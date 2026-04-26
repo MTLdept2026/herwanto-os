@@ -14,6 +14,9 @@ Your AI second brain on Telegram. Calendar-aware, project-tracking, daily briefi
 | All reminders & deadlines | `/due` |
 | Add a reminder | `/remind Description \| Date \| Category` |
 | Mark reminder done | `/done <id>` |
+| Full assistant agenda | `/agenda` or `/agenda 14` |
+| Store assistant memory | `/remember Category \| Fact` or say "remember..." |
+| View / clear memory | `/memory`, `/forget all` |
 | All project statuses | `/projects` |
 | Update a project | `/update Project \| Status \| Milestone \| Date \| Notes` |
 | Morning briefing now | `/briefing` |
@@ -177,6 +180,17 @@ The bot stores your chat ID on first `/start`. This is needed for the scheduled 
 /remind Submit CCA attendance report | 2026-05-30 | CCA
 ```
 
+**Use it like a full assistant:**
+```
+/agenda
+/agenda 14
+/remember preferences | Keep replies concise unless I ask for detail
+/memory
+What should I focus on this week?
+Remember that my usual CCA training is on Tuesdays and Thursdays.
+GamePlan is now in pilot mode with first-school onboarding as the next milestone.
+```
+
 **Update a project:**
 ```
 /update Rūḥ | Resubmitted to App Store | Apple approval | 2026-05-05 | Fixed metadata issues
@@ -209,7 +223,7 @@ What should my next milestone for Rūḥ be?
 - **Voice messages** → Telegram voice → Whisper transcription → Claude
 - **Document upload** → Send PDFs/worksheets for Claude to read and summarise
 - **WhatsApp** → Same backend, swap to Meta WhatsApp Cloud API when you're ready
-- **Persistent AI memory** → Replace in-memory `histories` dict with Redis on Railway
+- **Persistent AI memory** → Assistant memory is stored in the `Config` tab; Redis still improves chat history persistence
 
 ---
 

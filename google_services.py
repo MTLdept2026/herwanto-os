@@ -89,6 +89,14 @@ def get_week_events():
     return _fetch_events(start, end)
 
 
+def get_events_for_days(days: int = 7):
+    """Fetch events from today through the next N days."""
+    now = datetime.now(SGT)
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = (start + timedelta(days=max(1, days))).replace(hour=23, minute=59, second=59)
+    return _fetch_events(start, end)
+
+
 def format_events(events, show_date=False):
     if not events:
         return "Nothing scheduled."
@@ -263,3 +271,64 @@ def set_config(key: str, value: str):
         valueInputOption="RAW",
         body={"values": [[key, value]]},
     ).execute()
+
+
+# ─── SHEETS: ASSISTANT MEMORY ────────────────────────────────────────────────
+# Stored in Config as one JSON blob to avoid requiring another sheet tab.
+
+DEFAULT_MEMORY = {
+    "profile": [],
+    "preferences": [],
+    "people": [],
+    "places": [],
+    "projects": [],
+}
+
+
+def get_memory() -> dict:
+    raw = get_config("assistant_memory")
+    if not raw:
+        return {k: list(v) for k, v in DEFAULT_MEMORY.items()}
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return {k: list(v) for k, v in DEFAULT_MEMORY.items()}
+
+    memory = {k: list(v) for k, v in DEFAULT_MEMORY.items()}
+    for key, value in data.items():
+        if isinstance(value, list):
+            memory[key] = [str(item) for item in value if str(item).strip()]
+    return memory
+
+
+def set_memory(memory: dict):
+    clean = {}
+    for key in DEFAULT_MEMORY:
+        values = memory.get(key, [])
+        clean[key] = [str(item).strip() for item in values if str(item).strip()]
+    set_config("assistant_memory", json.dumps(clean, ensure_ascii=False))
+
+
+def add_memory(category: str, text: str) -> dict:
+    category = (category or "profile").lower().strip()
+    aliases = {
+        "preference": "preferences",
+        "person": "people",
+        "place": "places",
+        "project": "projects",
+    }
+    category = aliases.get(category, category)
+    if category not in DEFAULT_MEMORY:
+        category = "profile"
+    memory = get_memory()
+    item = text.strip()
+    if item and item not in memory[category]:
+        memory[category].append(item)
+    set_memory(memory)
+    return memory
+
+
+def clear_memory() -> dict:
+    memory = {k: list(v) for k, v in DEFAULT_MEMORY.items()}
+    set_memory(memory)
+    return memory

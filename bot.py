@@ -67,7 +67,20 @@ def save_history(user_id, history):
 def SYSTEM_PROMPT():
     now = datetime.now(SGT)
     date_ctx = now.strftime("Today is %A, %-d %B %Y. Current time in Singapore: %H:%M SGT.")
-    return f"""{date_ctx}
+    memory_ctx = ""
+    if google_ok():
+        try:
+            memory = gs.get_memory()
+            memory_lines = []
+            for category, items in memory.items():
+                if items:
+                    memory_lines.append(f"{category.title()}: " + "; ".join(items[:8]))
+            if memory_lines:
+                memory_ctx = "\n\nStored memory:\n" + "\n".join(memory_lines)
+        except Exception:
+            memory_ctx = ""
+
+    return f"""{date_ctx}{memory_ctx}
 
 You are Herwanto's personal AI assistant. Singapore-based. He wears three hats:
 
@@ -84,12 +97,15 @@ Rules:
 - For BM: proper DBP spelling and grammar always.
 - For business: give a direct recommendation.
 - Singapore English and local context always apply.
-- When he asks to add, schedule, or create a calendar event, do NOT describe or format it — just tell him to use /addcal and give the exact command to copy. Example: /addcal CCA duty 7 May 3-6pm
-- Never offer to generate .ics files. Always redirect to /addcal.
+- When he asks to add, schedule, or create a calendar event, create it directly if the date and time are clear. If details are incomplete, ask only for the missing detail.
+- Never offer to generate .ics files. Use Google Calendar directly.
 - The current date and time is already provided at the top of this prompt — always use it for any date/time reasoning.
-- You have tools: create_calendar_event, add_reminder, and web_search. Use them proactively.
+- You have tools: create_calendar_event, add_reminder, get_assistant_context, remember_user_info, update_project_status, and web_search. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
+- When the user asks about his day, week, workload, priorities, deadlines, or project status — call get_assistant_context before answering.
+- When the user says "remember", "note that", or gives stable preferences/facts about himself — call remember_user_info.
+- When the user gives a project progress update — call update_project_status.
 - After using a tool, confirm briefly and naturally. Do not ask "shall I add this?" — just do it.
 """
 
@@ -137,6 +153,49 @@ REMINDER_TOOL = {
     }
 }
 
+CONTEXT_TOOL = {
+    "name": "get_assistant_context",
+    "description": "Get Herwanto's current assistant context: timetable, calendar events, reminders, projects, and stored memory. Use before answering questions about schedule, priorities, deadlines, workload, or project state.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "days": {"type": "integer", "description": "Number of days to look ahead, from 1 to 14"}
+        }
+    }
+}
+
+MEMORY_TOOL = {
+    "name": "remember_user_info",
+    "description": "Persist stable information about Herwanto: preferences, personal profile facts, important people, places, or project context.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "category": {
+                "type": "string",
+                "description": "One of: profile, preferences, people, places, projects"
+            },
+            "text": {"type": "string", "description": "Concise memory to store"}
+        },
+        "required": ["category", "text"]
+    }
+}
+
+PROJECT_TOOL = {
+    "name": "update_project_status",
+    "description": "Create or update a tracked project status in Google Sheets when Herwanto gives a project progress update or milestone.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "project": {"type": "string", "description": "Project name"},
+            "status": {"type": "string", "description": "Current status"},
+            "milestone": {"type": "string", "description": "Next milestone, if any"},
+            "milestone_date": {"type": "string", "description": "YYYY-MM-DD if known, else empty"},
+            "notes": {"type": "string", "description": "Important notes, blockers, or context"}
+        },
+        "required": ["project", "status"]
+    }
+}
+
 # ─── HELPERS ─────────────────────────────────────────────────────────────────
 
 def google_ok():
@@ -164,6 +223,129 @@ def _lessons_for_date(target):
     lessons = tt.get_lessons(target, ref_date, ref_type)
     wt = tt.get_week_type(ref_date, ref_type, target)
     return lessons, tt.week_type_label(wt)
+
+def _format_memory(memory: dict) -> str:
+    lines = []
+    for category in ("profile", "preferences", "people", "places", "projects"):
+        items = memory.get(category, [])
+        if not items:
+            continue
+        lines.append(f"*{category.title()}*")
+        for item in items:
+            lines.append(f"- {item}")
+        lines.append("")
+    return "\n".join(lines).strip() or "No stored memory yet."
+
+def build_context_snapshot(days: int = 7) -> str:
+    days = max(1, min(int(days or 7), 14))
+    now = datetime.now(SGT)
+    today = now.date()
+    end_date = today + timedelta(days=days)
+    lines = [f"Assistant context as of {now.strftime('%A, %-d %B %Y, %H:%M SGT')}"]
+
+    lessons, wt_label = _lessons_for_date(today)
+    if wt_label:
+        lines.append(f"\nToday's lessons ({wt_label} week):")
+        lines.append(tt.format_lessons(lessons).replace("*", ""))
+
+    if not google_ok():
+        lines.append("\nGoogle is not connected.")
+        return "\n".join(lines)
+
+    try:
+        events = gs.get_events_for_days(days)
+        lines.append(f"\nCalendar, next {days} days:")
+        lines.append(gs.format_events(events, show_date=True).replace("*", ""))
+    except Exception as e:
+        lines.append(f"\nCalendar unavailable: {e}")
+
+    try:
+        reminders = gs.get_reminders()
+        active = [r for r in reminders if r["due"] <= end_date.isoformat()]
+        lines.append(f"\nReminders due by {end_date.isoformat()}:")
+        if active:
+            for r in sorted(active, key=lambda x: x["due"]):
+                status = "OVERDUE" if r["due"] < today.isoformat() else "due"
+                lines.append(f"- [{r['id']}] {r['due']} ({status}) {r['description']} / {r['category']}")
+        else:
+            lines.append("None.")
+    except Exception as e:
+        lines.append(f"\nReminders unavailable: {e}")
+
+    try:
+        projects = gs.get_projects()
+        lines.append("\nProjects:")
+        if projects:
+            for p in projects:
+                milestone = f"; next {p['next_milestone']} ({p['milestone_date']})" if p["next_milestone"] else ""
+                notes = f"; {p['notes']}" if p["notes"] else ""
+                lines.append(f"- {p['project']}: {p['status']}{milestone}{notes}")
+        else:
+            lines.append("None tracked.")
+    except Exception as e:
+        lines.append(f"\nProjects unavailable: {e}")
+
+    try:
+        memory = gs.get_memory()
+        formatted = _format_memory(memory).replace("*", "")
+        lines.append("\nStored memory:")
+        lines.append(formatted)
+    except Exception as e:
+        lines.append(f"\nMemory unavailable: {e}")
+
+    return "\n".join(lines)
+
+def build_agenda(days: int = 7) -> str:
+    days = max(1, min(int(days or 7), 14))
+    now = datetime.now(SGT)
+    today = now.date()
+    lines = [f"*Agenda*\n_{now.strftime('%A, %-d %B %Y, %H:%M SGT')}_\n"]
+
+    lessons, wt_label = _lessons_for_date(today)
+    if wt_label:
+        lines.append(f"*Today at school ({wt_label} week)*")
+        lines.append(tt.format_lessons(lessons))
+        lines.append("")
+
+    if not google_ok():
+        lines.append("_Google not connected._")
+        return "\n".join(lines)
+
+    events = gs.get_events_for_days(days)
+    reminders = gs.get_reminders()
+    end_date = today + timedelta(days=days)
+    overdue = [r for r in reminders if r["due"] < today.isoformat()]
+    due_window = [r for r in reminders if today.isoformat() <= r["due"] <= end_date.isoformat()]
+
+    lines.append(f"*Calendar - next {days} days*")
+    lines.append(gs.format_events(events, show_date=True))
+    lines.append("")
+
+    if overdue:
+        lines.append("*Overdue*")
+        for r in sorted(overdue, key=lambda x: x["due"]):
+            lines.append(f"- `[{r['id']}]` {r['due']} - {r['description']} _{r['category']}_")
+        lines.append("")
+
+    lines.append(f"*Due by {(end_date).strftime('%-d %b')}*")
+    if due_window:
+        for r in sorted(due_window, key=lambda x: x["due"]):
+            lines.append(f"- `[{r['id']}]` {r['due']} - {r['description']} _{r['category']}_")
+    else:
+        lines.append("Nothing due in this window.")
+    lines.append("")
+
+    try:
+        projects = gs.get_projects()
+        if projects:
+            lines.append("*Project pulse*")
+            for p in projects:
+                next_bit = f" Next: {p['next_milestone']} ({p['milestone_date']})." if p["next_milestone"] else ""
+                lines.append(f"- *{p['project']}* - {p['status']}.{next_bit}")
+    except Exception:
+        pass
+
+    return "\n".join(lines).strip()
 
 def build_briefing():
     now = datetime.now(SGT)
@@ -248,6 +430,7 @@ async def start(update, context):
         f"*School timetable*\n/lessons /setweek odd|even\n\n"
         f"*Calendar*\n/today /tomorrow /week\n/addcal [natural language]\n\n"
         f"*Reminders*\n/due /remind /done\n\n"
+        f"*Assistant*\n/agenda [days] /remember /memory /forget all\n\n"
         f"*Projects*\n/projects /update\n\n"
         f"*Search*\n/search [query]\n\n"
         f"*Briefing*\n/briefing (auto 7am SGT)\n\n"
@@ -427,6 +610,66 @@ async def update_cmd(update, context):
 async def briefing_cmd(update, context):
     await reply(update, build_briefing(), parse_mode="Markdown")
 
+async def agenda_cmd(update, context):
+    if not google_ok():
+        await update.message.reply_text("Google not connected.")
+        return
+    days = 7
+    if context.args:
+        try:
+            days = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("Usage: /agenda [days]")
+            return
+    try:
+        await reply(update, build_agenda(days), parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"Agenda error: {e}")
+
+async def remember_cmd(update, context):
+    if not google_ok():
+        await update.message.reply_text("Google not connected.")
+        return
+    text = " ".join(context.args).strip()
+    if not text:
+        await reply(update,
+            "Usage: `/remember preferences | Keep replies very concise`\n"
+            "Categories: profile, preferences, people, places, projects",
+            parse_mode="Markdown")
+        return
+    if "|" in text:
+        category, memory_text = [p.strip() for p in text.split("|", 1)]
+    else:
+        category, memory_text = "profile", text
+    try:
+        gs.add_memory(category, memory_text)
+        await update.message.reply_text(f"Remembered: {memory_text}")
+    except Exception as e:
+        await update.message.reply_text(f"Memory error: {e}")
+
+async def memory_cmd(update, context):
+    if not google_ok():
+        await update.message.reply_text("Google not connected.")
+        return
+    try:
+        await reply(update, f"*Assistant memory*\n\n{_format_memory(gs.get_memory())}", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"Memory error: {e}")
+
+async def forget_cmd(update, context):
+    if not google_ok():
+        await update.message.reply_text("Google not connected.")
+        return
+    confirm = " ".join(context.args).strip().lower()
+    if confirm != "all":
+        await reply(update, "Usage: `/forget all` clears stored assistant memory.", parse_mode="Markdown")
+        return
+    try:
+        gs.clear_memory()
+        await update.message.reply_text("Assistant memory cleared.")
+    except Exception as e:
+        await update.message.reply_text(f"Memory error: {e}")
+
 async def search_cmd(update, context):
     """Manual web search command."""
     query = " ".join(context.args)
@@ -576,6 +819,19 @@ async def _execute_tool(name: str, inp: dict) -> str:
         results = ss.web_search(inp.get("query", ""), max_results=5)
         return ss.format_results(results)
 
+    elif name == "get_assistant_context":
+        try:
+            return build_context_snapshot(inp.get("days", 7))
+        except Exception as e:
+            return f"Failed to get assistant context: {e}"
+
+    elif name == "remember_user_info":
+        try:
+            gs.add_memory(inp.get("category", "profile"), inp["text"])
+            return f"Remembered under {inp.get('category', 'profile')}: {inp['text']}"
+        except Exception as e:
+            return f"Failed to remember: {e}"
+
     elif name == "create_calendar_event":
         try:
             start_dt = SGT.localize(datetime.strptime(f"{inp['date']} {inp['start_time']}", "%Y-%m-%d %H:%M"))
@@ -593,6 +849,19 @@ async def _execute_tool(name: str, inp: dict) -> str:
         except Exception as e:
             return f"Failed to add reminder: {e}"
 
+    elif name == "update_project_status":
+        try:
+            gs.update_project(
+                inp["project"],
+                inp["status"],
+                inp.get("milestone", ""),
+                inp.get("milestone_date", ""),
+                inp.get("notes", ""),
+            )
+            return f"Updated project: {inp['project']} - {inp['status']}"
+        except Exception as e:
+            return f"Failed to update project: {e}"
+
     return "Unknown tool."
 
 
@@ -608,8 +877,8 @@ async def handle_message(update, context):
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
     try:
-        # Always include calendar + reminder tools; add search if key is set
-        tools = [CALENDAR_TOOL, REMINDER_TOOL]
+        # Always include core assistant tools; add search if key is set
+        tools = [CONTEXT_TOOL, CALENDAR_TOOL, REMINDER_TOOL, MEMORY_TOOL, PROJECT_TOOL]
         if ss.search_enabled():
             tools.append(SEARCH_TOOL)
 
@@ -705,6 +974,10 @@ def main():
     app.add_handler(CommandHandler("projects", projects_cmd))
     app.add_handler(CommandHandler("update",   update_cmd))
     app.add_handler(CommandHandler("briefing", briefing_cmd))
+    app.add_handler(CommandHandler("agenda",   agenda_cmd))
+    app.add_handler(CommandHandler("remember", remember_cmd))
+    app.add_handler(CommandHandler("memory",   memory_cmd))
+    app.add_handler(CommandHandler("forget",   forget_cmd))
     app.add_handler(CommandHandler("search",   search_cmd))
     app.add_handler(CommandHandler("addcal",   addcal_cmd))
     app.add_handler(CommandHandler("clear",    clear_cmd))
