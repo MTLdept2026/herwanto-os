@@ -435,8 +435,16 @@ Rules: assume 2026 if no year, 24hr time, add 1hr if no end time specified. Retu
             max_tokens=200,
             messages=[{"role": "user", "content": parse_prompt}]
         )
-        raw = parse_resp.content[0].text.strip().replace("```json","").replace("```","").strip()
+        raw = parse_resp.content[0].text.strip()
+        # Strip markdown fences
+        raw = raw.replace("```json","").replace("```","").strip()
+        # Strip anything before first { or [
+        start = min((raw.find(c) for c in ["{","["] if c in raw), default=0)
+        raw = raw[start:]
         event_data = json.loads(raw)
+        # Handle if Claude returned a list instead of a dict
+        if isinstance(event_data, list):
+            event_data = event_data[0]
         start_dt = SGT.localize(datetime.strptime(f"{event_data['date']} {event_data['start_time']}", "%Y-%m-%d %H:%M"))
         end_dt   = SGT.localize(datetime.strptime(f"{event_data['date']} {event_data['end_time']}",   "%Y-%m-%d %H:%M"))
         gs.create_event(event_data["title"], start_dt, end_dt,
