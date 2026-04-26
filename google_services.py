@@ -21,7 +21,11 @@ SCOPES = [
 ]
 
 SHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "")
-CALENDAR_ID = os.environ.get("GOOGLE_CALENDAR_ID", "primary")
+
+# Support multiple calendars via GOOGLE_CALENDAR_IDS (comma-separated)
+# Falls back to GOOGLE_CALENDAR_ID, then "primary"
+_cal_ids_raw = os.environ.get("GOOGLE_CALENDAR_IDS", "") or os.environ.get("GOOGLE_CALENDAR_ID", "primary")
+CALENDAR_IDS = [c.strip() for c in _cal_ids_raw.split(",") if c.strip()]
 
 
 def _creds():
@@ -43,14 +47,23 @@ def _sheets():
 # ─── CALENDAR ────────────────────────────────────────────────────────────────
 
 def _fetch_events(start: datetime, end: datetime):
-    result = _cal().events().list(
-        calendarId=CALENDAR_ID,
-        timeMin=start.isoformat(),
-        timeMax=end.isoformat(),
-        singleEvents=True,
-        orderBy="startTime",
-    ).execute()
-    return result.get("items", [])
+    """Fetch from all configured calendars, merged and sorted by start time."""
+    service = _cal()
+    all_events = []
+    for cal_id in CALENDAR_IDS:
+        try:
+            result = service.events().list(
+                calendarId=cal_id,
+                timeMin=start.isoformat(),
+                timeMax=end.isoformat(),
+                singleEvents=True,
+                orderBy="startTime",
+            ).execute()
+            all_events.extend(result.get("items", []))
+        except Exception:
+            pass  # skip calendars not yet shared
+    all_events.sort(key=lambda e: e["start"].get("dateTime", e["start"].get("date", "")))
+    return all_events
 
 
 def get_today_events():
