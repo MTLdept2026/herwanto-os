@@ -124,6 +124,8 @@ Rules:
 - You have tools: create_calendar_event, add_reminder, get_assistant_context, remember_user_info, update_project_status, get_latest_news, and web_search. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
+- When the user sends a screenshot, image, or PDF, inspect it for schedule items first: duties, appointments, matches, trainings, meetings, event timings, reporting times, deadlines, submissions, or preparation tasks.
+- For screenshots/PDFs/images: create calendar events for items with a clear date and time, add reminders for dated tasks/deadlines, then summarise what you added and what still needs clarification.
 - When the user asks about his day, week, workload, priorities, deadlines, or project status — call get_assistant_context before answering.
 - When the user asks about latest news, current events, headlines, football, F1, AI, Singapore education, apps, Apple, Nothing OS, or his shortlisted topics — call get_latest_news before answering.
 - When the user says "remember", "note that", or gives stable preferences/facts about himself — call remember_user_info.
@@ -862,8 +864,58 @@ Rules: the current year is 2026 — ALWAYS use 2026 if no year is mentioned, 24h
 
 # ─── MEDIA HANDLERS ──────────────────────────────────────────────────────────
 
+MEDIA_SCHEDULE_INSTRUCTION = """
+Inspect this screenshot/document carefully. Priority:
+1. Extract schedule/calendar items: duties, meetings, appointments, matches, trainings, reporting times, event timings, venue changes.
+2. Extract tasks/deadlines: things to submit, prepare, mark, complete, or follow up.
+3. If a calendar item has a clear date and start time, call create_calendar_event. Use a sensible one-hour duration if no end time is shown.
+4. If a task has a due date, call add_reminder.
+5. If the date/time is ambiguous, do not invent it. Ask for the exact missing detail.
+6. After tools run, reply with a concise summary: added to calendar, added as reminders, unclear items.
+"""
+
+def _core_tools():
+    tools = [CONTEXT_TOOL, CALENDAR_TOOL, REMINDER_TOOL, MEMORY_TOOL, PROJECT_TOOL, NEWS_TOOL]
+    if ss.search_enabled():
+        tools.append(SEARCH_TOOL)
+    return tools
+
+async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
+    tools = tools or _core_tools()
+    reply_text = ""
+    max_iterations = 5
+
+    for _ in range(max_iterations):
+        resp = claude.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=max_tokens,
+            system=SYSTEM_PROMPT(),
+            tools=tools,
+            messages=messages
+        )
+
+        if resp.stop_reason != "tool_use":
+            reply_text = next((b.text for b in resp.content if b.type == "text"), "Done.")
+            break
+
+        messages.append({"role": "assistant", "content": resp.content})
+        tool_results = []
+        for block in resp.content:
+            if block.type != "tool_use":
+                continue
+            logger.info(f"Tool call: {block.name} {block.input}")
+            result = await _execute_tool(block.name, block.input)
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": result
+            })
+        messages.append({"role": "user", "content": tool_results})
+
+    return reply_text or "Done."
+
 async def handle_photo(update, context):
-    """Send photo to Claude vision."""
+    """Extract schedule data from photos/screenshots and send to Claude vision."""
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     try:
         photo = update.message.photo[-1]
@@ -871,26 +923,25 @@ async def handle_photo(update, context):
         buf = io.BytesIO()
         await file.download_to_memory(buf)
         image_data = base64.b64encode(buf.getvalue()).decode()
-        caption = update.message.caption or "What is this? Help me with whatever is relevant to my work as an educator, developer, or entrepreneur."
-        resp = claude.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1024,
-            system=SYSTEM_PROMPT(),
-            messages=[{"role": "user", "content": [
+        caption = update.message.caption or "Extract any schedule items, calendar events, reminders, and useful context from this screenshot/photo."
+        reply_text = await _run_agentic_claude(
+            [{"role": "user", "content": [
                 {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_data}},
-                {"type": "text", "text": caption}
-            ]}]
+                {"type": "text", "text": f"{MEDIA_SCHEDULE_INSTRUCTION}\n\nUser note: {caption}"}
+            ]}],
+            max_tokens=2048,
+            tools=[CONTEXT_TOOL, CALENDAR_TOOL, REMINDER_TOOL]
         )
-        await reply(update, resp.content[0].text)
+        await reply(update, reply_text)
     except Exception as e:
         logger.error(f"Photo error: {e}")
         await update.message.reply_text(f"Could not process photo: {e}")
 
 async def handle_document(update, context):
-    """Handle PDF and other documents — send to Claude for analysis."""
+    """Handle PDFs/images and extract schedule data when present."""
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     doc = update.message.document
-    caption = update.message.caption or "Summarise this document. Extract any key dates, deadlines, or action items relevant to my work."
+    caption = update.message.caption or "Extract any schedule items, calendar events, reminders, deadlines, and action items relevant to my work."
     try:
         file = await context.bot.get_file(doc.file_id)
         buf = io.BytesIO()
@@ -913,16 +964,15 @@ async def handle_document(update, context):
                 parse_mode="Markdown")
             return
 
-        resp = claude.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=2048,
-            system=SYSTEM_PROMPT(),
-            messages=[{"role": "user", "content": [
+        reply_text = await _run_agentic_claude(
+            [{"role": "user", "content": [
                 content_block,
-                {"type": "text", "text": caption}
-            ]}]
+                {"type": "text", "text": f"{MEDIA_SCHEDULE_INSTRUCTION}\n\nUser note: {caption}"}
+            ]}],
+            max_tokens=2048,
+            tools=[CONTEXT_TOOL, CALENDAR_TOOL, REMINDER_TOOL]
         )
-        await reply(update, resp.content[0].text)
+        await reply(update, reply_text)
     except Exception as e:
         logger.error(f"Document error: {e}")
         await update.message.reply_text(f"Could not process document: {e}")
@@ -999,43 +1049,8 @@ async def handle_message(update, context):
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
     try:
-        # Always include core assistant tools; add search if key is set
-        tools = [CONTEXT_TOOL, CALENDAR_TOOL, REMINDER_TOOL, MEMORY_TOOL, PROJECT_TOOL, NEWS_TOOL]
-        if ss.search_enabled():
-            tools.append(SEARCH_TOOL)
-
-        # Agentic loop — Claude may call multiple tools before giving a final reply
         messages = list(history)
-        reply_text = ""
-        max_iterations = 5
-
-        for _ in range(max_iterations):
-            resp = claude.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=1024,
-                system=SYSTEM_PROMPT(),
-                tools=tools,
-                messages=messages
-            )
-
-            if resp.stop_reason != "tool_use":
-                reply_text = next((b.text for b in resp.content if b.type == "text"), "Done.")
-                break
-
-            # Process all tool calls in this response
-            messages.append({"role": "assistant", "content": resp.content})
-            tool_results = []
-            for block in resp.content:
-                if block.type != "tool_use":
-                    continue
-                logger.info(f"Tool call: {block.name} {block.input}")
-                result = await _execute_tool(block.name, block.input)
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": result
-                })
-            messages.append({"role": "user", "content": tool_results})
+        reply_text = await _run_agentic_claude(messages, max_tokens=1024)
 
         # Save only user message + final reply to persistent history
         history.append({"role": "assistant", "content": reply_text})

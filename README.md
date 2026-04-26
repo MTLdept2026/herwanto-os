@@ -17,6 +17,7 @@ Your AI second brain on Telegram. Calendar-aware, project-tracking, daily briefi
 | Full assistant agenda | `/agenda` or `/agenda 14` |
 | Store assistant memory | `/remember Category \| Fact` or say "remember..." |
 | View / clear memory | `/memory`, `/forget all` |
+| Screenshot/PDF schedule extraction | Send a photo, screenshot, image document, or PDF |
 | All project statuses | `/projects` |
 | Update a project | `/update Project \| Status \| Milestone \| Date \| Notes` |
 | Latest news shortlist | `/news`, `/news Apple AI`, `/watch`, `/watchlist`, `/unwatch` |
@@ -205,6 +206,13 @@ Hira is designed to feel like a calm chief-of-staff in your pocket: concise, obs
 /unwatch Apple AI
 What's the latest from my shortlist?
 Anything interesting in AI or SG education today?
+```
+
+**Screenshots and PDFs:**
+```
+Send a timetable screenshot, duty roster, match fixture, PDF letter, or event notice.
+Hira will extract dated schedule items, add clear events to Google Calendar,
+add dated tasks as reminders, and ask only for missing details when needed.
 ```
 
 **Update a project:**
