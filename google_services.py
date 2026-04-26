@@ -16,7 +16,7 @@ from google.oauth2 import service_account
 SGT = pytz.timezone('Asia/Singapore')
 
 SCOPES = [
-    'https://www.googleapis.com/auth/calendar.readonly',
+    'https://www.googleapis.com/auth/calendar',
     'https://www.googleapis.com/auth/spreadsheets',
 ]
 
@@ -106,7 +106,27 @@ def format_events(events, show_date=False):
             date_str = dt.strftime("%a %-d %b")
         prefix = f"{date_str} " if show_date else ""
         lines.append(f"• {prefix}{time_str} — {summary}")
+
     return "\n".join(lines)
+
+
+# ─── CALENDAR WRITE ──────────────────────────────────────────────────────────
+
+def create_event(title: str, start_dt: datetime, end_dt: datetime,
+                 location: str = "", description: str = "") -> dict:
+    """Create a calendar event. Uses first calendar ID (your personal calendar)."""
+    cal_id = CALENDAR_IDS[0] if CALENDAR_IDS else "primary"
+    event = {
+        "summary": title,
+        "start": {"dateTime": start_dt.isoformat(), "timeZone": "Asia/Singapore"},
+        "end":   {"dateTime": end_dt.isoformat(),   "timeZone": "Asia/Singapore"},
+    }
+    if location:
+        event["location"] = location
+    if description:
+        event["description"] = description
+    result = _cal().events().insert(calendarId=cal_id, body=event).execute()
+    return result
 
 
 # ─── SHEETS: REMINDERS ───────────────────────────────────────────────────────
