@@ -79,6 +79,9 @@ Rules:
 - For BM: proper DBP spelling and grammar always.
 - For business: give a direct recommendation.
 - Singapore English and local context always apply.
+- When he asks to add, schedule, or create a calendar event, do NOT describe or format it — just tell him to use /addcal and give the exact command to copy. Example: /addcal CCA duty 7 May 3-6pm
+- Never offer to generate .ics files. Always redirect to /addcal.
+- Current year is 2026. When parsing dates with no year, always assume 2026.
 """
 
 # Claude tool definition for web search
@@ -428,7 +431,7 @@ Text: "{user_text}"
 Return exactly:
 {{"title":"event title","date":"YYYY-MM-DD","start_time":"HH:MM","end_time":"HH:MM","location":"location or empty","description":"notes or empty"}}
 
-Rules: assume 2026 if no year, 24hr time, add 1hr if no end time specified. Return ONLY the JSON."""
+Rules: the current year is 2026 — ALWAYS use 2026 if no year is mentioned, 24hr time, add 1hr if no end time specified. Return ONLY the JSON."""
     try:
         parse_resp = claude.messages.create(
             model="claude-haiku-4-5-20251001",
