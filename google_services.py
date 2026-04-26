@@ -401,3 +401,98 @@ def remove_news_topic(label: str) -> list:
     topics = [t for t in get_news_topics() if t["label"].lower() != label]
     set_news_topics(topics)
     return topics
+
+
+# ─── SHEETS: PROACTIVE NUDGES ───────────────────────────────────────────────
+# Stored in Config as JSON so Hira can initiate chats at specific times.
+
+def get_nudges(include_sent=False) -> list:
+    raw = get_config("proactive_nudges")
+    if not raw:
+        return []
+    try:
+        nudges = json.loads(raw)
+    except Exception:
+        return []
+
+    clean = []
+    for nudge in nudges:
+        if not isinstance(nudge, dict):
+            continue
+        status = nudge.get("status", "pending")
+        if status == "sent" and not include_sent:
+            continue
+        clean.append({
+            "id": str(nudge.get("id", "")),
+            "message": str(nudge.get("message", "")).strip(),
+            "send_at": str(nudge.get("send_at", "")).strip(),
+            "status": status,
+            "created": str(nudge.get("created", "")).strip(),
+            "sent_at": str(nudge.get("sent_at", "")).strip(),
+        })
+    return [n for n in clean if n["id"] and n["message"] and n["send_at"]]
+
+
+def set_nudges(nudges: list):
+    set_config("proactive_nudges", json.dumps(nudges, ensure_ascii=False))
+
+
+def add_nudge(message: str, send_at: str) -> dict:
+    nudges = get_nudges(include_sent=True)
+    now = datetime.now(SGT)
+    next_id = 1
+    numeric_ids = [int(n["id"]) for n in nudges if str(n.get("id", "")).isdigit()]
+    if numeric_ids:
+        next_id = max(numeric_ids) + 1
+    nudge = {
+        "id": str(next_id),
+        "message": message.strip(),
+        "send_at": send_at.strip(),
+        "status": "pending",
+        "created": now.isoformat(),
+        "sent_at": "",
+    }
+    nudges.append(nudge)
+    set_nudges(nudges)
+    return nudge
+
+
+def cancel_nudge(nudge_id: str) -> bool:
+    nudges = get_nudges(include_sent=True)
+    changed = False
+    for nudge in nudges:
+        if str(nudge.get("id")) == str(nudge_id) and nudge.get("status") != "sent":
+            nudge["status"] = "cancelled"
+            changed = True
+    if changed:
+        set_nudges(nudges)
+    return changed
+
+
+def due_nudges(now: datetime) -> list:
+    due = []
+    for nudge in get_nudges(include_sent=True):
+        if nudge.get("status") != "pending":
+            continue
+        try:
+            send_at = datetime.fromisoformat(nudge["send_at"])
+            if send_at.tzinfo is None:
+                send_at = SGT.localize(send_at)
+            else:
+                send_at = send_at.astimezone(SGT)
+        except Exception:
+            continue
+        if send_at <= now:
+            due.append(nudge)
+    return due
+
+
+def mark_nudge_sent(nudge_id: str):
+    nudges = get_nudges(include_sent=True)
+    now = datetime.now(SGT).isoformat()
+    for nudge in nudges:
+        if str(nudge.get("id")) == str(nudge_id):
+            nudge["status"] = "sent"
+            nudge["sent_at"] = now
+            break
+    set_nudges(nudges)

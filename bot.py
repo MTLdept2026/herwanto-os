@@ -121,9 +121,10 @@ Rules:
 - When he asks to add, schedule, or create a calendar event, create it directly if the date and time are clear. If details are incomplete, ask only for the missing detail.
 - Never offer to generate .ics files. Use Google Calendar directly.
 - The current date and time is already provided at the top of this prompt — always use it for any date/time reasoning.
-- You have tools: create_calendar_event, add_reminder, get_assistant_context, remember_user_info, update_project_status, get_latest_news, and web_search. Use them proactively.
+- You have tools: create_calendar_event, add_reminder, create_proactive_nudge, get_assistant_context, remember_user_info, update_project_status, get_latest_news, and web_search. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
+- When the user asks you to nudge, ping, check in, remind him at a specific time, or initiate a chat later — call create_proactive_nudge. Use this for time-specific heads-ups, not ordinary all-day deadlines.
 - When the user sends a screenshot, image, or PDF, inspect it for schedule items first: duties, appointments, matches, trainings, meetings, event timings, reporting times, deadlines, submissions, or preparation tasks.
 - For screenshots/PDFs/images: create calendar events for items with a clear date and time, add reminders for dated tasks/deadlines, then summarise what you added and what still needs clarification.
 - When the user asks about his day, week, workload, priorities, deadlines, or project status — call get_assistant_context before answering.
@@ -174,6 +175,19 @@ REMINDER_TOOL = {
             "category":    {"type": "string", "description": "Teaching, CCA, GamePlan, Ruh, or Personal"}
         },
         "required": ["description", "due_date"]
+    }
+}
+
+NUDGE_TOOL = {
+    "name": "create_proactive_nudge",
+    "description": "Schedule Hira to initiate a Telegram chat at a specific date and time with a short message or heads-up.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "message": {"type": "string", "description": "Message Hira should send later"},
+            "send_at": {"type": "string", "description": "ISO datetime in Asia/Singapore, e.g. 2026-05-01T16:30:00+08:00"}
+        },
+        "required": ["message", "send_at"]
     }
 }
 
@@ -406,6 +420,26 @@ def build_news_digest(query: str = "", max_items: int = 2) -> str:
     digest = ss.get_digest_for_topics(_news_topics(), max_items=max_items)
     return f"*Latest from your shortlist*\n\n{digest or 'No news found.'}"
 
+def _parse_iso_sgt(value: str) -> datetime:
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        return SGT.localize(dt)
+    return dt.astimezone(SGT)
+
+def _format_nudge(nudge: dict) -> str:
+    try:
+        send_at = _parse_iso_sgt(nudge["send_at"])
+        when = send_at.strftime("%a %-d %b, %H:%M")
+    except Exception:
+        when = nudge.get("send_at", "")
+    return f"`[{nudge['id']}]` *{when}* - {nudge['message']}"
+
+def _create_nudge(message: str, send_at: str) -> dict:
+    send_dt = _parse_iso_sgt(send_at)
+    if send_dt <= datetime.now(SGT):
+        raise ValueError("Nudge time must be in the future.")
+    return gs.add_nudge(message, send_dt.isoformat())
+
 def build_briefing():
     now = datetime.now(SGT)
     today = now.date()
@@ -489,6 +523,7 @@ async def start(update, context):
         f"*School timetable*\n/lessons /setweek odd|even\n\n"
         f"*Calendar*\n/today /tomorrow /week\n/addcal [natural language]\n\n"
         f"*Reminders*\n/due /remind /done\n\n"
+        f"*Proactive nudges*\n/nudge /nudges /cancelnudge\n\n"
         f"*Assistant*\n/agenda [days] /remember /memory /forget all\n\n"
         f"*Projects*\n/projects /update\n\n"
         f"*Search*\n/search [query]\n\n"
@@ -627,6 +662,82 @@ async def done_cmd(update, context):
         await update.message.reply_text(f"#{rid} done!" if ok else f"#{rid} not found.")
     except Exception as e:
         await update.message.reply_text(f"Error: {e}")
+
+async def nudge_cmd(update, context):
+    if not google_ok():
+        await update.message.reply_text("Google not connected.")
+        return
+    text = " ".join(context.args).strip()
+    if not text:
+        await reply(update,
+            "Usage: `/nudge Message | YYYY-MM-DD HH:MM`\n"
+            "Or: `/nudge Check on GamePlan proposal tomorrow 16:30`",
+            parse_mode="Markdown")
+        return
+
+    try:
+        if "|" in text:
+            message, when_text = [p.strip() for p in text.split("|", 1)]
+            send_dt = SGT.localize(datetime.strptime(when_text, "%Y-%m-%d %H:%M"))
+            nudge = _create_nudge(message, send_dt.isoformat())
+        else:
+            now = datetime.now(SGT)
+            parse_prompt = f"""Today is {now.strftime('%Y-%m-%d')} and current time is {now.strftime('%H:%M')} SGT.
+Extract a proactive nudge from this text and return ONLY valid JSON.
+Text: "{text}"
+
+Return exactly:
+{{"message":"message to send later","send_at":"YYYY-MM-DDTHH:MM:SS+08:00"}}
+
+Rules: Use Asia/Singapore time. If no year is mentioned, use 2026. If the time/date is unclear, return {{"error":"missing date/time"}}. Return ONLY JSON."""
+            parse_resp = claude.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=200,
+                messages=[{"role": "user", "content": parse_prompt}]
+            )
+            raw = parse_resp.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+            start = min((raw.find(c) for c in ["{", "["] if c in raw), default=0)
+            data = json.loads(raw[start:])
+            if "error" in data:
+                await update.message.reply_text("I need a clear date and time for that nudge.")
+                return
+            nudge = _create_nudge(data["message"], data["send_at"])
+
+        await reply(update, f"Nudge scheduled:\n{_format_nudge(nudge)}", parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"nudge error: {e}")
+        await update.message.reply_text(f"Could not schedule nudge: {e}")
+
+async def nudges_cmd(update, context):
+    if not google_ok():
+        await update.message.reply_text("Google not connected.")
+        return
+    try:
+        nudges = sorted(gs.get_nudges(), key=lambda n: n["send_at"])
+        if not nudges:
+            await update.message.reply_text("No pending nudges.")
+            return
+        lines = ["*Pending nudges*\n"]
+        for nudge in nudges:
+            lines.append(_format_nudge(nudge))
+        lines.append("\n/cancelnudge <id> to cancel")
+        await reply(update, "\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"Nudges error: {e}")
+
+async def cancelnudge_cmd(update, context):
+    if not google_ok():
+        await update.message.reply_text("Google not connected.")
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /cancelnudge <id>")
+        return
+    try:
+        nudge_id = context.args[0]
+        ok = gs.cancel_nudge(nudge_id)
+        await update.message.reply_text(f"Nudge #{nudge_id} cancelled." if ok else f"Nudge #{nudge_id} not found.")
+    except Exception as e:
+        await update.message.reply_text(f"Nudges error: {e}")
 
 async def projects_cmd(update, context):
     if not google_ok():
@@ -875,7 +986,7 @@ Inspect this screenshot/document carefully. Priority:
 """
 
 def _core_tools():
-    tools = [CONTEXT_TOOL, CALENDAR_TOOL, REMINDER_TOOL, MEMORY_TOOL, PROJECT_TOOL, NEWS_TOOL]
+    tools = [CONTEXT_TOOL, CALENDAR_TOOL, REMINDER_TOOL, NUDGE_TOOL, MEMORY_TOOL, PROJECT_TOOL, NEWS_TOOL]
     if ss.search_enabled():
         tools.append(SEARCH_TOOL)
     return tools
@@ -1021,6 +1132,13 @@ async def _execute_tool(name: str, inp: dict) -> str:
         except Exception as e:
             return f"Failed to add reminder: {e}"
 
+    elif name == "create_proactive_nudge":
+        try:
+            nudge = _create_nudge(inp["message"], inp["send_at"])
+            return f"Scheduled nudge #{nudge['id']} for {nudge['send_at']}: {nudge['message']}"
+        except Exception as e:
+            return f"Failed to schedule nudge: {e}"
+
     elif name == "update_project_status":
         try:
             gs.update_project(
@@ -1092,6 +1210,21 @@ async def friday_checkin_job(context):
     except Exception as e:
         logger.error(f"Friday check-in error: {e}")
 
+async def proactive_nudges_job(context):
+    if not google_ok():
+        return
+    try:
+        chat_id = gs.get_config("chat_id")
+        if not chat_id:
+            return
+        now = datetime.now(SGT)
+        for nudge in gs.due_nudges(now):
+            text = f"*Hira nudge*\n\n{nudge['message']}"
+            await context.bot.send_message(chat_id=int(chat_id), text=text, parse_mode="Markdown")
+            gs.mark_nudge_sent(nudge["id"])
+    except Exception as e:
+        logger.error(f"Proactive nudge error: {e}")
+
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1108,6 +1241,9 @@ def main():
     app.add_handler(CommandHandler("due",      due_cmd))
     app.add_handler(CommandHandler("remind",   remind_cmd))
     app.add_handler(CommandHandler("done",     done_cmd))
+    app.add_handler(CommandHandler("nudge",    nudge_cmd))
+    app.add_handler(CommandHandler("nudges",   nudges_cmd))
+    app.add_handler(CommandHandler("cancelnudge", cancelnudge_cmd))
     app.add_handler(CommandHandler("projects", projects_cmd))
     app.add_handler(CommandHandler("update",   update_cmd))
     app.add_handler(CommandHandler("briefing", briefing_cmd))
@@ -1128,6 +1264,7 @@ def main():
     jq = app.job_queue
     jq.run_daily(morning_briefing_job, time=dt_time(7, 0, 0, tzinfo=SGT), name="morning_briefing")
     jq.run_daily(friday_checkin_job,   time=dt_time(17, 0, 0, tzinfo=SGT), days=(4,), name="friday_checkin")
+    jq.run_repeating(proactive_nudges_job, interval=60, first=10, name="proactive_nudges")
     logger.info("Herwanto OS running — all systems active.")
     app.run_polling(drop_pending_updates=True)
 

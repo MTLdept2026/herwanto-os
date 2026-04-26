@@ -14,6 +14,7 @@ Your AI second brain on Telegram. Calendar-aware, project-tracking, daily briefi
 | All reminders & deadlines | `/due` |
 | Add a reminder | `/remind Description \| Date \| Category` |
 | Mark reminder done | `/done <id>` |
+| Proactive timed nudges | `/nudge`, `/nudges`, `/cancelnudge` |
 | Full assistant agenda | `/agenda` or `/agenda 14` |
 | Store assistant memory | `/remember Category \| Fact` or say "remember..." |
 | View / clear memory | `/memory`, `/forget all` |
@@ -181,6 +182,16 @@ The bot stores your chat ID on first `/start`. This is needed for the scheduled 
 /remind Submit GamePlan proposal to NBSS | 2026-05-15 | GamePlan
 /remind Submit CCA attendance report | 2026-05-30 | CCA
 ```
+
+**Proactive nudges:**
+```
+/nudge Check on GamePlan proposal | 2026-05-02 16:30
+/nudge Ping me tomorrow 7am to check my duty roster
+/nudges
+/cancelnudge 3
+```
+
+Hira checks pending nudges every minute and sends the message proactively in Telegram. Use this for time-specific heads-ups when you are likely to be buried in work.
 
 **Use it like a full assistant:**
 ```
