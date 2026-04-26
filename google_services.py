@@ -332,3 +332,72 @@ def clear_memory() -> dict:
     memory = {k: list(v) for k, v in DEFAULT_MEMORY.items()}
     set_memory(memory)
     return memory
+
+
+# ─── SHEETS: NEWS WATCHLIST ─────────────────────────────────────────────────
+# Stored in Config so users can shortlist topics without adding another tab.
+
+DEFAULT_NEWS_TOPICS = [
+    {"label": "Liverpool / EPL", "query": "Liverpool FC Premier League"},
+    {"label": "F1", "query": "Formula 1"},
+    {"label": "AI", "query": "Claude Gemini Codex AI"},
+    {"label": "Islam", "query": "Islam Muslim"},
+    {"label": "SG Education", "query": "Singapore education MOE"},
+    {"label": "Current Affairs", "query": "Singapore news today"},
+    {"label": "Design / UI/UX", "query": "UI UX design"},
+    {"label": "App Dev", "query": "iOS Android app development"},
+    {"label": "macOS", "query": "macOS Apple"},
+    {"label": "Nothing OS", "query": "Nothing Phone Android"},
+]
+
+
+def get_news_topics() -> list:
+    raw = get_config("news_topics")
+    if not raw:
+        return [dict(topic) for topic in DEFAULT_NEWS_TOPICS]
+    try:
+        topics = json.loads(raw)
+    except Exception:
+        return [dict(topic) for topic in DEFAULT_NEWS_TOPICS]
+
+    clean = []
+    for topic in topics:
+        if not isinstance(topic, dict):
+            continue
+        label = str(topic.get("label", "")).strip()
+        query = str(topic.get("query", "")).strip()
+        if label and query:
+            clean.append({"label": label, "query": query})
+    return clean or [dict(topic) for topic in DEFAULT_NEWS_TOPICS]
+
+
+def set_news_topics(topics: list):
+    clean = []
+    seen = set()
+    for topic in topics:
+        label = str(topic.get("label", "")).strip()
+        query = str(topic.get("query", "")).strip()
+        if not label or not query:
+            continue
+        key = label.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        clean.append({"label": label, "query": query})
+    set_config("news_topics", json.dumps(clean, ensure_ascii=False))
+
+
+def add_news_topic(label: str, query: str = "") -> list:
+    label = label.strip()
+    query = (query or label).strip()
+    topics = [t for t in get_news_topics() if t["label"].lower() != label.lower()]
+    topics.append({"label": label, "query": query})
+    set_news_topics(topics)
+    return topics
+
+
+def remove_news_topic(label: str) -> list:
+    label = label.strip().lower()
+    topics = [t for t in get_news_topics() if t["label"].lower() != label]
+    set_news_topics(topics)
+    return topics

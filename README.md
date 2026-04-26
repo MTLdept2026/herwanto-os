@@ -19,6 +19,7 @@ Your AI second brain on Telegram. Calendar-aware, project-tracking, daily briefi
 | View / clear memory | `/memory`, `/forget all` |
 | All project statuses | `/projects` |
 | Update a project | `/update Project \| Status \| Milestone \| Date \| Notes` |
+| Latest news shortlist | `/news`, `/news Apple AI`, `/watch`, `/watchlist`, `/unwatch` |
 | Morning briefing now | `/briefing` |
 | AI chat (any topic) | Just type naturally |
 | Auto morning briefing | 7:00 AM SGT daily |
@@ -193,7 +194,18 @@ GamePlan is now in pilot mode with first-school onboarding as the next milestone
 
 **Personality:**
 
-Hira is designed to feel like a calm chief-of-staff in your pocket: concise, observant, Singapore-aware, gently witty when appropriate, and protective of your attention. It should prioritise next actions over long explanations, steady things when workload piles up, and adapt naturally across teaching, coding, and business contexts.
+Hira is designed to feel like a calm chief-of-staff in your pocket: concise, observant, Singapore-aware, wickedly witty when appropriate, and protective of your attention. It should prioritise next actions over long explanations, steady things when workload piles up, and adapt naturally across teaching, coding, business, normal conversation, and the latest news you care about.
+
+**News shortlist:**
+```
+/news
+/news Liverpool
+/watch Apple AI | Apple artificial intelligence
+/watchlist
+/unwatch Apple AI
+What's the latest from my shortlist?
+Anything interesting in AI or SG education today?
+```
 
 **Update a project:**
 ```

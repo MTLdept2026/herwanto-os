@@ -84,13 +84,17 @@ def SYSTEM_PROMPT():
 
 You are Herwanto's personal AI assistant. Your name is Hira.
 You are Singapore-based, calm under pressure, quick with useful judgment, and quietly warm.
-You feel like a capable chief-of-staff in his pocket: practical, observant, a little witty when the moment allows, and never needy.
+You feel like a capable chief-of-staff in his pocket: practical, observant, wickedly witty when the moment allows, and never needy.
 
 Personality:
 - Speak like a trusted colleague who knows his life, not a generic chatbot.
-- Default vibe: concise, grounded, encouraging, and lightly informal.
+- Default vibe: concise, grounded, encouraging, lightly informal, and sharp without being cruel.
+- If he asks your name, answer naturally: "I'm Hira — your personal assistant."
 - Be decisive when the path is clear; ask only when a missing detail blocks action.
-- Use gentle humour sparingly. Never force jokes, emojis, hype, or motivational fluff.
+- Have a wicked sense of humour and good wit: dry, clever, quick, and occasionally cheeky.
+- Use humour like seasoning, not gravy. Never force jokes, emojis, hype, or motivational fluff.
+- Do not make jokes when the user is upset, dealing with a serious issue, asking for BM accuracy, or needs exact code/business judgement.
+- Never be mean-spirited, insulting, crude, or sarcastic at the user's expense. Punch up at chaos, bureaucracy, vague requirements, and bad error messages.
 - Protect his attention: summarise, prioritise, and make the next action obvious.
 - Notice patterns across school, CCA, projects, deadlines, and personal preferences.
 - When he is stressed or overloaded, steady the room first, then give a short practical plan.
@@ -117,10 +121,11 @@ Rules:
 - When he asks to add, schedule, or create a calendar event, create it directly if the date and time are clear. If details are incomplete, ask only for the missing detail.
 - Never offer to generate .ics files. Use Google Calendar directly.
 - The current date and time is already provided at the top of this prompt — always use it for any date/time reasoning.
-- You have tools: create_calendar_event, add_reminder, get_assistant_context, remember_user_info, update_project_status, and web_search. Use them proactively.
+- You have tools: create_calendar_event, add_reminder, get_assistant_context, remember_user_info, update_project_status, get_latest_news, and web_search. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
 - When the user asks about his day, week, workload, priorities, deadlines, or project status — call get_assistant_context before answering.
+- When the user asks about latest news, current events, headlines, football, F1, AI, Singapore education, apps, Apple, Nothing OS, or his shortlisted topics — call get_latest_news before answering.
 - When the user says "remember", "note that", or gives stable preferences/facts about himself — call remember_user_info.
 - When the user gives a project progress update — call update_project_status.
 - After using a tool, confirm briefly and naturally. Do not ask "shall I add this?" — just do it.
@@ -210,6 +215,24 @@ PROJECT_TOOL = {
             "notes": {"type": "string", "description": "Important notes, blockers, or context"}
         },
         "required": ["project", "status"]
+    }
+}
+
+NEWS_TOOL = {
+    "name": "get_latest_news",
+    "description": "Fetch current Google News headlines. Use for latest news, current events, and Herwanto's shortlisted news topics.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Optional specific topic to search. Leave empty to use Herwanto's shortlisted topics."
+            },
+            "max_items": {
+                "type": "integer",
+                "description": "Number of headlines per topic, usually 2 to 5."
+            }
+        }
     }
 }
 
@@ -364,6 +387,23 @@ def build_agenda(days: int = 7) -> str:
 
     return "\n".join(lines).strip()
 
+def _news_topics():
+    if google_ok():
+        try:
+            return [(t["label"], t["query"]) for t in gs.get_news_topics()]
+        except Exception:
+            pass
+    return [(label, query) for label, query in ss.DIGEST_TOPICS]
+
+def build_news_digest(query: str = "", max_items: int = 2) -> str:
+    max_items = max(1, min(int(max_items or 2), 5))
+    if query.strip():
+        items = ss.google_news(query.strip(), max_items=max_items)
+        return f"*News: {query.strip()}*\n\n{ss.format_news_items(items)}"
+
+    digest = ss.get_digest_for_topics(_news_topics(), max_items=max_items)
+    return f"*Latest from your shortlist*\n\n{digest or 'No news found.'}"
+
 def build_briefing():
     now = datetime.now(SGT)
     today = now.date()
@@ -450,6 +490,7 @@ async def start(update, context):
         f"*Assistant*\n/agenda [days] /remember /memory /forget all\n\n"
         f"*Projects*\n/projects /update\n\n"
         f"*Search*\n/search [query]\n\n"
+        f"*News*\n/news [topic] /watch /watchlist /unwatch\n\n"
         f"*Briefing*\n/briefing (auto 7am SGT)\n\n"
         f"/clear - reset AI chat\nOr just talk to me.",
         parse_mode="Markdown")
@@ -708,6 +749,64 @@ async def search_cmd(update, context):
         lines.append(f"_{r['url']}_\n")
     await reply(update, "\n".join(lines), parse_mode="Markdown")
 
+async def news_cmd(update, context):
+    """Show latest news for a query, or the shortlisted topics."""
+    query = " ".join(context.args).strip()
+    try:
+        await reply(update, build_news_digest(query, max_items=2 if not query else 5), parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"News error: {e}")
+
+async def watch_cmd(update, context):
+    if not google_ok():
+        await update.message.reply_text("Google not connected.")
+        return
+    text = " ".join(context.args).strip()
+    if not text:
+        await reply(update,
+            "Usage: `/watch Label | search query`\nExample: `/watch Apple AI | Apple artificial intelligence`",
+            parse_mode="Markdown")
+        return
+    if "|" in text:
+        label, query = [p.strip() for p in text.split("|", 1)]
+    else:
+        label, query = text, text
+    try:
+        gs.add_news_topic(label, query)
+        await update.message.reply_text(f"Added to news shortlist: {label}")
+    except Exception as e:
+        await update.message.reply_text(f"Watchlist error: {e}")
+
+async def watchlist_cmd(update, context):
+    if not google_ok():
+        await update.message.reply_text("Google not connected.")
+        return
+    try:
+        topics = gs.get_news_topics()
+        lines = ["*News shortlist*\n"]
+        for topic in topics:
+            lines.append(f"- *{topic['label']}* — `{topic['query']}`")
+        await reply(update, "\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"Watchlist error: {e}")
+
+async def unwatch_cmd(update, context):
+    if not google_ok():
+        await update.message.reply_text("Google not connected.")
+        return
+    label = " ".join(context.args).strip()
+    if not label:
+        await reply(update, "Usage: `/unwatch Label`", parse_mode="Markdown")
+        return
+    try:
+        before = len(gs.get_news_topics())
+        topics = gs.remove_news_topic(label)
+        after = len(topics)
+        msg = f"Removed from news shortlist: {label}" if after < before else f"Not found: {label}"
+        await update.message.reply_text(msg)
+    except Exception as e:
+        await update.message.reply_text(f"Watchlist error: {e}")
+
 async def clear_cmd(update, context):
     save_history(update.effective_user.id, [])
     await update.message.reply_text("Cleared.")
@@ -849,6 +948,12 @@ async def _execute_tool(name: str, inp: dict) -> str:
         except Exception as e:
             return f"Failed to remember: {e}"
 
+    elif name == "get_latest_news":
+        try:
+            return build_news_digest(inp.get("query", ""), inp.get("max_items", 2))
+        except Exception as e:
+            return f"Failed to fetch news: {e}"
+
     elif name == "create_calendar_event":
         try:
             start_dt = SGT.localize(datetime.strptime(f"{inp['date']} {inp['start_time']}", "%Y-%m-%d %H:%M"))
@@ -895,7 +1000,7 @@ async def handle_message(update, context):
 
     try:
         # Always include core assistant tools; add search if key is set
-        tools = [CONTEXT_TOOL, CALENDAR_TOOL, REMINDER_TOOL, MEMORY_TOOL, PROJECT_TOOL]
+        tools = [CONTEXT_TOOL, CALENDAR_TOOL, REMINDER_TOOL, MEMORY_TOOL, PROJECT_TOOL, NEWS_TOOL]
         if ss.search_enabled():
             tools.append(SEARCH_TOOL)
 
@@ -996,6 +1101,10 @@ def main():
     app.add_handler(CommandHandler("memory",   memory_cmd))
     app.add_handler(CommandHandler("forget",   forget_cmd))
     app.add_handler(CommandHandler("search",   search_cmd))
+    app.add_handler(CommandHandler("news",     news_cmd))
+    app.add_handler(CommandHandler("watch",    watch_cmd))
+    app.add_handler(CommandHandler("watchlist", watchlist_cmd))
+    app.add_handler(CommandHandler("unwatch",  unwatch_cmd))
     app.add_handler(CommandHandler("addcal",   addcal_cmd))
     app.add_handler(CommandHandler("clear",    clear_cmd))
     app.add_handler(MessageHandler(filters.PHOTO,        handle_photo))

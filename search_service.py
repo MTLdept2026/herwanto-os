@@ -82,6 +82,57 @@ def _google_news_headline(query, max_items=1):
         return []
 
 
+def google_news(query, max_items=5):
+    """Fetch latest Google News RSS items for a query."""
+    url = f"https://news.google.com/rss/search?q={quote(query)}&hl=en-SG&gl=SG&ceid=SG:en"
+    try:
+        feed = feedparser.parse(url)
+        items = []
+        for entry in feed.entries[:max_items]:
+            items.append({
+                "title": getattr(entry, "title", ""),
+                "url": getattr(entry, "link", ""),
+                "published": getattr(entry, "published", ""),
+                "source": getattr(getattr(entry, "source", None), "title", ""),
+            })
+        return items
+    except Exception as e:
+        logger.warning(f"RSS error for '{query}': {e}")
+        return []
+
+
+def format_news_items(items):
+    if not items:
+        return "No news found."
+    lines = []
+    for item in items:
+        meta = []
+        if item.get("source"):
+            meta.append(item["source"])
+        if item.get("published"):
+            meta.append(item["published"])
+        suffix = f" ({' · '.join(meta)})" if meta else ""
+        lines.append(f"- {item.get('title', '')}{suffix}")
+        if item.get("url"):
+            lines.append(f"  {item['url']}")
+    return "\n".join(lines)
+
+
+def get_digest_for_topics(topics, max_items=2):
+    """Return latest headlines for a list of (label, query) topics."""
+    lines = []
+    for label, query in topics:
+        items = google_news(query, max_items=max_items)
+        if not items:
+            continue
+        lines.append(f"{label}:")
+        for item in items:
+            lines.append(f"- {item['title'][:110]}")
+            if item.get("url"):
+                lines.append(f"  {item['url']}")
+    return "\n".join(lines)
+
+
 def get_morning_digest():
     """
     Fetch one headline per topic using Google News RSS.
