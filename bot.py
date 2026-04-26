@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import os
 import io
 import json
 import base64
 import logging
+import re
 from collections import defaultdict
 from datetime import datetime, timedelta, time as dt_time, date
 import pytz
@@ -67,7 +70,10 @@ def save_history(user_id, history):
 def SYSTEM_PROMPT():
     now = datetime.now(SGT)
     date_ctx = now.strftime("Today is %A, %-d %B %Y. Current time in Singapore: %H:%M SGT.")
-    memory_ctx = ""
+    memory_ctx = (
+        "\n\nPersistent school calendar memory:\n" + tt.format_school_calendar_memory() +
+        "\n\nPersistent timetable memory:\n" + tt.format_timetable_memory()
+    )
     if google_ok():
         try:
             memory = gs.get_memory()
@@ -76,9 +82,29 @@ def SYSTEM_PROMPT():
                 if items:
                     memory_lines.append(f"{category.title()}: " + "; ".join(items[:8]))
             if memory_lines:
-                memory_ctx = "\n\nStored memory:\n" + "\n".join(memory_lines)
+                memory_ctx += "\n\nStored memory:\n" + "\n".join(memory_lines)
         except Exception:
-            memory_ctx = ""
+            pass
+        try:
+            official_week = tt.get_school_week_info(now.date())
+            if official_week:
+                week_label = tt.week_type_label(official_week["week_type"])
+                memory_ctx += (
+                    f"\n\nTimetable reference: this is {week_label} week, "
+                    f"{official_week['term']} Week {official_week['week_number']}."
+                )
+            else:
+                ref_date = gs.get_config("week_ref_date")
+                ref_type = gs.get_config("week_ref_type")
+                if not ref_date or not ref_type:
+                    raise ValueError("No timetable reference set")
+                wt = tt.get_week_type(ref_date, ref_type, now.date())
+                week_label = tt.week_type_label(wt)
+                school_week_number = gs.get_config("school_week_number")
+                week_number = f", school week {school_week_number}" if school_week_number else ""
+                memory_ctx += f"\n\nTimetable reference: this is {week_label} week{week_number}."
+        except Exception:
+            pass
 
     return f"""{date_ctx}{memory_ctx}
 
@@ -128,6 +154,7 @@ Rules:
 - When the user asks for a recurring daily ping/check-in until he replies yes/done — call create_daily_checkin.
 - When the user sends a screenshot, image, or PDF, inspect it for schedule items first: duties, appointments, matches, trainings, meetings, event timings, reporting times, deadlines, submissions, or preparation tasks.
 - For screenshots/PDFs/images: create calendar events for items with a clear date and time, add reminders for dated tasks/deadlines, then summarise what you added and what still needs clarification.
+- Uploaded PDFs/images are saved as file memory after processing. When the user later refers to a previously uploaded file, use Stored memory / Files first; do not ask for a re-upload unless the stored summary lacks the exact detail needed.
 - When the user asks about his day, week, workload, priorities, deadlines, or project status — call get_assistant_context before answering.
 - When the user asks about latest news, current events, headlines, football, F1, AI, Singapore education, apps, Apple, Nothing OS, or his shortlisted topics — call get_latest_news before answering.
 - When the user says "remember", "note that", or gives stable preferences/facts about himself — call remember_user_info.
@@ -229,11 +256,30 @@ MEMORY_TOOL = {
         "properties": {
             "category": {
                 "type": "string",
-                "description": "One of: profile, preferences, people, places, projects"
+                "description": "One of: profile, preferences, people, places, projects, files"
             },
             "text": {"type": "string", "description": "Concise memory to store"}
         },
         "required": ["category", "text"]
+    }
+}
+
+WEEK_TYPE_TOOL = {
+    "name": "set_current_school_week",
+    "description": "Persist the current school timetable week type. Use when Herwanto says this/today/current week is odd/even, or gives a school week number like 'week 6'.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "week_type": {
+                "type": "string",
+                "description": "odd or even"
+            },
+            "week_number": {
+                "type": "integer",
+                "description": "Optional school week number if mentioned"
+            }
+        },
+        "required": ["week_type"]
     }
 }
 
@@ -291,7 +337,61 @@ def _get_week_config():
     except Exception:
         return None, None
 
+def _normalise_week_type(value: str) -> str | None:
+    value = (value or "").strip().lower()
+    if value in ("odd", "o"):
+        return "odd"
+    if value in ("even", "e"):
+        return "even"
+    return None
+
+def _school_week_from_text(text: str) -> tuple[str | None, int | None]:
+    clean = " ".join((text or "").lower().split())
+
+    number_match = re.search(r"\b(?:week|wk)\s*(\d{1,2})\b", clean)
+    if number_match:
+        context_words = (
+            "today", "this week", "current week", "remember", "note that",
+            "timetable", "refer to", "school week"
+        )
+        if clean.strip() == number_match.group(0) or any(word in clean for word in context_words):
+            week_number = int(number_match.group(1))
+            return ("odd" if week_number % 2 else "even"), week_number
+
+    type_patterns = [
+        r"\b(odd|even)\s+week\b",
+        r"\bthis\s+week\s+is\s+(?:an?\s+)?(odd|even)\b",
+        r"\bcurrent\s+week\s+is\s+(?:an?\s+)?(odd|even)\b",
+        r"\btoday\s+is\s+(?:an?\s+)?(odd|even)\b",
+    ]
+    for pattern in type_patterns:
+        match = re.search(pattern, clean)
+        if match:
+            return match.group(1), None
+
+    return None, None
+
+def _set_current_school_week(week_type: str, week_number: int | None = None) -> str:
+    if not google_ok():
+        raise RuntimeError("Google not connected.")
+    wt = _normalise_week_type(week_type)
+    if not wt:
+        raise ValueError("Week type must be odd or even.")
+    today = datetime.now(SGT).date()
+    monday = (today - timedelta(days=today.weekday())).isoformat()
+    gs.set_config("week_ref_date", monday)
+    gs.set_config("week_ref_type", wt)
+    if week_number:
+        gs.set_config("school_week_number", str(week_number))
+    return monday
+
 def _lessons_for_date(target):
+    official_week = tt.get_school_week_info(target)
+    if official_week:
+        day_name = tt.DAY_MAP.get(target.weekday())
+        lessons = [] if official_week["is_school_holiday"] else tt.TIMETABLE.get((day_name, official_week["week_type"]), []) if day_name else []
+        return lessons, tt.week_type_label(official_week["week_type"])
+
     ref_date, ref_type = _get_week_config()
     if not ref_date or not ref_type:
         return [], ""
@@ -299,9 +399,33 @@ def _lessons_for_date(target):
     wt = tt.get_week_type(ref_date, ref_type, target)
     return lessons, tt.week_type_label(wt)
 
+def _school_week_label(target: date) -> str:
+    official_week = tt.get_school_week_info(target)
+    if official_week:
+        return f"{official_week['term']} Week {official_week['week_number']}"
+    if google_ok():
+        try:
+            stored_week_number = gs.get_config("school_week_number")
+            if stored_week_number:
+                return f"school week {stored_week_number}"
+        except Exception:
+            pass
+    return ""
+
+def _week_display(wt_label: str, target: date) -> str:
+    school_week = _school_week_label(target)
+    return f"{wt_label} week, {school_week}" if school_week else f"{wt_label} week"
+
 def _format_memory(memory: dict) -> str:
-    lines = []
-    for category in ("profile", "preferences", "people", "places", "projects"):
+    lines = [
+        "*Persistent School Calendar*",
+        f"- {tt.format_school_calendar_memory()}",
+        "",
+        "*Persistent Timetable*",
+        f"- {tt.format_timetable_memory()}",
+        "",
+    ]
+    for category in ("profile", "preferences", "people", "places", "projects", "files"):
         items = memory.get(category, [])
         if not items:
             continue
@@ -309,7 +433,29 @@ def _format_memory(memory: dict) -> str:
         for item in items:
             lines.append(f"- {item}")
         lines.append("")
-    return "\n".join(lines).strip() or "No stored memory yet."
+    return "\n".join(lines).strip()
+
+def _clip_memory_text(value: str, limit: int = 1200) -> str:
+    clean = " ".join((value or "").split())
+    if len(clean) <= limit:
+        return clean
+    return clean[:limit - 3].rstrip() + "..."
+
+def _remember_uploaded_file(kind: str, file_id: str, caption: str, extracted_summary: str, filename: str = "", mime_type: str = ""):
+    if not google_ok():
+        return
+    received = datetime.now(SGT).strftime("%Y-%m-%d %H:%M SGT")
+    label = filename or kind
+    parts = [
+        f"{label} received {received}",
+        f"type={mime_type or kind}",
+        f"telegram_file_id={file_id}",
+    ]
+    if caption:
+        parts.append(f"caption={_clip_memory_text(caption, 240)}")
+    if extracted_summary:
+        parts.append(f"extracted={_clip_memory_text(extracted_summary, 900)}")
+    gs.add_memory("files", " | ".join(parts))
 
 def build_context_snapshot(days: int = 7) -> str:
     days = max(1, min(int(days or 7), 14))
@@ -320,7 +466,7 @@ def build_context_snapshot(days: int = 7) -> str:
 
     lessons, wt_label = _lessons_for_date(today)
     if wt_label:
-        lines.append(f"\nToday's lessons ({wt_label} week):")
+        lines.append(f"\nToday's lessons ({_week_display(wt_label, today)}):")
         lines.append(tt.format_lessons(lessons).replace("*", ""))
 
     if not google_ok():
@@ -378,7 +524,7 @@ def build_agenda(days: int = 7) -> str:
 
     lessons, wt_label = _lessons_for_date(today)
     if wt_label:
-        lines.append(f"*Today at school ({wt_label} week)*")
+        lines.append(f"*Today at school ({_week_display(wt_label, today)})*")
         lines.append(tt.format_lessons(lessons))
         lines.append("")
 
@@ -491,7 +637,7 @@ def build_briefing():
     # Timetable
     lessons, wt_label = _lessons_for_date(today)
     if wt_label:
-        lines.append(f"*Today's lessons ({wt_label} week):*")
+        lines.append(f"*Today's lessons ({_week_display(wt_label, today)}):*")
         lines.append(tt.format_lessons(lessons))
     elif google_ok():
         lines.append("_Timetable: use /setweek to activate_")
@@ -582,12 +728,12 @@ async def lessons_cmd(update, context):
         await update.message.reply_text("Weekend - no lessons!")
         return
     ref_date, ref_type = _get_week_config()
-    if not ref_date:
+    if not ref_date and not tt.get_school_week_info(today):
         await update.message.reply_text("Week type not set. Use /setweek odd or /setweek even first.")
         return
     lessons, wt_label = _lessons_for_date(today)
     day_str = datetime.now(SGT).strftime("%A, %-d %B")
-    await reply(update, f"*{day_str} ({wt_label} week)*\n\n{tt.format_lessons(lessons)}", parse_mode="Markdown")
+    await reply(update, f"*{day_str} ({_week_display(wt_label, today)})*\n\n{tt.format_lessons(lessons)}", parse_mode="Markdown")
 
 async def setweek_cmd(update, context):
     if not google_ok():
@@ -597,12 +743,9 @@ async def setweek_cmd(update, context):
     if arg not in ("odd", "even", "o", "e"):
         await update.message.reply_text("Usage: /setweek odd or /setweek even")
         return
-    wt = "odd" if arg in ("odd", "o") else "even"
-    today = datetime.now(SGT).date()
-    monday = (today - timedelta(days=today.weekday())).isoformat()
     try:
-        gs.set_config("week_ref_date", monday)
-        gs.set_config("week_ref_type", wt)
+        wt = "odd" if arg in ("odd", "o") else "even"
+        _set_current_school_week(wt)
         await update.message.reply_text(f"This week is *{wt.upper()}* week.", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"Error: {e}")
@@ -613,7 +756,7 @@ async def today_cmd(update, context):
     lines = [f"*{day_str}*\n"]
     lessons, wt_label = _lessons_for_date(today)
     if wt_label:
-        lines.append(f"*Lessons ({wt_label} week):*")
+        lines.append(f"*Lessons ({_week_display(wt_label, today)}):*")
         lines.append(tt.format_lessons(lessons))
     else:
         lines.append("_Timetable: use /setweek to activate_")
@@ -635,7 +778,7 @@ async def tomorrow_cmd(update, context):
     lines = [f"*{day_str}*\n"]
     lessons, wt_label = _lessons_for_date(tomorrow)
     if wt_label:
-        lines.append(f"*Lessons ({wt_label} week):*")
+        lines.append(f"*Lessons ({_week_display(wt_label, tomorrow)}):*")
         lines.append(tt.format_lessons(lessons))
     else:
         lines.append("_Timetable: use /setweek to activate_")
@@ -903,7 +1046,7 @@ async def remember_cmd(update, context):
     if not text:
         await reply(update,
             "Usage: `/remember preferences | Keep replies very concise`\n"
-            "Categories: profile, preferences, people, places, projects",
+            "Categories: profile, preferences, people, places, projects, files",
             parse_mode="Markdown")
         return
     if "|" in text:
@@ -911,8 +1054,18 @@ async def remember_cmd(update, context):
     else:
         category, memory_text = "profile", text
     try:
+        inferred_week_type, inferred_week_number = _school_week_from_text(memory_text)
+        if inferred_week_type:
+            _set_current_school_week(inferred_week_type, inferred_week_number)
         gs.add_memory(category, memory_text)
-        await update.message.reply_text(f"Remembered: {memory_text}")
+        if inferred_week_type:
+            number_note = f" Week {inferred_week_number}," if inferred_week_number else ""
+            await update.message.reply_text(
+                f"Remembered: {memory_text}\n{number_note} this week is now *{inferred_week_type.upper()}* week for the timetable.",
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text(f"Remembered: {memory_text}")
     except Exception as e:
         await update.message.reply_text(f"Memory error: {e}")
 
@@ -1084,7 +1237,7 @@ Inspect this screenshot/document carefully. Priority:
 """
 
 def _core_tools():
-    tools = [CONTEXT_TOOL, CALENDAR_TOOL, REMINDER_TOOL, NUDGE_TOOL, DAILY_CHECKIN_TOOL, MEMORY_TOOL, PROJECT_TOOL, NEWS_TOOL]
+    tools = [CONTEXT_TOOL, CALENDAR_TOOL, REMINDER_TOOL, NUDGE_TOOL, DAILY_CHECKIN_TOOL, MEMORY_TOOL, WEEK_TYPE_TOOL, PROJECT_TOOL, NEWS_TOOL]
     if ss.search_enabled():
         tools.append(SEARCH_TOOL)
     return tools
@@ -1141,6 +1294,10 @@ async def handle_photo(update, context):
             max_tokens=2048,
             tools=[CONTEXT_TOOL, CALENDAR_TOOL, REMINDER_TOOL]
         )
+        try:
+            _remember_uploaded_file("photo", photo.file_id, caption, reply_text, mime_type="image/jpeg")
+        except Exception as e:
+            logger.warning(f"Could not store photo memory: {e}")
         await reply(update, reply_text)
     except Exception as e:
         logger.error(f"Photo error: {e}")
@@ -1181,6 +1338,17 @@ async def handle_document(update, context):
             max_tokens=2048,
             tools=[CONTEXT_TOOL, CALENDAR_TOOL, REMINDER_TOOL]
         )
+        try:
+            _remember_uploaded_file(
+                "document",
+                doc.file_id,
+                caption,
+                reply_text,
+                filename=doc.file_name or "",
+                mime_type=doc.mime_type or "",
+            )
+        except Exception as e:
+            logger.warning(f"Could not store document memory: {e}")
         await reply(update, reply_text)
     except Exception as e:
         logger.error(f"Document error: {e}")
@@ -1202,10 +1370,23 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "remember_user_info":
         try:
+            inferred_week_type, inferred_week_number = _school_week_from_text(inp.get("text", ""))
+            week_note = ""
+            if inferred_week_type:
+                _set_current_school_week(inferred_week_type, inferred_week_number)
+                week_note = f" Also set current timetable week to {inferred_week_type.upper()}."
             gs.add_memory(inp.get("category", "profile"), inp["text"])
-            return f"Remembered under {inp.get('category', 'profile')}: {inp['text']}"
+            return f"Remembered under {inp.get('category', 'profile')}: {inp['text']}.{week_note}"
         except Exception as e:
             return f"Failed to remember: {e}"
+
+    elif name == "set_current_school_week":
+        try:
+            monday = _set_current_school_week(inp["week_type"], inp.get("week_number"))
+            number_note = f" School week {inp['week_number']}." if inp.get("week_number") else ""
+            return f"Set timetable reference: week starting {monday} is {inp['week_type'].upper()}.{number_note}"
+        except Exception as e:
+            return f"Failed to set school week: {e}"
 
     elif name == "get_latest_news":
         try:
@@ -1264,6 +1445,19 @@ async def _execute_tool(name: str, inp: dict) -> str:
 async def handle_message(update, context):
     user_id = update.effective_user.id
     text = update.message.text
+
+    inferred_week_type, inferred_week_number = _school_week_from_text(text)
+    if inferred_week_type and google_ok():
+        try:
+            _set_current_school_week(inferred_week_type, inferred_week_number)
+            number_note = f" Week {inferred_week_number}," if inferred_week_number else ""
+            await update.message.reply_text(
+                f"Locked in.{number_note} this week is *{inferred_week_type.upper()}* week for the timetable.",
+                parse_mode="Markdown"
+            )
+            return
+        except Exception as e:
+            logger.warning(f"School week update error: {e}")
 
     if google_ok() and _is_affirmative(text):
         try:

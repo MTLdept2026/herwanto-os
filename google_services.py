@@ -282,6 +282,7 @@ DEFAULT_MEMORY = {
     "people": [],
     "places": [],
     "projects": [],
+    "files": [],
 }
 
 
@@ -316,6 +317,10 @@ def add_memory(category: str, text: str) -> dict:
         "person": "people",
         "place": "places",
         "project": "projects",
+        "file": "files",
+        "document": "files",
+        "attachment": "files",
+        "upload": "files",
     }
     category = aliases.get(category, category)
     if category not in DEFAULT_MEMORY:

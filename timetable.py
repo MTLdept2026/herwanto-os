@@ -1,11 +1,13 @@
 """
 Herwanto's NBSS timetable data.
-Generated: 13 March 2026
-Sec 4 (BMLA) on Mondays removed — taken over by another teacher.
+Source: TT 2026.pdf, generated 31 December 2025.
+User override: Sec 4 (BMLA) on Monday odd removed.
 
 Week types: O = Odd, E = Even
 Use /setweek to set the current week type once — bot calculates all future weeks.
 """
+
+from __future__ import annotations
 
 from datetime import date, timedelta
 
@@ -25,9 +27,52 @@ PERIOD_TIMES = {
     11: ("13:05", "13:40"),
     12: ("13:40", "14:15"),
     13: ("14:15", "14:45"),
+    14: ("14:45", "15:20"),
+    15: ("15:20", "15:50"),
+    16: ("15:50", "16:25"),
+    17: ("16:25", "16:55"),
+    18: ("16:55", "17:30"),
 }
 
 DAY_MAP = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri"}
+
+# MOE 2026 MK/Primary/Secondary school terms.
+SCHOOL_CALENDAR_2026_SOURCE = "https://www.moe.gov.sg/news/press-releases/20250730-school-terms-and-holidays-for-2026"
+SCHOOL_TERMS_2026 = [
+    ("Term I",  date(2026, 1, 2),  date(2026, 3, 13)),
+    ("Term II", date(2026, 3, 23), date(2026, 5, 29)),
+    ("Term III", date(2026, 6, 29), date(2026, 9, 4)),
+    ("Term IV", date(2026, 9, 14), date(2026, 11, 20)),
+]
+
+SCHOOL_CLOSURE_DATES_2026 = {
+    date(2026, 1, 1),   # New Year's Day
+    date(2026, 2, 17),  # Chinese New Year
+    date(2026, 2, 18),  # Chinese New Year
+    date(2026, 3, 23),  # Hari Raya Puasa off-in-lieu
+    date(2026, 4, 3),   # Good Friday
+    date(2026, 5, 1),   # Labour Day
+    date(2026, 5, 27),  # Hari Raya Haji
+    date(2026, 6, 1),   # Vesak Day public holiday
+    date(2026, 7, 6),   # Youth Day school holiday
+    date(2026, 8, 10),  # National Day public holiday
+    date(2026, 9, 4),   # Teachers' Day
+    date(2026, 11, 9),  # Deepavali public holiday
+}
+
+SCHOOL_CALENDAR_MEMORY_2026 = (
+    "MOE 2026 MK/Primary/Secondary calendar: Term I 2 Jan-13 Mar; "
+    "Term II 23 Mar-29 May; Term III 29 Jun-4 Sep; Term IV 14 Sep-20 Nov. "
+    "Timetable week numbers reset at each term start; odd-numbered weeks use Odd timetable, "
+    "even-numbered weeks use Even timetable."
+)
+
+TIMETABLE_MEMORY_2026 = (
+    "Herwanto's 2026 NBSS odd/even timetable is hardcoded from TT 2026.pdf "
+    "(Teacher MTL Muhammad Herwanto Johari, generated 31 Dec 2025). "
+    "User override: Sec 4 BMLA on Monday odd is removed. "
+    "Use TIMETABLE in timetable.py as the source of truth for lesson periods, rooms, and week parity."
+)
 
 
 def _b(periods, subject, desc, room, code=""):
@@ -64,7 +109,7 @@ TIMETABLE = {
 
     ("Mon", "O"): [
         _b([1],       "FTCT",  "1 Flagship",                "L4-08"),
-        _b([2, 3],    "ML",    "Sec 3 (MLG33A)",            "L3-10",  "MLG33A"),
+        _b([2, 3],    "ML",    "Sec 3 (MLG33A)",            "L4-10",  "MLG33A"),
         # Sec 4 BMLA at P7-P9 REMOVED — taken over by another teacher
         _b([10, 11],  "ML",    "Sec 2 (MLG31)",             "L4-12",  "MLG31"),
         _b([12, 13],  "ML",    "Sec 1 (MLG21)",             "L4-11",  "MLG21"),
@@ -73,7 +118,7 @@ TIMETABLE = {
     ("Mon", "E"): [
         _b([1],       "FTCT",  "1 Flagship",                "L4-08"),
         _b([2],       "ML",    "Sec 1 (MLG21A)",            "L4-11",  "MLG21A"),
-        _b([7, 8, 9], "ML",    "Sec 3 (MLG33A)",            "L3-10",  "MLG33A"),
+        _b([7, 8, 9], "ML",    "Sec 3 (MLG33A)",            "L4-10",  "MLG33A"),
         _b([10, 11],  "ML",    "Sec 2 (MLG31)",             "L4-12",  "MLG31"),
     ],
 
@@ -90,21 +135,21 @@ TIMETABLE = {
         _b([1],       "FTCT",  "1 Flagship",                "L4-08"),
         _b([2],       "CCE",   "1 Flagship",                "L4-08"),
         _b([5, 6],    "ML",    "Sec 1 (MLG21)",             "L4-11",  "MLG21"),
-        _b([12, 13],  "ML",    "Sec 3 (MLG33)",             "L3-10",  "MLG33"),
+        _b([12, 13],  "ML",    "Sec 3 (MLG33)",             "L4-10",  "MLG33"),
     ],
 
     # ── WEDNESDAY ─────────────────────────────────────────────────────────────
 
     ("Wed", "O"): [
         _b([2],       "FTCT",  "1 Flagship",                "L4-08"),
-        _b([3, 4],    "MTL",   "Dept Activity",             "-"),
+        _b([4, 5],    "MTL",   "PLT MTL",                   "-"),
         _b([7, 8, 9], "ML",    "Sec 2 (MLG31A)",            "L4-12",  "MLG31A"),
-        _b([10, 11],  "ML",    "Sec 4 (BMLA)",              "L3-11",  "BMLA"),
+        _b([10, 11],  "ML",    "Sec 4 (BMLA)",              "L4-12",  "BMLA"),
     ],
 
     ("Wed", "E"): [
         _b([2],       "FTCT",  "1 Flagship",                "L4-08"),
-        _b([3, 4],    "MTL",   "Dept Activity",             "-"),
+        _b([4, 5],    "MTL",   "PLT MTL",                   "-"),
         _b([7, 8, 9], "ML",    "Sec 2 (MLG31A)",            "L4-12",  "MLG31A"),
         _b([10, 11],  "ML",    "Sec 4 (BMLA)",              "L4-12",  "BMLA"),
     ],
@@ -114,7 +159,7 @@ TIMETABLE = {
     ("Thu", "O"): [
         _b([1],       "FTCT",  "1 Flagship",                "L4-08"),
         _b([4, 5, 6], "IPW",   "2 Compass",                 "L3-03"),
-        _b([12, 13],  "ML",    "Sec 3 (MLG33)",             "L3-10",  "MLG33"),
+        _b([12, 13],  "ML",    "Sec 3 (MLG33)",             "L4-10",  "MLG33"),
     ],
 
     ("Thu", "E"): [
@@ -128,7 +173,7 @@ TIMETABLE = {
     ("Fri", "O"): [
         _b([1],       "FTCT/CCE", "1 Flagship",             "L4-08"),
         _b([2],       "CCE",   "1 Flagship",                "L4-08"),
-        _b([7, 8, 9], "ML",    "Sec 3 (MLG33A)",            "L3-10",  "MLG33A"),
+        _b([7, 8, 9], "ML",    "Sec 3 (MLG33A)",            "L4-10",  "MLG33A"),
     ],
 
     ("Fri", "E"): [],  # Free day — no lessons
@@ -156,6 +201,34 @@ def get_week_type(ref_date_str: str, ref_type: str, query_date: date) -> str:
         return "O" if weeks_diff % 2 == 0 else "E"
     else:
         return "E" if weeks_diff % 2 == 0 else "O"
+
+
+def get_school_week_info(query_date: date) -> dict | None:
+    """
+    Return official 2026 term/week info for MOE primary/secondary dates.
+
+    Week numbers reset at each MOE term start. This matches common school
+    timetable usage where week 1 is odd, week 2 is even, etc.
+    """
+    for term_name, start, end in SCHOOL_TERMS_2026:
+        if start <= query_date <= end:
+            week_number = ((query_date - start).days // 7) + 1
+            week_type = "O" if week_number % 2 else "E"
+            return {
+                "term": term_name,
+                "week_number": week_number,
+                "week_type": week_type,
+                "is_school_holiday": query_date in SCHOOL_CLOSURE_DATES_2026,
+            }
+    return None
+
+
+def format_school_calendar_memory() -> str:
+    return f"{SCHOOL_CALENDAR_MEMORY_2026} Source: {SCHOOL_CALENDAR_2026_SOURCE}"
+
+
+def format_timetable_memory() -> str:
+    return TIMETABLE_MEMORY_2026
 
 
 def get_lessons(target_date: date, ref_date_str: str, ref_type: str) -> list:
