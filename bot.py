@@ -64,7 +64,12 @@ def save_history(user_id, history):
 
 # ─── SYSTEM PROMPT ───────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are Herwanto's personal AI assistant. Singapore-based. He wears three hats:
+def SYSTEM_PROMPT():
+    now = datetime.now(SGT)
+    date_ctx = now.strftime("Today is %A, %-d %B %Y. Current time in Singapore: %H:%M SGT.")
+    return f"""{date_ctx}
+
+You are Herwanto's personal AI assistant. Singapore-based. He wears three hats:
 
 1. EDUCATOR — Bahasa Melayu teacher at Naval Base Secondary School (NBSS). Form teacher of 1 Flagship. Teaches ML to Sec 1, 2, 3, and 4 groups. Runs the school Football CCA. Use DBP conventions for all BM content.
 
@@ -81,7 +86,11 @@ Rules:
 - Singapore English and local context always apply.
 - When he asks to add, schedule, or create a calendar event, do NOT describe or format it — just tell him to use /addcal and give the exact command to copy. Example: /addcal CCA duty 7 May 3-6pm
 - Never offer to generate .ics files. Always redirect to /addcal.
-- Current year is 2026. When parsing dates with no year, always assume 2026.
+- The current date and time is already provided at the top of this prompt — always use it for any date/time reasoning.
+- You have tools: create_calendar_event, add_reminder, and web_search. Use them proactively.
+- When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
+- When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
+- After using a tool, confirm briefly and naturally. Do not ask "shall I add this?" — just do it.
 """
 
 # Claude tool definition for web search
@@ -94,6 +103,37 @@ SEARCH_TOOL = {
             "query": {"type": "string", "description": "The search query"}
         },
         "required": ["query"]
+    }
+}
+
+CALENDAR_TOOL = {
+    "name": "create_calendar_event",
+    "description": "Create a Google Calendar event. Use this automatically when the user mentions attending, scheduling, or having something at a specific date and time — matches, duties, meetings, trainings, appointments.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "title":       {"type": "string", "description": "Event title"},
+            "date":        {"type": "string", "description": "YYYY-MM-DD"},
+            "start_time":  {"type": "string", "description": "HH:MM in 24hr"},
+            "end_time":    {"type": "string", "description": "HH:MM in 24hr"},
+            "location":    {"type": "string", "description": "Location if mentioned, else empty"},
+            "description": {"type": "string", "description": "Extra notes if any, else empty"}
+        },
+        "required": ["title", "date", "start_time", "end_time"]
+    }
+}
+
+REMINDER_TOOL = {
+    "name": "add_reminder",
+    "description": "Add a task or deadline reminder. Use this automatically when the user mentions something they need to do, prepare, submit, mark, or complete by a certain date.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "description": {"type": "string", "description": "What needs to be done"},
+            "due_date":    {"type": "string", "description": "YYYY-MM-DD"},
+            "category":    {"type": "string", "description": "Teaching, CCA, GamePlan, Ruh, or Personal"}
+        },
+        "required": ["description", "due_date"]
     }
 }
 
@@ -476,7 +516,7 @@ async def handle_photo(update, context):
         resp = claude.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=1024,
-            system=SYSTEM_PROMPT,
+            system=SYSTEM_PROMPT(),
             messages=[{"role": "user", "content": [
                 {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_data}},
                 {"type": "text", "text": caption}
@@ -517,7 +557,7 @@ async def handle_document(update, context):
         resp = claude.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=2048,
-            system=SYSTEM_PROMPT,
+            system=SYSTEM_PROMPT(),
             messages=[{"role": "user", "content": [
                 content_block,
                 {"type": "text", "text": caption}
@@ -529,6 +569,32 @@ async def handle_document(update, context):
         await update.message.reply_text(f"Could not process document: {e}")
 
 # ─── AI CHAT (with web search tool use) ──────────────────────────────────────
+
+async def _execute_tool(name: str, inp: dict) -> str:
+    """Execute a tool call and return result string."""
+    if name == "web_search":
+        results = ss.web_search(inp.get("query", ""), max_results=5)
+        return ss.format_results(results)
+
+    elif name == "create_calendar_event":
+        try:
+            start_dt = SGT.localize(datetime.strptime(f"{inp['date']} {inp['start_time']}", "%Y-%m-%d %H:%M"))
+            end_dt   = SGT.localize(datetime.strptime(f"{inp['date']} {inp['end_time']}",   "%Y-%m-%d %H:%M"))
+            gs.create_event(inp["title"], start_dt, end_dt,
+                            inp.get("location", ""), inp.get("description", ""))
+            return f"Created: {inp['title']} on {inp['date']} {inp['start_time']}–{inp['end_time']}"
+        except Exception as e:
+            return f"Failed to create event: {e}"
+
+    elif name == "add_reminder":
+        try:
+            rid = gs.add_reminder(inp["description"], inp["due_date"], inp.get("category", "General"))
+            return f"Added reminder #{rid}: {inp['description']} by {inp['due_date']}"
+        except Exception as e:
+            return f"Failed to add reminder: {e}"
+
+    return "Unknown tool."
+
 
 async def handle_message(update, context):
     user_id = update.effective_user.id
@@ -542,44 +608,45 @@ async def handle_message(update, context):
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
     try:
-        tools = [SEARCH_TOOL] if ss.search_enabled() else []
-        kwargs = {"tools": tools} if tools else {}
+        # Always include calendar + reminder tools; add search if key is set
+        tools = [CALENDAR_TOOL, REMINDER_TOOL]
+        if ss.search_enabled():
+            tools.append(SEARCH_TOOL)
 
-        resp = claude.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1024,
-            system=SYSTEM_PROMPT,
-            messages=history,
-            **kwargs
-        )
+        # Agentic loop — Claude may call multiple tools before giving a final reply
+        messages = list(history)
+        reply_text = ""
+        max_iterations = 5
 
-        # Handle tool use (web search)
-        if resp.stop_reason == "tool_use":
-            tool_block = next(b for b in resp.content if b.type == "tool_use")
-            query = tool_block.input.get("query", "")
-            logger.info(f"Search query: {query}")
-            search_results = ss.web_search(query, max_results=5)
-            search_text = ss.format_results(search_results)
-
-            messages_with_tool = history + [
-                {"role": "assistant", "content": resp.content},
-                {"role": "user", "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": tool_block.id,
-                    "content": search_text
-                }]}
-            ]
-            final_resp = claude.messages.create(
+        for _ in range(max_iterations):
+            resp = claude.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=1024,
-                system=SYSTEM_PROMPT,
+                system=SYSTEM_PROMPT(),
                 tools=tools,
-                messages=messages_with_tool
+                messages=messages
             )
-            reply_text = next((b.text for b in final_resp.content if b.type == "text"), "Done.")
-        else:
-            reply_text = next((b.text for b in resp.content if b.type == "text"), "Done.")
 
+            if resp.stop_reason != "tool_use":
+                reply_text = next((b.text for b in resp.content if b.type == "text"), "Done.")
+                break
+
+            # Process all tool calls in this response
+            messages.append({"role": "assistant", "content": resp.content})
+            tool_results = []
+            for block in resp.content:
+                if block.type != "tool_use":
+                    continue
+                logger.info(f"Tool call: {block.name} {block.input}")
+                result = await _execute_tool(block.name, block.input)
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": result
+                })
+            messages.append({"role": "user", "content": tool_results})
+
+        # Save only user message + final reply to persistent history
         history.append({"role": "assistant", "content": reply_text})
         save_history(user_id, history)
         await reply(update, reply_text)
