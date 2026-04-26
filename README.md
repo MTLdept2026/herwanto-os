@@ -1,6 +1,6 @@
 # Herwanto OS — Personal AI Assistant
 
-Your AI second brain on Telegram. Calendar-aware, project-tracking, daily briefings.
+Your AI second brain on Telegram. Calendar-aware, project-tracking, daily briefings, and a steady assistant personality named Hira.
 
 ---
 
@@ -190,6 +190,10 @@ What should I focus on this week?
 Remember that my usual CCA training is on Tuesdays and Thursdays.
 GamePlan is now in pilot mode with first-school onboarding as the next milestone.
 ```
+
+**Personality:**
+
+Hira is designed to feel like a calm chief-of-staff in your pocket: concise, observant, Singapore-aware, gently witty when appropriate, and protective of your attention. It should prioritise next actions over long explanations, steady things when workload piles up, and adapt naturally across teaching, coding, and business contexts.
 
 **Update a project:**
 ```
