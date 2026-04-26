@@ -124,9 +124,20 @@ Copy the bold part — this is your `GOOGLE_SHEET_ID`
 
 ### Step 6 — Push to GitHub (10 min)
 
+> ⚠️ **Security: never commit secrets.** This repo includes a `.gitignore` that
+> excludes `*.json`, `.env`, the `files/` folder, and other private material.
+> Before running `git add .` for the first time, sanity-check with
+> `git status` — if you see anything like `herwanto-bot-xxxx.json`,
+> `GOOGLE_SERVICE_ACCOUNT_JSON.txt`, or `.env`, **do not commit**. All secrets
+> belong in Railway environment variables, not in git. If you ever do leak a
+> service-account key, rotate it immediately in Google Cloud Console (the
+> leaked one can be used by anyone).
+
 ```bash
 git init
+# Use the provided .gitignore — do not delete it.
 git add .
+git status   # confirm no JSON keys / .env files are listed
 git commit -m "Herwanto OS v1"
 # Create a new GitHub repo, then:
 git remote add origin https://github.com/YOUR_USERNAME/herwanto-os.git

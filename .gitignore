@@ -1,0 +1,58 @@
+# ─── Secrets ─────────────────────────────────────────────────────────────────
+# NEVER commit service account keys, tokens, or env files.
+files/
+*.json
+!railway.json
+!package.json
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+secrets/
+
+# Allow the example env file
+!.env.example
+
+# ─── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# Build / dist
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+
+# Tests / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# ─── Tooling ─────────────────────────────────────────────────────────────────
+.mypy_cache/
+.ruff_cache/
+
+# ─── Editors / OS ────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ─── Logs ────────────────────────────────────────────────────────────────────
+*.log
+logs/
