@@ -496,3 +496,134 @@ def mark_nudge_sent(nudge_id: str):
             nudge["sent_at"] = now
             break
     set_nudges(nudges)
+
+
+# ─── SHEETS: DAILY CHECK-INS ────────────────────────────────────────────────
+# Recurring habits Hira can ask about daily until marked done for the day.
+
+def get_checkins(include_inactive=False) -> list:
+    raw = get_config("daily_checkins")
+    if not raw:
+        return []
+    try:
+        checkins = json.loads(raw)
+    except Exception:
+        return []
+
+    clean = []
+    for checkin in checkins:
+        if not isinstance(checkin, dict):
+            continue
+        active = bool(checkin.get("active", True))
+        if not active and not include_inactive:
+            continue
+        times = checkin.get("times", [])
+        if not isinstance(times, list):
+            times = []
+        clean.append({
+            "id": str(checkin.get("id", "")),
+            "name": str(checkin.get("name", "")).strip(),
+            "question": str(checkin.get("question", "")).strip(),
+            "times": [str(t).strip() for t in times if str(t).strip()],
+            "active": active,
+            "created": str(checkin.get("created", "")).strip(),
+            "last_completed_date": str(checkin.get("last_completed_date", "")).strip(),
+            "last_prompt_date": str(checkin.get("last_prompt_date", "")).strip(),
+            "sent_slots": checkin.get("sent_slots", {}),
+            "awaiting_reply": bool(checkin.get("awaiting_reply", False)),
+        })
+    return [c for c in clean if c["id"] and c["name"] and c["question"] and c["times"]]
+
+
+def set_checkins(checkins: list):
+    set_config("daily_checkins", json.dumps(checkins, ensure_ascii=False))
+
+
+def add_checkin(name: str, question: str, times: list) -> dict:
+    checkins = get_checkins(include_inactive=True)
+    numeric_ids = [int(c["id"]) for c in checkins if str(c.get("id", "")).isdigit()]
+    next_id = max(numeric_ids) + 1 if numeric_ids else 1
+    checkin = {
+        "id": str(next_id),
+        "name": name.strip(),
+        "question": question.strip(),
+        "times": [str(t).strip() for t in times if str(t).strip()],
+        "active": True,
+        "created": datetime.now(SGT).isoformat(),
+        "last_completed_date": "",
+        "last_prompt_date": "",
+        "sent_slots": {},
+        "awaiting_reply": False,
+    }
+    checkins.append(checkin)
+    set_checkins(checkins)
+    return checkin
+
+
+def cancel_checkin(checkin_id: str) -> bool:
+    checkins = get_checkins(include_inactive=True)
+    changed = False
+    for checkin in checkins:
+        if str(checkin.get("id")) == str(checkin_id):
+            checkin["active"] = False
+            checkin["awaiting_reply"] = False
+            changed = True
+    if changed:
+        set_checkins(checkins)
+    return changed
+
+
+def due_checkins(now: datetime) -> list:
+    today = now.strftime("%Y-%m-%d")
+    now_hm = now.strftime("%H:%M")
+    due = []
+    for checkin in get_checkins(include_inactive=True):
+        if not checkin["active"] or checkin.get("last_completed_date") == today:
+            continue
+        sent_slots = checkin.get("sent_slots") if isinstance(checkin.get("sent_slots"), dict) else {}
+        today_slots = sent_slots.get(today, [])
+        for slot in checkin["times"]:
+            if slot <= now_hm and slot not in today_slots:
+                due.append({**checkin, "due_slot": slot})
+                break
+    return due
+
+
+def mark_checkin_prompted(checkin_id: str, slot: str, now: datetime):
+    checkins = get_checkins(include_inactive=True)
+    today = now.strftime("%Y-%m-%d")
+    for checkin in checkins:
+        if str(checkin.get("id")) != str(checkin_id):
+            continue
+        sent_slots = checkin.get("sent_slots") if isinstance(checkin.get("sent_slots"), dict) else {}
+        today_slots = sent_slots.get(today, [])
+        if slot not in today_slots:
+            today_slots.append(slot)
+        sent_slots[today] = sorted(today_slots)
+        checkin["sent_slots"] = sent_slots
+        checkin["last_prompt_date"] = today
+        checkin["awaiting_reply"] = True
+        break
+    set_checkins(checkins)
+
+
+def awaiting_checkins() -> list:
+    today = datetime.now(SGT).strftime("%Y-%m-%d")
+    return [
+        c for c in get_checkins()
+        if c.get("awaiting_reply") and c.get("last_completed_date") != today
+    ]
+
+
+def complete_checkin_today(checkin_id: str) -> bool:
+    checkins = get_checkins(include_inactive=True)
+    today = datetime.now(SGT).strftime("%Y-%m-%d")
+    changed = False
+    for checkin in checkins:
+        if str(checkin.get("id")) == str(checkin_id):
+            checkin["last_completed_date"] = today
+            checkin["awaiting_reply"] = False
+            changed = True
+    if changed:
+        set_checkins(checkins)
+    return changed

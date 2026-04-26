@@ -121,10 +121,11 @@ Rules:
 - When he asks to add, schedule, or create a calendar event, create it directly if the date and time are clear. If details are incomplete, ask only for the missing detail.
 - Never offer to generate .ics files. Use Google Calendar directly.
 - The current date and time is already provided at the top of this prompt — always use it for any date/time reasoning.
-- You have tools: create_calendar_event, add_reminder, create_proactive_nudge, get_assistant_context, remember_user_info, update_project_status, get_latest_news, and web_search. Use them proactively.
+- You have tools: create_calendar_event, add_reminder, create_proactive_nudge, create_daily_checkin, get_assistant_context, remember_user_info, update_project_status, get_latest_news, and web_search. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
 - When the user asks you to nudge, ping, check in, remind him at a specific time, or initiate a chat later — call create_proactive_nudge. Use this for time-specific heads-ups, not ordinary all-day deadlines.
+- When the user asks for a recurring daily ping/check-in until he replies yes/done — call create_daily_checkin.
 - When the user sends a screenshot, image, or PDF, inspect it for schedule items first: duties, appointments, matches, trainings, meetings, event timings, reporting times, deadlines, submissions, or preparation tasks.
 - For screenshots/PDFs/images: create calendar events for items with a clear date and time, add reminders for dated tasks/deadlines, then summarise what you added and what still needs clarification.
 - When the user asks about his day, week, workload, priorities, deadlines, or project status — call get_assistant_context before answering.
@@ -188,6 +189,24 @@ NUDGE_TOOL = {
             "send_at": {"type": "string", "description": "ISO datetime in Asia/Singapore, e.g. 2026-05-01T16:30:00+08:00"}
         },
         "required": ["message", "send_at"]
+    }
+}
+
+DAILY_CHECKIN_TOOL = {
+    "name": "create_daily_checkin",
+    "description": "Create a recurring daily check-in. Hira pings at configured times until Herwanto replies affirmatively, then stops for that day.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Short habit/check-in name"},
+            "question": {"type": "string", "description": "Question Hira should ask"},
+            "times": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Daily times in HH:MM 24-hour Singapore time"
+            }
+        },
+        "required": ["name", "question", "times"]
     }
 }
 
@@ -440,6 +459,30 @@ def _create_nudge(message: str, send_at: str) -> dict:
         raise ValueError("Nudge time must be in the future.")
     return gs.add_nudge(message, send_dt.isoformat())
 
+AFFIRMATIVE_REPLIES = {
+    "yes", "y", "done", "did", "completed", "complete", "settled", "ok",
+    "okay", "yup", "yep", "yes done", "done already", "alhamdulillah",
+    "alhamdulillah done", "dah", "sudah", "dah buat", "sudah buat"
+}
+
+def _is_affirmative(text: str) -> bool:
+    clean = " ".join(text.lower().replace(".", " ").replace("!", " ").split())
+    return clean in AFFIRMATIVE_REPLIES or clean.startswith("yes ") or clean.startswith("done ")
+
+def _parse_checkin_times(raw: str) -> list:
+    times = []
+    for part in raw.replace(";", ",").split(","):
+        value = part.strip()
+        if not value:
+            continue
+        parsed = datetime.strptime(value, "%H:%M")
+        times.append(parsed.strftime("%H:%M"))
+    return sorted(set(times))
+
+def _format_checkin(checkin: dict) -> str:
+    status = "done today" if checkin.get("last_completed_date") == datetime.now(SGT).strftime("%Y-%m-%d") else "active"
+    return f"`[{checkin['id']}]` *{checkin['name']}* at {', '.join(checkin['times'])} - {status}\n{checkin['question']}"
+
 def build_briefing():
     now = datetime.now(SGT)
     today = now.date()
@@ -524,6 +567,7 @@ async def start(update, context):
         f"*Calendar*\n/today /tomorrow /week\n/addcal [natural language]\n\n"
         f"*Reminders*\n/due /remind /done\n\n"
         f"*Proactive nudges*\n/nudge /nudges /cancelnudge\n\n"
+        f"*Daily check-ins*\n/checkin /checkins /cancelcheckin\n\n"
         f"*Assistant*\n/agenda [days] /remember /memory /forget all\n\n"
         f"*Projects*\n/projects /update\n\n"
         f"*Search*\n/search [query]\n\n"
@@ -738,6 +782,60 @@ async def cancelnudge_cmd(update, context):
         await update.message.reply_text(f"Nudge #{nudge_id} cancelled." if ok else f"Nudge #{nudge_id} not found.")
     except Exception as e:
         await update.message.reply_text(f"Nudges error: {e}")
+
+async def checkin_cmd(update, context):
+    if not google_ok():
+        await update.message.reply_text("Google not connected.")
+        return
+    text = " ".join(context.args).strip()
+    if not text or "|" not in text:
+        await reply(update,
+            "Usage: `/checkin Name | HH:MM, HH:MM | Question`\n"
+            "Example: `/checkin Istigfar & Salawat | 09:00, 13:00, 21:30 | Have you done your istigfar and salawat today?`",
+            parse_mode="Markdown")
+        return
+    try:
+        parts = [p.strip() for p in text.split("|")]
+        if len(parts) < 3:
+            await update.message.reply_text("I need a name, time(s), and question.")
+            return
+        times = _parse_checkin_times(parts[1])
+        checkin = gs.add_checkin(parts[0], parts[2], times)
+        await reply(update, f"Daily check-in added:\n{_format_checkin(checkin)}", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"Check-in error: {e}")
+
+async def checkins_cmd(update, context):
+    if not google_ok():
+        await update.message.reply_text("Google not connected.")
+        return
+    try:
+        checkins = gs.get_checkins()
+        if not checkins:
+            await update.message.reply_text("No active daily check-ins.")
+            return
+        lines = ["*Daily check-ins*\n"]
+        for checkin in checkins:
+            lines.append(_format_checkin(checkin))
+            lines.append("")
+        lines.append("/cancelcheckin <id> to stop one")
+        await reply(update, "\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"Check-in error: {e}")
+
+async def cancelcheckin_cmd(update, context):
+    if not google_ok():
+        await update.message.reply_text("Google not connected.")
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /cancelcheckin <id>")
+        return
+    try:
+        checkin_id = context.args[0]
+        ok = gs.cancel_checkin(checkin_id)
+        await update.message.reply_text(f"Check-in #{checkin_id} cancelled." if ok else f"Check-in #{checkin_id} not found.")
+    except Exception as e:
+        await update.message.reply_text(f"Check-in error: {e}")
 
 async def projects_cmd(update, context):
     if not google_ok():
@@ -986,7 +1084,7 @@ Inspect this screenshot/document carefully. Priority:
 """
 
 def _core_tools():
-    tools = [CONTEXT_TOOL, CALENDAR_TOOL, REMINDER_TOOL, NUDGE_TOOL, MEMORY_TOOL, PROJECT_TOOL, NEWS_TOOL]
+    tools = [CONTEXT_TOOL, CALENDAR_TOOL, REMINDER_TOOL, NUDGE_TOOL, DAILY_CHECKIN_TOOL, MEMORY_TOOL, PROJECT_TOOL, NEWS_TOOL]
     if ss.search_enabled():
         tools.append(SEARCH_TOOL)
     return tools
@@ -1139,6 +1237,14 @@ async def _execute_tool(name: str, inp: dict) -> str:
         except Exception as e:
             return f"Failed to schedule nudge: {e}"
 
+    elif name == "create_daily_checkin":
+        try:
+            times = _parse_checkin_times(",".join(inp.get("times", [])))
+            checkin = gs.add_checkin(inp["name"], inp["question"], times)
+            return f"Created daily check-in #{checkin['id']}: {checkin['name']} at {', '.join(checkin['times'])}"
+        except Exception as e:
+            return f"Failed to create daily check-in: {e}"
+
     elif name == "update_project_status":
         try:
             gs.update_project(
@@ -1158,6 +1264,22 @@ async def _execute_tool(name: str, inp: dict) -> str:
 async def handle_message(update, context):
     user_id = update.effective_user.id
     text = update.message.text
+
+    if google_ok() and _is_affirmative(text):
+        try:
+            awaiting = gs.awaiting_checkins()
+            if awaiting:
+                completed = []
+                for checkin in awaiting:
+                    if gs.complete_checkin_today(checkin["id"]):
+                        completed.append(checkin["name"])
+                if completed:
+                    await update.message.reply_text(
+                        f"Marked done for today: {', '.join(completed)}. I’ll leave you in peace until tomorrow."
+                    )
+                    return
+        except Exception as e:
+            logger.warning(f"Check-in affirmation error: {e}")
 
     history = get_history(user_id)
     history.append({"role": "user", "content": text})
@@ -1225,6 +1347,21 @@ async def proactive_nudges_job(context):
     except Exception as e:
         logger.error(f"Proactive nudge error: {e}")
 
+async def daily_checkins_job(context):
+    if not google_ok():
+        return
+    try:
+        chat_id = gs.get_config("chat_id")
+        if not chat_id:
+            return
+        now = datetime.now(SGT)
+        for checkin in gs.due_checkins(now):
+            text = f"*Hira check-in*\n\n{checkin['question']}\n\nReply `yes`, `done`, or `alhamdulillah` once it is done and I’ll stop asking for today."
+            await context.bot.send_message(chat_id=int(chat_id), text=text, parse_mode="Markdown")
+            gs.mark_checkin_prompted(checkin["id"], checkin["due_slot"], now)
+    except Exception as e:
+        logger.error(f"Daily check-in error: {e}")
+
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1244,6 +1381,9 @@ def main():
     app.add_handler(CommandHandler("nudge",    nudge_cmd))
     app.add_handler(CommandHandler("nudges",   nudges_cmd))
     app.add_handler(CommandHandler("cancelnudge", cancelnudge_cmd))
+    app.add_handler(CommandHandler("checkin",  checkin_cmd))
+    app.add_handler(CommandHandler("checkins", checkins_cmd))
+    app.add_handler(CommandHandler("cancelcheckin", cancelcheckin_cmd))
     app.add_handler(CommandHandler("projects", projects_cmd))
     app.add_handler(CommandHandler("update",   update_cmd))
     app.add_handler(CommandHandler("briefing", briefing_cmd))
@@ -1265,6 +1405,7 @@ def main():
     jq.run_daily(morning_briefing_job, time=dt_time(7, 0, 0, tzinfo=SGT), name="morning_briefing")
     jq.run_daily(friday_checkin_job,   time=dt_time(17, 0, 0, tzinfo=SGT), days=(4,), name="friday_checkin")
     jq.run_repeating(proactive_nudges_job, interval=60, first=10, name="proactive_nudges")
+    jq.run_repeating(daily_checkins_job, interval=60, first=20, name="daily_checkins")
     logger.info("Herwanto OS running — all systems active.")
     app.run_polling(drop_pending_updates=True)
 

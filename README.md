@@ -15,6 +15,7 @@ Your AI second brain on Telegram. Calendar-aware, project-tracking, daily briefi
 | Add a reminder | `/remind Description \| Date \| Category` |
 | Mark reminder done | `/done <id>` |
 | Proactive timed nudges | `/nudge`, `/nudges`, `/cancelnudge` |
+| Daily check-ins until affirmed | `/checkin`, `/checkins`, `/cancelcheckin` |
 | Full assistant agenda | `/agenda` or `/agenda 14` |
 | Store assistant memory | `/remember Category \| Fact` or say "remember..." |
 | View / clear memory | `/memory`, `/forget all` |
@@ -192,6 +193,15 @@ The bot stores your chat ID on first `/start`. This is needed for the scheduled 
 ```
 
 Hira checks pending nudges every minute and sends the message proactively in Telegram. Use this for time-specific heads-ups when you are likely to be buried in work.
+
+**Daily check-ins:**
+```
+/checkin Istigfar & Salawat | 09:00, 13:00, 21:30 | Have you done your istigfar and salawat today?
+/checkins
+/cancelcheckin 1
+```
+
+Hira checks every minute. For each daily check-in, it pings at the configured times until you reply `yes`, `done`, or `alhamdulillah`. Once you reply affirmatively, it stays quiet for that check-in until the next day.
 
 **Use it like a full assistant:**
 ```
