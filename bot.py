@@ -240,7 +240,7 @@ async def start(update, context):
         except Exception as e:
             logger.warning(f"Could not store chat_id: {e}")
     redis_status = "Redis connected" if _get_redis() else "Redis not connected (in-memory only)"
-    search_status = "Web search enabled" if ss.search_enabled() else "Web search disabled (add BRAVE_API_KEY)"
+    search_status = "Web search enabled" if ss.search_enabled() else "Web search disabled (add TAVILY_API_KEY)"
     g = "Google connected" if google_ok() else "Google not connected"
     await reply(update,
         f"Assalamualaikum Herwanto\n\n"
@@ -434,7 +434,7 @@ async def search_cmd(update, context):
         await update.message.reply_text("Usage: /search [query]")
         return
     if not ss.search_enabled():
-        await update.message.reply_text("Web search not enabled. Add BRAVE_API_KEY to Railway variables.\nSign up free at brave.com/search/api")
+        await update.message.reply_text("Web search not enabled. Add TAVILY_API_KEY to Railway variables.\nSign up free at tavily.com")
         return
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     results = ss.web_search(query, max_results=5)
