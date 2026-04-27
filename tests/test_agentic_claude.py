@@ -45,12 +45,27 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("Tue Even week timetable", result)
         self.assertIn("7:35–8:00", result)
         self.assertIn("FTCT", result)
-        self.assertIn("8:00–9:05", result)
+        self.assertIn("8:00–8:35", result)
         self.assertIn("CCE", result)
         self.assertIn("9:40–10:50", result)
-        self.assertIn("Sec 1 (MLG21)", result)
+        self.assertIn("1 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison", result)
         self.assertIn("13:40–14:45", result)
-        self.assertIn("Sec 3 (MLG33)", result)
+        self.assertIn("3 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison", result)
+        self.assertIn("L3-10", result)
+
+    def test_master_timetable_key_periods(self):
+        monday_even = bot._timetable_for_lookup("Monday", "Even")
+        wednesday_odd = bot._timetable_for_lookup("Wednesday", "Odd")
+        thursday_odd = bot._timetable_for_lookup("Thursday", "Odd")
+        friday_odd = bot._timetable_for_lookup("Friday", "Odd")
+
+        self.assertIn("8:00–9:05", monday_even)
+        self.assertIn("10:50–11:55", monday_even)
+        self.assertIn("7:35–8:00", wednesday_odd)
+        self.assertIn("9:05–10:50", wednesday_odd)
+        self.assertIn("10:50–11:55", wednesday_odd)
+        self.assertIn("9:40–10:50", thursday_odd)
+        self.assertIn("10:50–11:55", friday_odd)
 
     def test_timetable_question_forces_timetable_tool(self):
         forced = bot._forced_tool_for_text(

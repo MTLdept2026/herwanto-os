@@ -1,7 +1,7 @@
 """
 Herwanto's NBSS timetable data.
-Source: TT 2026.pdf, generated 31 December 2025.
-User override: Sec 4 (BMLA) on Monday odd removed.
+Source: Master teaching timetable supplied by Herwanto.
+Timetable generated: 13/3/2026 | aSc Timetables.
 
 Week types: O = Odd, E = Even
 Use /setweek to set the current week type once — bot calculates all future weeks.
@@ -68,9 +68,9 @@ SCHOOL_CALENDAR_MEMORY_2026 = (
 )
 
 TIMETABLE_MEMORY_2026 = (
-    "Herwanto's 2026 NBSS odd/even timetable is hardcoded from TT 2026.pdf "
-    "(Teacher MTL Muhammad Herwanto Johari, generated 31 Dec 2025). "
-    "User override: Sec 4 BMLA on Monday odd is removed. "
+    "Herwanto's 2026 NBSS odd/even master teaching timetable is hardcoded from "
+    "the user-supplied TIMETABLE - T. MTL MUHAMMAD HERWANTO JOHARI "
+    "(generated 13 Mar 2026 via aSc Timetables). "
     "Use TIMETABLE in timetable.py as the source of truth for lesson periods, rooms, and week parity."
 )
 
@@ -99,7 +99,7 @@ def _b(periods, subject, desc, room, code=""):
 #   CCE    = Character & Citizenship Education
 #   ML     = Bahasa Melayu lesson
 #   IPW    = Interdisciplinary Project Work
-#   MTL    = MTL Department activity (combined with dept colleagues)
+#   PLT    = Professional Learning Teams
 #
 # Class naming: "Sec 1" = all Sec 1 classes, "1 Flagship" = form class only
 
@@ -109,17 +109,16 @@ TIMETABLE = {
 
     ("Mon", "O"): [
         _b([1],       "FTCT",  "1 Flagship",                "L4-08"),
-        _b([2, 3],    "ML",    "Sec 3 (MLG33A)",            "L4-10",  "MLG33A"),
-        # Sec 4 BMLA at P7-P9 REMOVED — taken over by another teacher
-        _b([10, 11],  "ML",    "Sec 2 (MLG31)",             "L4-12",  "MLG31"),
-        _b([12, 13],  "ML",    "Sec 1 (MLG21)",             "L4-11",  "MLG21"),
+        _b([2, 3],    "ML",    "3 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison", "L3-10", "MLG33A"),
+        _b([10, 11],  "ML",    "2 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison/Harbour", "L4-12", "MLG31"),
+        _b([12, 13],  "ML",    "1 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison", "L4-11", "MLG21"),
     ],
 
     ("Mon", "E"): [
         _b([1],       "FTCT",  "1 Flagship",                "L4-08"),
-        _b([2],       "ML",    "Sec 1 (MLG21A)",            "L4-11",  "MLG21A"),
-        _b([7, 8, 9], "ML",    "Sec 3 (MLG33A)",            "L4-10",  "MLG33A"),
-        _b([10, 11],  "ML",    "Sec 2 (MLG31)",             "L4-12",  "MLG31"),
+        _b([2, 3],    "ML",    "1 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison", "L4-11", "MLG21A"),
+        _b([7, 8],    "ML",    "3 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison", "L3-10", "MLG33A"),
+        _b([10, 11],  "ML",    "2 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison/Harbour", "L4-12", "MLG31"),
     ],
 
     # ── TUESDAY ───────────────────────────────────────────────────────────────
@@ -127,45 +126,45 @@ TIMETABLE = {
     ("Tue", "O"): [
         _b([1],       "FTCT",  "1 Flagship",                "L4-08"),
         _b([2],       "CCE",   "1 Flagship",                "L4-08"),
-        _b([5, 6],    "ML",    "Sec 2 (MLG31A)",            "L4-12",  "MLG31A"),
-        _b([10, 11],  "ML",    "Sec 1 (MLG21A)",            "L4-11",  "MLG21A"),
+        _b([5, 6],    "ML",    "2 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison/Harbour", "L4-12", "MLG31A"),
+        _b([10, 11],  "ML",    "1 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison", "L4-11", "MLG21A"),
     ],
 
     ("Tue", "E"): [
         _b([1],       "FTCT",  "1 Flagship",                "L4-08"),
-        _b([2, 3],    "CCE",   "1 Flagship",                "L4-08"),
-        _b([5, 6],    "ML",    "Sec 1 (MLG21)",             "L4-11",  "MLG21"),
-        _b([12, 13],  "ML",    "Sec 3 (MLG33)",             "L4-10",  "MLG33"),
+        _b([2],       "CCE",   "1 Flagship",                "L4-08"),
+        _b([5, 6],    "ML",    "1 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison", "L4-11", "MLG21"),
+        _b([12, 13],  "ML",    "3 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison", "L3-10", "MLG33"),
     ],
 
     # ── WEDNESDAY ─────────────────────────────────────────────────────────────
 
     ("Wed", "O"): [
-        _b([2],       "FTCT",  "1 Flagship",                "L4-08"),
-        _b([4, 5],    "MTL",   "PLT MTL",                   "-"),
-        _b([7, 8, 9], "ML",    "Sec 2 (MLG31A)",            "L4-12",  "MLG31A"),
-        _b([10, 11],  "ML",    "Sec 4 (BMLA)",              "L4-12",  "BMLA"),
+        _b([1],       "FTCT",  "1 Flagship",                "L4-08"),
+        _b([4, 5, 6], "PLT",   "MTL Department",            "-"),
+        _b([7, 8],    "ML",    "2 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison/Harbour", "L4-12", "MLG31A"),
+        _b([10, 11],  "ML",    "4 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison", "L4-12", "BMLA"),
     ],
 
     ("Wed", "E"): [
-        _b([2],       "FTCT",  "1 Flagship",                "L4-08"),
-        _b([4, 5],    "MTL",   "PLT MTL",                   "-"),
-        _b([7, 8, 9], "ML",    "Sec 2 (MLG31A)",            "L4-12",  "MLG31A"),
-        _b([10, 11],  "ML",    "Sec 4 (BMLA)",              "L4-12",  "BMLA"),
+        _b([1],       "FTCT",  "1 Flagship",                "L4-08"),
+        _b([4, 5, 6], "PLT",   "MTL Department",            "-"),
+        _b([7, 8],    "ML",    "2 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison/Harbour", "L4-12", "MLG31A"),
+        _b([10, 11],  "ML",    "4 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison", "L4-12", "BMLA"),
     ],
 
     # ── THURSDAY ──────────────────────────────────────────────────────────────
 
     ("Thu", "O"): [
         _b([1],       "FTCT",  "1 Flagship",                "L4-08"),
-        _b([4, 5, 6], "IPW",   "2 Compass",                 "L3-03"),
-        _b([12, 13],  "ML",    "Sec 3 (MLG33)",             "L4-10",  "MLG33"),
+        _b([5, 6],    "IPW",   "2 Compass",                 "L3-03"),
+        _b([12, 13],  "ML",    "3 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison", "L3-10", "MLG33"),
     ],
 
     ("Thu", "E"): [
         _b([1],       "FTCT/CCE", "1 Flagship",             "L4-08"),
         _b([2],       "CCE",   "1 Flagship",                "L4-08"),
-        _b([7, 8, 9], "ML",    "Sec 1 (MLG21A)",            "L4-11",  "MLG21A"),
+        _b([7, 8],    "ML",    "1 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison", "L4-11", "MLG21A"),
     ],
 
     # ── FRIDAY ────────────────────────────────────────────────────────────────
@@ -173,7 +172,7 @@ TIMETABLE = {
     ("Fri", "O"): [
         _b([1],       "FTCT/CCE", "1 Flagship",             "L4-08"),
         _b([2],       "CCE",   "1 Flagship",                "L4-08"),
-        _b([7, 8, 9], "ML",    "Sec 3 (MLG33A)",            "L4-10",  "MLG33A"),
+        _b([7, 8],    "ML",    "3 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison", "L3-10", "MLG33A"),
     ],
 
     ("Fri", "E"): [],  # Free day — no lessons
