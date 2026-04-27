@@ -256,6 +256,7 @@ Voice notes require `OPENAI_API_KEY`. Hira transcribes the note and then treats 
 
 **Gmail:**
 ```
+/gmail
 /gmail is:unread newer_than:7d
 /gmaildraft recipient@example.com | Subject | Email body
 ```

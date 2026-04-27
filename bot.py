@@ -166,7 +166,7 @@ Rules:
 - When the user asks to follow up with someone later, call create_followup.
 - When the user asks to mark a reminder/task/follow-up done, call complete_task_by_text or complete_followup_by_text.
 - When the user asks what to do now or how to prioritise tasks, call get_task_brief.
-- When the user asks about Gmail, unread email, or drafting an email, use get_gmail_brief or create_gmail_draft when Gmail is connected.
+- When the user asks about Gmail, unread email, or drafting an email, use get_gmail_brief or create_gmail_draft when Gmail is connected. For "last/latest/recent emails", leave the Gmail query empty and set max_items. Use is:unread only when he explicitly asks for unread mail.
 - When the user asks you to create a document, worksheet, letter, report, lesson plan, handout, memo, proposal, or meeting notes, call create_document_artifact.
 - When the user asks you to create slides, a deck, PowerPoint, PPTX, presentation, pitch deck, briefing deck, or lesson slides, call create_slide_deck_artifact.
 - When the user gives a reusable document/deck style, format, template preference, rubric format, NBSS worksheet format, GamePlan pitch style, or Rūḥ deck style, call remember_artifact_template.
@@ -459,7 +459,7 @@ GMAIL_BRIEF_TOOL = {
     "input_schema": {
         "type": "object",
         "properties": {
-            "query": {"type": "string", "description": "Gmail search query, default unread recent mail"},
+            "query": {"type": "string", "description": "Gmail search query. Leave empty for latest inbox messages. Use is:unread only if the user asks for unread mail."},
             "max_items": {"type": "integer", "description": "Maximum messages, default 10"}
         }
     }
@@ -1802,15 +1802,17 @@ async def weekly_cmd(update, context):
 
 async def gmail_cmd(update, context):
     if not gs.gmail_ok():
-        await update.message.reply_text("Gmail not connected. Configure GOOGLE_GMAIL_USER with delegated Gmail access first.")
+        await update.message.reply_text("Gmail not connected. Configure personal Gmail OAuth variables or GOOGLE_GMAIL_USER first.")
         return
-    query = " ".join(context.args).strip() or "is:unread newer_than:7d"
+    query = " ".join(context.args).strip()
     try:
         messages = gs.list_gmail_messages(query=query, max_results=10)
         if not messages:
-            await update.message.reply_text("No Gmail messages found.")
+            detail = f" for `{query}`" if query else ""
+            await reply(update, f"No Gmail messages found{detail}.", parse_mode="Markdown")
             return
-        lines = [f"*Gmail: {query}*\n"]
+        title = query if query else "latest messages"
+        lines = [f"*Gmail: {title}*\n"]
         for msg in messages:
             lines.append(f"- *{msg['subject']}*")
             lines.append(f"  From: {msg['from']}")
@@ -1821,7 +1823,7 @@ async def gmail_cmd(update, context):
 
 async def gmaildraft_cmd(update, context):
     if not gs.gmail_ok():
-        await update.message.reply_text("Gmail not connected. Configure GOOGLE_GMAIL_USER with delegated Gmail access first.")
+        await update.message.reply_text("Gmail not connected. Configure personal Gmail OAuth variables or GOOGLE_GMAIL_USER first.")
         return
     text = " ".join(context.args).strip()
     parts = [p.strip() for p in text.split("|")]
@@ -2370,7 +2372,7 @@ async def _execute_tool(name: str, inp: dict) -> str:
             if not gs.gmail_ok():
                 return "Gmail is not connected."
             messages = gs.list_gmail_messages(
-                inp.get("query", "is:unread newer_than:7d"),
+                inp.get("query", ""),
                 inp.get("max_items", 10),
             )
             if not messages:

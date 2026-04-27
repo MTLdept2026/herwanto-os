@@ -952,13 +952,15 @@ def gmail_ok() -> bool:
     return has_oauth or bool(os.environ.get("GOOGLE_GMAIL_USER", "").strip())
 
 
-def list_gmail_messages(query: str = "is:unread newer_than:7d", max_results: int = 10) -> list:
+def list_gmail_messages(query: str = "", max_results: int = 10) -> list:
     service = _gmail()
-    result = service.users().messages().list(
-        userId="me",
-        q=query,
-        maxResults=max(1, min(int(max_results or 10), 25)),
-    ).execute()
+    kwargs = {
+        "userId": "me",
+        "maxResults": max(1, min(int(max_results or 10), 25)),
+    }
+    if query.strip():
+        kwargs["q"] = query.strip()
+    result = service.users().messages().list(**kwargs).execute()
     messages = []
     for item in result.get("messages", []):
         msg = service.users().messages().get(
