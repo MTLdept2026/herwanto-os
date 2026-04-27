@@ -20,6 +20,8 @@ from telegram.ext import (
 import google_services as gs
 import timetable as tt
 import search_service as ss
+import artifact_service as artifacts
+import canva_service as canva
 
 # ─── SETUP ───────────────────────────────────────────────────────────────────
 
@@ -147,7 +149,7 @@ Rules:
 - When he asks to add, schedule, or create a calendar event, create it directly if the date and time are clear. If details are incomplete, ask only for the missing detail.
 - Never offer to generate .ics files. Use Google Calendar directly.
 - The current date and time is already provided at the top of this prompt — always use it for any date/time reasoning.
-- You have tools: create_calendar_event, add_reminder, create_proactive_nudge, create_daily_checkin, get_assistant_context, remember_user_info, update_project_status, get_latest_news, and web_search. Use them proactively.
+- You have tools: create_calendar_event, add_reminder, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, update_project_status, get_latest_news, and web_search. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
 - When the user asks you to nudge, ping, check in, remind him at a specific time, or initiate a chat later — call create_proactive_nudge. Use this for time-specific heads-ups, not ordinary all-day deadlines.
@@ -160,6 +162,10 @@ Rules:
 - When the user asks about latest news, current events, headlines, football, F1, AI, Singapore education, apps, Apple, Nothing OS, or his shortlisted topics — call get_latest_news before answering.
 - When the user says "remember", "note that", or gives stable preferences/facts about himself — call remember_user_info.
 - When the user gives a project progress update — call update_project_status.
+- When the user asks you to create a document, worksheet, letter, report, lesson plan, handout, memo, proposal, or meeting notes, call create_document_artifact.
+- When the user asks you to create slides, a deck, PowerPoint, PPTX, presentation, pitch deck, briefing deck, or lesson slides, call create_slide_deck_artifact.
+- When the user gives a reusable document/deck style, format, template preference, rubric format, NBSS worksheet format, GamePlan pitch style, or Rūḥ deck style, call remember_artifact_template.
+- When the user explicitly asks for Canva, call create_canva_design if they want a new Canva Doc/presentation/whiteboard/email. If Canva is not connected, say the Canva access token is missing.
 - After using a tool, confirm briefly and naturally. Do not ask "shall I add this?" — just do it.
 """
 
@@ -286,7 +292,7 @@ MEMORY_TOOL = {
         "properties": {
             "category": {
                 "type": "string",
-                "description": "One of: profile, preferences, people, places, projects, files"
+                "description": "One of: profile, preferences, people, places, projects, files, templates"
             },
             "text": {"type": "string", "description": "Concise memory to store"}
         },
@@ -344,6 +350,64 @@ NEWS_TOOL = {
                 "description": "Number of headlines per topic, usually 2 to 5."
             }
         }
+    }
+}
+
+DOCUMENT_ARTIFACT_TOOL = {
+    "name": "create_document_artifact",
+    "description": "Create a downloadable DOCX document and, when Google Drive is available, an editable Google Docs link.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "Document title"},
+            "instructions": {"type": "string", "description": "What the document should contain"},
+            "doc_type": {"type": "string", "description": "worksheet, letter, report, lesson_plan, memo, proposal, notes, or general"},
+            "audience": {"type": "string", "description": "Intended audience, e.g. Sec 3 ML, parents, school leaders"},
+            "language": {"type": "string", "description": "Language to use, e.g. English, Bahasa Melayu"},
+        },
+        "required": ["title", "instructions"]
+    }
+}
+
+SLIDE_ARTIFACT_TOOL = {
+    "name": "create_slide_deck_artifact",
+    "description": "Create a downloadable PPTX slide deck and, when Google Drive is available, an editable Google Slides link.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "Deck title"},
+            "instructions": {"type": "string", "description": "What the deck should contain"},
+            "audience": {"type": "string", "description": "Intended audience"},
+            "slide_count": {"type": "integer", "description": "Approximate number of slides, usually 5 to 12"},
+            "language": {"type": "string", "description": "Language to use, e.g. English, Bahasa Melayu"},
+        },
+        "required": ["title", "instructions"]
+    }
+}
+
+TEMPLATE_MEMORY_TOOL = {
+    "name": "remember_artifact_template",
+    "description": "Persist reusable document/deck style and template preferences for future generated artifacts.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Template or style name"},
+            "notes": {"type": "string", "description": "Reusable formatting, tone, structure, and audience notes"}
+        },
+        "required": ["name", "notes"]
+    }
+}
+
+CANVA_CREATE_TOOL = {
+    "name": "create_canva_design",
+    "description": "Create a new editable Canva design shell when Canva is connected. Supports doc, presentation, whiteboard, and email.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "Design title"},
+            "design_type": {"type": "string", "description": "doc, presentation, whiteboard, or email"}
+        },
+        "required": ["title", "design_type"]
     }
 }
 
@@ -455,7 +519,7 @@ def _format_memory(memory: dict) -> str:
         f"- {tt.format_timetable_memory()}",
         "",
     ]
-    for category in ("profile", "preferences", "people", "places", "projects", "files"):
+    for category in ("profile", "preferences", "people", "places", "projects", "files", "templates"):
         items = memory.get(category, [])
         if not items:
             continue
@@ -470,6 +534,17 @@ def _clip_memory_text(value: str, limit: int = 1200) -> str:
     if len(clean) <= limit:
         return clean
     return clean[:limit - 3].rstrip() + "..."
+
+def _artifact_template_context() -> str:
+    if not google_ok():
+        return ""
+    try:
+        templates = gs.get_memory().get("templates", [])
+    except Exception:
+        return ""
+    if not templates:
+        return ""
+    return "\n".join(f"- {item}" for item in templates[-12:])
 
 def _remember_uploaded_file(kind: str, file_id: str, caption: str, extracted_summary: str, filename: str = "", mime_type: str = ""):
     if not google_ok():
@@ -545,6 +620,21 @@ def build_context_snapshot(days: int = 7) -> str:
         lines.append(f"\nMemory unavailable: {e}")
 
     return "\n".join(lines)
+
+def build_artifact_index() -> str:
+    if not google_ok():
+        return "Google is not connected."
+    try:
+        memory = gs.get_memory()
+        files = memory.get("files", [])
+        if not files:
+            return "No generated or uploaded files remembered yet."
+        lines = ["*Artifact library*"]
+        for item in files[-20:]:
+            lines.append(f"- {item}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Artifact library unavailable: {e}"
 
 def build_agenda(days: int = 7) -> str:
     days = max(1, min(int(days or 7), 14))
@@ -771,6 +861,98 @@ def _due_break_aware_checkins(now: datetime) -> list[dict]:
                 break
     return due
 
+def _json_from_claude_text(raw: str):
+    clean = raw.strip().replace("```json", "").replace("```", "").strip()
+    start = min((clean.find(c) for c in ["{", "["] if c in clean), default=0)
+    return json.loads(clean[start:])
+
+def _generate_document_spec(title: str, instructions: str, doc_type: str = "general", audience: str = "", language: str = "") -> dict:
+    template_context = _artifact_template_context()
+    prompt = f"""Create a structured DOCX content spec for Hira to render.
+
+Title: {title}
+Document type: {doc_type or "general"}
+Audience: {audience or "Herwanto"}
+Language: {language or "Use the user's requested language; for Bahasa Melayu, use DBP conventions."}
+Instructions: {instructions}
+
+Reusable template/style memory:
+{template_context or "- None stored yet."}
+
+Return ONLY valid JSON in this exact shape:
+{{
+  "title": "document title",
+  "subtitle": "optional subtitle",
+  "author": "optional author/context",
+  "sections": [
+    {{"heading": "section heading", "body": "paragraph text", "bullets": ["optional bullet"]}}
+  ]
+}}
+
+Rules:
+- Make it ready to use, not a rough outline.
+- For worksheets, include student-facing instructions, exercises, and an answer key section.
+- For lesson plans, include objectives, materials, flow, checks for understanding, differentiation, and exit ticket.
+- Keep section body text concise but complete.
+- Return ONLY JSON."""
+    resp = claude.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=3000,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return _json_from_claude_text(resp.content[0].text)
+
+def _generate_slide_spec(title: str, instructions: str, audience: str = "", slide_count: int = 8, language: str = "") -> dict:
+    template_context = _artifact_template_context()
+    slide_count = max(3, min(int(slide_count or 8), 15))
+    prompt = f"""Create a structured PPTX content spec for Hira to render.
+
+Title: {title}
+Audience: {audience or "Herwanto"}
+Approximate slide count: {slide_count}
+Language: {language or "Use the user's requested language; for Bahasa Melayu, use DBP conventions."}
+Instructions: {instructions}
+
+Reusable template/style memory:
+{template_context or "- None stored yet."}
+
+Return ONLY valid JSON in this exact shape:
+{{
+  "title": "deck title",
+  "subtitle": "optional subtitle",
+  "audience": "audience",
+  "slides": [
+    {{"title": "slide title", "bullets": ["short bullet"], "notes": "optional presenter notes"}}
+  ]
+}}
+
+Rules:
+- Make the deck presentation-ready, not a rough outline.
+- Use concise slide bullets and put details in notes.
+- Include a strong opening and useful closing/action slide.
+- Return ONLY JSON."""
+    resp = claude.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=3000,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return _json_from_claude_text(resp.content[0].text)
+
+def _upload_artifact_if_possible(path: str, convert_to: str) -> dict | None:
+    if not google_ok():
+        return None
+    try:
+        return gs.upload_artifact(path, convert_to=convert_to)
+    except Exception as e:
+        logger.warning(f"Drive artifact upload failed: {e}")
+        return None
+
+def _artifact_result_text(kind: str, path, drive_file: dict | None = None) -> str:
+    text = f"Created {kind}: `{path.name}`"
+    if drive_file and drive_file.get("webViewLink"):
+        text += f"\nEditable Google link: {drive_file['webViewLink']}"
+    return text
+
 def build_briefing():
     now = datetime.now(SGT)
     today = now.date()
@@ -857,6 +1039,8 @@ async def start(update, context):
         f"*Proactive nudges*\n/nudge /nudges /cancelnudge\n\n"
         f"*Daily check-ins*\n/checkin /checkins /cancelcheckin\n"
         f"`/checkin Name | breaks | Question` for schedule-aware pings\n\n"
+        f"*Artifacts*\n/doc /slides /template /templates /artifacts\n\n"
+        f"*Canva*\n/canva /canvasearch /canvaexport /canvaexportcheck\n\n"
         f"*Assistant*\n/agenda [days] /remember /memory /forget all\n\n"
         f"*Projects*\n/projects /update\n\n"
         f"*Search*\n/search [query]\n\n"
@@ -1167,6 +1351,176 @@ async def update_cmd(update, context):
     except Exception as e:
         await update.message.reply_text(f"Error: {e}")
 
+async def doc_cmd(update, context):
+    text = " ".join(context.args).strip()
+    if not text or "|" not in text:
+        await reply(update,
+            "Usage: `/doc Title | What to create`\n"
+            "Example: `/doc Peribahasa Sec 3 Worksheet | 20-minute BM worksheet with answers`",
+            parse_mode="Markdown")
+        return
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    try:
+        title, instructions = [p.strip() for p in text.split("|", 1)]
+        spec = _generate_document_spec(title, instructions)
+        path = artifacts.render_docx(spec)
+        drive_file = _upload_artifact_if_possible(str(path), "doc")
+        if google_ok():
+            link_note = f" | google_doc={drive_file.get('webViewLink', '')}" if drive_file else ""
+            gs.add_memory("files", f"Generated DOCX {path.name} on {datetime.now(SGT).strftime('%Y-%m-%d %H:%M SGT')} | prompt={_clip_memory_text(instructions, 240)}{link_note}")
+        with path.open("rb") as artifact_file:
+            await update.message.reply_document(
+                document=artifact_file,
+                filename=path.name,
+                caption=_artifact_result_text("DOCX", path, drive_file),
+                parse_mode="Markdown",
+            )
+    except Exception as e:
+        logger.error(f"doc generation error: {e}")
+        await update.message.reply_text(f"Could not create document: {e}")
+
+async def slides_cmd(update, context):
+    text = " ".join(context.args).strip()
+    if not text or "|" not in text:
+        await reply(update,
+            "Usage: `/slides Title | What to create`\n"
+            "Example: `/slides GamePlan Pitch | 8-slide deck for a Singapore school leader`",
+            parse_mode="Markdown")
+        return
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    try:
+        title, instructions = [p.strip() for p in text.split("|", 1)]
+        spec = _generate_slide_spec(title, instructions)
+        path = artifacts.render_pptx(spec)
+        drive_file = _upload_artifact_if_possible(str(path), "slides")
+        if google_ok():
+            link_note = f" | google_slides={drive_file.get('webViewLink', '')}" if drive_file else ""
+            gs.add_memory("files", f"Generated PPTX {path.name} on {datetime.now(SGT).strftime('%Y-%m-%d %H:%M SGT')} | prompt={_clip_memory_text(instructions, 240)}{link_note}")
+        with path.open("rb") as artifact_file:
+            await update.message.reply_document(
+                document=artifact_file,
+                filename=path.name,
+                caption=_artifact_result_text("PPTX", path, drive_file),
+                parse_mode="Markdown",
+            )
+    except Exception as e:
+        logger.error(f"slides generation error: {e}")
+        await update.message.reply_text(f"Could not create slides: {e}")
+
+async def template_cmd(update, context):
+    if not google_ok():
+        await update.message.reply_text("Google not connected.")
+        return
+    text = " ".join(context.args).strip()
+    if not text or "|" not in text:
+        await reply(update,
+            "Usage: `/template Name | Reusable style notes`\n"
+            "Example: `/template NBSS BM Worksheet | Title, objectives, short practice, answer key, DBP BM`",
+            parse_mode="Markdown")
+        return
+    try:
+        name, notes = [p.strip() for p in text.split("|", 1)]
+        gs.add_memory("templates", f"{name}: {notes}")
+        await update.message.reply_text(f"Template remembered: {name}")
+    except Exception as e:
+        await update.message.reply_text(f"Template memory error: {e}")
+
+async def templates_cmd(update, context):
+    if not google_ok():
+        await update.message.reply_text("Google not connected.")
+        return
+    try:
+        templates = gs.get_memory().get("templates", [])
+        if not templates:
+            await update.message.reply_text("No artifact templates remembered yet.")
+            return
+        lines = ["*Artifact templates*\n"]
+        for item in templates:
+            lines.append(f"- {item}")
+        await reply(update, "\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"Template memory error: {e}")
+
+async def artifacts_cmd(update, context):
+    await reply(update, build_artifact_index(), parse_mode="Markdown")
+
+async def canva_cmd(update, context):
+    if not canva.canva_ok():
+        await update.message.reply_text("Canva not connected. Add CANVA_ACCESS_TOKEN to Railway variables first.")
+        return
+    text = " ".join(context.args).strip()
+    if not text or "|" not in text:
+        await reply(update,
+            "Usage: `/canva Title | doc|presentation|whiteboard|email`\n"
+            "Example: `/canva GamePlan Pitch | presentation`",
+            parse_mode="Markdown")
+        return
+    try:
+        title, design_type = [p.strip() for p in text.split("|", 1)]
+        result = canva.create_design(title, design_type)
+        design = result.get("design", result)
+        if google_ok():
+            gs.add_memory("files", f"Created Canva {design_type} {design.get('title', title)} | id={design.get('id', '')} | edit={design.get('urls', {}).get('edit_url', '')}")
+        await reply(update, f"Created Canva design:\n\n{canva.format_design(design)}", parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Canva create error: {e}")
+        await update.message.reply_text(f"Could not create Canva design: {e}")
+
+async def canva_search_cmd(update, context):
+    if not canva.canva_ok():
+        await update.message.reply_text("Canva not connected. Add CANVA_ACCESS_TOKEN to Railway variables first.")
+        return
+    query = " ".join(context.args).strip()
+    try:
+        result = canva.list_designs(query)
+        designs = result.get("items") or result.get("designs") or []
+        if not designs:
+            await update.message.reply_text("No Canva designs found.")
+            return
+        lines = ["*Canva designs*\n"]
+        for item in designs[:10]:
+            design = item.get("design", item)
+            lines.append(canva.format_design(design))
+            lines.append("")
+        await reply(update, "\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Canva search error: {e}")
+        await update.message.reply_text(f"Could not search Canva: {e}")
+
+async def canva_export_cmd(update, context):
+    if not canva.canva_ok():
+        await update.message.reply_text("Canva not connected. Add CANVA_ACCESS_TOKEN to Railway variables first.")
+        return
+    text = " ".join(context.args).strip()
+    if not text or "|" not in text:
+        await reply(update,
+            "Usage: `/canvaexport design_id | pdf|pptx|png|jpg`\n"
+            "Then check it with `/canvaexportcheck job_id` if it is still processing.",
+            parse_mode="Markdown")
+        return
+    try:
+        design_id, file_type = [p.strip() for p in text.split("|", 1)]
+        job = canva.create_export_job(design_id, file_type)
+        await reply(update, canva.format_export(job.get("job", job)), parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Canva export error: {e}")
+        await update.message.reply_text(f"Could not start Canva export: {e}")
+
+async def canva_export_check_cmd(update, context):
+    if not canva.canva_ok():
+        await update.message.reply_text("Canva not connected. Add CANVA_ACCESS_TOKEN to Railway variables first.")
+        return
+    job_id = " ".join(context.args).strip()
+    if not job_id:
+        await reply(update, "Usage: `/canvaexportcheck job_id`", parse_mode="Markdown")
+        return
+    try:
+        job = canva.get_export_job(job_id)
+        await reply(update, canva.format_export(job.get("job", job)), parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Canva export check error: {e}")
+        await update.message.reply_text(f"Could not check Canva export: {e}")
+
 async def briefing_cmd(update, context):
     await reply(update, build_briefing(), parse_mode="Markdown")
 
@@ -1194,7 +1548,7 @@ async def remember_cmd(update, context):
     if not text:
         await reply(update,
             "Usage: `/remember preferences | Keep replies very concise`\n"
-            "Categories: profile, preferences, people, places, projects, files",
+            "Categories: profile, preferences, people, places, projects, files, templates",
             parse_mode="Markdown")
         return
     if "|" in text:
@@ -1385,7 +1739,22 @@ Inspect this screenshot/document carefully. Priority:
 """
 
 def _core_tools():
-    tools = [CONTEXT_TOOL, CALENDAR_TOOL, REMINDER_TOOL, NUDGE_TOOL, DAILY_CHECKIN_TOOL, BREAK_AWARE_CHECKIN_TOOL, MEMORY_TOOL, WEEK_TYPE_TOOL, PROJECT_TOOL, NEWS_TOOL]
+    tools = [
+        CONTEXT_TOOL,
+        CALENDAR_TOOL,
+        REMINDER_TOOL,
+        NUDGE_TOOL,
+        DAILY_CHECKIN_TOOL,
+        BREAK_AWARE_CHECKIN_TOOL,
+        DOCUMENT_ARTIFACT_TOOL,
+        SLIDE_ARTIFACT_TOOL,
+        TEMPLATE_MEMORY_TOOL,
+        CANVA_CREATE_TOOL,
+        MEMORY_TOOL,
+        WEEK_TYPE_TOOL,
+        PROJECT_TOOL,
+        NEWS_TOOL,
+    ]
     if ss.search_enabled():
         tools.append(SEARCH_TOOL)
     return tools
@@ -1592,6 +1961,61 @@ async def _execute_tool(name: str, inp: dict) -> str:
         except Exception as e:
             return f"Failed to create break-aware daily check-in: {e}"
 
+    elif name == "create_document_artifact":
+        try:
+            spec = _generate_document_spec(
+                inp["title"],
+                inp["instructions"],
+                inp.get("doc_type", "general"),
+                inp.get("audience", ""),
+                inp.get("language", ""),
+            )
+            path = artifacts.render_docx(spec)
+            drive_file = _upload_artifact_if_possible(str(path), "doc")
+            if google_ok():
+                link_note = f" | google_doc={drive_file.get('webViewLink', '')}" if drive_file else ""
+                gs.add_memory("files", f"Generated DOCX {path.name} on {datetime.now(SGT).strftime('%Y-%m-%d %H:%M SGT')} | prompt={_clip_memory_text(inp['instructions'], 240)}{link_note}")
+            return _artifact_result_text("DOCX", path, drive_file)
+        except Exception as e:
+            return f"Failed to create document artifact: {e}"
+
+    elif name == "create_slide_deck_artifact":
+        try:
+            spec = _generate_slide_spec(
+                inp["title"],
+                inp["instructions"],
+                inp.get("audience", ""),
+                inp.get("slide_count", 8),
+                inp.get("language", ""),
+            )
+            path = artifacts.render_pptx(spec)
+            drive_file = _upload_artifact_if_possible(str(path), "slides")
+            if google_ok():
+                link_note = f" | google_slides={drive_file.get('webViewLink', '')}" if drive_file else ""
+                gs.add_memory("files", f"Generated PPTX {path.name} on {datetime.now(SGT).strftime('%Y-%m-%d %H:%M SGT')} | prompt={_clip_memory_text(inp['instructions'], 240)}{link_note}")
+            return _artifact_result_text("PPTX", path, drive_file)
+        except Exception as e:
+            return f"Failed to create slide deck artifact: {e}"
+
+    elif name == "remember_artifact_template":
+        try:
+            gs.add_memory("templates", f"{inp['name']}: {inp['notes']}")
+            return f"Remembered artifact template: {inp['name']}"
+        except Exception as e:
+            return f"Failed to remember artifact template: {e}"
+
+    elif name == "create_canva_design":
+        try:
+            if not canva.canva_ok():
+                return "Canva is not connected. Add CANVA_ACCESS_TOKEN to Railway variables first."
+            result = canva.create_design(inp["title"], inp.get("design_type", "presentation"))
+            design = result.get("design", result)
+            if google_ok():
+                gs.add_memory("files", f"Created Canva {inp.get('design_type', 'presentation')} {design.get('title', inp['title'])} | id={design.get('id', '')} | edit={design.get('urls', {}).get('edit_url', '')}")
+            return f"Created Canva design:\n{canva.format_design(design)}"
+        except Exception as e:
+            return f"Failed to create Canva design: {e}"
+
     elif name == "update_project_status":
         try:
             gs.update_project(
@@ -1747,6 +2171,15 @@ def main():
     app.add_handler(CommandHandler("cancelcheckin", cancelcheckin_cmd))
     app.add_handler(CommandHandler("projects", projects_cmd))
     app.add_handler(CommandHandler("update",   update_cmd))
+    app.add_handler(CommandHandler("doc",      doc_cmd))
+    app.add_handler(CommandHandler("slides",   slides_cmd))
+    app.add_handler(CommandHandler("template", template_cmd))
+    app.add_handler(CommandHandler("templates", templates_cmd))
+    app.add_handler(CommandHandler("artifacts", artifacts_cmd))
+    app.add_handler(CommandHandler("canva",   canva_cmd))
+    app.add_handler(CommandHandler("canvasearch", canva_search_cmd))
+    app.add_handler(CommandHandler("canvaexport", canva_export_cmd))
+    app.add_handler(CommandHandler("canvaexportcheck", canva_export_check_cmd))
     app.add_handler(CommandHandler("briefing", briefing_cmd))
     app.add_handler(CommandHandler("agenda",   agenda_cmd))
     app.add_handler(CommandHandler("remember", remember_cmd))

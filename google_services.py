@@ -8,9 +8,11 @@ import json
 import base64
 import pytz
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from googleapiclient.http import MediaFileUpload
 from google.oauth2 import service_account
 
 SGT = pytz.timezone('Asia/Singapore')
@@ -18,6 +20,7 @@ SGT = pytz.timezone('Asia/Singapore')
 SCOPES = [
     'https://www.googleapis.com/auth/calendar',
     'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/drive.file',
 ]
 
 SHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "")
@@ -42,6 +45,10 @@ def _cal():
 
 def _sheets():
     return build("sheets", "v4", credentials=_creds())
+
+
+def _drive():
+    return build("drive", "v3", credentials=_creds())
 
 
 # ─── CALENDAR ────────────────────────────────────────────────────────────────
@@ -135,6 +142,52 @@ def create_event(title: str, start_dt: datetime, end_dt: datetime,
         event["description"] = description
     result = _cal().events().insert(calendarId=cal_id, body=event).execute()
     return result
+
+
+# ─── DRIVE ARTIFACTS ────────────────────────────────────────────────────────
+
+def upload_artifact(path: str, convert_to: str = "") -> dict:
+    """Upload a generated file to Drive, optionally converting to Docs/Slides."""
+    source = Path(path)
+    if not source.exists():
+        raise FileNotFoundError(path)
+
+    ext = source.suffix.lower()
+    source_mime = {
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ".pdf": "application/pdf",
+    }.get(ext, "application/octet-stream")
+
+    target_mime = ""
+    if convert_to == "doc":
+        target_mime = "application/vnd.google-apps.document"
+    elif convert_to == "slides":
+        target_mime = "application/vnd.google-apps.presentation"
+
+    body = {"name": source.stem}
+    if target_mime:
+        body["mimeType"] = target_mime
+
+    media = MediaFileUpload(str(source), mimetype=source_mime, resumable=False)
+    uploaded = _drive().files().create(
+        body=body,
+        media_body=media,
+        fields="id,name,mimeType,webViewLink",
+    ).execute()
+    share_email = os.environ.get("GOOGLE_ARTIFACT_SHARE_EMAIL", "").strip()
+    if share_email:
+        role = os.environ.get("GOOGLE_ARTIFACT_SHARE_ROLE", "writer").strip() or "writer"
+        try:
+            _drive().permissions().create(
+                fileId=uploaded["id"],
+                body={"type": "user", "role": role, "emailAddress": share_email},
+                fields="id",
+                sendNotificationEmail=False,
+            ).execute()
+        except Exception:
+            pass
+    return uploaded
 
 
 # ─── SHEETS: REMINDERS ───────────────────────────────────────────────────────
@@ -283,6 +336,7 @@ DEFAULT_MEMORY = {
     "places": [],
     "projects": [],
     "files": [],
+    "templates": [],
 }
 
 
@@ -321,6 +375,8 @@ def add_memory(category: str, text: str) -> dict:
         "document": "files",
         "attachment": "files",
         "upload": "files",
+        "template": "templates",
+        "style": "templates",
     }
     category = aliases.get(category, category)
     if category not in DEFAULT_MEMORY:
