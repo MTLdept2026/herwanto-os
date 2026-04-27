@@ -23,7 +23,6 @@ Your AI second brain on Telegram. Calendar-aware, project-tracking, daily briefi
 | Create DOCX / Google Docs | `/doc`, or ask naturally |
 | Create PPTX / Google Slides | `/slides`, or ask naturally |
 | Remember artifact templates | `/template`, `/templates`, `/artifacts` |
-| Canva design bridge | `/canva`, `/canvasearch`, `/canvaexport`, `/canvaexportcheck` |
 | All project statuses | `/projects` |
 | Update a project | `/update Project \| Status \| Milestone \| Date \| Notes` |
 | Latest news shortlist | `/news`, `/news Apple AI`, `/watch`, `/watchlist`, `/unwatch` |
@@ -224,17 +223,6 @@ Adding a check-in with the same name updates the existing one, so you can switch
 
 Hira creates downloadable `.docx` and `.pptx` files in Telegram. If Google Drive is connected and the Drive API is enabled, Hira also uploads and converts them into Google Docs or Google Slides links. Set `GOOGLE_ARTIFACT_SHARE_EMAIL` to your Gmail/Workspace email if you want those generated links shared back to your account automatically. Reusable template memories are applied to future generated worksheets, decks, lesson plans, proposals, and briefing materials.
 
-**Canva bridge:**
-```
-/canva GamePlan Pitch | presentation
-/canva Parent Briefing Notes | doc
-/canvasearch GamePlan
-/canvaexport DESIGN_ID | pdf
-/canvaexportcheck EXPORT_JOB_ID
-```
-
-Set `CANVA_ACCESS_TOKEN` from Canva Connect OAuth to enable this. Hira can create editable Canva design shells, search your Canva designs, and start exports. Deep brand-template autofill is a later phase because Canva restricts that flow to supported brand-template/OAuth setups.
-
 **Use it like a full assistant:**
 ```
 /agenda
@@ -299,7 +287,6 @@ What should my next milestone for Rūḥ be?
 
 - **Voice messages** → Telegram voice → Whisper transcription → Claude
 - **Document upload** → Send PDFs/worksheets for Claude to read and summarise
-- **Canva generation** → Add a Canva integration after the Google Docs/Slides artifact pipeline is stable
 - **WhatsApp** → Same backend, swap to Meta WhatsApp Cloud API when you're ready
 - **Persistent AI memory** → Assistant memory is stored in the `Config` tab; Redis still improves chat history persistence
 

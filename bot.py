@@ -21,7 +21,6 @@ import google_services as gs
 import timetable as tt
 import search_service as ss
 import artifact_service as artifacts
-import canva_service as canva
 
 # ─── SETUP ───────────────────────────────────────────────────────────────────
 
@@ -165,7 +164,6 @@ Rules:
 - When the user asks you to create a document, worksheet, letter, report, lesson plan, handout, memo, proposal, or meeting notes, call create_document_artifact.
 - When the user asks you to create slides, a deck, PowerPoint, PPTX, presentation, pitch deck, briefing deck, or lesson slides, call create_slide_deck_artifact.
 - When the user gives a reusable document/deck style, format, template preference, rubric format, NBSS worksheet format, GamePlan pitch style, or Rūḥ deck style, call remember_artifact_template.
-- When the user explicitly asks for Canva, call create_canva_design if they want a new Canva Doc/presentation/whiteboard/email. If Canva is not connected, say the Canva access token is missing.
 - After using a tool, confirm briefly and naturally. Do not ask "shall I add this?" — just do it.
 """
 
@@ -395,19 +393,6 @@ TEMPLATE_MEMORY_TOOL = {
             "notes": {"type": "string", "description": "Reusable formatting, tone, structure, and audience notes"}
         },
         "required": ["name", "notes"]
-    }
-}
-
-CANVA_CREATE_TOOL = {
-    "name": "create_canva_design",
-    "description": "Create a new editable Canva design shell when Canva is connected. Supports doc, presentation, whiteboard, and email.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "title": {"type": "string", "description": "Design title"},
-            "design_type": {"type": "string", "description": "doc, presentation, whiteboard, or email"}
-        },
-        "required": ["title", "design_type"]
     }
 }
 
@@ -1040,7 +1025,6 @@ async def start(update, context):
         f"*Daily check-ins*\n/checkin /checkins /cancelcheckin\n"
         f"`/checkin Name | breaks | Question` for schedule-aware pings\n\n"
         f"*Artifacts*\n/doc /slides /template /templates /artifacts\n\n"
-        f"*Canva*\n/canva /canvasearch /canvaexport /canvaexportcheck\n\n"
         f"*Assistant*\n/agenda [days] /remember /memory /forget all\n\n"
         f"*Projects*\n/projects /update\n\n"
         f"*Search*\n/search [query]\n\n"
@@ -1444,83 +1428,6 @@ async def templates_cmd(update, context):
 async def artifacts_cmd(update, context):
     await reply(update, build_artifact_index(), parse_mode="Markdown")
 
-async def canva_cmd(update, context):
-    if not canva.canva_ok():
-        await update.message.reply_text("Canva not connected. Add CANVA_ACCESS_TOKEN to Railway variables first.")
-        return
-    text = " ".join(context.args).strip()
-    if not text or "|" not in text:
-        await reply(update,
-            "Usage: `/canva Title | doc|presentation|whiteboard|email`\n"
-            "Example: `/canva GamePlan Pitch | presentation`",
-            parse_mode="Markdown")
-        return
-    try:
-        title, design_type = [p.strip() for p in text.split("|", 1)]
-        result = canva.create_design(title, design_type)
-        design = result.get("design", result)
-        if google_ok():
-            gs.add_memory("files", f"Created Canva {design_type} {design.get('title', title)} | id={design.get('id', '')} | edit={design.get('urls', {}).get('edit_url', '')}")
-        await reply(update, f"Created Canva design:\n\n{canva.format_design(design)}", parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"Canva create error: {e}")
-        await update.message.reply_text(f"Could not create Canva design: {e}")
-
-async def canva_search_cmd(update, context):
-    if not canva.canva_ok():
-        await update.message.reply_text("Canva not connected. Add CANVA_ACCESS_TOKEN to Railway variables first.")
-        return
-    query = " ".join(context.args).strip()
-    try:
-        result = canva.list_designs(query)
-        designs = result.get("items") or result.get("designs") or []
-        if not designs:
-            await update.message.reply_text("No Canva designs found.")
-            return
-        lines = ["*Canva designs*\n"]
-        for item in designs[:10]:
-            design = item.get("design", item)
-            lines.append(canva.format_design(design))
-            lines.append("")
-        await reply(update, "\n".join(lines), parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"Canva search error: {e}")
-        await update.message.reply_text(f"Could not search Canva: {e}")
-
-async def canva_export_cmd(update, context):
-    if not canva.canva_ok():
-        await update.message.reply_text("Canva not connected. Add CANVA_ACCESS_TOKEN to Railway variables first.")
-        return
-    text = " ".join(context.args).strip()
-    if not text or "|" not in text:
-        await reply(update,
-            "Usage: `/canvaexport design_id | pdf|pptx|png|jpg`\n"
-            "Then check it with `/canvaexportcheck job_id` if it is still processing.",
-            parse_mode="Markdown")
-        return
-    try:
-        design_id, file_type = [p.strip() for p in text.split("|", 1)]
-        job = canva.create_export_job(design_id, file_type)
-        await reply(update, canva.format_export(job.get("job", job)), parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"Canva export error: {e}")
-        await update.message.reply_text(f"Could not start Canva export: {e}")
-
-async def canva_export_check_cmd(update, context):
-    if not canva.canva_ok():
-        await update.message.reply_text("Canva not connected. Add CANVA_ACCESS_TOKEN to Railway variables first.")
-        return
-    job_id = " ".join(context.args).strip()
-    if not job_id:
-        await reply(update, "Usage: `/canvaexportcheck job_id`", parse_mode="Markdown")
-        return
-    try:
-        job = canva.get_export_job(job_id)
-        await reply(update, canva.format_export(job.get("job", job)), parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"Canva export check error: {e}")
-        await update.message.reply_text(f"Could not check Canva export: {e}")
-
 async def briefing_cmd(update, context):
     await reply(update, build_briefing(), parse_mode="Markdown")
 
@@ -1749,7 +1656,6 @@ def _core_tools():
         DOCUMENT_ARTIFACT_TOOL,
         SLIDE_ARTIFACT_TOOL,
         TEMPLATE_MEMORY_TOOL,
-        CANVA_CREATE_TOOL,
         MEMORY_TOOL,
         WEEK_TYPE_TOOL,
         PROJECT_TOOL,
@@ -2004,18 +1910,6 @@ async def _execute_tool(name: str, inp: dict) -> str:
         except Exception as e:
             return f"Failed to remember artifact template: {e}"
 
-    elif name == "create_canva_design":
-        try:
-            if not canva.canva_ok():
-                return "Canva is not connected. Add CANVA_ACCESS_TOKEN to Railway variables first."
-            result = canva.create_design(inp["title"], inp.get("design_type", "presentation"))
-            design = result.get("design", result)
-            if google_ok():
-                gs.add_memory("files", f"Created Canva {inp.get('design_type', 'presentation')} {design.get('title', inp['title'])} | id={design.get('id', '')} | edit={design.get('urls', {}).get('edit_url', '')}")
-            return f"Created Canva design:\n{canva.format_design(design)}"
-        except Exception as e:
-            return f"Failed to create Canva design: {e}"
-
     elif name == "update_project_status":
         try:
             gs.update_project(
@@ -2176,10 +2070,6 @@ def main():
     app.add_handler(CommandHandler("template", template_cmd))
     app.add_handler(CommandHandler("templates", templates_cmd))
     app.add_handler(CommandHandler("artifacts", artifacts_cmd))
-    app.add_handler(CommandHandler("canva",   canva_cmd))
-    app.add_handler(CommandHandler("canvasearch", canva_search_cmd))
-    app.add_handler(CommandHandler("canvaexport", canva_export_cmd))
-    app.add_handler(CommandHandler("canvaexportcheck", canva_export_check_cmd))
     app.add_handler(CommandHandler("briefing", briefing_cmd))
     app.add_handler(CommandHandler("agenda",   agenda_cmd))
     app.add_handler(CommandHandler("remember", remember_cmd))
