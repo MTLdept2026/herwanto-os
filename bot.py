@@ -467,7 +467,7 @@ COMPLETE_FOLLOWUP_TOOL = {
 
 TASK_BRIEF_TOOL = {
     "name": "get_task_brief",
-    "description": "Get prioritised reminders/tasks with priority, effort, and next action metadata.",
+    "description": "Get prioritised reminders/tasks with due dates and next actions.",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -955,13 +955,10 @@ def build_task_brief(days: int = 7) -> str:
         return "No active tasks in that window."
     lines = [f"*Task brief* - now to {end_date.strftime('%-d %b')}\n"]
     for task in sorted(tasks, key=lambda item: _task_priority_score(item, today))[:12]:
-        priority = task.get("priority", "medium")
-        effort = task.get("effort", "medium")
         next_action = f"\n  Next: {task['next_action']}" if task.get("next_action") else ""
         overdue = " OVERDUE" if task["due"] < today.isoformat() else ""
         lines.append(
-            f"- `[{task['id']}]` {task['due']}{overdue} - {task['description']} "
-            f"_{task['category']}; {priority}; {effort}_{next_action}"
+            f"- `[{task['id']}]` {task['due']}{overdue} - {task['description']}{next_action}"
         )
     return "\n".join(lines)
 

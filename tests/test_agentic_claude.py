@@ -117,6 +117,27 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertIsNone(bot._forced_tool_for_current_turn(messages, [{"name": "get_gmail_brief"}]))
 
+    def test_task_brief_hides_internal_metadata(self):
+        due = (bot.datetime.now(bot.SGT).date() + bot.timedelta(days=1)).isoformat()
+        tasks = [
+            {
+                "id": "31",
+                "description": "Arrange relief teacher for ML Sec 2",
+                "due": due,
+                "category": "Teaching",
+                "priority": "medium",
+                "effort": "medium",
+                "next_action": "",
+            }
+        ]
+
+        with patch.object(bot.gs, "enriched_reminders", return_value=tasks):
+            brief = bot.build_task_brief(days=7)
+
+        self.assertIn("Arrange relief teacher for ML Sec 2", brief)
+        self.assertNotIn("Teaching; medium; medium", brief)
+        self.assertNotIn("_Teaching", brief)
+
 
 if __name__ == "__main__":
     unittest.main()
