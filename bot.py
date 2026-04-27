@@ -1153,6 +1153,18 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
 
     return None
 
+
+def _forced_tool_for_current_turn(messages: list[dict], tools: list[dict]) -> str | None:
+    if not messages:
+        return None
+    last_message = messages[-1]
+    if last_message.get("role") != "user":
+        return None
+    content = last_message.get("content")
+    if not isinstance(content, str):
+        return None
+    return _forced_tool_for_text(content, tools)
+
 def build_briefing():
     now = datetime.now(SGT)
     today = now.date()
@@ -2119,12 +2131,7 @@ async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
     max_iterations = 5
 
     for _ in range(max_iterations):
-        last_user_text = ""
-        for message in reversed(messages):
-            if message.get("role") == "user" and isinstance(message.get("content"), str):
-                last_user_text = message["content"]
-                break
-        forced_tool = _forced_tool_for_text(last_user_text, tools)
+        forced_tool = _forced_tool_for_current_turn(messages, tools)
         tool_choice = {"type": "tool", "name": forced_tool} if forced_tool else None
         kwargs = {}
         if tool_choice:
