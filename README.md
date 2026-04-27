@@ -15,7 +15,7 @@ Your AI second brain on Telegram. Calendar-aware, project-tracking, daily briefi
 | Add a reminder | `/remind Description \| Date \| Category` |
 | Mark reminder done | `/done <id>` |
 | Proactive timed nudges | `/nudge`, `/nudges`, `/cancelnudge` |
-| Daily check-ins until affirmed | `/checkin`, `/checkins`, `/cancelcheckin` |
+| Daily check-ins until affirmed | `/checkin`, `/checkin ... \| breaks \| ...`, `/checkins`, `/cancelcheckin` |
 | Full assistant agenda | `/agenda` or `/agenda 14` |
 | Store assistant memory | `/remember Category \| Fact` or say "remember..." |
 | View / clear memory | `/memory`, `/forget all` |
@@ -197,11 +197,15 @@ Hira checks pending nudges every minute and sends the message proactively in Tel
 **Daily check-ins:**
 ```
 /checkin Istigfar & Salawat | 09:00, 13:00, 21:30 | Have you done your istigfar and salawat today?
+/checkin Selawat & Istighfar | breaks | Have you done your selawat and istighfar today?
 /checkins
 /cancelcheckin 1
 ```
 
 Hira checks every minute. For each daily check-in, it pings at the configured times until you reply `yes`, `done`, or `alhamdulillah`. Once you reply affirmatively, it stays quiet for that check-in until the next day.
+
+Use `breaks` instead of fixed times when the reminder should adapt to the day. Hira will read today's timetable and Google Calendar, find free windows, and place the check-ins during suitable breaks.
+Adding a check-in with the same name updates the existing one, so you can switch `Istighfar & Selawat` from fixed times to break-aware reminders without creating duplicates.
 
 **Use it like a full assistant:**
 ```

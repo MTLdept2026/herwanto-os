@@ -152,6 +152,7 @@ Rules:
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
 - When the user asks you to nudge, ping, check in, remind him at a specific time, or initiate a chat later — call create_proactive_nudge. Use this for time-specific heads-ups, not ordinary all-day deadlines.
 - When the user asks for a recurring daily ping/check-in until he replies yes/done — call create_daily_checkin.
+- When the user asks for daily reminders/check-ins to adapt around his schedule, breaks, timetable, lessons, or calendar, call create_break_aware_daily_checkin. This is especially appropriate for selawat, salawat, selawat ke atas Nabi, istighfar, zikr/dhikr, and similar habits he wants during free pockets of the day.
 - When the user sends a screenshot, image, or PDF, inspect it for schedule items first: duties, appointments, matches, trainings, meetings, event timings, reporting times, deadlines, submissions, or preparation tasks.
 - For screenshots/PDFs/images: create calendar events for items with a clear date and time, add reminders for dated tasks/deadlines, then summarise what you added and what still needs clarification.
 - Uploaded PDFs/images are saved as file memory after processing. When the user later refers to a previously uploaded file, use Stored memory / Files first; do not ask for a re-upload unless the stored summary lacks the exact detail needed.
@@ -234,6 +235,35 @@ DAILY_CHECKIN_TOOL = {
             }
         },
         "required": ["name", "question", "times"]
+    }
+}
+
+BREAK_AWARE_CHECKIN_TOOL = {
+    "name": "create_break_aware_daily_checkin",
+    "description": "Create a recurring daily check-in that recalculates today's reminder times from Herwanto's lessons and Google Calendar, then pings during free breaks.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Short habit/check-in name"},
+            "question": {"type": "string", "description": "Question Hira should ask"},
+            "target_count": {
+                "type": "integer",
+                "description": "How many break-time reminders to aim for each day, usually 2 to 4"
+            },
+            "window_start": {
+                "type": "string",
+                "description": "Earliest reminder time in HH:MM Singapore time, default 08:00"
+            },
+            "window_end": {
+                "type": "string",
+                "description": "Latest reminder time in HH:MM Singapore time, default 21:30"
+            },
+            "min_break_minutes": {
+                "type": "integer",
+                "description": "Smallest free window worth using, default 20"
+            }
+        },
+        "required": ["name", "question"]
     }
 }
 
@@ -627,7 +657,119 @@ def _parse_checkin_times(raw: str) -> list:
 
 def _format_checkin(checkin: dict) -> str:
     status = "done today" if checkin.get("last_completed_date") == datetime.now(SGT).strftime("%Y-%m-%d") else "active"
-    return f"`[{checkin['id']}]` *{checkin['name']}* at {', '.join(checkin['times'])} - {status}\n{checkin['question']}"
+    if checkin.get("schedule_aware"):
+        timing = (
+            f"around breaks ({checkin.get('target_count', 3)}x, "
+            f"{checkin.get('window_start', '08:00')}-{checkin.get('window_end', '21:30')})"
+        )
+    else:
+        timing = f"at {', '.join(checkin['times'])}"
+    return f"`[{checkin['id']}]` *{checkin['name']}* {timing} - {status}\n{checkin['question']}"
+
+def _hm_to_minutes(value: str) -> int:
+    parsed = datetime.strptime(value.strip(), "%H:%M")
+    return parsed.hour * 60 + parsed.minute
+
+def _minutes_to_hm(value: int) -> str:
+    value = max(0, min(23 * 60 + 59, int(value)))
+    return f"{value // 60:02d}:{value % 60:02d}"
+
+def _merge_busy_intervals(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    intervals = sorted((s, e) for s, e in intervals if e > s)
+    if not intervals:
+        return []
+    merged = [intervals[0]]
+    for start, end in intervals[1:]:
+        last_start, last_end = merged[-1]
+        if start <= last_end:
+            merged[-1] = (last_start, max(last_end, end))
+        else:
+            merged.append((start, end))
+    return merged
+
+def _event_busy_intervals_for_date(target: date) -> list[tuple[int, int]]:
+    intervals = []
+    start_of_day = SGT.localize(datetime.combine(target, dt_time.min))
+    end_of_day = start_of_day + timedelta(days=1)
+    for event in gs._fetch_events(start_of_day, end_of_day):
+        start_raw = event.get("start", {}).get("dateTime")
+        end_raw = event.get("end", {}).get("dateTime")
+        if not start_raw or not end_raw:
+            continue
+        try:
+            start_dt = datetime.fromisoformat(start_raw).astimezone(SGT)
+            end_dt = datetime.fromisoformat(end_raw).astimezone(SGT)
+        except Exception:
+            continue
+        if start_dt.date() > target or end_dt.date() < target:
+            continue
+        start_min = max(0, start_dt.hour * 60 + start_dt.minute)
+        end_min = min(24 * 60, end_dt.hour * 60 + end_dt.minute)
+        intervals.append((start_min, end_min))
+    return intervals
+
+def _break_aware_slots(checkin: dict, target: date) -> list[str]:
+    window_start = _hm_to_minutes(checkin.get("window_start", "08:00"))
+    window_end = _hm_to_minutes(checkin.get("window_end", "21:30"))
+    if window_end <= window_start:
+        window_end = window_start + 60
+
+    busy = []
+    lessons, _ = _lessons_for_date(target)
+    for lesson in lessons:
+        busy.append((_hm_to_minutes(lesson["start"]), _hm_to_minutes(lesson["end"])))
+
+    try:
+        busy.extend(_event_busy_intervals_for_date(target))
+    except Exception as e:
+        logger.warning(f"Break-aware calendar read failed: {e}")
+
+    busy = _merge_busy_intervals([
+        (max(window_start, start), min(window_end, end))
+        for start, end in busy
+        if end > window_start and start < window_end
+    ])
+
+    free = []
+    cursor = window_start
+    for start, end in busy:
+        if start > cursor:
+            free.append((cursor, start))
+        cursor = max(cursor, end)
+    if cursor < window_end:
+        free.append((cursor, window_end))
+
+    min_break = max(5, int(checkin.get("min_break_minutes", 20) or 20))
+    free = [(start, end) for start, end in free if end - start >= min_break]
+    if not free:
+        return []
+
+    target_count = max(1, min(int(checkin.get("target_count", 3) or 3), 8))
+    chosen = sorted(free, key=lambda slot: (slot[1] - slot[0], -slot[0]), reverse=True)[:target_count]
+    slots = []
+    for start, end in sorted(chosen):
+        reminder_minute = start + min(10, max(2, (end - start) // 4))
+        slots.append(_minutes_to_hm(min(reminder_minute, end - 1)))
+    return sorted(set(slots))
+
+def _due_break_aware_checkins(now: datetime) -> list[dict]:
+    today = now.strftime("%Y-%m-%d")
+    now_hm = now.strftime("%H:%M")
+    due = []
+    for checkin in gs.get_checkins(include_inactive=True):
+        if (
+            not checkin["active"]
+            or not checkin.get("schedule_aware")
+            or checkin.get("last_completed_date") == today
+        ):
+            continue
+        sent_slots = checkin.get("sent_slots") if isinstance(checkin.get("sent_slots"), dict) else {}
+        today_slots = sent_slots.get(today, [])
+        for slot in _break_aware_slots(checkin, now.date()):
+            if slot <= now_hm and slot not in today_slots:
+                due.append({**checkin, "due_slot": slot})
+                break
+    return due
 
 def build_briefing():
     now = datetime.now(SGT)
@@ -713,7 +855,8 @@ async def start(update, context):
         f"*Calendar*\n/today /tomorrow /week\n/addcal [natural language]\n\n"
         f"*Reminders*\n/due /remind /done\n\n"
         f"*Proactive nudges*\n/nudge /nudges /cancelnudge\n\n"
-        f"*Daily check-ins*\n/checkin /checkins /cancelcheckin\n\n"
+        f"*Daily check-ins*\n/checkin /checkins /cancelcheckin\n"
+        f"`/checkin Name | breaks | Question` for schedule-aware pings\n\n"
         f"*Assistant*\n/agenda [days] /remember /memory /forget all\n\n"
         f"*Projects*\n/projects /update\n\n"
         f"*Search*\n/search [query]\n\n"
@@ -934,7 +1077,8 @@ async def checkin_cmd(update, context):
     if not text or "|" not in text:
         await reply(update,
             "Usage: `/checkin Name | HH:MM, HH:MM | Question`\n"
-            "Example: `/checkin Istigfar & Salawat | 09:00, 13:00, 21:30 | Have you done your istigfar and salawat today?`",
+            "Smart breaks: `/checkin Name | breaks | Question`\n"
+            "Example: `/checkin Istigfar & Salawat | breaks | Have you done your istigfar and salawat today?`",
             parse_mode="Markdown")
         return
     try:
@@ -942,8 +1086,12 @@ async def checkin_cmd(update, context):
         if len(parts) < 3:
             await update.message.reply_text("I need a name, time(s), and question.")
             return
-        times = _parse_checkin_times(parts[1])
-        checkin = gs.add_checkin(parts[0], parts[2], times)
+        timing = parts[1].strip().lower()
+        if timing in ("break", "breaks", "smart", "schedule", "schedule-aware", "calendar"):
+            checkin = gs.add_checkin(parts[0], parts[2], [], schedule_aware=True)
+        else:
+            times = _parse_checkin_times(parts[1])
+            checkin = gs.add_checkin(parts[0], parts[2], times)
         await reply(update, f"Daily check-in added:\n{_format_checkin(checkin)}", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"Check-in error: {e}")
@@ -1237,7 +1385,7 @@ Inspect this screenshot/document carefully. Priority:
 """
 
 def _core_tools():
-    tools = [CONTEXT_TOOL, CALENDAR_TOOL, REMINDER_TOOL, NUDGE_TOOL, DAILY_CHECKIN_TOOL, MEMORY_TOOL, WEEK_TYPE_TOOL, PROJECT_TOOL, NEWS_TOOL]
+    tools = [CONTEXT_TOOL, CALENDAR_TOOL, REMINDER_TOOL, NUDGE_TOOL, DAILY_CHECKIN_TOOL, BREAK_AWARE_CHECKIN_TOOL, MEMORY_TOOL, WEEK_TYPE_TOOL, PROJECT_TOOL, NEWS_TOOL]
     if ss.search_enabled():
         tools.append(SEARCH_TOOL)
     return tools
@@ -1426,6 +1574,24 @@ async def _execute_tool(name: str, inp: dict) -> str:
         except Exception as e:
             return f"Failed to create daily check-in: {e}"
 
+    elif name == "create_break_aware_daily_checkin":
+        try:
+            checkin = gs.add_checkin(
+                inp["name"],
+                inp["question"],
+                [],
+                schedule_aware=True,
+                target_count=inp.get("target_count", 3),
+                window_start=inp.get("window_start", "08:00"),
+                window_end=inp.get("window_end", "21:30"),
+                min_break_minutes=inp.get("min_break_minutes", 20),
+            )
+            slots = _break_aware_slots(checkin, datetime.now(SGT).date())
+            today_note = f" Today's planned slots: {', '.join(slots)}." if slots else " No clear break slots found for today yet."
+            return f"Created break-aware daily check-in #{checkin['id']}: {checkin['name']}.{today_note}"
+        except Exception as e:
+            return f"Failed to create break-aware daily check-in: {e}"
+
     elif name == "update_project_status":
         try:
             gs.update_project(
@@ -1549,7 +1715,8 @@ async def daily_checkins_job(context):
         if not chat_id:
             return
         now = datetime.now(SGT)
-        for checkin in gs.due_checkins(now):
+        due_checkins = gs.due_checkins(now) + _due_break_aware_checkins(now)
+        for checkin in due_checkins:
             text = f"*Hira check-in*\n\n{checkin['question']}\n\nReply `yes`, `done`, or `alhamdulillah` once it is done and I’ll stop asking for today."
             await context.bot.send_message(chat_id=int(chat_id), text=text, parse_mode="Markdown")
             gs.mark_checkin_prompted(checkin["id"], checkin["due_slot"], now)

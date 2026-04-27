@@ -530,6 +530,11 @@ def get_checkins(include_inactive=False) -> list:
             "name": str(checkin.get("name", "")).strip(),
             "question": str(checkin.get("question", "")).strip(),
             "times": [str(t).strip() for t in times if str(t).strip()],
+            "schedule_aware": bool(checkin.get("schedule_aware", False)),
+            "target_count": int(checkin.get("target_count", 3) or 3),
+            "window_start": str(checkin.get("window_start", "08:00") or "08:00").strip(),
+            "window_end": str(checkin.get("window_end", "21:30") or "21:30").strip(),
+            "min_break_minutes": int(checkin.get("min_break_minutes", 20) or 20),
             "active": active,
             "created": str(checkin.get("created", "")).strip(),
             "last_completed_date": str(checkin.get("last_completed_date", "")).strip(),
@@ -537,22 +542,59 @@ def get_checkins(include_inactive=False) -> list:
             "sent_slots": checkin.get("sent_slots", {}),
             "awaiting_reply": bool(checkin.get("awaiting_reply", False)),
         })
-    return [c for c in clean if c["id"] and c["name"] and c["question"] and c["times"]]
+    return [
+        c for c in clean
+        if c["id"] and c["name"] and c["question"] and (c["times"] or c["schedule_aware"])
+    ]
 
 
 def set_checkins(checkins: list):
     set_config("daily_checkins", json.dumps(checkins, ensure_ascii=False))
 
 
-def add_checkin(name: str, question: str, times: list) -> dict:
+def add_checkin(
+    name: str,
+    question: str,
+    times: list,
+    schedule_aware: bool = False,
+    target_count: int = 3,
+    window_start: str = "08:00",
+    window_end: str = "21:30",
+    min_break_minutes: int = 20,
+) -> dict:
+    cleaned_name = name.strip()
+    cleaned_question = question.strip()
+    cleaned_times = [str(t).strip() for t in times if str(t).strip()]
     checkins = get_checkins(include_inactive=True)
+    for checkin in checkins:
+        if str(checkin.get("name", "")).strip().lower() != cleaned_name.lower():
+            continue
+        checkin["name"] = cleaned_name
+        checkin["question"] = cleaned_question
+        checkin["times"] = cleaned_times
+        checkin["schedule_aware"] = bool(schedule_aware)
+        checkin["target_count"] = int(target_count or 3)
+        checkin["window_start"] = str(window_start or "08:00").strip()
+        checkin["window_end"] = str(window_end or "21:30").strip()
+        checkin["min_break_minutes"] = int(min_break_minutes or 20)
+        checkin["active"] = True
+        checkin["sent_slots"] = {}
+        checkin["awaiting_reply"] = False
+        set_checkins(checkins)
+        return checkin
+
     numeric_ids = [int(c["id"]) for c in checkins if str(c.get("id", "")).isdigit()]
     next_id = max(numeric_ids) + 1 if numeric_ids else 1
     checkin = {
         "id": str(next_id),
-        "name": name.strip(),
-        "question": question.strip(),
-        "times": [str(t).strip() for t in times if str(t).strip()],
+        "name": cleaned_name,
+        "question": cleaned_question,
+        "times": cleaned_times,
+        "schedule_aware": bool(schedule_aware),
+        "target_count": int(target_count or 3),
+        "window_start": str(window_start or "08:00").strip(),
+        "window_end": str(window_end or "21:30").strip(),
+        "min_break_minutes": int(min_break_minutes or 20),
         "active": True,
         "created": datetime.now(SGT).isoformat(),
         "last_completed_date": "",
@@ -583,7 +625,11 @@ def due_checkins(now: datetime) -> list:
     now_hm = now.strftime("%H:%M")
     due = []
     for checkin in get_checkins(include_inactive=True):
-        if not checkin["active"] or checkin.get("last_completed_date") == today:
+        if (
+            not checkin["active"]
+            or checkin.get("schedule_aware")
+            or checkin.get("last_completed_date") == today
+        ):
             continue
         sent_slots = checkin.get("sent_slots") if isinstance(checkin.get("sent_slots"), dict) else {}
         today_slots = sent_slots.get(today, [])
