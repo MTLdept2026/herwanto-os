@@ -363,6 +363,101 @@ def enriched_reminders(include_done=False) -> list:
     return out
 
 
+# ─── CONFIG: MARKING TASKS ────────────────────────────────────────────────────
+
+def get_marking_tasks(include_done=False) -> list:
+    raw = get_config("marking_tasks")
+    if not raw:
+        return []
+    try:
+        tasks = json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(tasks, list):
+        return []
+    out = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        normalised = {
+            "id": str(task.get("id", "")),
+            "title": task.get("title", ""),
+            "total_scripts": int(task.get("total_scripts") or 0),
+            "marked_count": int(task.get("marked_count") or 0),
+            "stack_count": int(task.get("stack_count") or 1),
+            "notes": task.get("notes", ""),
+            "collected_date": task.get("collected_date", task.get("created", "")),
+            "created": task.get("created", ""),
+            "done": bool(task.get("done", False)),
+            "completed_at": task.get("completed_at", ""),
+        }
+        if normalised["done"] and not include_done:
+            continue
+        out.append(normalised)
+    return out
+
+
+def set_marking_tasks(tasks: list):
+    set_config("marking_tasks", json.dumps(tasks, ensure_ascii=False))
+
+
+def add_marking_task(
+    title: str,
+    total_scripts: int = 0,
+    stack_count: int = 1,
+    notes: str = "",
+    collected_date: str = "",
+) -> dict:
+    tasks = get_marking_tasks(include_done=True)
+    next_id = max([int(t["id"]) for t in tasks if str(t.get("id", "")).isdigit()] or [0]) + 1
+    total_scripts = max(0, int(total_scripts or 0))
+    task = {
+        "id": str(next_id),
+        "title": title.strip(),
+        "total_scripts": total_scripts,
+        "marked_count": 0,
+        "stack_count": max(1, int(stack_count or 1)),
+        "notes": notes.strip(),
+        "collected_date": collected_date.strip() or datetime.now(SGT).strftime("%Y-%m-%d"),
+        "created": datetime.now(SGT).strftime("%Y-%m-%d"),
+        "done": False,
+        "completed_at": "",
+    }
+    tasks.append(task)
+    set_marking_tasks(tasks)
+    return task
+
+
+def update_marking_progress(
+    task_id: str,
+    marked_count=None,
+    increment: int = 0,
+    done: bool = False,
+):
+    tasks = get_marking_tasks(include_done=True)
+    updated = None
+    for task in tasks:
+        if str(task.get("id")) != str(task_id):
+            continue
+        current = int(task.get("marked_count") or 0)
+        total = int(task.get("total_scripts") or 0)
+        if marked_count is not None:
+            current = max(0, int(marked_count))
+        if increment:
+            current = max(0, current + int(increment))
+        if total:
+            current = min(current, total)
+        task["marked_count"] = current
+        if done:
+            task["done"] = True
+            task["completed_at"] = datetime.now(SGT).strftime("%Y-%m-%d")
+        updated = task
+        break
+    if updated:
+        set_marking_tasks(tasks)
+    return updated
+
+
 # ─── SHEETS: PROJECTS ────────────────────────────────────────────────────────
 # Sheet structure: project | status | last_update | next_milestone | milestone_date | notes
 

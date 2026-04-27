@@ -245,7 +245,9 @@ Hira creates downloadable `.docx` and `.pptx` files in Telegram. If Google Drive
 /weekly
 ```
 
-Hira can now prioritise reminders with priority/effort/next-action metadata, track follow-ups, send evening prep and weekly planning briefings, and search remembered file/artifact summaries.
+For marking, just say it naturally: "add 1 stack of kefahaman 2G3 to marking task", "I collected kefahaman 2G3 today, 34 scripts", "I've marked 12 scripts for kefahaman 2G3", or "what marking is outstanding?"
+
+Hira can now prioritise reminders with priority/effort/next-action metadata, track marking stacks and follow-ups, send evening prep and weekly planning briefings, and search remembered file/artifact summaries.
 
 **Voice notes:**
 ```

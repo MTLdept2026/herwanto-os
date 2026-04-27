@@ -155,9 +155,10 @@ Rules:
 - When he asks to add, schedule, or create a calendar event, create it directly if the date and time are clear. If details are incomplete, ask only for the missing detail.
 - Never offer to generate .ics files. Use Google Calendar directly.
 - The current date and time is already provided at the top of this prompt — always use it for any date/time reasoning.
-- You have tools: create_calendar_event, add_reminder, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, update_project_status, get_latest_news, and web_search. Use them proactively.
+- You have tools: create_calendar_event, add_reminder, add_marking_task, update_marking_progress, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, update_project_status, get_latest_news, and web_search. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
+- When the user mentions marking scripts, papers, compositions, kefahaman, karangan, worksheets, or a marking stack, use marking tools instead of ordinary reminders: add_marking_task for a new stack, update_marking_progress when he says how many scripts are marked, and get_marking_brief when he asks what marking is outstanding. Marking tasks are mission-critical and must persist even at 0 outstanding; only complete one when he explicitly says that marking stack is done, completed, or can be closed.
 - When the user asks you to nudge, ping, check in, remind him at a specific time, or initiate a chat later — call create_proactive_nudge. Use this for time-specific heads-ups, not ordinary all-day deadlines.
 - When the user asks for a recurring daily ping/check-in until he replies yes/done — call create_daily_checkin.
 - When the user asks for daily reminders/check-ins to adapt around his schedule, breaks, timetable, lessons, or calendar, call create_break_aware_daily_checkin. This is especially appropriate for selawat, salawat, selawat ke atas Nabi, istighfar, zikr/dhikr, and similar habits he wants during free pockets of the day.
@@ -465,6 +466,46 @@ COMPLETE_FOLLOWUP_TOOL = {
     }
 }
 
+ADD_MARKING_TOOL = {
+    "name": "add_marking_task",
+    "description": "Add a marking stack/task for scripts or papers. Use when Herwanto says to add something to marking tasks, e.g. 'add 1 stack of kefahaman 2G3'.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "Short marking task title, e.g. Kefahaman 2G3"},
+            "total_scripts": {"type": "integer", "description": "Total scripts if known; use 0 if unknown"},
+            "stack_count": {"type": "integer", "description": "Number of stacks, default 1"},
+            "collected_date": {"type": "string", "description": "YYYY-MM-DD date the stack was collected from students; default today if not stated"},
+            "notes": {"type": "string", "description": "Optional notes"}
+        },
+        "required": ["title"]
+    }
+}
+
+UPDATE_MARKING_TOOL = {
+    "name": "update_marking_progress",
+    "description": "Update scripts marked for an active marking task. Use marked_count to set the current total, or increment when the user says 'more' or 'another'. Only set done=true when the user explicitly says the marking stack is done, completed, or can be closed.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Marking task text or id to match"},
+            "marked_count": {"type": "integer", "description": "Current total scripts marked, if the user gives the new total"},
+            "increment": {"type": "integer", "description": "Additional scripts marked, if the user says more/another"},
+            "done": {"type": "boolean", "description": "True if the marking stack is complete"}
+        },
+        "required": ["query"]
+    }
+}
+
+MARKING_BRIEF_TOOL = {
+    "name": "get_marking_brief",
+    "description": "Get active marking stacks with marked and outstanding script counts.",
+    "input_schema": {
+        "type": "object",
+        "properties": {}
+    }
+}
+
 TASK_BRIEF_TOOL = {
     "name": "get_task_brief",
     "description": "Get prioritised reminders/tasks with due dates and next actions.",
@@ -742,6 +783,17 @@ def build_context_snapshot(days: int = 7) -> str:
         lines.append(f"\nFollow-ups unavailable: {e}")
 
     try:
+        marking = gs.get_marking_tasks()
+        lines.append("\nOutstanding marking:")
+        if marking:
+            for task in marking:
+                lines.append(f"- {_format_marking_task(task).replace('*', '').replace('`', '')}")
+        else:
+            lines.append("None.")
+    except Exception as e:
+        lines.append(f"\nMarking unavailable: {e}")
+
+    try:
         projects = gs.get_projects()
         lines.append("\nProjects:")
         if projects:
@@ -932,6 +984,61 @@ def _find_best_followup(query: str):
         reverse=True,
     )
     return scored[0]
+
+def _find_best_marking_task(query: str):
+    tasks = gs.get_marking_tasks()
+    if not tasks:
+        return None, 0
+    if str(query).strip().isdigit():
+        for task in tasks:
+            if str(task["id"]) == str(query).strip():
+                return task, 1.0
+    scored = sorted(
+        ((task, _score_text_match(query, f"{task['title']} {task.get('notes', '')}")) for task in tasks),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    return scored[0]
+
+def _marking_counts(task: dict) -> tuple[int, int, int | None]:
+    total = int(task.get("total_scripts") or 0)
+    marked = int(task.get("marked_count") or 0)
+    outstanding = max(0, total - marked) if total else None
+    return total, marked, outstanding
+
+def _days_old_text(days_old: int) -> str:
+    if days_old == 0:
+        return "today"
+    if days_old == 1:
+        return "1 day ago"
+    return f"{days_old} days ago"
+
+def _format_marking_task(task: dict) -> str:
+    total, marked, outstanding = _marking_counts(task)
+    stack = "stack" if int(task.get("stack_count") or 1) == 1 else "stacks"
+    prefix = task["title"]
+    collected = task.get("collected_date", "")
+    age = ""
+    if collected:
+        try:
+            days_old = (datetime.now(SGT).date() - date.fromisoformat(collected)).days
+            age = f" Collected {collected} ({_days_old_text(days_old)})."
+        except Exception:
+            age = f" Collected {collected}."
+    if total:
+        return f"{prefix}: {marked} of {total} scripts marked, {outstanding} outstanding.{age}"
+    return f"{prefix}: {marked} scripts marked so far. Total scripts not set yet ({task.get('stack_count', 1)} {stack}).{age}"
+
+def build_marking_brief() -> str:
+    if not google_ok():
+        return "Google is not connected."
+    tasks = gs.get_marking_tasks()
+    if not tasks:
+        return "No active marking stacks."
+    lines = ["*Outstanding marking*"]
+    for task in tasks:
+        lines.append(f"- {_format_marking_task(task)}")
+    return "\n".join(lines)
 
 def _task_priority_score(task: dict, today: date) -> tuple:
     priority_order = {"urgent": 0, "high": 1, "medium": 2, "low": 3}
@@ -1278,6 +1385,13 @@ def build_briefing():
                 lines.append("No deadlines this week.")
         except Exception as e:
             lines.append(f"_(Reminders error: {e})_")
+        try:
+            marking = gs.get_marking_tasks()
+            if marking:
+                lines.append("")
+                lines.append(build_marking_brief())
+        except Exception:
+            pass
 
     # Morning news digest
     try:
@@ -1316,6 +1430,10 @@ def build_evening_briefing():
             lines.append(f"Calendar unavailable: {e}\n")
         try:
             lines.append(build_task_brief(days=3))
+            marking = build_marking_brief()
+            if "No active" not in marking:
+                lines.append("")
+                lines.append(marking)
         except Exception:
             pass
 
@@ -1335,6 +1453,13 @@ def build_weekly_plan():
         try:
             lines.append(build_task_brief(days=7))
             lines.append("")
+        except Exception:
+            pass
+        try:
+            marking = build_marking_brief()
+            if "No active" not in marking:
+                lines.append(marking)
+                lines.append("")
         except Exception:
             pass
         try:
@@ -1800,6 +1925,54 @@ async def tasks_cmd(update, context):
     except Exception as e:
         await update.message.reply_text(f"Task brief error: {e}")
 
+async def marking_cmd(update, context):
+    if not google_ok():
+        await update.message.reply_text("Google not connected.")
+        return
+    text = " ".join(context.args).strip()
+    if not text:
+        await reply(update, build_marking_brief(), parse_mode="Markdown")
+        return
+    parts = [p.strip() for p in text.split("|")]
+    title = parts[0]
+    if not title:
+        await reply(
+            update,
+            "Tell me naturally, like: “Add Kefahaman 2G3 to marking, 34 scripts, collected today.”",
+            parse_mode="Markdown",
+        )
+        return
+    try:
+        total_scripts = int(parts[1]) if len(parts) > 1 and parts[1] else 0
+        collected_date = parts[2] if len(parts) > 2 else ""
+        notes = parts[3] if len(parts) > 3 else ""
+        task = gs.add_marking_task(title, total_scripts=total_scripts, collected_date=collected_date, notes=notes)
+        await reply(update, f"Added to your marking tracker. {_format_marking_task(task)}", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"Marking task error: {e}")
+
+async def marked_cmd(update, context):
+    if not google_ok():
+        await update.message.reply_text("Google not connected.")
+        return
+    text = " ".join(context.args).strip()
+    parts = [p.strip() for p in text.split("|")]
+    if len(parts) < 2:
+        await reply(update, "Tell me naturally, like: “I’ve marked 12 scripts for Kefahaman 2G3.”", parse_mode="Markdown")
+        return
+    try:
+        task, score = _find_best_marking_task(parts[0])
+        if not task or score < 0.35:
+            await update.message.reply_text("I could not confidently match that to an active marking stack.")
+            return
+        value = parts[1].lower()
+        done = value in ("done", "complete", "completed", "settled")
+        marked_count = None if done else int(parts[1])
+        updated = gs.update_marking_progress(task["id"], marked_count=marked_count, done=done)
+        await reply(update, f"Updated. {_format_marking_task(updated)}", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"Marking update error: {e}")
+
 async def taskmeta_cmd(update, context):
     if not google_ok():
         await update.message.reply_text("Google not connected.")
@@ -2175,6 +2348,9 @@ def _core_tools():
         FOLLOWUP_TOOL,
         COMPLETE_TASK_TOOL,
         COMPLETE_FOLLOWUP_TOOL,
+        ADD_MARKING_TOOL,
+        UPDATE_MARKING_TOOL,
+        MARKING_BRIEF_TOOL,
         TASK_BRIEF_TOOL,
         TIMETABLE_TOOL,
         GMAIL_BRIEF_TOOL,
@@ -2376,6 +2552,40 @@ async def _execute_tool(name: str, inp: dict) -> str:
         except Exception as e:
             return f"Failed to schedule nudge: {e}"
 
+    elif name == "add_marking_task":
+        try:
+            task = gs.add_marking_task(
+                inp["title"],
+                total_scripts=inp.get("total_scripts", 0),
+                stack_count=inp.get("stack_count", 1),
+                collected_date=inp.get("collected_date", ""),
+                notes=inp.get("notes", ""),
+            )
+            return f"Added to your marking tracker. {_format_marking_task(task)}"
+        except Exception as e:
+            return f"Failed to add marking stack: {e}"
+
+    elif name == "update_marking_progress":
+        try:
+            task, score = _find_best_marking_task(inp["query"])
+            if not task or score < 0.35:
+                return "No confident marking stack match found."
+            updated = gs.update_marking_progress(
+                task["id"],
+                marked_count=inp.get("marked_count"),
+                increment=inp.get("increment", 0),
+                done=bool(inp.get("done", False)),
+            )
+            return f"Updated. {_format_marking_task(updated)}"
+        except Exception as e:
+            return f"Failed to update marking: {e}"
+
+    elif name == "get_marking_brief":
+        try:
+            return build_marking_brief()
+        except Exception as e:
+            return f"Failed to get marking brief: {e}"
+
     elif name == "create_daily_checkin":
         try:
             times = _parse_checkin_times(",".join(inp.get("times", [])))
@@ -2576,6 +2786,11 @@ async def _process_user_text(update, context, text: str):
             try:
                 reminder, r_score = _find_best_reminder(query)
                 followup, f_score = _find_best_followup(query)
+                marking, m_score = _find_best_marking_task(query)
+                if marking and m_score >= max(0.35, r_score, f_score):
+                    updated = gs.update_marking_progress(marking["id"], done=True)
+                    await update.message.reply_text(f"Completed marking: {updated['title']}")
+                    return
                 if reminder and r_score >= max(0.35, f_score):
                     gs.mark_done(reminder["id"])
                     await update.message.reply_text(f"Marked done: [{reminder['id']}] {reminder['description']}")
@@ -2771,6 +2986,8 @@ def main():
     app.add_handler(CommandHandler("artifacts", artifacts_cmd))
     app.add_handler(CommandHandler("files",    files_cmd))
     app.add_handler(CommandHandler("tasks",    tasks_cmd))
+    app.add_handler(CommandHandler("marking",  marking_cmd))
+    app.add_handler(CommandHandler("marked",   marked_cmd))
     app.add_handler(CommandHandler("taskmeta", taskmeta_cmd))
     app.add_handler(CommandHandler("donetask", done_text_cmd))
     app.add_handler(CommandHandler("followup", followup_cmd))

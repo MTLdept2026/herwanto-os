@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import unittest
 from types import SimpleNamespace
@@ -137,6 +138,61 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("Arrange relief teacher for ML Sec 2", brief)
         self.assertNotIn("Teaching; medium; medium", brief)
         self.assertNotIn("_Teaching", brief)
+
+    def test_marking_brief_shows_outstanding_and_collected_date(self):
+        collected = (bot.datetime.now(bot.SGT).date() - bot.timedelta(days=2)).isoformat()
+        tasks = [
+            {
+                "id": "1",
+                "title": "Kefahaman 2G3",
+                "total_scripts": 34,
+                "marked_count": 12,
+                "stack_count": 1,
+                "collected_date": collected,
+                "notes": "",
+                "done": False,
+            }
+        ]
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "get_marking_tasks", return_value=tasks),
+        ):
+            brief = bot.build_marking_brief()
+
+        self.assertIn("Kefahaman 2G3", brief)
+        self.assertIn("12 of 34 scripts marked", brief)
+        self.assertIn("22 outstanding", brief)
+        self.assertIn("2 days ago", brief)
+        self.assertNotIn("[1]", brief)
+
+    def test_marking_persists_at_full_count_until_explicitly_completed(self):
+        store = {}
+
+        def fake_get_config(key):
+            return store.get(key, "")
+
+        def fake_set_config(key, value):
+            store[key] = value
+
+        with (
+            patch.object(bot.gs, "get_config", side_effect=fake_get_config),
+            patch.object(bot.gs, "set_config", side_effect=fake_set_config),
+        ):
+            task = bot.gs.add_marking_task("Kefahaman 2G3", total_scripts=34, collected_date="2026-04-27")
+            bot.gs.update_marking_progress(task["id"], marked_count=34)
+
+            active = bot.gs.get_marking_tasks()
+            stored = json.loads(store["marking_tasks"])[0]
+
+            self.assertEqual(len(active), 1)
+            self.assertFalse(stored["done"])
+            self.assertEqual(active[0]["marked_count"], 34)
+
+            bot.gs.update_marking_progress(task["id"], done=True)
+
+            self.assertEqual(bot.gs.get_marking_tasks(), [])
+            self.assertEqual(len(bot.gs.get_marking_tasks(include_done=True)), 1)
 
 
 if __name__ == "__main__":
