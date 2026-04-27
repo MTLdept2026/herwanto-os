@@ -262,6 +262,37 @@ Voice notes require `OPENAI_API_KEY`. Hira transcribes the note and then treats 
 
 Gmail support is optional. It requires the Gmail API and delegated access for `GOOGLE_GMAIL_USER`; for ordinary Gmail accounts this is not as simple as Calendar/Sheets service-account sharing. If Gmail is not configured, the commands fail gracefully.
 
+For a personal `@gmail.com` account, use OAuth instead:
+
+1. Google Cloud Console → APIs & Services → Library → enable **Gmail API**.
+2. APIs & Services → OAuth consent screen → set up an external/testing app.
+3. Add your Gmail address as a test user.
+4. APIs & Services → Credentials → Create credentials → OAuth client ID.
+5. Choose **Desktop app**.
+6. Copy the client ID and client secret.
+7. Set these locally:
+```bash
+export GOOGLE_GMAIL_CLIENT_ID="..."
+export GOOGLE_GMAIL_CLIENT_SECRET="..."
+```
+8. Run:
+```bash
+python3 -m pip install -r requirements.txt
+python3 scripts/get_gmail_refresh_token.py
+```
+9. Sign in with your Gmail and approve read/compose access.
+10. Add these Railway variables:
+```env
+GOOGLE_GMAIL_CLIENT_ID=...
+GOOGLE_GMAIL_CLIENT_SECRET=...
+GOOGLE_GMAIL_REFRESH_TOKEN=...
+```
+11. Redeploy Railway and test:
+```text
+/gmail is:unread newer_than:7d
+/gmaildraft someone@example.com | Test from Hira | Hello, this is a draft created by Hira.
+```
+
 **Use it like a full assistant:**
 ```
 /agenda

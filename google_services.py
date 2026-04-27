@@ -14,6 +14,7 @@ from pathlib import Path
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
+from google.oauth2.credentials import Credentials
 from google.oauth2 import service_account
 
 SGT = pytz.timezone('Asia/Singapore')
@@ -61,9 +62,23 @@ def _drive():
 
 
 def _gmail():
+    refresh_token = os.environ.get("GOOGLE_GMAIL_REFRESH_TOKEN", "").strip()
+    client_id = os.environ.get("GOOGLE_GMAIL_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("GOOGLE_GMAIL_CLIENT_SECRET", "").strip()
+    if refresh_token and client_id and client_secret:
+        creds = Credentials(
+            None,
+            refresh_token=refresh_token,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=client_id,
+            client_secret=client_secret,
+            scopes=GMAIL_SCOPES,
+        )
+        return build("gmail", "v1", credentials=creds)
+
     user = os.environ.get("GOOGLE_GMAIL_USER", "").strip()
     if not user:
-        raise EnvironmentError("GOOGLE_GMAIL_USER not set")
+        raise EnvironmentError("Gmail not configured. Set personal Gmail OAuth vars or GOOGLE_GMAIL_USER for Workspace delegation.")
     return build("gmail", "v1", credentials=_creds(GMAIL_SCOPES, subject=user))
 
 
@@ -930,7 +945,11 @@ def complete_followup(followup_id: str) -> bool:
 # ─── GMAIL ──────────────────────────────────────────────────────────────────
 
 def gmail_ok() -> bool:
-    return bool(os.environ.get("GOOGLE_GMAIL_USER", "").strip())
+    has_oauth = all(
+        os.environ.get(key, "").strip()
+        for key in ("GOOGLE_GMAIL_CLIENT_ID", "GOOGLE_GMAIL_CLIENT_SECRET", "GOOGLE_GMAIL_REFRESH_TOKEN")
+    )
+    return has_oauth or bool(os.environ.get("GOOGLE_GMAIL_USER", "").strip())
 
 
 def list_gmail_messages(query: str = "is:unread newer_than:7d", max_results: int = 10) -> list:
