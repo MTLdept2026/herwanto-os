@@ -39,6 +39,27 @@ class FakeMessages:
 
 
 class AgenticClaudeTests(unittest.TestCase):
+    def test_tuesday_even_timetable_uses_hardcoded_source(self):
+        result = bot._timetable_for_lookup("Tuesday", "Even")
+
+        self.assertIn("Tue Even week timetable", result)
+        self.assertIn("7:35–8:00", result)
+        self.assertIn("FTCT", result)
+        self.assertIn("8:00–9:05", result)
+        self.assertIn("CCE", result)
+        self.assertIn("9:40–10:50", result)
+        self.assertIn("Sec 1 (MLG21)", result)
+        self.assertIn("13:40–14:45", result)
+        self.assertIn("Sec 3 (MLG33)", result)
+
+    def test_timetable_question_forces_timetable_tool(self):
+        forced = bot._forced_tool_for_text(
+            "What's the correct Tuesday Even week timetable?",
+            [{"name": "get_timetable"}, {"name": "get_assistant_context"}],
+        )
+
+        self.assertEqual(forced, "get_timetable")
+
     def test_forced_tool_does_not_repeat_after_tool_result(self):
         fake_messages = FakeMessages()
         fake_claude = SimpleNamespace(messages=fake_messages)

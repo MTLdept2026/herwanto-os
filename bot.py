@@ -146,6 +146,7 @@ Rules:
 - Prefer doing the requested action or lookup over explaining which command to use. Only mention a slash command if the user asks how to do it manually or the action is blocked.
 - After tool results, answer in natural language with a brief useful summary. Do not dump raw tool output unless the user asks for raw output.
 - For data lookups, use the user's words as intent: "last 5 emails" means latest 5 Gmail messages; "what's on today" means schedule/context; "anything due" means reminders/tasks; "who do I owe replies/follow-ups to" means Gmail/follow-up/task context as relevant.
+- For timetable or lesson lookups, use get_timetable. TIMETABLE in timetable.py is the source of truth for lessons; Google Calendar is only for events/appointments.
 - Infer his hat from context — never ask.
 - For code: fix first, explain if needed.
 - For BM: proper DBP spelling and grammar always.
@@ -154,7 +155,7 @@ Rules:
 - When he asks to add, schedule, or create a calendar event, create it directly if the date and time are clear. If details are incomplete, ask only for the missing detail.
 - Never offer to generate .ics files. Use Google Calendar directly.
 - The current date and time is already provided at the top of this prompt — always use it for any date/time reasoning.
-- You have tools: create_calendar_event, add_reminder, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, update_project_status, get_latest_news, and web_search. Use them proactively.
+- You have tools: create_calendar_event, add_reminder, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, update_project_status, get_latest_news, and web_search. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
 - When the user asks you to nudge, ping, check in, remind him at a specific time, or initiate a chat later — call create_proactive_nudge. Use this for time-specific heads-ups, not ordinary all-day deadlines.
@@ -288,6 +289,24 @@ CONTEXT_TOOL = {
         "type": "object",
         "properties": {
             "days": {"type": "integer", "description": "Number of days to look ahead, from 1 to 14"}
+        }
+    }
+}
+
+TIMETABLE_TOOL = {
+    "name": "get_timetable",
+    "description": "Get Herwanto's NBSS timetable lessons from timetable.py, the source of truth. Use for lesson/timetable questions, including specific day and odd/even week lookups.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "day": {
+                "type": "string",
+                "description": "Optional day name: Monday, Tuesday, Wednesday, Thursday, Friday, or short forms Mon-Fri. Leave blank for today."
+            },
+            "week_type": {
+                "type": "string",
+                "description": "Optional week type: odd, even, O, E, or current. Leave blank/current to use the current school week."
+            }
         }
     }
 }
@@ -551,6 +570,46 @@ def _set_current_school_week(week_type: str, week_number: int | None = None) -> 
     if week_number:
         gs.set_config("school_week_number", str(week_number))
     return monday
+
+def _normalise_timetable_day(value: str | None) -> str | None:
+    clean = (value or "").strip().lower()
+    if not clean:
+        return None
+    days = {
+        "monday": "Mon", "mon": "Mon",
+        "tuesday": "Tue", "tue": "Tue", "tues": "Tue",
+        "wednesday": "Wed", "wed": "Wed",
+        "thursday": "Thu", "thu": "Thu", "thur": "Thu", "thurs": "Thu",
+        "friday": "Fri", "fri": "Fri",
+    }
+    return days.get(clean)
+
+def _timetable_for_lookup(day: str | None = "", week_type: str | None = "") -> str:
+    today = datetime.now(SGT).date()
+    day_name = _normalise_timetable_day(day) or tt.DAY_MAP.get(today.weekday())
+    if not day_name:
+        return "No timetabled lessons — free day."
+
+    wt = _normalise_week_type(week_type or "")
+    if wt:
+        wt_code = "O" if wt == "odd" else "E"
+        wt_label = tt.week_type_label(wt_code)
+        lessons = tt.TIMETABLE.get((day_name, wt_code), [])
+        return f"{day_name} {wt_label} week timetable:\n{tt.format_lessons(lessons)}"
+
+    lessons, wt_label = _lessons_for_date(today)
+    if _normalise_timetable_day(day):
+        official_week = tt.get_school_week_info(today)
+        if official_week:
+            wt_code = official_week["week_type"]
+        else:
+            ref_date, ref_type = _get_week_config()
+            if not ref_date or not ref_type:
+                return "Week type is not set. Use /setweek odd or /setweek even first."
+            wt_code = tt.get_week_type(ref_date, ref_type, today)
+        lessons = tt.TIMETABLE.get((day_name, wt_code), [])
+        wt_label = tt.week_type_label(wt_code)
+    return f"{day_name} {wt_label} week timetable:\n{tt.format_lessons(lessons)}"
 
 def _lessons_for_date(target):
     official_week = tt.get_school_week_info(target)
@@ -1131,6 +1190,12 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
 
     def has_any(words):
         return any(word in clean for word in words)
+
+    if "get_timetable" in available and has_any([
+        "timetable", "lesson", "lessons", "periods", "classes"
+    ]):
+        if not has_any(["calendar event", "calendar events", "appointment", "appointments"]):
+            return "get_timetable"
 
     if "get_gmail_brief" in available and has_any([
         "email", "emails", "gmail", "inbox", "unread mail", "unread email",
@@ -2114,6 +2179,7 @@ def _core_tools():
         COMPLETE_TASK_TOOL,
         COMPLETE_FOLLOWUP_TOOL,
         TASK_BRIEF_TOOL,
+        TIMETABLE_TOOL,
         GMAIL_BRIEF_TOOL,
         GMAIL_DRAFT_TOOL,
         MEMORY_TOOL,
@@ -2256,6 +2322,12 @@ async def _execute_tool(name: str, inp: dict) -> str:
             return build_context_snapshot(inp.get("days", 7))
         except Exception as e:
             return f"Failed to get assistant context: {e}"
+
+    elif name == "get_timetable":
+        try:
+            return _timetable_for_lookup(inp.get("day", ""), inp.get("week_type", ""))
+        except Exception as e:
+            return f"Failed to get timetable: {e}"
 
     elif name == "remember_user_info":
         try:

@@ -133,7 +133,7 @@ TIMETABLE = {
 
     ("Tue", "E"): [
         _b([1],       "FTCT",  "1 Flagship",                "L4-08"),
-        _b([2],       "CCE",   "1 Flagship",                "L4-08"),
+        _b([2, 3],    "CCE",   "1 Flagship",                "L4-08"),
         _b([5, 6],    "ML",    "Sec 1 (MLG21)",             "L4-11",  "MLG21"),
         _b([12, 13],  "ML",    "Sec 3 (MLG33)",             "L4-10",  "MLG33"),
     ],
