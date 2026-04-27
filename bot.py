@@ -142,6 +142,10 @@ Herwanto wears three hats:
 
 Rules:
 - Be concise. No filler, no preamble.
+- Natural language is the main interface. Slash commands are shortcuts, not required. If the user asks in plain English/Singlish, infer the intent and use tools directly.
+- Prefer doing the requested action or lookup over explaining which command to use. Only mention a slash command if the user asks how to do it manually or the action is blocked.
+- After tool results, answer in natural language with a brief useful summary. Do not dump raw tool output unless the user asks for raw output.
+- For data lookups, use the user's words as intent: "last 5 emails" means latest 5 Gmail messages; "what's on today" means schedule/context; "anything due" means reminders/tasks; "who do I owe replies/follow-ups to" means Gmail/follow-up/task context as relevant.
 - Infer his hat from context — never ask.
 - For code: fix first, explain if needed.
 - For BM: proper DBP spelling and grammar always.
@@ -166,7 +170,7 @@ Rules:
 - When the user asks to follow up with someone later, call create_followup.
 - When the user asks to mark a reminder/task/follow-up done, call complete_task_by_text or complete_followup_by_text.
 - When the user asks what to do now or how to prioritise tasks, call get_task_brief.
-- When the user asks about Gmail, unread email, or drafting an email, use get_gmail_brief or create_gmail_draft when Gmail is connected. For "last/latest/recent emails", leave the Gmail query empty and set max_items. Use is:unread only when he explicitly asks for unread mail.
+- When the user asks about Gmail, emails, inbox, unread email, latest/last/recent mail, email summaries, or drafting an email, use get_gmail_brief or create_gmail_draft when Gmail is connected. For "last/latest/recent emails", leave the Gmail query empty and set max_items. Use is:unread only when he explicitly asks for unread mail. If he asks for a number, set max_items to that number.
 - When the user asks you to create a document, worksheet, letter, report, lesson plan, handout, memo, proposal, or meeting notes, call create_document_artifact.
 - When the user asks you to create slides, a deck, PowerPoint, PPTX, presentation, pitch deck, briefing deck, or lesson slides, call create_slide_deck_artifact.
 - When the user gives a reusable document/deck style, format, template preference, rubric format, NBSS worksheet format, GamePlan pitch style, or Rūḥ deck style, call remember_artifact_template.
@@ -455,7 +459,7 @@ TASK_BRIEF_TOOL = {
 
 GMAIL_BRIEF_TOOL = {
     "name": "get_gmail_brief",
-    "description": "Get a brief list of recent Gmail messages when Gmail is connected.",
+    "description": "Get Gmail messages from natural language email queries. Use for inbox, latest emails, last N emails, recent mail, unread mail, sender/subject searches, or email summaries.",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -1118,6 +1122,36 @@ def _artifact_result_text(kind: str, path, drive_file: dict | None = None) -> st
     if drive_file and drive_file.get("webViewLink"):
         text += f"\nEditable Google link: {drive_file['webViewLink']}"
     return text
+
+def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
+    available = {tool["name"] for tool in tools}
+    clean = " ".join((text or "").lower().split())
+    if not clean:
+        return None
+
+    def has_any(words):
+        return any(word in clean for word in words)
+
+    if "get_gmail_brief" in available and has_any([
+        "email", "emails", "gmail", "inbox", "unread mail", "unread email",
+        "last mail", "latest mail", "recent mail"
+    ]):
+        if not has_any(["draft", "write", "compose", "reply"]):
+            return "get_gmail_brief"
+
+    if "get_assistant_context" in available and has_any([
+        "today", "tomorrow", "schedule", "calendar", "agenda", "my day",
+        "my week", "what's on", "whats on"
+    ]):
+        return "get_assistant_context"
+
+    if "get_task_brief" in available and has_any([
+        "tasks", "task", "due", "deadline", "deadlines", "prioritise",
+        "prioritize", "what should i do", "focus on"
+    ]):
+        return "get_task_brief"
+
+    return None
 
 def build_briefing():
     now = datetime.now(SGT)
@@ -2085,12 +2119,23 @@ async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
     max_iterations = 5
 
     for _ in range(max_iterations):
+        last_user_text = ""
+        for message in reversed(messages):
+            if message.get("role") == "user" and isinstance(message.get("content"), str):
+                last_user_text = message["content"]
+                break
+        forced_tool = _forced_tool_for_text(last_user_text, tools)
+        tool_choice = {"type": "tool", "name": forced_tool} if forced_tool else None
+        kwargs = {}
+        if tool_choice:
+            kwargs["tool_choice"] = tool_choice
         resp = claude.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=max_tokens,
             system=SYSTEM_PROMPT(),
             tools=tools,
-            messages=messages
+            messages=messages,
+            **kwargs,
         )
 
         if resp.stop_reason != "tool_use":
