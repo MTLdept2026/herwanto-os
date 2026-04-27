@@ -6,8 +6,10 @@ import json
 import base64
 import logging
 import re
+import tempfile
 from collections import defaultdict
 from datetime import datetime, timedelta, time as dt_time, date
+from difflib import SequenceMatcher
 import pytz
 
 from anthropic import Anthropic
@@ -148,7 +150,7 @@ Rules:
 - When he asks to add, schedule, or create a calendar event, create it directly if the date and time are clear. If details are incomplete, ask only for the missing detail.
 - Never offer to generate .ics files. Use Google Calendar directly.
 - The current date and time is already provided at the top of this prompt — always use it for any date/time reasoning.
-- You have tools: create_calendar_event, add_reminder, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, update_project_status, get_latest_news, and web_search. Use them proactively.
+- You have tools: create_calendar_event, add_reminder, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, update_project_status, get_latest_news, and web_search. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
 - When the user asks you to nudge, ping, check in, remind him at a specific time, or initiate a chat later — call create_proactive_nudge. Use this for time-specific heads-ups, not ordinary all-day deadlines.
@@ -161,6 +163,10 @@ Rules:
 - When the user asks about latest news, current events, headlines, football, F1, AI, Singapore education, apps, Apple, Nothing OS, or his shortlisted topics — call get_latest_news before answering.
 - When the user says "remember", "note that", or gives stable preferences/facts about himself — call remember_user_info.
 - When the user gives a project progress update — call update_project_status.
+- When the user asks to follow up with someone later, call create_followup.
+- When the user asks to mark a reminder/task/follow-up done, call complete_task_by_text or complete_followup_by_text.
+- When the user asks what to do now or how to prioritise tasks, call get_task_brief.
+- When the user asks about Gmail, unread email, or drafting an email, use get_gmail_brief or create_gmail_draft when Gmail is connected.
 - When the user asks you to create a document, worksheet, letter, report, lesson plan, handout, memo, proposal, or meeting notes, call create_document_artifact.
 - When the user asks you to create slides, a deck, PowerPoint, PPTX, presentation, pitch deck, briefing deck, or lesson slides, call create_slide_deck_artifact.
 - When the user gives a reusable document/deck style, format, template preference, rubric format, NBSS worksheet format, GamePlan pitch style, or Rūḥ deck style, call remember_artifact_template.
@@ -396,6 +402,84 @@ TEMPLATE_MEMORY_TOOL = {
     }
 }
 
+FOLLOWUP_TOOL = {
+    "name": "create_followup",
+    "description": "Track a person/topic to follow up by a due date.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "person": {"type": "string", "description": "Person or organisation to follow up with"},
+            "topic": {"type": "string", "description": "What to follow up about"},
+            "due_date": {"type": "string", "description": "YYYY-MM-DD"},
+            "channel": {"type": "string", "description": "Email, WhatsApp, Telegram, call, or blank"},
+            "notes": {"type": "string", "description": "Optional context"}
+        },
+        "required": ["topic", "due_date"]
+    }
+}
+
+COMPLETE_TASK_TOOL = {
+    "name": "complete_task_by_text",
+    "description": "Mark the closest matching reminder/task done from natural text.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Reminder text to match"}
+        },
+        "required": ["query"]
+    }
+}
+
+COMPLETE_FOLLOWUP_TOOL = {
+    "name": "complete_followup_by_text",
+    "description": "Mark the closest matching follow-up done from natural text.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Follow-up text or id to match"}
+        },
+        "required": ["query"]
+    }
+}
+
+TASK_BRIEF_TOOL = {
+    "name": "get_task_brief",
+    "description": "Get prioritised reminders/tasks with priority, effort, and next action metadata.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "days": {"type": "integer", "description": "Days ahead to include, default 7"}
+        }
+    }
+}
+
+GMAIL_BRIEF_TOOL = {
+    "name": "get_gmail_brief",
+    "description": "Get a brief list of recent Gmail messages when Gmail is connected.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Gmail search query, default unread recent mail"},
+            "max_items": {"type": "integer", "description": "Maximum messages, default 10"}
+        }
+    }
+}
+
+GMAIL_DRAFT_TOOL = {
+    "name": "create_gmail_draft",
+    "description": "Create a Gmail draft when Gmail is connected.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "to": {"type": "string", "description": "Recipient email"},
+            "subject": {"type": "string", "description": "Email subject"},
+            "body": {"type": "string", "description": "Email body"},
+            "cc": {"type": "string", "description": "Optional cc"}
+        },
+        "required": ["to", "subject", "body"]
+    }
+}
+
 # ─── HELPERS ─────────────────────────────────────────────────────────────────
 
 def google_ok():
@@ -584,6 +668,17 @@ def build_context_snapshot(days: int = 7) -> str:
         lines.append(f"\nReminders unavailable: {e}")
 
     try:
+        followups = gs.get_followups()
+        lines.append("\nFollow-ups:")
+        if followups:
+            for f in sorted(followups, key=lambda item: item["due_date"])[:10]:
+                lines.append(f"- [{f['id']}] {f['due_date']} {f['person']} {f['topic']}".strip())
+        else:
+            lines.append("None.")
+    except Exception as e:
+        lines.append(f"\nFollow-ups unavailable: {e}")
+
+    try:
         projects = gs.get_projects()
         lines.append("\nProjects:")
         if projects:
@@ -740,6 +835,92 @@ def _format_checkin(checkin: dict) -> str:
     else:
         timing = f"at {', '.join(checkin['times'])}"
     return f"`[{checkin['id']}]` *{checkin['name']}* {timing} - {status}\n{checkin['question']}"
+
+def _score_text_match(query: str, value: str) -> float:
+    query = " ".join((query or "").lower().split())
+    value = " ".join((value or "").lower().split())
+    if not query or not value:
+        return 0
+    ratio = SequenceMatcher(None, query, value).ratio()
+    contains = 0.35 if query in value or value in query else 0
+    query_words = set(query.split())
+    value_words = set(value.split())
+    overlap = len(query_words & value_words) / max(1, len(query_words | value_words))
+    return ratio + contains + overlap
+
+def _find_best_reminder(query: str):
+    reminders = gs.get_reminders()
+    if not reminders:
+        return None, 0
+    scored = sorted(
+        ((r, _score_text_match(query, f"{r['description']} {r['category']} {r['due']}")) for r in reminders),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    return scored[0]
+
+def _find_best_followup(query: str):
+    followups = gs.get_followups()
+    if not followups:
+        return None, 0
+    scored = sorted(
+        ((f, _score_text_match(query, f"{f['person']} {f['topic']} {f['due_date']} {f['channel']}")) for f in followups),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    return scored[0]
+
+def _task_priority_score(task: dict, today: date) -> tuple:
+    priority_order = {"urgent": 0, "high": 1, "medium": 2, "low": 3}
+    due = task.get("due", "9999-12-31")
+    try:
+        due_days = (date.fromisoformat(due) - today).days
+    except Exception:
+        due_days = 999
+    priority = priority_order.get(task.get("priority", "medium"), 2)
+    effort = {"quick": 0, "small": 1, "medium": 2, "deep": 3, "large": 3}.get(task.get("effort", "medium"), 2)
+    return (priority, due_days, effort, task.get("description", ""))
+
+def build_task_brief(days: int = 7) -> str:
+    today = datetime.now(SGT).date()
+    end_date = today + timedelta(days=max(1, min(int(days or 7), 30)))
+    tasks = [
+        task for task in gs.enriched_reminders()
+        if task.get("due", "9999-12-31") <= end_date.isoformat()
+    ]
+    if not tasks:
+        return "No active tasks in that window."
+    lines = [f"*Task brief* - now to {end_date.strftime('%-d %b')}\n"]
+    for task in sorted(tasks, key=lambda item: _task_priority_score(item, today))[:12]:
+        priority = task.get("priority", "medium")
+        effort = task.get("effort", "medium")
+        next_action = f"\n  Next: {task['next_action']}" if task.get("next_action") else ""
+        overdue = " OVERDUE" if task["due"] < today.isoformat() else ""
+        lines.append(
+            f"- `[{task['id']}]` {task['due']}{overdue} - {task['description']} "
+            f"_{task['category']}; {priority}; {effort}_{next_action}"
+        )
+    return "\n".join(lines)
+
+def _format_followup(followup: dict) -> str:
+    person = f"{followup['person']} - " if followup.get("person") else ""
+    channel = f" via {followup['channel']}" if followup.get("channel") else ""
+    notes = f"\n  {followup['notes']}" if followup.get("notes") else ""
+    return f"`[{followup['id']}]` {followup['due_date']} - {person}{followup['topic']}{channel}{notes}"
+
+def build_files_index() -> str:
+    if not google_ok():
+        return "Google is not connected."
+    try:
+        files = gs.get_memory().get("files", [])
+        if not files:
+            return "No files remembered yet."
+        lines = ["*File memory*\n"]
+        for item in files[-25:]:
+            lines.append(f"- {item}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"File memory unavailable: {e}"
 
 def _hm_to_minutes(value: str) -> int:
     parsed = datetime.strptime(value.strip(), "%H:%M")
@@ -923,11 +1104,11 @@ Rules:
     )
     return _json_from_claude_text(resp.content[0].text)
 
-def _upload_artifact_if_possible(path: str, convert_to: str) -> dict | None:
+def _upload_artifact_if_possible(path: str, convert_to: str, category: str = "General") -> dict | None:
     if not google_ok():
         return None
     try:
-        return gs.upload_artifact(path, convert_to=convert_to)
+        return gs.upload_artifact(path, convert_to=convert_to, category=category)
     except Exception as e:
         logger.warning(f"Drive artifact upload failed: {e}")
         return None
@@ -1003,6 +1184,71 @@ def build_briefing():
     lines.append("\nHave a productive day!")
     return "\n".join(lines)
 
+def build_evening_briefing():
+    now = datetime.now(SGT)
+    tomorrow = now.date() + timedelta(days=1)
+    lines = [f"*Evening prep*\n_{now.strftime('%A, %-d %B %Y, %H:%M SGT')}_\n"]
+
+    lessons, wt_label = _lessons_for_date(tomorrow)
+    lines.append(f"*Tomorrow ({tomorrow.strftime('%A, %-d %B')})*")
+    if wt_label:
+        lines.append(f"Lessons ({_week_display(wt_label, tomorrow)}):")
+        lines.append(tt.format_lessons(lessons))
+    else:
+        lines.append("No timetable reference for tomorrow.")
+    lines.append("")
+
+    if google_ok():
+        try:
+            events = gs.get_tomorrow_events()
+            lines.append("*Calendar:*")
+            lines.append(gs.format_events(events))
+            lines.append("")
+        except Exception as e:
+            lines.append(f"Calendar unavailable: {e}\n")
+        try:
+            lines.append(build_task_brief(days=3))
+        except Exception:
+            pass
+
+    lines.append("\nPack/prep what future-you will quietly thank you for.")
+    return "\n".join(lines).strip()
+
+def build_weekly_plan():
+    now = datetime.now(SGT)
+    lines = [f"*Weekly plan*\n_{now.strftime('%A, %-d %B %Y')}_\n"]
+    if google_ok():
+        try:
+            lines.append("*Calendar - next 7 days*")
+            lines.append(gs.format_events(gs.get_week_events(), show_date=True))
+            lines.append("")
+        except Exception as e:
+            lines.append(f"Calendar unavailable: {e}\n")
+        try:
+            lines.append(build_task_brief(days=7))
+            lines.append("")
+        except Exception:
+            pass
+        try:
+            followups = gs.get_followups()
+            if followups:
+                lines.append("*Follow-ups*")
+                for followup in sorted(followups, key=lambda f: f["due_date"])[:10]:
+                    lines.append(f"- {_format_followup(followup)}")
+                lines.append("")
+        except Exception:
+            pass
+        try:
+            projects = gs.get_projects()
+            if projects:
+                lines.append("*Projects*")
+                for p in projects:
+                    milestone = f" Next: {p['next_milestone']} ({p['milestone_date']})." if p["next_milestone"] else ""
+                    lines.append(f"- *{p['project']}* - {p['status']}.{milestone}")
+        except Exception:
+            pass
+    return "\n".join(lines).strip()
+
 # ─── COMMANDS ────────────────────────────────────────────────────────────────
 
 async def start(update, context):
@@ -1025,6 +1271,8 @@ async def start(update, context):
         f"*Daily check-ins*\n/checkin /checkins /cancelcheckin\n"
         f"`/checkin Name | breaks | Question` for schedule-aware pings\n\n"
         f"*Artifacts*\n/doc /slides /template /templates /artifacts\n\n"
+        f"*Pro assistant*\n/tasks /taskmeta /donetask /followup /followups /files /evening /weekly\n\n"
+        f"*Gmail*\n/gmail /gmaildraft (optional setup)\n\n"
         f"*Assistant*\n/agenda [days] /remember /memory /forget all\n\n"
         f"*Projects*\n/projects /update\n\n"
         f"*Search*\n/search [query]\n\n"
@@ -1348,7 +1596,7 @@ async def doc_cmd(update, context):
         title, instructions = [p.strip() for p in text.split("|", 1)]
         spec = _generate_document_spec(title, instructions)
         path = artifacts.render_docx(spec)
-        drive_file = _upload_artifact_if_possible(str(path), "doc")
+        drive_file = _upload_artifact_if_possible(str(path), "doc", category="Documents")
         if google_ok():
             link_note = f" | google_doc={drive_file.get('webViewLink', '')}" if drive_file else ""
             gs.add_memory("files", f"Generated DOCX {path.name} on {datetime.now(SGT).strftime('%Y-%m-%d %H:%M SGT')} | prompt={_clip_memory_text(instructions, 240)}{link_note}")
@@ -1376,7 +1624,7 @@ async def slides_cmd(update, context):
         title, instructions = [p.strip() for p in text.split("|", 1)]
         spec = _generate_slide_spec(title, instructions)
         path = artifacts.render_pptx(spec)
-        drive_file = _upload_artifact_if_possible(str(path), "slides")
+        drive_file = _upload_artifact_if_possible(str(path), "slides", category="Slides")
         if google_ok():
             link_note = f" | google_slides={drive_file.get('webViewLink', '')}" if drive_file else ""
             gs.add_memory("files", f"Generated PPTX {path.name} on {datetime.now(SGT).strftime('%Y-%m-%d %H:%M SGT')} | prompt={_clip_memory_text(instructions, 240)}{link_note}")
@@ -1427,6 +1675,164 @@ async def templates_cmd(update, context):
 
 async def artifacts_cmd(update, context):
     await reply(update, build_artifact_index(), parse_mode="Markdown")
+
+async def files_cmd(update, context):
+    await reply(update, build_files_index(), parse_mode="Markdown")
+
+async def tasks_cmd(update, context):
+    days = 7
+    if context.args:
+        try:
+            days = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("Usage: /tasks [days]")
+            return
+    try:
+        await reply(update, build_task_brief(days), parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"Task brief error: {e}")
+
+async def taskmeta_cmd(update, context):
+    if not google_ok():
+        await update.message.reply_text("Google not connected.")
+        return
+    text = " ".join(context.args).strip()
+    parts = [p.strip() for p in text.split("|")]
+    if len(parts) < 2:
+        await reply(update,
+            "Usage: `/taskmeta id | priority | effort | next action`\n"
+            "Priority: urgent/high/medium/low. Effort: quick/small/medium/deep.",
+            parse_mode="Markdown")
+        return
+    try:
+        meta = gs.update_task_metadata(
+            parts[0],
+            priority=parts[1] if len(parts) > 1 else "",
+            effort=parts[2] if len(parts) > 2 else "",
+            next_action=parts[3] if len(parts) > 3 else "",
+        )
+        await update.message.reply_text(f"Task #{parts[0]} updated: {meta}")
+    except Exception as e:
+        await update.message.reply_text(f"Task metadata error: {e}")
+
+async def done_text_cmd(update, context):
+    if not google_ok():
+        await update.message.reply_text("Google not connected.")
+        return
+    query = " ".join(context.args).strip()
+    if not query:
+        await reply(update, "Usage: `/donetask reminder text`", parse_mode="Markdown")
+        return
+    try:
+        reminder, score = _find_best_reminder(query)
+        if not reminder or score < 0.35:
+            await update.message.reply_text("I could not confidently match that to an active reminder.")
+            return
+        gs.mark_done(reminder["id"])
+        await update.message.reply_text(f"Marked done: [{reminder['id']}] {reminder['description']}")
+    except Exception as e:
+        await update.message.reply_text(f"Could not mark task done: {e}")
+
+async def followup_cmd(update, context):
+    if not google_ok():
+        await update.message.reply_text("Google not connected.")
+        return
+    text = " ".join(context.args).strip()
+    parts = [p.strip() for p in text.split("|")]
+    if len(parts) < 3:
+        await reply(update,
+            "Usage: `/followup Person | Topic | YYYY-MM-DD | Channel | Notes`",
+            parse_mode="Markdown")
+        return
+    try:
+        followup = gs.add_followup(
+            parts[0],
+            parts[1],
+            parts[2],
+            parts[3] if len(parts) > 3 else "",
+            parts[4] if len(parts) > 4 else "",
+        )
+        await reply(update, f"Follow-up added:\n{_format_followup(followup)}", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"Follow-up error: {e}")
+
+async def followups_cmd(update, context):
+    if not google_ok():
+        await update.message.reply_text("Google not connected.")
+        return
+    try:
+        followups = gs.get_followups()
+        if not followups:
+            await update.message.reply_text("No open follow-ups.")
+            return
+        lines = ["*Follow-ups*\n"]
+        for followup in sorted(followups, key=lambda f: f["due_date"]):
+            lines.append(_format_followup(followup))
+        await reply(update, "\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"Follow-up error: {e}")
+
+async def donefollowup_cmd(update, context):
+    if not google_ok():
+        await update.message.reply_text("Google not connected.")
+        return
+    query = " ".join(context.args).strip()
+    if not query:
+        await reply(update, "Usage: `/donefollowup id or text`", parse_mode="Markdown")
+        return
+    try:
+        if query.isdigit():
+            ok = gs.complete_followup(query)
+            await update.message.reply_text(f"Follow-up #{query} done." if ok else f"Follow-up #{query} not found.")
+            return
+        followup, score = _find_best_followup(query)
+        if not followup or score < 0.35:
+            await update.message.reply_text("I could not confidently match that to an open follow-up.")
+            return
+        gs.complete_followup(followup["id"])
+        await update.message.reply_text(f"Follow-up done: {followup['topic']}")
+    except Exception as e:
+        await update.message.reply_text(f"Could not mark follow-up done: {e}")
+
+async def evening_cmd(update, context):
+    await reply(update, build_evening_briefing(), parse_mode="Markdown")
+
+async def weekly_cmd(update, context):
+    await reply(update, build_weekly_plan(), parse_mode="Markdown")
+
+async def gmail_cmd(update, context):
+    if not gs.gmail_ok():
+        await update.message.reply_text("Gmail not connected. Configure GOOGLE_GMAIL_USER with delegated Gmail access first.")
+        return
+    query = " ".join(context.args).strip() or "is:unread newer_than:7d"
+    try:
+        messages = gs.list_gmail_messages(query=query, max_results=10)
+        if not messages:
+            await update.message.reply_text("No Gmail messages found.")
+            return
+        lines = [f"*Gmail: {query}*\n"]
+        for msg in messages:
+            lines.append(f"- *{msg['subject']}*")
+            lines.append(f"  From: {msg['from']}")
+            lines.append(f"  {msg['snippet']}")
+        await reply(update, "\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"Gmail error: {e}")
+
+async def gmaildraft_cmd(update, context):
+    if not gs.gmail_ok():
+        await update.message.reply_text("Gmail not connected. Configure GOOGLE_GMAIL_USER with delegated Gmail access first.")
+        return
+    text = " ".join(context.args).strip()
+    parts = [p.strip() for p in text.split("|")]
+    if len(parts) < 3:
+        await reply(update, "Usage: `/gmaildraft to | subject | body | cc`", parse_mode="Markdown")
+        return
+    try:
+        draft = gs.create_gmail_draft(parts[0], parts[1], parts[2], parts[3] if len(parts) > 3 else "")
+        await update.message.reply_text(f"Gmail draft created: {draft.get('id', '')}")
+    except Exception as e:
+        await update.message.reply_text(f"Gmail draft error: {e}")
 
 async def briefing_cmd(update, context):
     await reply(update, build_briefing(), parse_mode="Markdown")
@@ -1656,6 +2062,12 @@ def _core_tools():
         DOCUMENT_ARTIFACT_TOOL,
         SLIDE_ARTIFACT_TOOL,
         TEMPLATE_MEMORY_TOOL,
+        FOLLOWUP_TOOL,
+        COMPLETE_TASK_TOOL,
+        COMPLETE_FOLLOWUP_TOOL,
+        TASK_BRIEF_TOOL,
+        GMAIL_BRIEF_TOOL,
+        GMAIL_DRAFT_TOOL,
         MEMORY_TOOL,
         WEEK_TYPE_TOOL,
         PROJECT_TOOL,
@@ -1877,7 +2289,7 @@ async def _execute_tool(name: str, inp: dict) -> str:
                 inp.get("language", ""),
             )
             path = artifacts.render_docx(spec)
-            drive_file = _upload_artifact_if_possible(str(path), "doc")
+            drive_file = _upload_artifact_if_possible(str(path), "doc", category="Documents")
             if google_ok():
                 link_note = f" | google_doc={drive_file.get('webViewLink', '')}" if drive_file else ""
                 gs.add_memory("files", f"Generated DOCX {path.name} on {datetime.now(SGT).strftime('%Y-%m-%d %H:%M SGT')} | prompt={_clip_memory_text(inp['instructions'], 240)}{link_note}")
@@ -1895,7 +2307,7 @@ async def _execute_tool(name: str, inp: dict) -> str:
                 inp.get("language", ""),
             )
             path = artifacts.render_pptx(spec)
-            drive_file = _upload_artifact_if_possible(str(path), "slides")
+            drive_file = _upload_artifact_if_possible(str(path), "slides", category="Slides")
             if google_ok():
                 link_note = f" | google_slides={drive_file.get('webViewLink', '')}" if drive_file else ""
                 gs.add_memory("files", f"Generated PPTX {path.name} on {datetime.now(SGT).strftime('%Y-%m-%d %H:%M SGT')} | prompt={_clip_memory_text(inp['instructions'], 240)}{link_note}")
@@ -1909,6 +2321,80 @@ async def _execute_tool(name: str, inp: dict) -> str:
             return f"Remembered artifact template: {inp['name']}"
         except Exception as e:
             return f"Failed to remember artifact template: {e}"
+
+    elif name == "create_followup":
+        try:
+            followup = gs.add_followup(
+                inp.get("person", ""),
+                inp["topic"],
+                inp["due_date"],
+                inp.get("channel", ""),
+                inp.get("notes", ""),
+            )
+            return f"Created follow-up: {_format_followup(followup)}"
+        except Exception as e:
+            return f"Failed to create follow-up: {e}"
+
+    elif name == "complete_task_by_text":
+        try:
+            reminder, score = _find_best_reminder(inp["query"])
+            if not reminder or score < 0.35:
+                return "No confident reminder match found."
+            gs.mark_done(reminder["id"])
+            return f"Marked reminder #{reminder['id']} done: {reminder['description']}"
+        except Exception as e:
+            return f"Failed to mark task done: {e}"
+
+    elif name == "complete_followup_by_text":
+        try:
+            query = inp["query"]
+            if str(query).strip().isdigit():
+                ok = gs.complete_followup(query)
+                return f"Marked follow-up #{query} done." if ok else "No follow-up found."
+            followup, score = _find_best_followup(query)
+            if not followup or score < 0.35:
+                return "No confident follow-up match found."
+            gs.complete_followup(followup["id"])
+            return f"Marked follow-up #{followup['id']} done: {followup['topic']}"
+        except Exception as e:
+            return f"Failed to mark follow-up done: {e}"
+
+    elif name == "get_task_brief":
+        try:
+            return build_task_brief(inp.get("days", 7))
+        except Exception as e:
+            return f"Failed to get task brief: {e}"
+
+    elif name == "get_gmail_brief":
+        try:
+            if not gs.gmail_ok():
+                return "Gmail is not connected."
+            messages = gs.list_gmail_messages(
+                inp.get("query", "is:unread newer_than:7d"),
+                inp.get("max_items", 10),
+            )
+            if not messages:
+                return "No Gmail messages found."
+            lines = []
+            for msg in messages:
+                lines.append(f"- {msg['subject']} | From: {msg['from']} | {msg['snippet']}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Failed to get Gmail brief: {e}"
+
+    elif name == "create_gmail_draft":
+        try:
+            if not gs.gmail_ok():
+                return "Gmail is not connected."
+            draft = gs.create_gmail_draft(
+                inp["to"],
+                inp["subject"],
+                inp["body"],
+                inp.get("cc", ""),
+            )
+            return f"Created Gmail draft: {draft.get('id', '')}"
+        except Exception as e:
+            return f"Failed to create Gmail draft: {e}"
 
     elif name == "update_project_status":
         try:
@@ -1927,9 +2413,10 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
 
 async def handle_message(update, context):
-    user_id = update.effective_user.id
-    text = update.message.text
+    await _process_user_text(update, context, update.message.text)
 
+async def _process_user_text(update, context, text: str):
+    user_id = update.effective_user.id
     inferred_week_type, inferred_week_number = _school_week_from_text(text)
     if inferred_week_type and google_ok():
         try:
@@ -1959,6 +2446,24 @@ async def handle_message(update, context):
         except Exception as e:
             logger.warning(f"Check-in affirmation error: {e}")
 
+    if google_ok():
+        done_match = re.match(r"^\s*(?:done with|mark done|mark .* done|completed|settled)\s+(.+)$", text, re.I)
+        if done_match:
+            query = done_match.group(1).strip()
+            try:
+                reminder, r_score = _find_best_reminder(query)
+                followup, f_score = _find_best_followup(query)
+                if reminder and r_score >= max(0.35, f_score):
+                    gs.mark_done(reminder["id"])
+                    await update.message.reply_text(f"Marked done: [{reminder['id']}] {reminder['description']}")
+                    return
+                if followup and f_score >= 0.35:
+                    gs.complete_followup(followup["id"])
+                    await update.message.reply_text(f"Follow-up done: {followup['topic']}")
+                    return
+            except Exception as e:
+                logger.warning(f"Natural done handling error: {e}")
+
     history = get_history(user_id)
     history.append({"role": "user", "content": text})
     if len(history) > MAX_TURNS:
@@ -1978,6 +2483,37 @@ async def handle_message(update, context):
     except Exception as e:
         logger.error(f"Claude error: {e}")
         await update.message.reply_text("Error. Try again.")
+
+def _openai_ok() -> bool:
+    return bool(os.environ.get("OPENAI_API_KEY", "").strip())
+
+async def handle_voice(update, context):
+    if not _openai_ok():
+        await update.message.reply_text("Voice notes need OPENAI_API_KEY configured first.")
+        return
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    try:
+        from openai import OpenAI
+
+        voice = update.message.voice
+        file = await context.bot.get_file(voice.file_id)
+        with tempfile.NamedTemporaryFile(suffix=".ogg") as tmp:
+            await file.download_to_drive(custom_path=tmp.name)
+            client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+            with open(tmp.name, "rb") as audio:
+                transcript = client.audio.transcriptions.create(
+                    model=os.environ.get("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe"),
+                    file=audio,
+                )
+        text = getattr(transcript, "text", str(transcript)).strip()
+        if not text:
+            await update.message.reply_text("I could not transcribe that voice note.")
+            return
+        await reply(update, f"Transcribed: {text}")
+        await _process_user_text(update, context, text)
+    except Exception as e:
+        logger.error(f"Voice note error: {e}")
+        await update.message.reply_text(f"Could not process voice note: {e}")
 
 # ─── SCHEDULED JOBS ──────────────────────────────────────────────────────────
 
@@ -2010,6 +2546,28 @@ async def friday_checkin_job(context):
     except Exception as e:
         logger.error(f"Friday check-in error: {e}")
 
+async def evening_briefing_job(context):
+    if not google_ok():
+        return
+    try:
+        chat_id = gs.get_config("chat_id")
+        if not chat_id:
+            return
+        await context.bot.send_message(chat_id=int(chat_id), text=build_evening_briefing(), parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Evening briefing error: {e}")
+
+async def weekly_planning_job(context):
+    if not google_ok():
+        return
+    try:
+        chat_id = gs.get_config("chat_id")
+        if not chat_id:
+            return
+        await context.bot.send_message(chat_id=int(chat_id), text=build_weekly_plan(), parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Weekly planning error: {e}")
+
 async def proactive_nudges_job(context):
     if not google_ok():
         return
@@ -2041,6 +2599,24 @@ async def daily_checkins_job(context):
     except Exception as e:
         logger.error(f"Daily check-in error: {e}")
 
+async def followups_job(context):
+    if not google_ok():
+        return
+    try:
+        chat_id = gs.get_config("chat_id")
+        if not chat_id:
+            return
+        today = datetime.now(SGT).strftime("%Y-%m-%d")
+        for followup in gs.due_followups(today):
+            await context.bot.send_message(
+                chat_id=int(chat_id),
+                text=f"*Hira follow-up*\n\n{_format_followup(followup)}\n\nUse `/donefollowup {followup['id']}` when settled.",
+                parse_mode="Markdown",
+            )
+            gs.mark_followup_prompted(followup["id"], today)
+    except Exception as e:
+        logger.error(f"Follow-up job error: {e}")
+
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -2070,6 +2646,17 @@ def main():
     app.add_handler(CommandHandler("template", template_cmd))
     app.add_handler(CommandHandler("templates", templates_cmd))
     app.add_handler(CommandHandler("artifacts", artifacts_cmd))
+    app.add_handler(CommandHandler("files",    files_cmd))
+    app.add_handler(CommandHandler("tasks",    tasks_cmd))
+    app.add_handler(CommandHandler("taskmeta", taskmeta_cmd))
+    app.add_handler(CommandHandler("donetask", done_text_cmd))
+    app.add_handler(CommandHandler("followup", followup_cmd))
+    app.add_handler(CommandHandler("followups", followups_cmd))
+    app.add_handler(CommandHandler("donefollowup", donefollowup_cmd))
+    app.add_handler(CommandHandler("evening",  evening_cmd))
+    app.add_handler(CommandHandler("weekly",   weekly_cmd))
+    app.add_handler(CommandHandler("gmail",    gmail_cmd))
+    app.add_handler(CommandHandler("gmaildraft", gmaildraft_cmd))
     app.add_handler(CommandHandler("briefing", briefing_cmd))
     app.add_handler(CommandHandler("agenda",   agenda_cmd))
     app.add_handler(CommandHandler("remember", remember_cmd))
@@ -2084,12 +2671,16 @@ def main():
     app.add_handler(CommandHandler("clear",    clear_cmd))
     app.add_handler(MessageHandler(filters.PHOTO,        handle_photo))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    app.add_handler(MessageHandler(filters.VOICE,        handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     jq = app.job_queue
     jq.run_daily(morning_briefing_job, time=dt_time(7, 0, 0, tzinfo=SGT), name="morning_briefing")
+    jq.run_daily(evening_briefing_job, time=dt_time(20, 30, 0, tzinfo=SGT), name="evening_briefing")
+    jq.run_daily(weekly_planning_job, time=dt_time(19, 30, 0, tzinfo=SGT), days=(6,), name="weekly_planning")
     jq.run_daily(friday_checkin_job,   time=dt_time(17, 0, 0, tzinfo=SGT), days=(4,), name="friday_checkin")
     jq.run_repeating(proactive_nudges_job, interval=60, first=10, name="proactive_nudges")
     jq.run_repeating(daily_checkins_job, interval=60, first=20, name="daily_checkins")
+    jq.run_repeating(followups_job, interval=3600, first=40, name="followups")
     logger.info("Herwanto OS running — all systems active.")
     app.run_polling(drop_pending_updates=True)
 

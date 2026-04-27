@@ -23,6 +23,12 @@ Your AI second brain on Telegram. Calendar-aware, project-tracking, daily briefi
 | Create DOCX / Google Docs | `/doc`, or ask naturally |
 | Create PPTX / Google Slides | `/slides`, or ask naturally |
 | Remember artifact templates | `/template`, `/templates`, `/artifacts` |
+| Voice notes | Send a Telegram voice note |
+| Smart task brief | `/tasks`, `/taskmeta`, `/donetask` |
+| Follow-up tracker | `/followup`, `/followups`, `/donefollowup` |
+| File memory | `/files` |
+| Prep briefings | `/evening`, `/weekly` |
+| Gmail brief/drafts | `/gmail`, `/gmaildraft` |
 | All project statuses | `/projects` |
 | Update a project | `/update Project \| Status \| Milestone \| Date \| Notes` |
 | Latest news shortlist | `/news`, `/news Apple AI`, `/watch`, `/watchlist`, `/unwatch` |
@@ -61,6 +67,7 @@ This is the most involved step. Follow exactly.
 4. In the search bar, search **"Google Calendar API"** → Enable
 5. Search **"Google Sheets API"** → Enable
 6. Search **"Google Drive API"** → Enable
+7. Optional: search **"Gmail API"** → Enable if you are setting up Gmail brief/draft support
 
 **3b. Create Service Account**
 1. Left menu → **IAM & Admin** → **Service Accounts**
@@ -167,6 +174,8 @@ git push -u origin main
    - `GOOGLE_SERVICE_ACCOUNT_JSON`
    - `GOOGLE_SHEET_ID`
    - Optional for editable generated Google Docs/Slides links: `GOOGLE_ARTIFACT_SHARE_EMAIL`
+   - Optional for voice notes: `OPENAI_API_KEY`
+   - Optional for Gmail: `GOOGLE_GMAIL_USER`
 4. Click **Deploy**
 5. Watch logs — you should see: `Herwanto OS running — scheduler active.`
 
@@ -222,6 +231,36 @@ Adding a check-in with the same name updates the existing one, so you can switch
 ```
 
 Hira creates downloadable `.docx` and `.pptx` files in Telegram. If Google Drive is connected and the Drive API is enabled, Hira also uploads and converts them into Google Docs or Google Slides links. Set `GOOGLE_ARTIFACT_SHARE_EMAIL` to your Gmail/Workspace email if you want those generated links shared back to your account automatically. Reusable template memories are applied to future generated worksheets, decks, lesson plans, proposals, and briefing materials.
+
+**Pro assistant workflows:**
+```
+/tasks
+/taskmeta 12 | high | quick | Draft the first paragraph
+/donetask CCA attendance
+/followup Faizal | Jerseys quote | 2026-05-05 | WhatsApp | Ask for final price
+/followups
+/donefollowup jerseys
+/files
+/evening
+/weekly
+```
+
+Hira can now prioritise reminders with priority/effort/next-action metadata, track follow-ups, send evening prep and weekly planning briefings, and search remembered file/artifact summaries.
+
+**Voice notes:**
+```
+Send a Telegram voice note.
+```
+
+Voice notes require `OPENAI_API_KEY`. Hira transcribes the note and then treats it like a normal message, so it can create reminders, events, documents, follow-ups, or drafts from speech.
+
+**Gmail:**
+```
+/gmail is:unread newer_than:7d
+/gmaildraft recipient@example.com | Subject | Email body
+```
+
+Gmail support is optional. It requires the Gmail API and delegated access for `GOOGLE_GMAIL_USER`; for ordinary Gmail accounts this is not as simple as Calendar/Sheets service-account sharing. If Gmail is not configured, the commands fail gracefully.
 
 **Use it like a full assistant:**
 ```

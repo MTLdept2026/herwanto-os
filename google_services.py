@@ -8,6 +8,7 @@ import json
 import base64
 import pytz
 from datetime import datetime, timedelta
+from email.message import EmailMessage
 from pathlib import Path
 
 from googleapiclient.discovery import build
@@ -23,6 +24,11 @@ SCOPES = [
     'https://www.googleapis.com/auth/drive.file',
 ]
 
+GMAIL_SCOPES = [
+    'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/gmail.compose',
+]
+
 SHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "")
 
 # Support multiple calendars via GOOGLE_CALENDAR_IDS (comma-separated)
@@ -31,12 +37,15 @@ _cal_ids_raw = os.environ.get("GOOGLE_CALENDAR_IDS", "") or os.environ.get("GOOG
 CALENDAR_IDS = [c.strip() for c in _cal_ids_raw.split(",") if c.strip()]
 
 
-def _creds():
+def _creds(scopes=None, subject: str = ""):
     raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
     if not raw:
         raise EnvironmentError("GOOGLE_SERVICE_ACCOUNT_JSON not set")
     sa_info = json.loads(base64.b64decode(raw).decode("utf-8"))
-    return service_account.Credentials.from_service_account_info(sa_info, scopes=SCOPES)
+    creds = service_account.Credentials.from_service_account_info(sa_info, scopes=scopes or SCOPES)
+    if subject:
+        creds = creds.with_subject(subject)
+    return creds
 
 
 def _cal():
@@ -49,6 +58,13 @@ def _sheets():
 
 def _drive():
     return build("drive", "v3", credentials=_creds())
+
+
+def _gmail():
+    user = os.environ.get("GOOGLE_GMAIL_USER", "").strip()
+    if not user:
+        raise EnvironmentError("GOOGLE_GMAIL_USER not set")
+    return build("gmail", "v1", credentials=_creds(GMAIL_SCOPES, subject=user))
 
 
 # ─── CALENDAR ────────────────────────────────────────────────────────────────
@@ -146,7 +162,47 @@ def create_event(title: str, start_dt: datetime, end_dt: datetime,
 
 # ─── DRIVE ARTIFACTS ────────────────────────────────────────────────────────
 
-def upload_artifact(path: str, convert_to: str = "") -> dict:
+def _drive_query_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def _ensure_drive_folder(name: str, parent_id: str = "") -> str:
+    service = _drive()
+    escaped = _drive_query_escape(name)
+    query = (
+        f"name = '{escaped}' and mimeType = 'application/vnd.google-apps.folder' "
+        "and trashed = false"
+    )
+    if parent_id:
+        query += f" and '{parent_id}' in parents"
+    result = service.files().list(q=query, fields="files(id,name)", pageSize=1).execute()
+    files = result.get("files", [])
+    if files:
+        return files[0]["id"]
+
+    body = {"name": name, "mimeType": "application/vnd.google-apps.folder"}
+    if parent_id:
+        body["parents"] = [parent_id]
+    folder = service.files().create(body=body, fields="id").execute()
+    return folder["id"]
+
+
+def artifact_folder_id(category: str = "General") -> str:
+    root_id = os.environ.get("GOOGLE_ARTIFACT_FOLDER_ID", "").strip()
+    if not root_id:
+        root_id = get_config("artifact_root_folder_id") or ""
+    if not root_id:
+        root_id = _ensure_drive_folder("Hira")
+        set_config("artifact_root_folder_id", root_id)
+    category_name = (category or "General").strip().title()
+    cache_key = f"artifact_folder_{category_name.lower().replace(' ', '_')}"
+    folder_id = get_config(cache_key) or ""
+    if not folder_id:
+        folder_id = _ensure_drive_folder(category_name, parent_id=root_id)
+        set_config(cache_key, folder_id)
+    return folder_id
+
+def upload_artifact(path: str, convert_to: str = "", category: str = "General") -> dict:
     """Upload a generated file to Drive, optionally converting to Docs/Slides."""
     source = Path(path)
     if not source.exists():
@@ -166,6 +222,10 @@ def upload_artifact(path: str, convert_to: str = "") -> dict:
         target_mime = "application/vnd.google-apps.presentation"
 
     body = {"name": source.stem}
+    try:
+        body["parents"] = [artifact_folder_id(category)]
+    except Exception:
+        pass
     if target_mime:
         body["mimeType"] = target_mime
 
@@ -240,6 +300,52 @@ def mark_done(reminder_id: str) -> bool:
             ).execute()
             return True
     return False
+
+
+def get_task_metadata() -> dict:
+    raw = get_config("task_metadata")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def set_task_metadata(metadata: dict):
+    set_config("task_metadata", json.dumps(metadata, ensure_ascii=False))
+
+
+def update_task_metadata(
+    reminder_id: str,
+    priority: str = "",
+    effort: str = "",
+    next_action: str = "",
+    status: str = "",
+) -> dict:
+    metadata = get_task_metadata()
+    item = metadata.get(str(reminder_id), {})
+    if priority:
+        item["priority"] = priority.strip().lower()
+    if effort:
+        item["effort"] = effort.strip().lower()
+    if next_action:
+        item["next_action"] = next_action.strip()
+    if status:
+        item["status"] = status.strip().lower()
+    metadata[str(reminder_id)] = item
+    set_task_metadata(metadata)
+    return item
+
+
+def enriched_reminders(include_done=False) -> list:
+    metadata = get_task_metadata()
+    out = []
+    for reminder in get_reminders(include_done=include_done):
+        meta = metadata.get(str(reminder["id"]), {})
+        out.append({**reminder, **meta})
+    return out
 
 
 # ─── SHEETS: PROJECTS ────────────────────────────────────────────────────────
@@ -734,3 +840,136 @@ def complete_checkin_today(checkin_id: str) -> bool:
     if changed:
         set_checkins(checkins)
     return changed
+
+
+# ─── SHEETS: FOLLOW-UPS ─────────────────────────────────────────────────────
+# Stored in Config as JSON so Hira can track people/topic/date/status.
+
+def get_followups(include_done=False) -> list:
+    raw = get_config("followups")
+    if not raw:
+        return []
+    try:
+        followups = json.loads(raw)
+    except Exception:
+        return []
+    clean = []
+    for item in followups:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status", "open")).strip().lower() or "open"
+        if status == "done" and not include_done:
+            continue
+        clean.append({
+            "id": str(item.get("id", "")),
+            "person": str(item.get("person", "")).strip(),
+            "topic": str(item.get("topic", "")).strip(),
+            "due_date": str(item.get("due_date", "")).strip(),
+            "channel": str(item.get("channel", "")).strip(),
+            "status": status,
+            "created": str(item.get("created", "")).strip(),
+            "last_prompted": str(item.get("last_prompted", "")).strip(),
+            "notes": str(item.get("notes", "")).strip(),
+        })
+    return [f for f in clean if f["id"] and f["topic"] and f["due_date"]]
+
+
+def set_followups(followups: list):
+    set_config("followups", json.dumps(followups, ensure_ascii=False))
+
+
+def add_followup(person: str, topic: str, due_date: str, channel: str = "", notes: str = "") -> dict:
+    followups = get_followups(include_done=True)
+    numeric_ids = [int(f["id"]) for f in followups if str(f.get("id", "")).isdigit()]
+    followup = {
+        "id": str(max(numeric_ids) + 1 if numeric_ids else 1),
+        "person": person.strip(),
+        "topic": topic.strip(),
+        "due_date": due_date.strip(),
+        "channel": channel.strip(),
+        "status": "open",
+        "created": datetime.now(SGT).isoformat(),
+        "last_prompted": "",
+        "notes": notes.strip(),
+    }
+    followups.append(followup)
+    set_followups(followups)
+    return followup
+
+
+def due_followups(today: str) -> list:
+    due = []
+    for followup in get_followups():
+        if followup["due_date"] <= today and followup.get("last_prompted") != today:
+            due.append(followup)
+    return due
+
+
+def mark_followup_prompted(followup_id: str, today: str):
+    followups = get_followups(include_done=True)
+    for followup in followups:
+        if str(followup.get("id")) == str(followup_id):
+            followup["last_prompted"] = today
+            break
+    set_followups(followups)
+
+
+def complete_followup(followup_id: str) -> bool:
+    followups = get_followups(include_done=True)
+    changed = False
+    for followup in followups:
+        if str(followup.get("id")) == str(followup_id):
+            followup["status"] = "done"
+            changed = True
+            break
+    if changed:
+        set_followups(followups)
+    return changed
+
+
+# ─── GMAIL ──────────────────────────────────────────────────────────────────
+
+def gmail_ok() -> bool:
+    return bool(os.environ.get("GOOGLE_GMAIL_USER", "").strip())
+
+
+def list_gmail_messages(query: str = "is:unread newer_than:7d", max_results: int = 10) -> list:
+    service = _gmail()
+    result = service.users().messages().list(
+        userId="me",
+        q=query,
+        maxResults=max(1, min(int(max_results or 10), 25)),
+    ).execute()
+    messages = []
+    for item in result.get("messages", []):
+        msg = service.users().messages().get(
+            userId="me",
+            id=item["id"],
+            format="metadata",
+            metadataHeaders=["From", "Subject", "Date"],
+        ).execute()
+        headers = {h["name"].lower(): h["value"] for h in msg.get("payload", {}).get("headers", [])}
+        messages.append({
+            "id": msg.get("id", ""),
+            "thread_id": msg.get("threadId", ""),
+            "from": headers.get("from", ""),
+            "subject": headers.get("subject", ""),
+            "date": headers.get("date", ""),
+            "snippet": msg.get("snippet", ""),
+        })
+    return messages
+
+
+def create_gmail_draft(to: str, subject: str, body: str, cc: str = "") -> dict:
+    service = _gmail()
+    message = EmailMessage()
+    message["To"] = to
+    if cc:
+        message["Cc"] = cc
+    message["Subject"] = subject
+    message.set_content(body)
+    encoded = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
+    return service.users().drafts().create(
+        userId="me",
+        body={"message": {"raw": encoded}},
+    ).execute()
