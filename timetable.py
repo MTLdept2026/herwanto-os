@@ -172,7 +172,7 @@ TIMETABLE = {
     ("Fri", "O"): [
         _b([1],       "FTCT/CCE", "1 Flagship",             "L4-08"),
         _b([2],       "CCE",   "1 Flagship",                "L4-08"),
-        _b([7, 8],    "ML",    "3 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison", "L3-10", "MLG33A"),
+        _b([8, 9],    "ML",    "3 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison", "L3-10", "MLG33A"),
     ],
 
     ("Fri", "E"): [],  # Free day — no lessons

@@ -67,7 +67,7 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("9:05–10:50", wednesday_odd)
         self.assertIn("11:25–12:30", wednesday_odd)
         self.assertIn("9:40–10:50", thursday_odd)
-        self.assertIn("10:50–11:55", friday_odd)
+        self.assertIn("11:25–12:30", friday_odd)
 
     def test_timetable_question_forces_timetable_tool(self):
         forced = bot._forced_tool_for_text(
