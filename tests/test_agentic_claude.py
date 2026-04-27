@@ -55,15 +55,17 @@ class AgenticClaudeTests(unittest.TestCase):
 
     def test_master_timetable_key_periods(self):
         monday_even = bot._timetable_for_lookup("Monday", "Even")
+        tuesday_odd = bot._timetable_for_lookup("Tuesday", "Odd")
         wednesday_odd = bot._timetable_for_lookup("Wednesday", "Odd")
         thursday_odd = bot._timetable_for_lookup("Thursday", "Odd")
         friday_odd = bot._timetable_for_lookup("Friday", "Odd")
 
         self.assertIn("8:00–9:05", monday_even)
         self.assertIn("10:50–11:55", monday_even)
-        self.assertIn("7:35–8:00", wednesday_odd)
+        self.assertIn("8:00–9:05", tuesday_odd)
+        self.assertIn("8:00–8:35", wednesday_odd)
         self.assertIn("9:05–10:50", wednesday_odd)
-        self.assertIn("10:50–11:55", wednesday_odd)
+        self.assertIn("11:25–12:30", wednesday_odd)
         self.assertIn("9:40–10:50", thursday_odd)
         self.assertIn("10:50–11:55", friday_odd)
 

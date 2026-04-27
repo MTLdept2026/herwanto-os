@@ -125,7 +125,7 @@ TIMETABLE = {
 
     ("Tue", "O"): [
         _b([1],       "FTCT",  "1 Flagship",                "L4-08"),
-        _b([2],       "CCE",   "1 Flagship",                "L4-08"),
+        _b([2, 3],    "CCE",   "1 Flagship",                "L4-08"),
         _b([5, 6],    "ML",    "2 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison/Harbour", "L4-12", "MLG31A"),
         _b([10, 11],  "ML",    "1 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison", "L4-11", "MLG21A"),
     ],
@@ -140,9 +140,9 @@ TIMETABLE = {
     # ── WEDNESDAY ─────────────────────────────────────────────────────────────
 
     ("Wed", "O"): [
-        _b([1],       "FTCT",  "1 Flagship",                "L4-08"),
+        _b([2],       "FTCT",  "1 Flagship",                "L4-08"),
         _b([4, 5, 6], "PLT",   "MTL Department",            "-"),
-        _b([7, 8],    "ML",    "2 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison/Harbour", "L4-12", "MLG31A"),
+        _b([8, 9],    "ML",    "2 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison/Harbour", "L4-12", "MLG31A"),
         _b([10, 11],  "ML",    "4 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison", "L4-12", "BMLA"),
     ],
 
