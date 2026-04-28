@@ -138,11 +138,13 @@ function urlBase64ToUint8Array(value) {
 function renderNotifications() {
   const badge = $("#notificationBadge");
   const list = $("#notificationsList");
+  const panel = $("#notificationsPanel");
   const count = state.notifications.length;
   badge.hidden = count === 0;
   badge.textContent = String(Math.min(count, 99));
   if (!count) {
-    list.innerHTML = "<div class='empty-state compact'>No app notifications yet.</div>";
+    list.innerHTML = "";
+    if (panel) panel.hidden = true;
     return;
   }
   list.innerHTML = state.notifications
@@ -1052,8 +1054,8 @@ $("#settingsBtn").addEventListener("click", () => {
   updateNotificationControls();
 });
 $("#notificationsBtn").addEventListener("click", () => {
-  $("#notificationsPanel").toggleAttribute("hidden");
   renderNotifications();
+  if (state.notifications.length) $("#notificationsPanel").toggleAttribute("hidden");
   updateNotificationControls();
 });
 $("#notificationsList").addEventListener("click", (event) => {

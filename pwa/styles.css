@@ -417,6 +417,10 @@ h3 {
   border-color: color-mix(in srgb, var(--success) 45%, transparent);
 }
 
+.notification-btn.notification-enabled {
+  border-color: var(--border-visible);
+}
+
 .notification-enabled .notification-toggle-knob {
   transform: translateX(18px);
 }
@@ -1349,11 +1353,12 @@ html[data-theme="dark"] .segment {
     --space-lg: 16px;
     --display-lg: 42px;
     --heading: 22px;
+    --mobile-edge: 20px;
   }
 
   .shell {
-    padding-left: max(10px, env(safe-area-inset-left));
-    padding-right: max(10px, env(safe-area-inset-right));
+    padding-left: max(var(--mobile-edge), env(safe-area-inset-left));
+    padding-right: max(var(--mobile-edge), env(safe-area-inset-right));
   }
 
   .topbar,
@@ -1368,6 +1373,8 @@ html[data-theme="dark"] .segment {
     grid-template-columns: 1fr auto;
     align-items: center;
     gap: var(--space-sm);
+    padding-left: 0;
+    padding-right: 0;
   }
 
   .topbar-actions {
@@ -1383,7 +1390,7 @@ html[data-theme="dark"] .segment {
   .status-bar {
     display: grid;
     gap: var(--space-sm);
-    padding: 14px;
+    padding: 18px;
     overflow: hidden;
   }
 
@@ -1438,7 +1445,7 @@ html[data-theme="dark"] .segment {
   .chat-main {
     order: -1;
     min-height: 0;
-    padding: 14px;
+    padding: 18px;
     grid-template-rows: auto auto minmax(140px, 1fr) auto;
   }
 
