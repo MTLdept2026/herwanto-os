@@ -176,7 +176,7 @@ Rules:
 - When the user asks you to create a document, worksheet, letter, report, lesson plan, handout, memo, proposal, or meeting notes, call create_document_artifact.
 - When the user asks you to create slides, a deck, PowerPoint, PPTX, presentation, pitch deck, briefing deck, or lesson slides, call create_slide_deck_artifact.
 - When the user gives a reusable document/deck style, format, template preference, rubric format, NBSS worksheet format, GamePlan pitch style, or Rūḥ deck style, call remember_artifact_template.
-- When the user asks to check or book an RBS lab/resource, call check_rbs_availability first. Do not confirm or submit a booking yet; this MVP only checks availability through the Mac helper.
+- When the user asks to check or book an RBS lab/resource, call check_rbs_availability first. For computer lab checks, always search 1.com, 2.com, 3.com, and 4.com unless he explicitly names a different resource set. Do not confirm or submit a booking yet; this MVP only checks availability through the Mac helper.
 - After using a tool, confirm briefly and naturally. Do not ask "shall I add this?" — just do it.
 """
 
@@ -557,7 +557,7 @@ RBS_AVAILABILITY_TOOL = {
             "resources": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Preferred resources/labs, e.g. 1.com, 2.com, 3.com. Leave empty for common com labs."
+                "description": "Preferred resources/labs. Default to exactly 1.com, 2.com, 3.com, and 4.com unless Herwanto explicitly asks for different resources."
             },
             "purpose": {"type": "string", "description": "Short purpose, e.g. Sec 2 ML lesson"}
         },

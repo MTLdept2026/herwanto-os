@@ -235,12 +235,12 @@ Hira creates downloadable `.docx` and `.pptx` files in Telegram. If Google Drive
 
 **RBS lab availability checks:**
 ```
-/rbs check 2026-05-05 | P5-P6 | 1.com,2.com,3.com | Sec 2 ML lesson
+/rbs check 2026-05-05 | P5-P6 | 1.com,2.com,3.com,4.com | Sec 2 ML lesson
 /rbs jobs
 Book lab for my Sec 2 ML lesson next Tuesday
 ```
 
-RBS automation uses a local Mac helper because Railway cannot access your Chrome session or MIMS credentials. The first version is dry-run only: Hira queues the check, the Mac helper opens Chrome/RBS, reads availability, saves a screenshot, and reports back in Telegram. It does not submit bookings yet.
+RBS automation uses a local Mac helper because Railway cannot access your Chrome session or MIMS credentials. The first version is dry-run only: Hira queues the check, the Mac helper opens Chrome/RBS, reads availability, saves a screenshot, and reports back in Telegram. Computer lab checks default to `1.com`, `2.com`, `3.com`, and `4.com`. It does not submit bookings yet.
 
 Local setup:
 ```bash
