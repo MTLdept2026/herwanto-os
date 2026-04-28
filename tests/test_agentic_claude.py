@@ -258,25 +258,5 @@ class AgenticClaudeTests(unittest.TestCase):
             self.assertTrue(bot.gs.gmail_ok("work"))
             self.assertFalse(bot.gs.gmail_ok("personal"))
 
-    def test_school_calendar_ids_append_after_primary(self):
-        env = {
-            "GOOGLE_CALENDAR_IDS": "primary,personal@example.com",
-            "STAFF_CALENDAR_IDS": "staff@group.calendar.google.com",
-            "SSC_CALENDAR_IDS": "ssc@group.calendar.google.com,primary",
-            "SCHOOL_LEADERS_CALENDAR_IDS": "leaders@group.calendar.google.com",
-        }
-
-        with patch.dict(os.environ, env, clear=True):
-            ids = bot.gs._configured_calendar_ids()
-
-        self.assertEqual(ids, [
-            "primary",
-            "personal@example.com",
-            "staff@group.calendar.google.com",
-            "ssc@group.calendar.google.com",
-            "leaders@group.calendar.google.com",
-        ])
-
-
 if __name__ == "__main__":
     unittest.main()

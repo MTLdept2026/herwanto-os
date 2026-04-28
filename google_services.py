@@ -39,15 +39,10 @@ def _split_ids(value: str) -> list[str]:
 
 
 def _configured_calendar_ids() -> list[str]:
-    """Read all configured calendar IDs, preserving write-calendar first."""
+    """Read configured calendar IDs, preserving write-calendar first."""
     ids = _split_ids(os.environ.get("GOOGLE_CALENDAR_IDS", ""))
     if not ids:
         ids = _split_ids(os.environ.get("GOOGLE_CALENDAR_ID", "")) or ["primary"]
-
-    # Optional grouped school calendars. These are read after the main calendar
-    # so calendar writes still go to the first GOOGLE_CALENDAR_IDS/ID entry.
-    for key in ("STAFF_CALENDAR_IDS", "SSC_CALENDAR_IDS", "SCHOOL_LEADERS_CALENDAR_IDS"):
-        ids.extend(_split_ids(os.environ.get(key, "")))
 
     deduped = []
     seen = set()
