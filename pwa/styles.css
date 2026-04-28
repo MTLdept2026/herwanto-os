@@ -149,9 +149,9 @@ textarea {
 
 .topbar {
   display: flex;
-  align-items: start;
+  align-items: center;
   justify-content: space-between;
-  padding: 4px 0 var(--space-md);
+  padding: 4px 0 var(--space-sm);
 }
 
 .topbar-actions,
@@ -1128,13 +1128,13 @@ html[data-theme="dark"] .segment {
 
   .topbar {
     grid-template-columns: 1fr auto;
-    align-items: start;
+    align-items: center;
     gap: var(--space-sm);
   }
 
   .topbar-actions {
     display: grid;
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, 52px);
     justify-items: end;
   }
 
