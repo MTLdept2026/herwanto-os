@@ -213,6 +213,34 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("Muhammad Herwanto Johari", excerpt)
         self.assertIn("Mon P2", excerpt)
 
+    def test_calendar_event_matching_finds_event_by_text(self):
+        events = [
+            {
+                "id": "evt-1",
+                "summary": "CCA football briefing",
+                "location": "Hall",
+                "description": "",
+                "start": {"dateTime": "2026-04-28T15:00:00+08:00"},
+                "end": {"dateTime": "2026-04-28T16:00:00+08:00"},
+                "_calendar_id": "primary",
+            },
+            {
+                "id": "evt-2",
+                "summary": "Parent meeting",
+                "location": "General Office",
+                "description": "",
+                "start": {"dateTime": "2026-04-29T10:00:00+08:00"},
+                "end": {"dateTime": "2026-04-29T10:30:00+08:00"},
+                "_calendar_id": "primary",
+            },
+        ]
+
+        with patch.object(bot.gs, "get_events_between", return_value=events):
+            event, score = bot._find_best_calendar_event("football briefing")
+
+        self.assertEqual(event["id"], "evt-1")
+        self.assertGreater(score, 0.45)
+
 
 if __name__ == "__main__":
     unittest.main()

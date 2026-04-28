@@ -155,6 +155,7 @@ Rules:
 - For business: give a direct recommendation.
 - Singapore English and local context always apply.
 - When he asks to add, schedule, or create a calendar event, create it directly if the date and time are clear. If details are incomplete, ask only for the missing detail.
+- When he asks to cancel, remove, delete, or mark a calendar event as done, call delete_calendar_event_by_text with the event description.
 - Never offer to generate .ics files. Use Google Calendar directly.
 - The current date and time is already provided at the top of this prompt — always use it for any date/time reasoning.
 - You have tools: create_calendar_event, add_reminder, add_marking_task, update_marking_progress, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, update_project_status, get_latest_news, and web_search. Use them proactively.
@@ -208,6 +209,20 @@ CALENDAR_TOOL = {
             "description": {"type": "string", "description": "Extra notes if any, else empty"}
         },
         "required": ["title", "date", "start_time", "end_time"]
+    }
+}
+
+DELETE_CALENDAR_TOOL = {
+    "name": "delete_calendar_event_by_text",
+    "description": "Delete the closest matching Google Calendar event by natural language text. Use when Herwanto says an event/meeting/duty/appointment is done, cancelled, or should be removed.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Event text to match, e.g. CCA duty, meeting with VP, lab booking"},
+            "days_back": {"type": "integer", "description": "Days back to search, default 7"},
+            "days_ahead": {"type": "integer", "description": "Days ahead to search, default 30"}
+        },
+        "required": ["query"]
     }
 }
 
@@ -982,6 +997,44 @@ def _find_best_followup(query: str):
         return None, 0
     scored = sorted(
         ((f, _score_text_match(query, f"{f['person']} {f['topic']} {f['due_date']} {f['channel']}")) for f in followups),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    return scored[0]
+
+def _event_text(event: dict) -> str:
+    start = event.get("start", {})
+    end = event.get("end", {})
+    return " ".join([
+        event.get("summary", ""),
+        event.get("location", ""),
+        event.get("description", ""),
+        start.get("dateTime", start.get("date", "")),
+        end.get("dateTime", end.get("date", "")),
+    ])
+
+def _event_when_text(event: dict) -> str:
+    raw_start = event.get("start", {}).get("dateTime", event.get("start", {}).get("date", ""))
+    raw_end = event.get("end", {}).get("dateTime", event.get("end", {}).get("date", ""))
+    try:
+        if "T" in raw_start:
+            start_dt = datetime.fromisoformat(raw_start).astimezone(SGT)
+            end_dt = datetime.fromisoformat(raw_end).astimezone(SGT) if raw_end else None
+            end_text = f"–{end_dt.strftime('%H:%M')}" if end_dt else ""
+            return f"{start_dt.strftime('%a %-d %b %H:%M')}{end_text}"
+        return datetime.fromisoformat(raw_start).strftime("%a %-d %b")
+    except Exception:
+        return raw_start
+
+def _find_best_calendar_event(query: str, days_back: int = 7, days_ahead: int = 30):
+    now = datetime.now(SGT)
+    start = now - timedelta(days=max(0, int(days_back or 7)))
+    end = now + timedelta(days=max(1, int(days_ahead or 30)))
+    events = gs.get_events_between(start, end)
+    if not events:
+        return None, 0
+    scored = sorted(
+        ((event, _score_text_match(query, _event_text(event))) for event in events),
         key=lambda item: item[1],
         reverse=True,
     )
@@ -2340,6 +2393,7 @@ def _core_tools():
     tools = [
         CONTEXT_TOOL,
         CALENDAR_TOOL,
+        DELETE_CALENDAR_TOOL,
         REMINDER_TOOL,
         NUDGE_TOOL,
         DAILY_CHECKIN_TOOL,
@@ -2621,6 +2675,20 @@ async def _execute_tool(name: str, inp: dict) -> str:
         except Exception as e:
             return f"Failed to create event: {e}"
 
+    elif name == "delete_calendar_event_by_text":
+        try:
+            event, score = _find_best_calendar_event(
+                inp["query"],
+                days_back=inp.get("days_back", 7),
+                days_ahead=inp.get("days_ahead", 30),
+            )
+            if not event or score < 0.45:
+                return "No confident calendar event match found. Ask with the event title/date so I do not delete the wrong thing."
+            gs.delete_event(event["id"], event.get("_calendar_id", ""))
+            return f"Deleted calendar event: {event.get('summary', '(No title)')} ({_event_when_text(event)})"
+        except Exception as e:
+            return f"Failed to delete calendar event: {e}"
+
     elif name == "add_reminder":
         try:
             rid = gs.add_reminder(inp["description"], inp["due_date"], inp.get("category", "General"))
@@ -2870,20 +2938,43 @@ async def _process_user_text(update, context, text: str):
                 reminder, r_score = _find_best_reminder(query)
                 followup, f_score = _find_best_followup(query)
                 marking, m_score = _find_best_marking_task(query)
-                if marking and m_score >= max(0.35, r_score, f_score):
+                event, e_score = _find_best_calendar_event(query)
+                if marking and m_score >= max(0.35, r_score, f_score, e_score):
                     updated = gs.update_marking_progress(marking["id"], done=True)
                     await update.message.reply_text(f"Completed marking: {updated['title']}")
                     return
-                if reminder and r_score >= max(0.35, f_score):
+                if reminder and r_score >= max(0.35, f_score, e_score):
                     gs.mark_done(reminder["id"])
                     await update.message.reply_text(f"Marked done: [{reminder['id']}] {reminder['description']}")
                     return
-                if followup and f_score >= 0.35:
+                if followup and f_score >= max(0.35, e_score):
                     gs.complete_followup(followup["id"])
                     await update.message.reply_text(f"Follow-up done: {followup['topic']}")
                     return
+                if event and e_score >= 0.5:
+                    gs.delete_event(event["id"], event.get("_calendar_id", ""))
+                    await update.message.reply_text(f"Removed from calendar: {event.get('summary', '(No title)')} ({_event_when_text(event)})")
+                    return
             except Exception as e:
                 logger.warning(f"Natural done handling error: {e}")
+
+        calendar_delete_match = re.match(
+            r"^\s*(?:cancel|delete|remove)\s+(?:the\s+)?(?:calendar\s+)?(?:event\s+)?(.+?)(?:\s+from\s+(?:my\s+)?calendar)?\s*$",
+            text,
+            re.I,
+        )
+        if calendar_delete_match:
+            query = calendar_delete_match.group(1).strip()
+            try:
+                event, score = _find_best_calendar_event(query)
+                if not event or score < 0.45:
+                    await update.message.reply_text("I could not confidently match that to a calendar event. Give me the event title or date so I do not delete the wrong thing.")
+                    return
+                gs.delete_event(event["id"], event.get("_calendar_id", ""))
+                await update.message.reply_text(f"Removed from calendar: {event.get('summary', '(No title)')} ({_event_when_text(event)})")
+                return
+            except Exception as e:
+                logger.warning(f"Natural calendar delete error: {e}")
 
     history = get_history(user_id)
     history.append({"role": "user", "content": text})

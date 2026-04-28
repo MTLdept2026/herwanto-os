@@ -99,7 +99,9 @@ def _fetch_events(start: datetime, end: datetime):
                 singleEvents=True,
                 orderBy="startTime",
             ).execute()
-            all_events.extend(result.get("items", []))
+            for event in result.get("items", []):
+                event["_calendar_id"] = cal_id
+                all_events.append(event)
         except Exception:
             pass  # skip calendars not yet shared
     all_events.sort(key=lambda e: e["start"].get("dateTime", e["start"].get("date", "")))
@@ -175,6 +177,16 @@ def create_event(title: str, start_dt: datetime, end_dt: datetime,
         event["description"] = description
     result = _cal().events().insert(calendarId=cal_id, body=event).execute()
     return result
+
+
+def get_events_between(start: datetime, end: datetime):
+    return _fetch_events(start, end)
+
+
+def delete_event(event_id: str, calendar_id: str = "") -> bool:
+    cal_id = calendar_id or (CALENDAR_IDS[0] if CALENDAR_IDS else "primary")
+    _cal().events().delete(calendarId=cal_id, eventId=event_id).execute()
+    return True
 
 
 # ─── DRIVE ARTIFACTS ────────────────────────────────────────────────────────
