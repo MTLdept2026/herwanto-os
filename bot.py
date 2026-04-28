@@ -1472,6 +1472,18 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     def has_any(words):
         return any(word in clean for word in words)
 
+    action_intent = has_any([
+        "add ", "create ", "schedule ", "book ", "put ", "set up ",
+        "remind me", "nudge me", "ping me", "check in", "check-in",
+        "draft ", "write ", "compose ", "reply ", "send ",
+    ])
+    completion_intent = has_any([
+        "done", "completed", "complete ", "mark as done", "mark done",
+        "cancel ", "delete ", "remove ",
+    ])
+    if action_intent or completion_intent:
+        return None
+
     if "get_timetable" in available and has_any([
         "timetable", "lesson", "lessons", "periods", "classes"
     ]):

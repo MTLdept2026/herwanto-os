@@ -89,6 +89,19 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(forced, "get_timetable")
 
+    def test_action_requests_are_not_forced_to_read_only_tools(self):
+        calendar_forced = bot._forced_tool_for_text(
+            "schedule meeting with HOD tomorrow at 3pm",
+            [{"name": "get_assistant_context"}, {"name": "create_calendar_event"}],
+        )
+        task_forced = bot._forced_tool_for_text(
+            "add task to submit CCA attendance by Friday",
+            [{"name": "get_task_brief"}, {"name": "add_reminder"}],
+        )
+
+        self.assertIsNone(calendar_forced)
+        self.assertIsNone(task_forced)
+
     def test_forced_tool_does_not_repeat_after_tool_result(self):
         fake_messages = FakeMessages()
         fake_claude = SimpleNamespace(messages=fake_messages)

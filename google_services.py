@@ -10,6 +10,8 @@ import json
 import base64
 import tempfile
 import pytz
+import threading
+from functools import lru_cache
 from datetime import datetime, timedelta
 from email.message import EmailMessage
 from pathlib import Path
@@ -34,6 +36,12 @@ GMAIL_SCOPES = [
 ]
 
 SHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "")
+_thread_local = threading.local()
+
+
+@lru_cache(maxsize=4)
+def _service_account_info(raw: str) -> dict:
+    return json.loads(base64.b64decode(raw).decode("utf-8"))
 
 def _split_ids(value: str) -> list[str]:
     return [item.strip() for item in (value or "").split(",") if item.strip()]
@@ -61,56 +69,70 @@ def _creds(scopes=None, subject: str = ""):
     raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
     if not raw:
         raise EnvironmentError("GOOGLE_SERVICE_ACCOUNT_JSON not set")
-    sa_info = json.loads(base64.b64decode(raw).decode("utf-8"))
+    sa_info = _service_account_info(raw)
     creds = service_account.Credentials.from_service_account_info(sa_info, scopes=scopes or SCOPES)
     if subject:
         creds = creds.with_subject(subject)
     return creds
 
 
+def _thread_cached_service(key: tuple, builder):
+    cache = getattr(_thread_local, "google_services", None)
+    if cache is None:
+        cache = {}
+        _thread_local.google_services = cache
+    if key not in cache:
+        cache[key] = builder()
+    return cache[key]
+
+
 def _cal():
-    return build("calendar", "v3", credentials=_creds())
+    return _thread_cached_service(("calendar",), lambda: build("calendar", "v3", credentials=_creds()))
 
 
 def _sheets():
-    return build("sheets", "v4", credentials=_creds())
+    return _thread_cached_service(("sheets",), lambda: build("sheets", "v4", credentials=_creds()))
 
 
 def _drive():
-    return build("drive", "v3", credentials=_creds())
+    return _thread_cached_service(("drive",), lambda: build("drive", "v3", credentials=_creds()))
 
 
 def _gmail(account: str = "personal"):
     account = (account or "personal").strip().lower()
-    if account in ("work", "moe", "school"):
-        refresh_token = os.environ.get("GOOGLE_WORK_GMAIL_REFRESH_TOKEN", "").strip()
-        client_id = os.environ.get("GOOGLE_WORK_GMAIL_CLIENT_ID", "").strip()
-        client_secret = os.environ.get("GOOGLE_WORK_GMAIL_CLIENT_SECRET", "").strip()
-        if not (refresh_token and client_id and client_secret):
-            # Reuse the same OAuth client app if only the work refresh token differs.
-            client_id = client_id or os.environ.get("GOOGLE_GMAIL_CLIENT_ID", "").strip()
-            client_secret = client_secret or os.environ.get("GOOGLE_GMAIL_CLIENT_SECRET", "").strip()
-    else:
-        refresh_token = os.environ.get("GOOGLE_GMAIL_REFRESH_TOKEN", "").strip()
-        client_id = os.environ.get("GOOGLE_GMAIL_CLIENT_ID", "").strip()
-        client_secret = os.environ.get("GOOGLE_GMAIL_CLIENT_SECRET", "").strip()
 
-    if refresh_token and client_id and client_secret:
-        creds = Credentials(
-            None,
-            refresh_token=refresh_token,
-            token_uri="https://oauth2.googleapis.com/token",
-            client_id=client_id,
-            client_secret=client_secret,
-            scopes=GMAIL_SCOPES,
-        )
-        return build("gmail", "v1", credentials=creds)
+    def build_gmail():
+        if account in ("work", "moe", "school"):
+            refresh_token = os.environ.get("GOOGLE_WORK_GMAIL_REFRESH_TOKEN", "").strip()
+            client_id = os.environ.get("GOOGLE_WORK_GMAIL_CLIENT_ID", "").strip()
+            client_secret = os.environ.get("GOOGLE_WORK_GMAIL_CLIENT_SECRET", "").strip()
+            if not (refresh_token and client_id and client_secret):
+                # Reuse the same OAuth client app if only the work refresh token differs.
+                client_id = client_id or os.environ.get("GOOGLE_GMAIL_CLIENT_ID", "").strip()
+                client_secret = client_secret or os.environ.get("GOOGLE_GMAIL_CLIENT_SECRET", "").strip()
+        else:
+            refresh_token = os.environ.get("GOOGLE_GMAIL_REFRESH_TOKEN", "").strip()
+            client_id = os.environ.get("GOOGLE_GMAIL_CLIENT_ID", "").strip()
+            client_secret = os.environ.get("GOOGLE_GMAIL_CLIENT_SECRET", "").strip()
 
-    user_key = "GOOGLE_WORK_GMAIL_USER" if account in ("work", "moe", "school") else "GOOGLE_GMAIL_USER"
-    user = os.environ.get(user_key, "").strip()
-    if not user:
-        raise EnvironmentError(f"{account.title()} Gmail not configured.")
-    return build("gmail", "v1", credentials=_creds(GMAIL_SCOPES, subject=user))
+        if refresh_token and client_id and client_secret:
+            creds = Credentials(
+                None,
+                refresh_token=refresh_token,
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=client_id,
+                client_secret=client_secret,
+                scopes=GMAIL_SCOPES,
+            )
+            return build("gmail", "v1", credentials=creds)
+
+        user_key = "GOOGLE_WORK_GMAIL_USER" if account in ("work", "moe", "school") else "GOOGLE_GMAIL_USER"
+        user = os.environ.get(user_key, "").strip()
+        if not user:
+            raise EnvironmentError(f"{account.title()} Gmail not configured.")
+        return build("gmail", "v1", credentials=_creds(GMAIL_SCOPES, subject=user))
+
+    return _thread_cached_service(("gmail", account), build_gmail)
 
 
 # ─── CALENDAR ────────────────────────────────────────────────────────────────
@@ -1329,6 +1351,7 @@ def list_gmail_messages(query: str = "", max_results: int = 10, account: str = "
     kwargs = {
         "userId": "me",
         "maxResults": max(1, min(int(max_results or 10), 25)),
+        "fields": "messages/id,nextPageToken",
     }
     if query.strip():
         kwargs["q"] = query.strip()
@@ -1340,6 +1363,7 @@ def list_gmail_messages(query: str = "", max_results: int = 10, account: str = "
             id=item["id"],
             format="metadata",
             metadataHeaders=["From", "Subject", "Date"],
+            fields="id,threadId,snippet,payload/headers/name,payload/headers/value",
         ).execute()
         headers = {h["name"].lower(): h["value"] for h in msg.get("payload", {}).get("headers", [])}
         messages.append({

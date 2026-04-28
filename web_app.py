@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -23,6 +24,7 @@ PWA_DIR = APP_DIR / "pwa"
 
 app = FastAPI(title="Hira OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
+_HOME_EXECUTOR = ThreadPoolExecutor(max_workers=6)
 
 
 class ChatRequest(BaseModel):
@@ -61,6 +63,46 @@ def _safe_text(builder, fallback: str) -> str:
         return builder()
     except Exception:
         return fallback
+
+
+def _parallel_home_data(days: int) -> dict:
+    jobs = {
+        "agenda": lambda: bot.build_agenda(days),
+        "tasks": lambda: bot.build_task_brief(days),
+        "files": bot.build_files_index,
+        "services": _service_status,
+        "marking": _marking_summary,
+    }
+    fallbacks = {
+        "agenda": "Agenda unavailable right now.",
+        "tasks": "Task brief unavailable until Google is connected.",
+        "files": "File memory unavailable until Google is connected.",
+        "services": {
+            "google": False,
+            "calendar": False,
+            "personal_gmail": False,
+            "work_gmail": False,
+        },
+        "marking": {
+            "active_stacks": 0,
+            "total_scripts": 0,
+            "marked_scripts": 0,
+            "unmarked_scripts": 0,
+            "connected": False,
+        },
+    }
+    futures = {key: _HOME_EXECUTOR.submit(builder) for key, builder in jobs.items()}
+    wait(futures.values(), timeout=12)
+    results = {}
+    for key, future in futures.items():
+        if not future.done():
+            results[key] = fallbacks[key]
+            continue
+        try:
+            results[key] = future.result()
+        except Exception:
+            results[key] = fallbacks[key]
+    return results
 
 
 def _service_status() -> dict:
@@ -126,14 +168,11 @@ def service_worker():
 def home(days: int = 7, x_hira_token: Optional[str] = Header(default=None)):
     _require_token(x_hira_token)
     now = datetime.now(bot.SGT)
+    data = _parallel_home_data(days)
     return {
         "greeting": now.strftime("%A, %-d %B"),
         "time_label": now.strftime("%H:%M SGT"),
-        "agenda": _safe_text(lambda: bot.build_agenda(days), "Agenda unavailable right now."),
-        "tasks": _safe_text(lambda: bot.build_task_brief(days), "Task brief unavailable until Google is connected."),
-        "files": _safe_text(lambda: bot.build_files_index(), "File memory unavailable until Google is connected."),
-        "services": _service_status(),
-        "marking": _marking_summary(),
+        **data,
     }
 
 
