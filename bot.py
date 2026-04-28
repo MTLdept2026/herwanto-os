@@ -7,8 +7,9 @@ import json
 import base64
 import logging
 import re
+import resource
 import tempfile
-from collections import defaultdict
+from collections import OrderedDict
 from datetime import datetime, timedelta, time as dt_time, date
 from difflib import SequenceMatcher
 import pytz
@@ -32,6 +33,9 @@ import document_service as docs
 SGT = pytz.timezone("Asia/Singapore")
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("apscheduler.executors.default").setLevel(logging.WARNING)
+logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
 
 claude = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 async_claude = AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
@@ -56,22 +60,77 @@ def _get_redis():
                 _redis = False
     return _redis if _redis else None
 
-_mem_histories = defaultdict(list)
+_mem_histories = OrderedDict()
 MAX_TURNS = 20
+try:
+    MAX_IN_MEMORY_HISTORIES = int(os.environ.get("HIRA_MAX_IN_MEMORY_HISTORIES", "50"))
+except ValueError:
+    MAX_IN_MEMORY_HISTORIES = 50
+_BREAK_AWARE_SLOT_CACHE = {}
+_LAST_MEMORY_LOG = None
 
 def get_history(user_id):
     r = _get_redis()
     if r:
         data = r.get(f"hist:{user_id}")
         return json.loads(data) if data else []
-    return list(_mem_histories[user_id])
+    key = str(user_id)
+    history = _mem_histories.get(key, [])
+    if key in _mem_histories:
+        _mem_histories.move_to_end(key)
+    return list(history)
 
 def save_history(user_id, history):
     r = _get_redis()
     if r:
         r.setex(f"hist:{user_id}", 86400 * 7, json.dumps(history))
     else:
-        _mem_histories[user_id] = history
+        key = str(user_id)
+        _mem_histories[key] = history[-MAX_TURNS:]
+        _mem_histories.move_to_end(key)
+        while len(_mem_histories) > MAX_IN_MEMORY_HISTORIES:
+            _mem_histories.popitem(last=False)
+
+def _rss_mb() -> float:
+    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    # Linux reports KiB, macOS reports bytes.
+    if rss > 10_000_000:
+        return rss / (1024 * 1024)
+    return rss / 1024
+
+def _memory_limit_mb() -> float | None:
+    for path in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                raw = fh.read().strip()
+        except Exception:
+            continue
+        if not raw or raw == "max":
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            continue
+        if value > 0 and value < 10**15:
+            return value / (1024 * 1024)
+    return None
+
+def _log_memory(label: str, force: bool = False) -> None:
+    global _LAST_MEMORY_LOG
+    now = datetime.now(SGT)
+    if not force and _LAST_MEMORY_LOG and now - _LAST_MEMORY_LOG < timedelta(minutes=10):
+        return
+    _LAST_MEMORY_LOG = now
+    limit = _memory_limit_mb()
+    limit_text = f" / limit {limit:.0f} MB" if limit else ""
+    logger.info(
+        "Memory %s: rss %.1f MB%s, in-memory histories=%s, break-slot cache=%s",
+        label,
+        _rss_mb(),
+        limit_text,
+        len(_mem_histories),
+        len(_BREAK_AWARE_SLOT_CACHE),
+    )
 
 # ─── SYSTEM PROMPT ───────────────────────────────────────────────────────────
 
@@ -1356,6 +1415,10 @@ def _due_break_aware_checkins(now: datetime) -> list[dict]:
     today = now.strftime("%Y-%m-%d")
     now_hm = now.strftime("%H:%M")
     due = []
+    cache_prefix = f"{today}:"
+    for key in list(_BREAK_AWARE_SLOT_CACHE):
+        if not key.startswith(cache_prefix):
+            _BREAK_AWARE_SLOT_CACHE.pop(key, None)
     for checkin in gs.get_checkins(include_inactive=True):
         if (
             not checkin["active"]
@@ -1365,7 +1428,17 @@ def _due_break_aware_checkins(now: datetime) -> list[dict]:
             continue
         sent_slots = checkin.get("sent_slots") if isinstance(checkin.get("sent_slots"), dict) else {}
         today_slots = sent_slots.get(today, [])
-        for slot in _break_aware_slots(checkin, now.date()):
+        cache_key = (
+            f"{today}:{checkin['id']}:{checkin.get('window_start')}:{checkin.get('window_end')}:"
+            f"{checkin.get('target_count')}:{checkin.get('min_break_minutes')}"
+        )
+        cached = _BREAK_AWARE_SLOT_CACHE.get(cache_key)
+        if cached and now - cached["created"] < timedelta(minutes=15):
+            slots = cached["slots"]
+        else:
+            slots = _break_aware_slots(checkin, now.date())
+            _BREAK_AWARE_SLOT_CACHE[cache_key] = {"created": now, "slots": slots}
+        for slot in slots:
             if slot <= now_hm and slot not in today_slots:
                 due.append({**checkin, "due_slot": slot})
                 break
@@ -3516,6 +3589,7 @@ async def proactive_nudges_job(context):
     if not google_ok():
         return
     try:
+        _log_memory("before proactive_nudges")
         now = datetime.now(SGT)
         for nudge in gs.due_nudges(now):
             text = f"*Hira nudge*\n\n{nudge['message']}"
@@ -3529,6 +3603,7 @@ async def daily_checkins_job(context):
     if not google_ok():
         return
     try:
+        _log_memory("before daily_checkins")
         now = datetime.now(SGT)
         due_checkins = gs.due_checkins(now) + _due_break_aware_checkins(now)
         for checkin in due_checkins:
@@ -3543,6 +3618,7 @@ async def followups_job(context):
     if not google_ok():
         return
     try:
+        _log_memory("before followups")
         today = datetime.now(SGT).strftime("%Y-%m-%d")
         for followup in gs.due_followups(today):
             text = f"*Hira follow-up*\n\n{_format_followup(followup)}\n\nUse `/donefollowup {followup['id']}` when settled."
@@ -3619,6 +3695,7 @@ def main():
     jq.run_repeating(daily_checkins_job, interval=60, first=20, name="daily_checkins")
     jq.run_repeating(followups_job, interval=3600, first=40, name="followups")
     logger.info("Herwanto OS running — all systems active.")
+    _log_memory("startup", force=True)
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
