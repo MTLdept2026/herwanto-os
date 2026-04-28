@@ -331,9 +331,55 @@ h3 {
   color: var(--text-secondary);
 }
 
+.notification-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-width: 112px;
+  min-height: 42px;
+  padding: 0 12px;
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  border-color: var(--border-visible);
+}
+
+.notification-toggle-track {
+  position: relative;
+  width: 38px;
+  height: 20px;
+  flex: 0 0 auto;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  opacity: 0.85;
+}
+
+.notification-toggle-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: currentColor;
+  transition: transform 160ms ease;
+}
+
+.notification-toggle-label {
+  font-family: "Space Mono", monospace;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .notification-enabled {
   color: var(--success);
   border-color: color-mix(in srgb, var(--success) 45%, transparent);
+}
+
+.notification-enabled .notification-toggle-knob {
+  transform: translateX(18px);
 }
 
 .notification-enabled:disabled {
@@ -343,6 +389,10 @@ h3 {
 .notification-warning {
   color: var(--warning);
   border-color: color-mix(in srgb, var(--warning) 45%, transparent);
+}
+
+.notification-warning .notification-toggle-knob {
+  transform: translateX(9px);
 }
 
 .notification-item {

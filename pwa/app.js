@@ -168,6 +168,16 @@ function renderNotifications() {
   refreshIcons(list);
 }
 
+function notificationToggleMarkup(label, tone) {
+  const safeLabel = escapeHtml(label);
+  return `
+    <span class="notification-toggle-track" aria-hidden="true">
+      <span class="notification-toggle-knob"></span>
+    </span>
+    <span class="notification-toggle-label">${safeLabel}</span>
+  `;
+}
+
 function setNotificationButtons({ label, title, stateText, tone = "neutral", disabled = false }) {
   const panelButton = $("#enableNotificationsBtn");
   const settingsButton = $("#settingsEnableNotificationsBtn");
@@ -175,9 +185,11 @@ function setNotificationButtons({ label, title, stateText, tone = "neutral", dis
   const notificationButton = $("#notificationsBtn");
   [panelButton, settingsButton].forEach((button) => {
     if (!button) return;
-    button.textContent = label;
+    button.innerHTML = notificationToggleMarkup(label, tone);
     button.title = title;
     button.disabled = disabled;
+    button.setAttribute("aria-pressed", tone === "ok" ? "true" : "false");
+    button.dataset.notificationState = tone;
     button.classList.toggle("notification-enabled", tone === "ok");
     button.classList.toggle("notification-warning", tone === "warn");
   });
@@ -196,7 +208,7 @@ function setNotificationButtons({ label, title, stateText, tone = "neutral", dis
 async function updateNotificationControls() {
   if (!("Notification" in window)) {
     setNotificationButtons({
-      label: "Notifications unavailable",
+      label: "Unavailable",
       title: "This browser does not support app notifications.",
       stateText: "State: unavailable in this browser.",
       tone: "warn",
@@ -207,7 +219,7 @@ async function updateNotificationControls() {
 
   if (Notification.permission === "denied") {
     setNotificationButtons({
-      label: "Notifications blocked",
+      label: "Blocked",
       title: "Notifications are blocked in browser settings.",
       stateText: "State: blocked in browser settings.",
       tone: "warn",
@@ -218,7 +230,7 @@ async function updateNotificationControls() {
 
   if (Notification.permission !== "granted") {
     setNotificationButtons({
-      label: "Enable app notifications",
+      label: "Off",
       title: "Ask this browser for notification permission.",
       stateText: "State: not enabled on this device.",
       disabled: false,
@@ -228,7 +240,7 @@ async function updateNotificationControls() {
 
   if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
     setNotificationButtons({
-      label: "Notifications enabled",
+      label: "On",
       title: "Browser notifications are enabled on this device.",
       stateText: "State: enabled on this device.",
       tone: "ok",
@@ -238,7 +250,7 @@ async function updateNotificationControls() {
   }
 
   setNotificationButtons({
-    label: "Notifications enabled",
+    label: "On",
     title: "Browser notification permission is enabled.",
     stateText: "State: enabled; checking push connection.",
     tone: "ok",
@@ -249,7 +261,7 @@ async function updateNotificationControls() {
     const registration = await navigator.serviceWorker.ready;
     const subscription = await registration.pushManager.getSubscription();
     setNotificationButtons({
-      label: subscription ? "Notifications enabled" : "Finish notification setup",
+      label: subscription ? "On" : "Setup",
       title: subscription
         ? "Browser permission and push subscription are active."
         : "Browser permission is on, but push still needs to be connected.",
@@ -261,7 +273,7 @@ async function updateNotificationControls() {
     });
   } catch (_) {
     setNotificationButtons({
-      label: "Notifications enabled",
+      label: "On",
       title: "Browser notification permission is enabled.",
       stateText: "State: enabled on this device.",
       tone: "ok",
