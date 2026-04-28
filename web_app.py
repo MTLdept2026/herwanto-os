@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -25,6 +25,16 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="Hira OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 _HOME_EXECUTOR = ThreadPoolExecutor(max_workers=6)
+
+
+@app.middleware("http")
+async def add_static_cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path in {"/", "/service-worker.js", "/static/app.js", "/static/styles.css"}:
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
 
 
 class ChatRequest(BaseModel):
