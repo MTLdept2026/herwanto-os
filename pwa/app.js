@@ -1153,7 +1153,19 @@ $("#tasksOutput").addEventListener("change", (event) => {
 });
 
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("/service-worker.js").then(updateNotificationControls).catch(updateNotificationControls);
+  let refreshingForServiceWorker = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (refreshingForServiceWorker) return;
+    refreshingForServiceWorker = true;
+    window.location.reload();
+  });
+  navigator.serviceWorker
+    .register("/service-worker.js", { updateViaCache: "none" })
+    .then((registration) => {
+      registration.update();
+      updateNotificationControls();
+    })
+    .catch(updateNotificationControls);
 }
 
 document.addEventListener("visibilitychange", () => {
