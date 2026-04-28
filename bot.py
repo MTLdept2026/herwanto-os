@@ -155,7 +155,7 @@ Rules:
 - When he asks to add, schedule, or create a calendar event, create it directly if the date and time are clear. If details are incomplete, ask only for the missing detail.
 - Never offer to generate .ics files. Use Google Calendar directly.
 - The current date and time is already provided at the top of this prompt — always use it for any date/time reasoning.
-- You have tools: create_calendar_event, add_reminder, add_marking_task, update_marking_progress, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, update_project_status, get_latest_news, and web_search. Use them proactively.
+- You have tools: create_calendar_event, add_reminder, add_marking_task, update_marking_progress, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, check_rbs_availability, get_assistant_context, remember_user_info, update_project_status, get_latest_news, and web_search. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
 - When the user mentions marking scripts, papers, compositions, kefahaman, karangan, worksheets, or a marking stack, use marking tools instead of ordinary reminders: add_marking_task for a new stack, update_marking_progress when he says how many scripts are marked, and get_marking_brief when he asks what marking is outstanding. Marking tasks are mission-critical and must persist even at 0 outstanding; only complete one when he explicitly says that marking stack is done, completed, or can be closed.
@@ -176,6 +176,7 @@ Rules:
 - When the user asks you to create a document, worksheet, letter, report, lesson plan, handout, memo, proposal, or meeting notes, call create_document_artifact.
 - When the user asks you to create slides, a deck, PowerPoint, PPTX, presentation, pitch deck, briefing deck, or lesson slides, call create_slide_deck_artifact.
 - When the user gives a reusable document/deck style, format, template preference, rubric format, NBSS worksheet format, GamePlan pitch style, or Rūḥ deck style, call remember_artifact_template.
+- When the user asks to check or book an RBS lab/resource, call check_rbs_availability first. Do not confirm or submit a booking yet; this MVP only checks availability through the Mac helper.
 - After using a tool, confirm briefly and naturally. Do not ask "shall I add this?" — just do it.
 """
 
@@ -541,6 +542,26 @@ GMAIL_DRAFT_TOOL = {
             "cc": {"type": "string", "description": "Optional cc"}
         },
         "required": ["to", "subject", "body"]
+    }
+}
+
+RBS_AVAILABILITY_TOOL = {
+    "name": "check_rbs_availability",
+    "description": "Queue a local Mac helper job to check RBS resource/lab availability. Use for lab/resource booking requests. This does not submit a booking.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "date": {"type": "string", "description": "Booking date in YYYY-MM-DD"},
+            "from_period": {"type": "string", "description": "Start period, e.g. P5"},
+            "till_period": {"type": "string", "description": "End period, e.g. P6"},
+            "resources": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Preferred resources/labs, e.g. 1.com, 2.com, 3.com. Leave empty for common com labs."
+            },
+            "purpose": {"type": "string", "description": "Short purpose, e.g. Sec 2 ML lesson"}
+        },
+        "required": ["date", "from_period", "till_period"]
     }
 }
 
@@ -1308,6 +1329,13 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
         if not has_any(["draft", "write", "compose", "reply"]):
             return "get_gmail_brief"
 
+    if "check_rbs_availability" in available and has_any([
+        "rbs", "resource booking", "book lab", "booking lab", "computer lab",
+        "com lab", "lab available", "lab availability", "book 1.com", "book 2.com",
+        "book 3.com", "book 4.com"
+    ]):
+        return "check_rbs_availability"
+
     if "get_assistant_context" in available and has_any([
         "today", "tomorrow", "schedule", "calendar", "agenda", "my day",
         "my week", "what's on", "whats on"
@@ -1482,6 +1510,108 @@ def build_weekly_plan():
             pass
     return "\n".join(lines).strip()
 
+DEFAULT_RBS_RESOURCES = ["1.com", "2.com", "3.com", "4.com"]
+
+def _normalise_period(value: str) -> str:
+    clean = str(value or "").strip().upper().replace("PERIOD", "P").replace(" ", "")
+    match = re.search(r"P?(\d{1,2})", clean)
+    if not match:
+        raise ValueError(f"Invalid period: {value}")
+    period = int(match.group(1))
+    if period < 0 or period > 18:
+        raise ValueError(f"Period out of RBS range: P{period}")
+    return f"P{period}"
+
+def _parse_rbs_period_range(value: str) -> tuple[str, str]:
+    clean = str(value or "").strip().upper()
+    parts = re.findall(r"P?\d{1,2}", clean)
+    if not parts:
+        raise ValueError("I need a period range like P5-P6.")
+    start = _normalise_period(parts[0])
+    end = _normalise_period(parts[1] if len(parts) > 1 else parts[0])
+    if int(start[1:]) > int(end[1:]):
+        start, end = end, start
+    return start, end
+
+def _normalise_rbs_resources(resources) -> list[str]:
+    if isinstance(resources, str):
+        raw = re.split(r"[,;/]", resources)
+    else:
+        raw = resources or []
+    cleaned = []
+    for item in raw:
+        value = str(item).strip()
+        if value and value.lower() not in {r.lower() for r in cleaned}:
+            cleaned.append(value)
+    return cleaned or list(DEFAULT_RBS_RESOURCES)
+
+def _create_rbs_availability_job(
+    booking_date: str,
+    from_period: str,
+    till_period: str,
+    resources=None,
+    purpose: str = "",
+    notify_chat_id: str = "",
+) -> dict:
+    if not google_ok():
+        raise RuntimeError("Google is not connected.")
+    date.fromisoformat(booking_date)
+    start = _normalise_period(from_period)
+    end = _normalise_period(till_period)
+    if int(start[1:]) > int(end[1:]):
+        start, end = end, start
+    return gs.add_rbs_availability_job(
+        booking_date,
+        start,
+        end,
+        _normalise_rbs_resources(resources),
+        purpose=purpose,
+        notify_chat_id=notify_chat_id,
+    )
+
+def _format_rbs_job(job: dict) -> str:
+    resources = ", ".join(job.get("resources", [])) or ", ".join(DEFAULT_RBS_RESOURCES)
+    purpose = f"\nPurpose: {job['purpose']}" if job.get("purpose") else ""
+    return (
+        f"`[{job['id']}]` {job['date']} {job['from_period']}-{job['till_period']}"
+        f"\nResources: {resources}{purpose}\nStatus: {job.get('status', 'queued')}"
+    )
+
+def _format_rbs_result(job: dict) -> str:
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    if job.get("status") == "failed":
+        error = job.get("error") or result.get("error") or "Unknown error"
+        return f"*RBS check failed* `[{job['id']}]`\n\n{error}"
+
+    available = result.get("available", [])
+    unavailable = result.get("unavailable", [])
+    notes = result.get("notes", "")
+    screenshot = result.get("screenshot", "")
+    lines = [f"*RBS availability result* `[{job['id']}]`"]
+    lines.append(f"{job['date']} {job['from_period']}-{job['till_period']}")
+    if job.get("purpose"):
+        lines.append(f"Purpose: {job['purpose']}")
+    lines.append("")
+    if available:
+        lines.append("*Available:*")
+        for item in available:
+            lines.append(f"- {item}")
+    else:
+        lines.append("*Available:* None found.")
+    if unavailable:
+        lines.append("")
+        lines.append("*Not available / unclear:*")
+        for item in unavailable:
+            lines.append(f"- {item}")
+    if notes:
+        lines.append("")
+        lines.append(notes)
+    if screenshot:
+        lines.append("")
+        lines.append(f"Screenshot: `{screenshot}`")
+    lines.append("\nDry run only. No booking was submitted.")
+    return "\n".join(lines)
+
 # ─── COMMANDS ────────────────────────────────────────────────────────────────
 
 async def start(update, context):
@@ -1506,6 +1636,7 @@ async def start(update, context):
         f"*Artifacts*\n/doc /slides /template /templates /artifacts\n\n"
         f"*Pro assistant*\n/tasks /taskmeta /donetask /followup /followups /files /evening /weekly\n\n"
         f"*Gmail*\n/gmail /gmaildraft (optional setup)\n\n"
+        f"*RBS Mac helper*\n/rbs check YYYY-MM-DD | P5-P6 | 1.com,2.com | purpose\n\n"
         f"*Assistant*\n/agenda [days] /remember /memory /forget all\n\n"
         f"*Projects*\n/projects /update\n\n"
         f"*Search*\n/search [query]\n\n"
@@ -2117,6 +2248,60 @@ async def gmaildraft_cmd(update, context):
     except Exception as e:
         await update.message.reply_text(f"Gmail draft error: {e}")
 
+async def rbs_cmd(update, context):
+    if not google_ok():
+        await update.message.reply_text("Google not connected.")
+        return
+    text = " ".join(context.args).strip()
+    if not text:
+        await reply(
+            update,
+            "Usage: `/rbs check YYYY-MM-DD | P5-P6 | 1.com,2.com | purpose`\n"
+            "Example: `/rbs check 2026-05-05 | P5-P6 | 1.com,2.com,3.com | Sec 2 ML lesson`",
+            parse_mode="Markdown",
+        )
+        return
+    try:
+        if text.lower().startswith("jobs"):
+            jobs = gs.get_rbs_jobs(include_done=True)[-10:]
+            if not jobs:
+                await update.message.reply_text("No RBS helper jobs yet.")
+                return
+            lines = ["*RBS helper jobs*\n"]
+            for job in jobs:
+                lines.append(_format_rbs_job(job))
+                lines.append("")
+            await reply(update, "\n".join(lines).strip(), parse_mode="Markdown")
+            return
+
+        if text.lower().startswith("check"):
+            text = text[5:].strip()
+        parts = [p.strip() for p in text.split("|")]
+        if len(parts) < 2:
+            await reply(update, "I need at least date and period range: `/rbs check 2026-05-05 | P5-P6`", parse_mode="Markdown")
+            return
+        booking_date = parts[0]
+        from_period, till_period = _parse_rbs_period_range(parts[1])
+        resources = parts[2] if len(parts) > 2 else ""
+        purpose = parts[3] if len(parts) > 3 else ""
+        job = _create_rbs_availability_job(
+            booking_date,
+            from_period,
+            till_period,
+            resources,
+            purpose=purpose,
+            notify_chat_id=str(update.effective_chat.id),
+        )
+        await reply(
+            update,
+            "Queued RBS availability check for the Mac helper:\n\n"
+            f"{_format_rbs_job(job)}\n\n"
+            "No booking will be submitted.",
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        await update.message.reply_text(f"RBS helper error: {e}")
+
 async def briefing_cmd(update, context):
     await reply(update, build_briefing(), parse_mode="Markdown")
 
@@ -2355,6 +2540,7 @@ def _core_tools():
         TIMETABLE_TOOL,
         GMAIL_BRIEF_TOOL,
         GMAIL_DRAFT_TOOL,
+        RBS_AVAILABILITY_TOOL,
         MEMORY_TOOL,
         WEEK_TYPE_TOOL,
         PROJECT_TOOL,
@@ -2729,6 +2915,24 @@ async def _execute_tool(name: str, inp: dict) -> str:
         except Exception as e:
             return f"Failed to create Gmail draft: {e}"
 
+    elif name == "check_rbs_availability":
+        try:
+            job = _create_rbs_availability_job(
+                inp["date"],
+                inp["from_period"],
+                inp["till_period"],
+                inp.get("resources", []),
+                purpose=inp.get("purpose", ""),
+                notify_chat_id=gs.get_config("chat_id") if google_ok() else "",
+            )
+            return (
+                "Queued RBS availability check for the Mac helper. "
+                f"Job #{job['id']}: {job['date']} {job['from_period']}-{job['till_period']} "
+                f"for {', '.join(job['resources'])}. No booking will be submitted."
+            )
+        except Exception as e:
+            return f"Failed to queue RBS check: {e}"
+
     elif name == "update_project_status":
         try:
             gs.update_project(
@@ -2955,6 +3159,20 @@ async def followups_job(context):
     except Exception as e:
         logger.error(f"Follow-up job error: {e}")
 
+async def rbs_results_job(context):
+    if not google_ok():
+        return
+    try:
+        for job in gs.unreported_rbs_jobs():
+            await context.bot.send_message(
+                chat_id=int(job["notify_chat_id"]),
+                text=_format_rbs_result(job),
+                parse_mode="Markdown",
+            )
+            gs.mark_rbs_job_reported(job["id"])
+    except Exception as e:
+        logger.error(f"RBS result job error: {e}")
+
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -2997,6 +3215,7 @@ def main():
     app.add_handler(CommandHandler("weekly",   weekly_cmd))
     app.add_handler(CommandHandler("gmail",    gmail_cmd))
     app.add_handler(CommandHandler("gmaildraft", gmaildraft_cmd))
+    app.add_handler(CommandHandler("rbs",      rbs_cmd))
     app.add_handler(CommandHandler("briefing", briefing_cmd))
     app.add_handler(CommandHandler("agenda",   agenda_cmd))
     app.add_handler(CommandHandler("remember", remember_cmd))
@@ -3021,6 +3240,7 @@ def main():
     jq.run_repeating(proactive_nudges_job, interval=60, first=10, name="proactive_nudges")
     jq.run_repeating(daily_checkins_job, interval=60, first=20, name="daily_checkins")
     jq.run_repeating(followups_job, interval=3600, first=40, name="followups")
+    jq.run_repeating(rbs_results_job, interval=60, first=30, name="rbs_results")
     logger.info("Herwanto OS running — all systems active.")
     app.run_polling(drop_pending_updates=True)
 
