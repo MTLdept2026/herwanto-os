@@ -1,7 +1,7 @@
 {
-  "name": "Hira OS",
-  "short_name": "Hira",
-  "description": "Herwanto's private assistant interface.",
+  "name": "H.I.R.A",
+  "short_name": "H.I.R.A",
+  "description": "Herwanto interface for responsive assistance.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

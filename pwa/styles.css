@@ -213,6 +213,16 @@ h1 {
   color: var(--text-display);
 }
 
+.brand-subtitle {
+  margin-top: 4px;
+  color: var(--text-secondary);
+  font-family: "Space Mono", monospace;
+  font-size: 11px;
+  line-height: 1.25;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+}
+
 h2 {
   font-size: var(--heading);
   line-height: 1.2;
@@ -693,6 +703,15 @@ h3 {
   line-height: 0.9;
   letter-spacing: 0;
   color: var(--text-display);
+}
+
+.brand-lockup {
+  display: grid;
+  gap: 8px;
+}
+
+.brand-lockup .brand-subtitle {
+  max-width: 34ch;
 }
 
 .prompt-row {
