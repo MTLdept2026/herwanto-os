@@ -13,7 +13,7 @@
     />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260428-5" />
+    <link rel="stylesheet" href="./styles.css?v=20260428-6" />
   </head>
   <body>
     <main class="shell">
@@ -73,11 +73,11 @@
         <p id="notificationStateText" class="subtle notification-state">Checking notifications...</p>
       </aside>
 
-      <section class="status-bar">
-        <div>
-          <p class="status-label">SYSTEM TIME</p>
-          <strong id="greetingDate">Loading...</strong>
-          <span id="greetingTime">...</span>
+      <section class="status-bar status-clockbar">
+        <div class="status-clock" aria-label="Local time">
+          <p class="status-label">LOCAL TIME</p>
+          <div id="greetingTime" class="clock-display clock-display-top">--:--</div>
+          <strong id="greetingDate" class="clock-meta">Loading</strong>
         </div>
         <p id="statusLine" data-tone="muted">Ready.</p>
       </section>

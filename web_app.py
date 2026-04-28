@@ -24,7 +24,13 @@ PWA_DIR = APP_DIR / "pwa"
 
 app = FastAPI(title="Hira OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
-_HOME_EXECUTOR = ThreadPoolExecutor(max_workers=6)
+
+try:
+    _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "2"))
+except ValueError:
+    _HOME_EXECUTOR_WORKERS = 2
+_HOME_EXECUTOR_WORKERS = max(1, min(3, _HOME_EXECUTOR_WORKERS))
+_HOME_EXECUTOR = ThreadPoolExecutor(max_workers=_HOME_EXECUTOR_WORKERS)
 
 
 @app.middleware("http")
@@ -106,6 +112,7 @@ def _parallel_home_data(days: int) -> dict:
     results = {}
     for key, future in futures.items():
         if not future.done():
+            future.cancel()
             results[key] = fallbacks[key]
             continue
         try:

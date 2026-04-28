@@ -20,6 +20,28 @@ const quickPrompts = [
 
 const $ = (selector) => document.querySelector(selector);
 const urlTheme = new URLSearchParams(window.location.search).get("theme");
+const clockFormatter = new Intl.DateTimeFormat("en-SG", {
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+  timeZone: "Asia/Singapore",
+});
+const dateFormatter = new Intl.DateTimeFormat("en-SG", {
+  weekday: "long",
+  day: "2-digit",
+  month: "long",
+  timeZone: "Asia/Singapore",
+});
+
+function updateLiveClock() {
+  const now = new Date();
+  const time = clockFormatter.format(now).replace(/^24:/, "00:");
+  const date = dateFormatter.format(now).replace(",", "").toUpperCase();
+  $("#greetingTime").textContent = time;
+  $("#greetingDate").textContent = date;
+  $("#homeClockTime").textContent = time;
+  $("#homeClockDate").textContent = date;
+}
 
 function resolvedTheme() {
   if (urlTheme === "light" || urlTheme === "dark") return urlTheme;
@@ -791,10 +813,7 @@ async function loadHome() {
   $("#homeTasks").innerHTML = "<div>Loading...</div>";
   try {
     const data = await api(`/api/home?days=${state.homeDays}`, { headers: headers(false) });
-    $("#greetingDate").textContent = data.greeting;
-    $("#greetingTime").textContent = data.time_label;
-    $("#homeClockTime").textContent = (data.time_label || "").replace(" SGT", "");
-    $("#homeClockDate").textContent = data.greeting || "";
+    updateLiveClock();
     $("#homeAgenda").innerHTML = renderAgendaCards(data.agenda);
     $("#homeTasks").innerHTML = renderTextBlock(data.tasks);
     const fileLines = countMeaningfulLines(data.files);
@@ -1209,5 +1228,7 @@ renderStoredChat();
 renderNotifications();
 updateNotificationControls();
 setView("home");
+updateLiveClock();
+setInterval(updateLiveClock, 1000);
 loadHome();
 startNotificationPolling();

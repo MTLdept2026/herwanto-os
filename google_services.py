@@ -86,16 +86,20 @@ def _thread_cached_service(key: tuple, builder):
     return cache[key]
 
 
+def _build_service(name: str, version: str, credentials):
+    return build(name, version, credentials=credentials, cache_discovery=False)
+
+
 def _cal():
-    return _thread_cached_service(("calendar",), lambda: build("calendar", "v3", credentials=_creds()))
+    return _thread_cached_service(("calendar",), lambda: _build_service("calendar", "v3", _creds()))
 
 
 def _sheets():
-    return _thread_cached_service(("sheets",), lambda: build("sheets", "v4", credentials=_creds()))
+    return _thread_cached_service(("sheets",), lambda: _build_service("sheets", "v4", _creds()))
 
 
 def _drive():
-    return _thread_cached_service(("drive",), lambda: build("drive", "v3", credentials=_creds()))
+    return _thread_cached_service(("drive",), lambda: _build_service("drive", "v3", _creds()))
 
 
 def _gmail(account: str = "personal"):
@@ -124,13 +128,13 @@ def _gmail(account: str = "personal"):
                 client_secret=client_secret,
                 scopes=GMAIL_SCOPES,
             )
-            return build("gmail", "v1", credentials=creds)
+            return _build_service("gmail", "v1", creds)
 
         user_key = "GOOGLE_WORK_GMAIL_USER" if account in ("work", "moe", "school") else "GOOGLE_GMAIL_USER"
         user = os.environ.get(user_key, "").strip()
         if not user:
             raise EnvironmentError(f"{account.title()} Gmail not configured.")
-        return build("gmail", "v1", credentials=_creds(GMAIL_SCOPES, subject=user))
+        return _build_service("gmail", "v1", _creds(GMAIL_SCOPES, subject=user))
 
     return _thread_cached_service(("gmail", account), build_gmail)
 

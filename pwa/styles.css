@@ -505,6 +505,36 @@ h3 {
   margin-bottom: var(--space-md);
 }
 
+.status-clockbar {
+  align-items: stretch;
+  min-height: 230px;
+  padding: clamp(22px, 4vw, 42px) clamp(24px, 5vw, 48px);
+  background:
+    radial-gradient(circle, rgba(255, 255, 255, 0.2) 0.8px, transparent 0.9px),
+    #ff7a1a;
+  background-size: 14px 14px, auto;
+  border-color: #e65f00;
+  color: #0b0b0b;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.12);
+}
+
+.status-clock {
+  display: grid;
+  align-content: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.status-clockbar .status-label {
+  color: #111111;
+}
+
+.status-clockbar #statusLine {
+  align-self: end;
+  max-width: 34ch;
+  color: rgba(0, 0, 0, 0.68);
+}
+
 #greetingDate {
   display: inline-block;
   margin-top: var(--space-xs);
@@ -518,6 +548,27 @@ h3 {
   font-family: "Space Mono", monospace;
   font-size: 22px;
   color: var(--text-primary);
+}
+
+.clock-display-top {
+  align-self: auto;
+  margin: 0;
+  font-size: clamp(86px, 13vw, 168px);
+  line-height: 0.82;
+  color: #ffffff;
+  text-shadow:
+    1px 0 #111111,
+    0 1px #111111;
+}
+
+.status-clockbar #greetingDate {
+  margin: 0;
+  font-size: clamp(20px, 3.6vw, 38px);
+  color: #111111;
+}
+
+.status-clockbar #greetingTime {
+  display: block;
 }
 
 #statusLine[data-tone="ok"] {
@@ -1394,6 +1445,16 @@ html[data-theme="dark"] .segment {
     overflow: hidden;
   }
 
+  .status-clockbar {
+    min-height: 190px;
+    padding: 22px;
+  }
+
+  .status-clockbar #statusLine {
+    align-self: start;
+    max-width: none;
+  }
+
   #greetingDate {
     display: block;
     font-size: clamp(30px, 8vw, 42px);
@@ -1404,6 +1465,15 @@ html[data-theme="dark"] .segment {
     display: block;
     margin: 8px 0 0;
     font-size: clamp(20px, 5.5vw, 26px);
+  }
+
+  .clock-display-top {
+    margin: 0;
+    font-size: clamp(72px, 22vw, 118px);
+  }
+
+  .status-clockbar #greetingDate {
+    font-size: clamp(18px, 6vw, 28px);
   }
 
   .nav-tabs {
