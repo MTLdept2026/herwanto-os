@@ -35,11 +35,8 @@ import google_services as gs  # noqa: E402
 
 RBS_URL = os.environ.get("RBS_URL", "https://rbs.avero-tech.com/login.html")
 PROFILE_DIR = Path(os.environ.get("RBS_CHROME_PROFILE_DIR", "~/.hira-rbs-chrome")).expanduser()
-CHROME_USER_DATA_DIR = os.environ.get(
-    "RBS_CHROME_USER_DATA_DIR",
-    "~/Library/Application Support/Google/Chrome",
-).strip()
-CHROME_PROFILE_NAME = os.environ.get("RBS_CHROME_PROFILE_NAME", "Default").strip()
+CHROME_USER_DATA_DIR = os.environ.get("RBS_CHROME_USER_DATA_DIR", "").strip()
+CHROME_PROFILE_NAME = os.environ.get("RBS_CHROME_PROFILE_NAME", "").strip()
 SCREENSHOT_DIR = Path(os.environ.get("RBS_SCREENSHOT_DIR", str(ROOT / "files" / "rbs"))).expanduser()
 POLL_SECONDS = int(os.environ.get("RBS_HELPER_POLL_SECONDS", "15"))
 LOGIN_WAIT_SECONDS = int(os.environ.get("RBS_LOGIN_WAIT_SECONDS", "180"))
@@ -76,15 +73,21 @@ def _click_if_visible(page, selector: str, timeout: int = 1500) -> bool:
 
 
 def _open_rbs(page):
+    _log(f"Opening RBS: {RBS_URL}")
+    page.bring_to_front()
     page.goto(RBS_URL, wait_until="domcontentloaded", timeout=60000)
+    _log(f"Loaded page: {page.url}")
     page.wait_for_timeout(1500)
 
-    _click_if_visible(page, "text=Sign in via MIMS", timeout=3000)
+    if _click_if_visible(page, "text=Sign in via MIMS", timeout=3000):
+        _log("Clicked Sign in via MIMS.")
     page.wait_for_timeout(1500)
 
     # If credentials are prefilled on the MIMS page, this is usually enough.
-    _click_if_visible(page, "button:has-text('Sign in')", timeout=2500)
+    if _click_if_visible(page, "button:has-text('Sign in')", timeout=2500):
+        _log("Clicked MIMS Sign in.")
     page.wait_for_load_state("domcontentloaded", timeout=60000)
+    _log(f"After sign-in attempt: {page.url}")
     page.wait_for_timeout(2500)
 
     if _looks_like_mims_login(page):
@@ -122,12 +125,14 @@ def _wait_for_manual_login(page):
 
 def _go_to_make_booking(page):
     # RBS sometimes lands on Home after auth; these clicks are intentionally broad.
+    _log("Opening Resource Booking > Make New Booking.")
     for selector in [
         "text=Resource Booking",
         "a:has-text('Resource Booking')",
         "button:has-text('Resource Booking')",
     ]:
         if _click_if_visible(page, selector, timeout=2500):
+            _log(f"Clicked {selector}.")
             page.wait_for_timeout(800)
             break
 
@@ -137,9 +142,11 @@ def _go_to_make_booking(page):
         "button:has-text('Make New Booking')",
     ]:
         if _click_if_visible(page, selector, timeout=2500):
+            _log(f"Clicked {selector}.")
             page.wait_for_load_state("domcontentloaded", timeout=60000)
             page.wait_for_timeout(1500)
             return
+    _log("Could not confidently click Make New Booking; continuing with current page.")
 
 
 def _set_date(page, iso_date: str):
@@ -158,10 +165,12 @@ def _set_date(page, iso_date: str):
                 locator.click()
                 locator.fill(rbs_date)
                 locator.press("Enter")
+                _log(f"Set RBS date to {rbs_date}.")
                 page.wait_for_timeout(1200)
                 return
         except Exception:
             continue
+    _log("Could not find date input.")
 
 
 def _select_period_dropdown(page, label_text: str, period: str):
@@ -190,6 +199,7 @@ def _select_period_dropdown(page, label_text: str, period: str):
 
 
 def _set_periods(page, from_period: str, till_period: str):
+    _log(f"Setting periods {from_period}-{till_period}.")
     _select_period_dropdown(page, "From Period", from_period)
     _select_period_dropdown(page, "Till Period", till_period)
 
@@ -205,10 +215,12 @@ def _search_resources(page, resources: list[str]):
             if locator.is_visible(timeout=1500):
                 locator.fill(search_text)
                 locator.press("Enter")
+                _log(f"Searched resources: {search_text}.")
                 page.wait_for_timeout(1500)
                 return
         except Exception:
             continue
+    _log("Could not find resource search input.")
 
 
 def _read_grid(page, resources: list[str], periods: list[str]) -> dict:
@@ -377,7 +389,7 @@ def process_once() -> bool:
                 viewport={"width": 1600, "height": 1000},
                 args=launch_args,
             )
-            page = context.pages[0] if context.pages else context.new_page()
+            page = context.new_page()
             result = check_availability(page, job)
             context.close()
         gs.update_rbs_job(job["id"], "done", result=result)

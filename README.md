@@ -261,7 +261,14 @@ export RBS_LOGIN_WAIT_SECONDS=180
 
 On the first run, log in to MIMS/RBS inside the helper-opened Chrome window if prompted. The helper waits on the MIMS page for manual login, then continues after the RBS page loads. After that, the local profile should keep the session. If you want it to use your regular Chrome profile, set `RBS_CHROME_PROFILE_DIR` to that profile path, but close Chrome first because Chrome locks active profiles.
 
-By default, the helper uses Herwanto's Chrome `Work` profile, which Chrome stores as `Default`:
+For daily use, keep the helper on its dedicated Chrome profile. It can stay logged into MIMS and run beside your normal Chrome:
+```bash
+export RBS_CHROME_PROFILE_DIR="$HOME/.hira-rbs-chrome"
+unset RBS_CHROME_USER_DATA_DIR
+unset RBS_CHROME_PROFILE_NAME
+```
+
+To use your real Chrome `Work` profile instead, normal Chrome must be fully closed first because Chrome locks active profiles:
 ```bash
 export RBS_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome"
 export RBS_CHROME_PROFILE_NAME="Default"
