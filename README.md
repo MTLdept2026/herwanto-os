@@ -260,13 +260,16 @@ Voice notes require `OPENAI_API_KEY`. Hira transcribes the note and then treats 
 **Gmail:**
 ```
 /gmail
+/gmail work
 /gmail is:unread newer_than:7d
+/gmail work is:unread newer_than:7d
 /gmaildraft recipient@example.com | Subject | Email body
+/gmaildraft work recipient@example.com | Subject | Email body
 ```
 
 Gmail support is optional. It requires the Gmail API and delegated access for `GOOGLE_GMAIL_USER`; for ordinary Gmail accounts this is not as simple as Calendar/Sheets service-account sharing. If Gmail is not configured, the commands fail gracefully.
 
-For a personal `@gmail.com` account, use OAuth instead:
+For Gmail OAuth:
 
 1. Google Cloud Console → APIs & Services → Library → enable **Gmail API**.
 2. APIs & Services → OAuth consent screen → set up an external/testing app.
@@ -285,15 +288,25 @@ python3 -m pip install -r requirements.txt
 python3 scripts/get_gmail_refresh_token.py
 ```
 9. Sign in with your Gmail and approve read/compose access.
-10. Add these Railway variables:
+10. Add these Railway variables for your personal inbox:
 ```env
 GOOGLE_GMAIL_CLIENT_ID=...
 GOOGLE_GMAIL_CLIENT_SECRET=...
 GOOGLE_GMAIL_REFRESH_TOKEN=...
 ```
-11. Redeploy Railway and test:
+11. For a second work/MOE Gmail inbox, run the token script again and sign in with the work account. Add the work token separately:
+```env
+GOOGLE_WORK_GMAIL_REFRESH_TOKEN=...
+```
+If you are using the same OAuth app, you do not need separate work client ID/secret. Hira will reuse `GOOGLE_GMAIL_CLIENT_ID` and `GOOGLE_GMAIL_CLIENT_SECRET`. If you create a separate OAuth app for work, set:
+```env
+GOOGLE_WORK_GMAIL_CLIENT_ID=...
+GOOGLE_WORK_GMAIL_CLIENT_SECRET=...
+```
+12. Redeploy Railway and test:
 ```text
 /gmail is:unread newer_than:7d
+/gmail work is:unread newer_than:7d
 /gmaildraft someone@example.com | Test from Hira | Hello, this is a draft created by Hira.
 ```
 

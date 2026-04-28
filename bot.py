@@ -176,6 +176,7 @@ Rules:
 - When the user asks to mark a reminder/task/follow-up done, call complete_task_by_text or complete_followup_by_text.
 - When the user asks what to do now or how to prioritise tasks, call get_task_brief.
 - When the user asks about Gmail, emails, inbox, unread email, latest/last/recent mail, email summaries, or drafting an email, use get_gmail_brief or create_gmail_draft when Gmail is connected. For "last/latest/recent emails", leave the Gmail query empty and set max_items. Use is:unread only when he explicitly asks for unread mail. If he asks for a number, set max_items to that number.
+- If he says work/MOE/school email, use account="work". If he says personal Gmail/email, use account="personal". If unspecified, default to personal.
 - When the user asks you to create a document, worksheet, letter, report, lesson plan, handout, memo, proposal, or meeting notes, call create_document_artifact.
 - When the user asks you to create slides, a deck, PowerPoint, PPTX, presentation, pitch deck, briefing deck, or lesson slides, call create_slide_deck_artifact.
 - When the user gives a reusable document/deck style, format, template preference, rubric format, NBSS worksheet format, GamePlan pitch style, or Rūḥ deck style, call remember_artifact_template.
@@ -541,7 +542,8 @@ GMAIL_BRIEF_TOOL = {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "Gmail search query. Leave empty for latest inbox messages. Use is:unread only if the user asks for unread mail."},
-            "max_items": {"type": "integer", "description": "Maximum messages, default 10"}
+            "max_items": {"type": "integer", "description": "Maximum messages, default 10"},
+            "account": {"type": "string", "description": "personal or work. Use work for MOE/school email."}
         }
     }
 }
@@ -555,7 +557,8 @@ GMAIL_DRAFT_TOOL = {
             "to": {"type": "string", "description": "Recipient email"},
             "subject": {"type": "string", "description": "Email subject"},
             "body": {"type": "string", "description": "Email body"},
-            "cc": {"type": "string", "description": "Optional cc"}
+            "cc": {"type": "string", "description": "Optional cc"},
+            "account": {"type": "string", "description": "personal or work. Use work for MOE/school email."}
         },
         "required": ["to", "subject", "body"]
     }
@@ -1377,6 +1380,35 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
 
     return None
 
+def _normalise_gmail_account(value: str = "") -> str:
+    clean = " ".join((value or "").lower().split())
+    if clean in ("work", "moe", "school", "work gmail", "moe gmail", "school gmail"):
+        return "work"
+    return "personal"
+
+def _extract_gmail_account_from_text(text: str) -> tuple[str, str]:
+    clean = " ".join((text or "").split())
+    lowered = clean.lower()
+    account = "personal"
+    for pattern in [
+        r"\bwork\s+gmail\b",
+        r"\bwork\s+emails?\b",
+        r"\bmoe\s+gmail\b",
+        r"\bmoe\s+emails?\b",
+        r"\bschool\s+gmail\b",
+        r"\bschool\s+emails?\b",
+    ]:
+        if re.search(pattern, lowered):
+            account = "work"
+            clean = re.sub(pattern, "", clean, flags=re.I).strip()
+            break
+    for pattern in [r"\bpersonal\s+gmail\b", r"\bpersonal\s+emails?\b"]:
+        if re.search(pattern, lowered):
+            account = "personal"
+            clean = re.sub(pattern, "", clean, flags=re.I).strip()
+            break
+    return account, " ".join(clean.split())
+
 
 def _forced_tool_for_current_turn(messages: list[dict], tools: list[dict]) -> str | None:
     if not messages:
@@ -2137,18 +2169,22 @@ async def weekly_cmd(update, context):
     await reply(update, build_weekly_plan(), parse_mode="Markdown")
 
 async def gmail_cmd(update, context):
-    if not gs.gmail_ok():
-        await update.message.reply_text("Gmail not connected. Configure personal Gmail OAuth variables or GOOGLE_GMAIL_USER first.")
+    account = "personal"
+    args = list(context.args)
+    if args and args[0].lower() in ("personal", "work", "moe", "school"):
+        account = _normalise_gmail_account(args.pop(0))
+    query = " ".join(args).strip()
+    if not gs.gmail_ok(account):
+        await update.message.reply_text(f"{gs.gmail_label(account).title()} not connected.")
         return
-    query = " ".join(context.args).strip()
     try:
-        messages = gs.list_gmail_messages(query=query, max_results=10)
+        messages = gs.list_gmail_messages(query=query, max_results=10, account=account)
         if not messages:
             detail = f" for `{query}`" if query else ""
-            await reply(update, f"No Gmail messages found{detail}.", parse_mode="Markdown")
+            await reply(update, f"No {gs.gmail_label(account)} messages found{detail}.", parse_mode="Markdown")
             return
         title = query if query else "latest messages"
-        lines = [f"*Gmail: {title}*\n"]
+        lines = [f"*{gs.gmail_label(account).title()}: {title}*\n"]
         for msg in messages:
             lines.append(f"- *{msg['subject']}*")
             lines.append(f"  From: {msg['from']}")
@@ -2158,17 +2194,21 @@ async def gmail_cmd(update, context):
         await update.message.reply_text(f"Gmail error: {e}")
 
 async def gmaildraft_cmd(update, context):
-    if not gs.gmail_ok():
-        await update.message.reply_text("Gmail not connected. Configure personal Gmail OAuth variables or GOOGLE_GMAIL_USER first.")
+    account = "personal"
+    args = list(context.args)
+    if args and args[0].lower() in ("personal", "work", "moe", "school"):
+        account = _normalise_gmail_account(args.pop(0))
+    if not gs.gmail_ok(account):
+        await update.message.reply_text(f"{gs.gmail_label(account).title()} not connected.")
         return
-    text = " ".join(context.args).strip()
+    text = " ".join(args).strip()
     parts = [p.strip() for p in text.split("|")]
     if len(parts) < 3:
-        await reply(update, "Usage: `/gmaildraft to | subject | body | cc`", parse_mode="Markdown")
+        await reply(update, "Usage: `/gmaildraft [personal|work] to | subject | body | cc`", parse_mode="Markdown")
         return
     try:
-        draft = gs.create_gmail_draft(parts[0], parts[1], parts[2], parts[3] if len(parts) > 3 else "")
-        await update.message.reply_text(f"Gmail draft created: {draft.get('id', '')}")
+        draft = gs.create_gmail_draft(parts[0], parts[1], parts[2], parts[3] if len(parts) > 3 else "", account=account)
+        await update.message.reply_text(f"{gs.gmail_label(account).title()} draft created: {draft.get('id', '')}")
     except Exception as e:
         await update.message.reply_text(f"Gmail draft error: {e}")
 
@@ -2851,14 +2891,16 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "get_gmail_brief":
         try:
-            if not gs.gmail_ok():
-                return "Gmail is not connected."
+            account = _normalise_gmail_account(inp.get("account", "personal"))
+            if not gs.gmail_ok(account):
+                return f"{gs.gmail_label(account).title()} is not connected."
             messages = gs.list_gmail_messages(
                 inp.get("query", ""),
                 inp.get("max_items", 10),
+                account=account,
             )
             if not messages:
-                return "No Gmail messages found."
+                return f"No {gs.gmail_label(account)} messages found."
             lines = []
             for msg in messages:
                 lines.append(f"- {msg['subject']} | From: {msg['from']} | {msg['snippet']}")
@@ -2868,15 +2910,17 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "create_gmail_draft":
         try:
-            if not gs.gmail_ok():
-                return "Gmail is not connected."
+            account = _normalise_gmail_account(inp.get("account", "personal"))
+            if not gs.gmail_ok(account):
+                return f"{gs.gmail_label(account).title()} is not connected."
             draft = gs.create_gmail_draft(
                 inp["to"],
                 inp["subject"],
                 inp["body"],
                 inp.get("cc", ""),
+                account=account,
             )
-            return f"Created Gmail draft: {draft.get('id', '')}"
+            return f"Created {gs.gmail_label(account)} draft: {draft.get('id', '')}"
         except Exception as e:
             return f"Failed to create Gmail draft: {e}"
 
@@ -2977,7 +3021,11 @@ async def _process_user_text(update, context, text: str):
                 logger.warning(f"Natural calendar delete error: {e}")
 
     history = get_history(user_id)
-    history.append({"role": "user", "content": text})
+    user_content = text
+    if re.search(r"\b(?:work|moe|school|personal)\s+(?:gmail|email|emails|mail)\b", text, re.I):
+        account_hint, _ = _extract_gmail_account_from_text(text)
+        user_content = f"{text}\n\n[Email account hint: use account=\"{account_hint}\" for Gmail tools.]"
+    history.append({"role": "user", "content": user_content})
     if len(history) > MAX_TURNS:
         history = history[-MAX_TURNS:]
 

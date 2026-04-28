@@ -241,6 +241,23 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(event["id"], "evt-1")
         self.assertGreater(score, 0.45)
 
+    def test_gmail_account_extraction_detects_work_email(self):
+        account, query = bot._extract_gmail_account_from_text("show my last 5 work emails")
+
+        self.assertEqual(account, "work")
+        self.assertEqual(query, "show my last 5")
+
+    def test_work_gmail_can_reuse_personal_oauth_client(self):
+        env = {
+            "GOOGLE_GMAIL_CLIENT_ID": "client",
+            "GOOGLE_GMAIL_CLIENT_SECRET": "secret",
+            "GOOGLE_WORK_GMAIL_REFRESH_TOKEN": "work-refresh",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            self.assertTrue(bot.gs.gmail_ok("work"))
+            self.assertFalse(bot.gs.gmail_ok("personal"))
+
 
 if __name__ == "__main__":
     unittest.main()

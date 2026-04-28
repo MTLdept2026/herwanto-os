@@ -63,10 +63,21 @@ def _drive():
     return build("drive", "v3", credentials=_creds())
 
 
-def _gmail():
-    refresh_token = os.environ.get("GOOGLE_GMAIL_REFRESH_TOKEN", "").strip()
-    client_id = os.environ.get("GOOGLE_GMAIL_CLIENT_ID", "").strip()
-    client_secret = os.environ.get("GOOGLE_GMAIL_CLIENT_SECRET", "").strip()
+def _gmail(account: str = "personal"):
+    account = (account or "personal").strip().lower()
+    if account in ("work", "moe", "school"):
+        refresh_token = os.environ.get("GOOGLE_WORK_GMAIL_REFRESH_TOKEN", "").strip()
+        client_id = os.environ.get("GOOGLE_WORK_GMAIL_CLIENT_ID", "").strip()
+        client_secret = os.environ.get("GOOGLE_WORK_GMAIL_CLIENT_SECRET", "").strip()
+        if not (refresh_token and client_id and client_secret):
+            # Reuse the same OAuth client app if only the work refresh token differs.
+            client_id = client_id or os.environ.get("GOOGLE_GMAIL_CLIENT_ID", "").strip()
+            client_secret = client_secret or os.environ.get("GOOGLE_GMAIL_CLIENT_SECRET", "").strip()
+    else:
+        refresh_token = os.environ.get("GOOGLE_GMAIL_REFRESH_TOKEN", "").strip()
+        client_id = os.environ.get("GOOGLE_GMAIL_CLIENT_ID", "").strip()
+        client_secret = os.environ.get("GOOGLE_GMAIL_CLIENT_SECRET", "").strip()
+
     if refresh_token and client_id and client_secret:
         creds = Credentials(
             None,
@@ -78,9 +89,10 @@ def _gmail():
         )
         return build("gmail", "v1", credentials=creds)
 
-    user = os.environ.get("GOOGLE_GMAIL_USER", "").strip()
+    user_key = "GOOGLE_WORK_GMAIL_USER" if account in ("work", "moe", "school") else "GOOGLE_GMAIL_USER"
+    user = os.environ.get(user_key, "").strip()
     if not user:
-        raise EnvironmentError("Gmail not configured. Set personal Gmail OAuth vars or GOOGLE_GMAIL_USER for Workspace delegation.")
+        raise EnvironmentError(f"{account.title()} Gmail not configured.")
     return build("gmail", "v1", credentials=_creds(GMAIL_SCOPES, subject=user))
 
 
@@ -1053,7 +1065,21 @@ def complete_followup(followup_id: str) -> bool:
 
 # ─── GMAIL ──────────────────────────────────────────────────────────────────
 
-def gmail_ok() -> bool:
+def gmail_ok(account: str = "personal") -> bool:
+    account = (account or "personal").strip().lower()
+    if account in ("work", "moe", "school"):
+        has_work_oauth = bool(os.environ.get("GOOGLE_WORK_GMAIL_REFRESH_TOKEN", "").strip()) and (
+            all(
+                os.environ.get(key, "").strip()
+                for key in ("GOOGLE_WORK_GMAIL_CLIENT_ID", "GOOGLE_WORK_GMAIL_CLIENT_SECRET")
+            )
+            or all(
+                os.environ.get(key, "").strip()
+                for key in ("GOOGLE_GMAIL_CLIENT_ID", "GOOGLE_GMAIL_CLIENT_SECRET")
+            )
+        )
+        return has_work_oauth or bool(os.environ.get("GOOGLE_WORK_GMAIL_USER", "").strip())
+
     has_oauth = all(
         os.environ.get(key, "").strip()
         for key in ("GOOGLE_GMAIL_CLIENT_ID", "GOOGLE_GMAIL_CLIENT_SECRET", "GOOGLE_GMAIL_REFRESH_TOKEN")
@@ -1061,8 +1087,15 @@ def gmail_ok() -> bool:
     return has_oauth or bool(os.environ.get("GOOGLE_GMAIL_USER", "").strip())
 
 
-def list_gmail_messages(query: str = "", max_results: int = 10) -> list:
-    service = _gmail()
+def gmail_label(account: str = "personal") -> str:
+    account = (account or "personal").strip().lower()
+    if account in ("work", "moe", "school"):
+        return "work Gmail"
+    return "personal Gmail"
+
+
+def list_gmail_messages(query: str = "", max_results: int = 10, account: str = "personal") -> list:
+    service = _gmail(account)
     kwargs = {
         "userId": "me",
         "maxResults": max(1, min(int(max_results or 10), 25)),
@@ -1090,8 +1123,8 @@ def list_gmail_messages(query: str = "", max_results: int = 10) -> list:
     return messages
 
 
-def create_gmail_draft(to: str, subject: str, body: str, cc: str = "") -> dict:
-    service = _gmail()
+def create_gmail_draft(to: str, subject: str, body: str, cc: str = "", account: str = "personal") -> dict:
+    service = _gmail(account)
     message = EmailMessage()
     message["To"] = to
     if cc:
