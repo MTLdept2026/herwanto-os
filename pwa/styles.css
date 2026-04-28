@@ -295,6 +295,9 @@ h3 {
 
 .notification-btn {
   position: relative;
+  grid-template-columns: 18px auto;
+  gap: 7px;
+  width: 76px;
 }
 
 .notification-btn span {
@@ -318,6 +321,42 @@ h3 {
   font-family: "Space Mono", monospace;
   font-size: 11px;
   line-height: 1;
+}
+
+.notification-top-toggle {
+  position: relative;
+  width: 26px;
+  height: 14px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  color: var(--text-secondary);
+}
+
+.notification-top-toggle span {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+  transition: transform 160ms ease;
+}
+
+.notification-enabled .notification-top-toggle {
+  color: var(--success);
+}
+
+.notification-enabled .notification-top-toggle span {
+  transform: translateX(12px);
+}
+
+.notification-warning .notification-top-toggle {
+  color: var(--warning);
+}
+
+.notification-warning .notification-top-toggle span {
+  transform: translateX(6px);
 }
 
 .notification-list {
@@ -465,15 +504,15 @@ h3 {
 #greetingDate {
   display: inline-block;
   margin-top: var(--space-xs);
-  font-size: 28px;
-  line-height: 1.05;
+  font-size: 44px;
+  line-height: 1;
   color: var(--text-display);
 }
 
 #greetingTime {
   margin-left: var(--space-xs);
   font-family: "Space Mono", monospace;
-  font-size: 18px;
+  font-size: 28px;
   color: var(--text-primary);
 }
 
@@ -1350,14 +1389,14 @@ html[data-theme="dark"] .segment {
 
   #greetingDate {
     display: block;
-    font-size: clamp(22px, 7vw, 34px);
+    font-size: clamp(38px, 10vw, 56px);
     overflow-wrap: anywhere;
   }
 
   #greetingTime {
     display: block;
     margin: 8px 0 0;
-    font-size: 16px;
+    font-size: clamp(24px, 7vw, 34px);
   }
 
   .nav-tabs {

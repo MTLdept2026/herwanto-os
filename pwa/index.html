@@ -13,7 +13,7 @@
     />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260428-3" />
+    <link rel="stylesheet" href="./styles.css?v=20260428-4" />
   </head>
   <body>
     <main class="shell">
@@ -29,6 +29,7 @@
           </div>
           <button id="notificationsBtn" class="icon-btn notification-btn" type="button" title="Notifications">
             <span data-lucide="bell" aria-hidden="true"></span>
+            <span class="notification-top-toggle" aria-hidden="true"><span></span></span>
             <strong id="notificationBadge" hidden>0</strong>
           </button>
           <button id="installBtn" class="icon-btn" hidden title="Install app">
@@ -381,6 +382,6 @@
       </section>
     </main>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-    <script src="/static/app.js?v=20260428-3" type="module"></script>
+    <script src="./app.js?v=20260428-4" type="module"></script>
   </body>
 </html>

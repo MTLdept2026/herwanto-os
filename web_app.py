@@ -30,7 +30,7 @@ _HOME_EXECUTOR = ThreadPoolExecutor(max_workers=6)
 @app.middleware("http")
 async def add_static_cache_headers(request: Request, call_next):
     response = await call_next(request)
-    if request.url.path in {"/", "/service-worker.js", "/static/app.js", "/static/styles.css"}:
+    if request.url.path in {"/", "/service-worker.js", "/app.js", "/styles.css", "/static/app.js", "/static/styles.css"}:
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
@@ -172,6 +172,16 @@ def manifest():
 @app.get("/service-worker.js")
 def service_worker():
     return FileResponse(PWA_DIR / "service-worker.js", media_type="application/javascript")
+
+
+@app.get("/styles.css")
+def root_styles():
+    return FileResponse(PWA_DIR / "styles.css", media_type="text/css")
+
+
+@app.get("/app.js")
+def root_app_js():
+    return FileResponse(PWA_DIR / "app.js", media_type="application/javascript")
 
 
 @app.get("/api/home")
