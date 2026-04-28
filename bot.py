@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import io
+import asyncio
 import json
 import base64
 import logging
@@ -12,7 +13,7 @@ from datetime import datetime, timedelta, time as dt_time, date
 from difflib import SequenceMatcher
 import pytz
 
-from anthropic import Anthropic
+from anthropic import Anthropic, AsyncAnthropic
 from telegram import Update
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -33,6 +34,8 @@ logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=lo
 logger = logging.getLogger(__name__)
 
 claude = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+async_claude = AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+_SYSTEM_PROMPT_CACHE = {"key": None, "value": None}
 
 # ─── REDIS MEMORY (falls back to in-memory if Redis not configured) ──────────
 
@@ -183,6 +186,14 @@ Rules:
 - When the user gives a reusable document/deck style, format, template preference, rubric format, NBSS worksheet format, GamePlan pitch style, or Rūḥ deck style, call remember_artifact_template.
 - After using a tool, confirm briefly and naturally. Do not ask "shall I add this?" — just do it.
 """
+
+def CACHED_SYSTEM_PROMPT():
+    now = datetime.now(SGT)
+    key = (now.strftime("%Y-%m-%d %H:%M"), google_ok())
+    if _SYSTEM_PROMPT_CACHE["key"] != key:
+        _SYSTEM_PROMPT_CACHE["key"] = key
+        _SYSTEM_PROMPT_CACHE["value"] = SYSTEM_PROMPT()
+    return _SYSTEM_PROMPT_CACHE["value"]
 
 # Claude tool definition for web search
 SEARCH_TOOL = {
@@ -2648,6 +2659,42 @@ def _core_tools():
         tools.append(SEARCH_TOOL)
     return tools
 
+def pwa_tools_for_message(text: str) -> list[dict]:
+    text = (text or "").lower()
+    tools: list[dict] = []
+
+    def add(*items):
+        for item in items:
+            if item not in tools:
+                tools.append(item)
+
+    if re.search(r"\b(gmail|email|emails|mail|inbox|unread|draft|reply)\b", text):
+        add(GMAIL_BRIEF_TOOL, GMAIL_DRAFT_TOOL)
+    if re.search(r"\b(timetable|lesson|period|odd week|even week|school week)\b", text):
+        add(TIMETABLE_TOOL, WEEK_TYPE_TOOL)
+    if re.search(r"\b(calendar|schedule|agenda|today|tomorrow|week|meeting|event|appointment|duty|training|match|cca|what'?s on)\b", text):
+        add(CONTEXT_TOOL, CALENDAR_TOOL, DELETE_CALENDAR_TOOL, REMINDER_TOOL, TIMETABLE_TOOL)
+    if re.search(r"\b(task|tasks|due|deadline|remind|reminder|prepare|submit|complete|done|priority|prioritise|prioritize|focus)\b", text):
+        add(CONTEXT_TOOL, TASK_BRIEF_TOOL, REMINDER_TOOL, COMPLETE_TASK_TOOL)
+    if re.search(r"\b(marking|scripts?|papers?|compositions?|kefahaman|karangan|worksheets?|marked|unmarked)\b", text):
+        add(ADD_MARKING_TOOL, UPDATE_MARKING_TOOL, MARKING_BRIEF_TOOL)
+    if re.search(r"\b(nudge|ping|check[- ]?in|check in|selawat|salawat|istighfar|zikir|zikr|dhikr)\b", text):
+        add(NUDGE_TOOL, DAILY_CHECKIN_TOOL, BREAK_AWARE_CHECKIN_TOOL)
+    if re.search(r"\b(follow[- ]?up|follow up|owe replies|chase)\b", text):
+        add(FOLLOWUP_TOOL, COMPLETE_FOLLOWUP_TOOL, GMAIL_BRIEF_TOOL, TASK_BRIEF_TOOL)
+    if re.search(r"\b(news|latest|current|headline|headlines|search|web|football|f1|apple|ai|singapore education|nothing os)\b", text):
+        add(NEWS_TOOL)
+        if ss.search_enabled():
+            add(SEARCH_TOOL)
+    if re.search(r"\b(document|docx|worksheet|letter|report|lesson plan|handout|memo|proposal|meeting notes)\b", text):
+        add(DOCUMENT_ARTIFACT_TOOL, TEMPLATE_MEMORY_TOOL)
+    if re.search(r"\b(slide|slides|deck|ppt|pptx|powerpoint|presentation|pitch)\b", text):
+        add(SLIDE_ARTIFACT_TOOL, TEMPLATE_MEMORY_TOOL)
+    if re.search(r"\b(remember|note that|preference|prefer|template|style|project status|milestone)\b", text):
+        add(MEMORY_TOOL, PROJECT_TOOL, TEMPLATE_MEMORY_TOOL)
+
+    return tools or _core_tools()
+
 async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
     tools = tools or _core_tools()
     reply_text = ""
@@ -2662,7 +2709,7 @@ async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
         resp = claude.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=max_tokens,
-            system=SYSTEM_PROMPT(),
+            system=CACHED_SYSTEM_PROMPT(),
             tools=tools,
             messages=messages,
             **kwargs,
@@ -2673,20 +2720,141 @@ async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
             break
 
         messages.append({"role": "assistant", "content": resp.content})
-        tool_results = []
-        for block in resp.content:
-            if block.type != "tool_use":
-                continue
+        tool_blocks = [block for block in resp.content if block.type == "tool_use"]
+
+        async def run_tool(block):
             logger.info(f"Tool call: {block.name} {block.input}")
             result = await _execute_tool(block.name, block.input)
-            tool_results.append({
+            return {
                 "type": "tool_result",
                 "tool_use_id": block.id,
                 "content": result
-            })
+            }
+
+        tool_results = await asyncio.gather(*(run_tool(block) for block in tool_blocks))
         messages.append({"role": "user", "content": tool_results})
 
     return _correct_weekday_date_mismatches(reply_text or "Done.")
+
+def _looks_tool_heavy(text: str) -> bool:
+    return bool(re.search(
+        r"\b(calendar|schedule|meeting|event|remind|nudge|task|due|marking|scripts?|"
+        r"email|gmail|inbox|draft|reply|timetable|lesson|news|latest|search|remember|"
+        r"document|worksheet|slides?|ppt|deck|follow\s*up|done|complete)\b",
+        text,
+        re.I,
+    ))
+
+def _obvious_quick_chat(text: str) -> bool:
+    clean = re.sub(r"[^\w\s']", "", text.lower()).strip()
+    if not clean:
+        return False
+    if clean in {
+        "ok", "okay", "k", "kk", "yes", "yep", "yeah", "no", "nope", "nah",
+        "thanks", "thank you", "thx", "ty", "cool", "great", "nice", "noted",
+        "got it", "understood", "sure", "alright", "morning", "hi", "hello", "hey",
+    }:
+        return True
+    return len(clean.split()) <= 5 and bool(re.search(r"\b(thanks?|ok(?:ay)?|yes|no|hi|hello|hey)\b", clean))
+
+async def should_route_quick_pwa_chat(messages: list[dict], message: str) -> bool:
+    text = (message or "").strip()
+    if not text or len(text) > 120 or _looks_tool_heavy(text):
+        return False
+    if _obvious_quick_chat(text):
+        return True
+    try:
+        prompt = (
+            "Classify whether this chat message can be answered as lightweight small talk "
+            "without tools, private data, calendar, Gmail, tasks, files, or web lookup. "
+            "Reply with only QUICK or FULL.\n\n"
+            f"Message: {text}"
+        )
+        resp = await async_claude.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=10,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        verdict = (resp.content[0].text or "").strip().upper()
+        return verdict.startswith("QUICK")
+    except Exception as exc:
+        logger.warning(f"Quick-route classifier failed: {exc}")
+        return False
+
+async def stream_quick_pwa_reply(messages: list[dict], message: str):
+    context = messages[-6:]
+    prompt_messages = context + [{"role": "user", "content": message}]
+    try:
+        async with async_claude.messages.stream(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=220,
+            system=(
+                "You are Hira, Herwanto's concise personal assistant. "
+                "Answer lightweight chat naturally in one or two short sentences. "
+                "Do not use tools or pretend to have checked live data."
+            ),
+            messages=prompt_messages,
+        ) as stream:
+            async for event in stream:
+                if event.type == "content_block_delta" and getattr(event.delta, "type", None) == "text_delta":
+                    yield {"type": "text", "text": event.delta.text}
+    except Exception as exc:
+        logger.error(f"Quick PWA reply failed: {exc}")
+        raise
+
+async def stream_agentic_claude(messages, max_tokens=650, tools=None):
+    tools = tools or _core_tools()
+    reply_text = ""
+    max_iterations = 5
+
+    for _ in range(max_iterations):
+        forced_tool = _forced_tool_for_current_turn(messages, tools)
+        tool_choice = {"type": "tool", "name": forced_tool} if forced_tool else None
+        kwargs = {}
+        if tool_choice:
+            kwargs["tool_choice"] = tool_choice
+        resp = None
+        text_parts = []
+        async with async_claude.messages.stream(
+            model="claude-sonnet-4-6",
+            max_tokens=max_tokens,
+            system=CACHED_SYSTEM_PROMPT(),
+            tools=tools,
+            messages=messages,
+            **kwargs,
+        ) as stream:
+            async for event in stream:
+                if event.type == "content_block_delta" and getattr(event.delta, "type", None) == "text_delta":
+                    text = event.delta.text
+                    text_parts.append(text)
+                    yield {"type": "text", "text": text}
+            resp = await stream.get_final_message()
+
+        if resp.stop_reason != "tool_use":
+            reply_text = "".join(text_parts) or next((b.text for b in resp.content if b.type == "text"), "Done.")
+            break
+
+        messages.append({"role": "assistant", "content": resp.content})
+        tool_blocks = [block for block in resp.content if block.type == "tool_use"]
+        for block in tool_blocks:
+            yield {"type": "tool", "name": block.name}
+
+        async def run_tool(block):
+            logger.info(f"Tool call: {block.name} {block.input}")
+            result = await _execute_tool(block.name, block.input)
+            return {
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": result,
+            }
+
+        tool_results = await asyncio.gather(*(run_tool(block) for block in tool_blocks))
+        messages.append({"role": "user", "content": tool_results})
+
+    corrected = _correct_weekday_date_mismatches(reply_text or "Done.")
+    if corrected != (reply_text or "Done."):
+        yield {"type": "replace", "text": corrected}
+    yield {"type": "done", "text": corrected}
 
 async def handle_photo(update, context):
     """Extract schedule data from photos/screenshots and send to Claude vision."""

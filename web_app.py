@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, File, Header, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -154,10 +156,72 @@ async def chat(
         user_content = f"{message}\n\n[Email account hint: use account=\"{account_hint}\" for Gmail tools.]"
     history.append({"role": "user", "content": user_content})
     history = history[-bot.MAX_TURNS:]
-    reply_text = await bot._run_agentic_claude(list(history), max_tokens=1200)
-    history.append({"role": "assistant", "content": reply_text})
-    bot.save_history(history_key, history[-bot.MAX_TURNS:])
-    return {"reply": reply_text}
+
+    async def events():
+        reply_parts: list[str] = []
+        final_text = ""
+        started = time.perf_counter()
+        phase_started = started
+
+        def sse(payload: dict) -> str:
+            return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+        def timing(phase: str) -> dict:
+            nonlocal phase_started
+            now = time.perf_counter()
+            payload = {
+                "type": "timing",
+                "phase": phase,
+                "elapsed_ms": round((now - started) * 1000),
+                "phase_ms": round((now - phase_started) * 1000),
+            }
+            phase_started = now
+            bot.logger.info(
+                "PWA chat timing phase=%s elapsed_ms=%s phase_ms=%s",
+                payload["phase"],
+                payload["elapsed_ms"],
+                payload["phase_ms"],
+            )
+            return payload
+
+        try:
+            quick = await bot.should_route_quick_pwa_chat(list(history[:-1]), message)
+            yield sse(timing("route"))
+            yield sse({"type": "route", "name": "quick" if quick else "agentic"})
+            tools = [] if quick else bot.pwa_tools_for_message(message)
+            if not quick:
+                yield sse({"type": "tools", "count": len(tools), "names": [tool["name"] for tool in tools]})
+            stream = (
+                bot.stream_quick_pwa_reply(list(history[:-1]), message)
+                if quick
+                else bot.stream_agentic_claude(list(history), max_tokens=650, tools=tools)
+            )
+            first_text = True
+            async for event in stream:
+                if first_text and event.get("type") == "text":
+                    first_text = False
+                    yield sse(timing("first_token"))
+                if event.get("type") == "text":
+                    reply_parts.append(event.get("text", ""))
+                elif event.get("type") == "replace":
+                    reply_parts = [event.get("text", "")]
+                elif event.get("type") == "done":
+                    final_text = event.get("text", "")
+                yield sse(event)
+
+            reply_text = final_text or "".join(reply_parts).strip() or "Done."
+            history.append({"role": "assistant", "content": reply_text})
+            bot.save_history(history_key, history[-bot.MAX_TURNS:])
+            yield sse(timing("saved"))
+            yield sse({"type": "saved"})
+        except Exception as exc:
+            bot.logger.exception(f"PWA chat failed: {exc}")
+            yield sse({
+                "type": "error",
+                "message": "Hira hit a backend snag. Try again in a moment.",
+            })
+
+    return StreamingResponse(events(), media_type="text/event-stream")
 
 
 @app.post("/api/chat/reset")

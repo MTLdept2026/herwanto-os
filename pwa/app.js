@@ -79,6 +79,38 @@ async function api(path, options = {}, tokenPrompted = false) {
   return response.json();
 }
 
+async function fetchWithToken(path, options = {}, tokenPrompted = false) {
+  const response = await fetch(path, withAuth(options));
+  if (response.status === 401) {
+    if (tokenPrompted) {
+      $("#settingsPanel").hidden = false;
+      throw new Error("That token was rejected. Paste the Hira web token in Settings and save it once.");
+    }
+    const token = prompt("Enter Hira web token");
+    if (token) {
+      state.token = token.trim();
+      localStorage.setItem("hira_web_token", state.token);
+      $("#tokenInput").value = state.token;
+      return fetchWithToken(path, options, true);
+    }
+    $("#settingsPanel").hidden = false;
+    throw new Error("Hira needs the web token before live data can load.");
+  }
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}));
+    throw new Error(detail.detail || `Request failed: ${response.status}`);
+  }
+  return response;
+}
+
+function refreshIcons(root = document) {
+  window.lucide?.createIcons({
+    attrs: { "stroke-width": 1.8 },
+    nameAttr: "data-lucide",
+    root,
+  });
+}
+
 function setStatus(text, tone = "muted") {
   const el = $("#statusLine");
   el.textContent = text;
@@ -503,6 +535,71 @@ function addMessage(role, text, persist = true) {
   return el;
 }
 
+function updateMessage(el, text) {
+  el.querySelector(".message-body").innerHTML = renderChatText(text || "");
+  el.scrollIntoView({ block: "end" });
+}
+
+function appendToolStatus(el, name) {
+  const labels = {
+    create_calendar_event: "Adding to calendar...",
+    delete_calendar_event_by_text: "Checking your calendar...",
+    add_reminder: "Saving a reminder...",
+    get_assistant_context: "Checking your day...",
+    get_timetable: "Checking the timetable...",
+    get_task_brief: "Checking tasks...",
+    get_gmail_brief: "Checking Gmail...",
+    create_gmail_draft: "Drafting email...",
+    get_latest_news: "Checking latest news...",
+    web_search: "Searching...",
+  };
+  const status = document.createElement("div");
+  status.className = "tool-status";
+  status.innerHTML = `<span data-lucide="loader-2" aria-hidden="true"></span>${labels[name] || "Using a tool..."}`;
+  el.appendChild(status);
+  refreshIcons(status);
+  el.scrollIntoView({ block: "end" });
+}
+
+async function streamChatResponse(message, onEvent) {
+  const response = await fetchWithToken("/api/chat", {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ message }),
+  });
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.includes("text/event-stream")) {
+    const data = await response.json();
+    onEvent({ type: "text", text: data.reply || "Done." });
+    onEvent({ type: "done", text: data.reply || "Done." });
+    return data.reply || "Done.";
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalText = "";
+  let streamedText = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split("\n\n");
+    buffer = events.pop() || "";
+    for (const raw of events) {
+      const line = raw.split("\n").find((item) => item.startsWith("data: "));
+      if (!line) continue;
+      const event = JSON.parse(line.slice(6));
+      if (event.type === "text") streamedText += event.text || "";
+      if (event.type === "replace") streamedText = event.text || "";
+      if (event.type === "done") finalText = event.text || streamedText;
+      onEvent(event, streamedText);
+    }
+  }
+  return finalText || streamedText || "Done.";
+}
+
 function renderStoredChat() {
   $("#messages").innerHTML = "";
   if (!state.chatHistory.length) {
@@ -573,9 +670,9 @@ async function loadHome() {
   } catch (error) {
     $("#homeAgenda").textContent = `Error: ${error.message}`;
     $("#homeTasks").textContent = `Error: ${error.message}`;
-    $("#fileMemoryValue").textContent = "!";
+    $("#fileMemoryValue").textContent = "--";
     $("#fileMemoryLabel").textContent = "MEMORY CHECK FAILED";
-    $("#fileMemoryValueHome").textContent = "!";
+    $("#fileMemoryValueHome").textContent = "--";
     $("#fileMemoryLabelHome").textContent = "MEMORY CHECK FAILED";
     renderSegmentsAll(".file-memory-segments", 1, 12, "warning");
     setStatus(error.message, "error");
@@ -719,23 +816,43 @@ async function sendChat(message) {
   if (state.chatBusy) return;
   state.chatBusy = true;
   addMessage("user", message);
-  const pending = addMessage("hira", "Thinking...");
+  const pending = addMessage("hira", "", true);
+  pending.classList.add("pending");
   $("#sendBtn").disabled = true;
   try {
-    const data = await api("/api/chat", {
-      method: "POST",
-      headers: headers(),
-      body: JSON.stringify({ message }),
+    let latestText = "";
+    const reply = await streamChatResponse(message, (event, streamedText = latestText) => {
+      if (event.type === "route") {
+        setStatus(event.name === "quick" ? "Quick reply path." : "Thinking with tools ready.", "muted");
+      }
+      if (event.type === "tools") {
+        console.info("Hira tool route", event.names || []);
+      }
+      if (event.type === "timing") {
+        console.info(`Hira timing: ${event.phase}`, `${event.elapsed_ms}ms`, `phase ${event.phase_ms}ms`);
+      }
+      if (event.type === "tool") appendToolStatus(pending, event.name);
+      if (event.type === "text" || event.type === "replace") {
+        latestText = streamedText;
+        pending.classList.toggle("pending", !latestText);
+        updateMessage(pending, latestText);
+      }
+      if (event.type === "error") throw new Error(event.message);
     });
-    pending.querySelector(".message-body").innerHTML = renderChatText(data.reply || "Done.");
-    state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: data.reply || "Done." };
+    pending.classList.remove("pending");
+    updateMessage(pending, reply);
+    pending.querySelectorAll(".tool-status").forEach((item) => item.remove());
+    state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: reply };
     saveChatHistory();
     setStatus("Hira replied.", "ok");
   } catch (error) {
-    pending.querySelector(".message-body").textContent = `Error: ${error.message}`;
-    state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: `Error: ${error.message}` };
+    const friendly = "Hira hit a backend snag. Try again in a moment.";
+    pending.classList.remove("pending");
+    pending.querySelector(".message-body").textContent = friendly;
+    state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: friendly };
     saveChatHistory();
-    setStatus(error.message, "error");
+    console.error(error);
+    setStatus(friendly, "error");
   } finally {
     state.chatBusy = false;
     $("#sendBtn").disabled = false;
@@ -878,6 +995,7 @@ window.matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", (
 $("#tokenInput").value = state.token;
 localStorage.setItem("hira_client_id", state.clientId);
 applyTheme();
+refreshIcons();
 quickPrompts.forEach((text) => {
   const button = document.createElement("button");
   button.type = "button";

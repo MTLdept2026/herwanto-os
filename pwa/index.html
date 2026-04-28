@@ -28,11 +28,15 @@
             <button type="button" data-theme-choice="dark" class="theme-btn">Dark</button>
           </div>
           <button id="notificationsBtn" class="icon-btn notification-btn" type="button" title="Notifications">
-            <span>!</span>
+            <span data-lucide="bell" aria-hidden="true"></span>
             <strong id="notificationBadge" hidden>0</strong>
           </button>
-          <button id="installBtn" class="icon-btn" hidden title="Install app">+</button>
-          <button id="settingsBtn" class="icon-btn" title="Settings">...</button>
+          <button id="installBtn" class="icon-btn" hidden title="Install app">
+            <span data-lucide="download" aria-hidden="true"></span>
+          </button>
+          <button id="settingsBtn" class="icon-btn" title="Settings">
+            <span data-lucide="settings" aria-hidden="true"></span>
+          </button>
         </div>
       </header>
 
@@ -120,13 +124,19 @@
                 <h2>Chat</h2>
                 <p class="subtle">Same Hira, just without the Telegram crowd.</p>
               </div>
-              <button id="resetChatBtn" type="button" class="ghost-btn">Clear</button>
+              <button id="resetChatBtn" type="button" class="ghost-btn icon-label-btn">
+                <span data-lucide="trash-2" aria-hidden="true"></span>
+                Clear
+              </button>
             </div>
             <div id="promptRow" class="prompt-row"></div>
             <div id="messages" class="messages" aria-live="polite"></div>
             <form id="chatForm" class="composer">
               <textarea id="messageInput" rows="1" placeholder="Ask Hira anything"></textarea>
-              <button id="sendBtn" type="submit">Send</button>
+              <button id="sendBtn" type="submit" class="icon-label-btn">
+                <span data-lucide="send" aria-hidden="true"></span>
+                Send
+              </button>
             </form>
           </section>
         </div>
@@ -369,6 +379,7 @@
         <div id="tasksOutput" class="rich-output panel"></div>
       </section>
     </main>
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
     <script src="/static/app.js" type="module"></script>
   </body>
 </html>
