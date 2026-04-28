@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import io
 import asyncio
+import gc
 import json
 import base64
 import logging
@@ -69,6 +70,18 @@ except ValueError:
 _BREAK_AWARE_SLOT_CACHE = {}
 _LAST_MEMORY_LOG = None
 
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(os.environ.get(name, str(default))))
+    except ValueError:
+        return default
+
+JOB_INTERVALS = {
+    "proactive_nudges": _env_int("HIRA_PROACTIVE_NUDGE_INTERVAL", 60, 30),
+    "daily_checkins": _env_int("HIRA_DAILY_CHECKIN_INTERVAL", 300, 60),
+    "followups": _env_int("HIRA_FOLLOWUP_INTERVAL", 3600, 300),
+}
+
 def get_history(user_id):
     r = _get_redis()
     if r:
@@ -92,6 +105,13 @@ def save_history(user_id, history):
             _mem_histories.popitem(last=False)
 
 def _rss_mb() -> float:
+    try:
+        with open("/proc/self/status", "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024
+    except Exception:
+        pass
     rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     # Linux reports KiB, macOS reports bytes.
     if rss > 10_000_000:
@@ -131,6 +151,10 @@ def _log_memory(label: str, force: bool = False) -> None:
         len(_mem_histories),
         len(_BREAK_AWARE_SLOT_CACHE),
     )
+
+def _finish_background_job(name: str) -> None:
+    gc.collect()
+    _log_memory(f"after {name}")
 
 # ─── SYSTEM PROMPT ───────────────────────────────────────────────────────────
 
@@ -3598,6 +3622,8 @@ async def proactive_nudges_job(context):
             gs.mark_nudge_sent(nudge["id"])
     except Exception as e:
         logger.error(f"Proactive nudge error: {e}")
+    finally:
+        _finish_background_job("proactive_nudges")
 
 async def daily_checkins_job(context):
     if not google_ok():
@@ -3613,6 +3639,8 @@ async def daily_checkins_job(context):
             gs.mark_checkin_prompted(checkin["id"], checkin["due_slot"], now)
     except Exception as e:
         logger.error(f"Daily check-in error: {e}")
+    finally:
+        _finish_background_job("daily_checkins")
 
 async def followups_job(context):
     if not google_ok():
@@ -3627,6 +3655,8 @@ async def followups_job(context):
             gs.mark_followup_prompted(followup["id"], today)
     except Exception as e:
         logger.error(f"Follow-up job error: {e}")
+    finally:
+        _finish_background_job("followups")
 
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 
@@ -3691,9 +3721,27 @@ def main():
     jq.run_daily(evening_briefing_job, time=dt_time(20, 30, 0, tzinfo=SGT), name="evening_briefing")
     jq.run_daily(weekly_planning_job, time=dt_time(19, 30, 0, tzinfo=SGT), days=(6,), name="weekly_planning")
     jq.run_daily(friday_checkin_job,   time=dt_time(17, 0, 0, tzinfo=SGT), days=(4,), name="friday_checkin")
-    jq.run_repeating(proactive_nudges_job, interval=60, first=10, name="proactive_nudges")
-    jq.run_repeating(daily_checkins_job, interval=60, first=20, name="daily_checkins")
-    jq.run_repeating(followups_job, interval=3600, first=40, name="followups")
+    jq.run_repeating(
+        proactive_nudges_job,
+        interval=JOB_INTERVALS["proactive_nudges"],
+        first=10,
+        name="proactive_nudges",
+        job_kwargs={"coalesce": True, "max_instances": 1},
+    )
+    jq.run_repeating(
+        daily_checkins_job,
+        interval=JOB_INTERVALS["daily_checkins"],
+        first=20,
+        name="daily_checkins",
+        job_kwargs={"coalesce": True, "max_instances": 1},
+    )
+    jq.run_repeating(
+        followups_job,
+        interval=JOB_INTERVALS["followups"],
+        first=40,
+        name="followups",
+        job_kwargs={"coalesce": True, "max_instances": 1},
+    )
     logger.info("Herwanto OS running — all systems active.")
     _log_memory("startup", force=True)
     app.run_polling(drop_pending_updates=True)
