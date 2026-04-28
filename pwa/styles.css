@@ -327,6 +327,10 @@ h3 {
   overflow: auto;
 }
 
+.notification-state {
+  color: var(--text-secondary);
+}
+
 .notification-item {
   display: grid;
   gap: 8px;
@@ -537,8 +541,8 @@ h3 {
 .clock-display {
   align-self: end;
   font-family: "Doto", "Space Mono", monospace;
-  font-size: 88px;
-  line-height: 0.9;
+  font-size: clamp(96px, 9vw, 124px);
+  line-height: 0.84;
   letter-spacing: 0;
   color: #ffffff;
 }
@@ -1299,7 +1303,7 @@ html[data-theme="dark"] .segment {
   }
 
   .clock-display {
-    font-size: clamp(48px, 17vw, 70px);
+    font-size: clamp(64px, 20vw, 86px);
   }
 
   .message {

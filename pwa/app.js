@@ -162,28 +162,122 @@ function renderNotifications() {
     .join("");
 }
 
+function setNotificationButtons({ label, title, stateText, disabled = false }) {
+  const panelButton = $("#enableNotificationsBtn");
+  const settingsButton = $("#settingsEnableNotificationsBtn");
+  const stateLabel = $("#notificationStateText");
+  [panelButton, settingsButton].forEach((button) => {
+    if (!button) return;
+    button.textContent = label;
+    button.title = title;
+    button.disabled = disabled;
+  });
+  if (stateLabel) stateLabel.textContent = stateText || title;
+}
+
+async function updateNotificationControls() {
+  if (!("Notification" in window)) {
+    setNotificationButtons({
+      label: "Notifications unavailable",
+      title: "This browser does not support app notifications.",
+      stateText: "State: unavailable in this browser.",
+      disabled: true,
+    });
+    return;
+  }
+
+  if (Notification.permission === "denied") {
+    setNotificationButtons({
+      label: "Notifications blocked",
+      title: "Notifications are blocked in browser settings.",
+      stateText: "State: blocked in browser settings.",
+      disabled: true,
+    });
+    return;
+  }
+
+  if (Notification.permission !== "granted") {
+    setNotificationButtons({
+      label: "Enable app notifications",
+      title: "Ask this browser for notification permission.",
+      stateText: "State: not enabled on this device.",
+      disabled: false,
+    });
+    return;
+  }
+
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    setNotificationButtons({
+      label: "Notifications enabled",
+      title: "Browser notifications are enabled on this device.",
+      stateText: "State: enabled on this device.",
+      disabled: true,
+    });
+    return;
+  }
+
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    setNotificationButtons({
+      label: subscription ? "Notifications enabled" : "Finish notification setup",
+      title: subscription
+        ? "Browser permission and push subscription are active."
+        : "Browser permission is on, but push still needs to be connected.",
+      stateText: subscription
+        ? "State: enabled and connected on this device."
+        : "State: browser permission is on, push is not connected yet.",
+      disabled: !!subscription,
+    });
+  } catch (_) {
+    setNotificationButtons({
+      label: "Notifications enabled",
+      title: "Browser notification permission is enabled.",
+      stateText: "State: enabled on this device.",
+      disabled: true,
+    });
+  }
+}
+
 async function enableNotifications() {
   if (!("Notification" in window)) {
     setStatus("This browser does not support app notifications.", "warn");
+    await updateNotificationControls();
     return false;
   }
   if (Notification.permission === "granted") {
-    await subscribeForPushNotifications();
-    setStatus("App notifications are enabled.", "ok");
-    return true;
+    const subscribed = await subscribeForPushNotifications().catch((error) => {
+      setStatus(`Notification setup: ${error.message}`, "warn");
+      return false;
+    });
+    setStatus(
+      subscribed ? "App notifications are enabled." : "Browser notifications are enabled, but push is not connected.",
+      subscribed ? "ok" : "warn"
+    );
+    await updateNotificationControls();
+    return subscribed;
   }
   if (Notification.permission === "denied") {
     setStatus("Notifications are blocked in browser settings.", "warn");
+    await updateNotificationControls();
     return false;
   }
   const permission = await Notification.requestPermission();
   if (permission !== "granted") {
     setStatus("Notifications were not enabled.", "warn");
+    await updateNotificationControls();
     return false;
   }
-  await subscribeForPushNotifications();
-  setStatus("App notifications are enabled.", "ok");
-  return true;
+  const subscribed = await subscribeForPushNotifications().catch((error) => {
+    setStatus(`Notification setup: ${error.message}`, "warn");
+    return false;
+  });
+  setStatus(
+    subscribed ? "App notifications are enabled." : "Browser notifications are enabled, but push is not connected.",
+    subscribed ? "ok" : "warn"
+  );
+  await updateNotificationControls();
+  return subscribed;
 }
 
 async function subscribeForPushNotifications() {
@@ -888,10 +982,14 @@ $("#installBtn").addEventListener("click", async () => {
   $("#installBtn").hidden = true;
 });
 
-$("#settingsBtn").addEventListener("click", () => $("#settingsPanel").toggleAttribute("hidden"));
+$("#settingsBtn").addEventListener("click", () => {
+  $("#settingsPanel").toggleAttribute("hidden");
+  updateNotificationControls();
+});
 $("#notificationsBtn").addEventListener("click", () => {
   $("#notificationsPanel").toggleAttribute("hidden");
   renderNotifications();
+  updateNotificationControls();
 });
 $("#enableNotificationsBtn").addEventListener("click", enableNotifications);
 $("#settingsEnableNotificationsBtn").addEventListener("click", enableNotifications);
@@ -985,8 +1083,12 @@ $("#tasksOutput").addEventListener("change", (event) => {
 });
 
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("/service-worker.js");
+  navigator.serviceWorker.register("/service-worker.js").then(updateNotificationControls).catch(updateNotificationControls);
 }
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) updateNotificationControls();
+});
 
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => {
   if (state.theme === "auto") applyTheme();
@@ -1021,6 +1123,7 @@ document.querySelectorAll(".prompt-row-mirror .prompt-chip").forEach((button) =>
 mountChatInHome();
 renderStoredChat();
 renderNotifications();
+updateNotificationControls();
 setView("home");
 loadHome();
 startNotificationPolling();
