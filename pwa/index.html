@@ -27,10 +27,24 @@
             <button type="button" data-theme-choice="light" class="theme-btn active">Light</button>
             <button type="button" data-theme-choice="dark" class="theme-btn">Dark</button>
           </div>
+          <button id="notificationsBtn" class="icon-btn notification-btn" type="button" title="Notifications">
+            <span>!</span>
+            <strong id="notificationBadge" hidden>0</strong>
+          </button>
           <button id="installBtn" class="icon-btn" hidden title="Install app">+</button>
           <button id="settingsBtn" class="icon-btn" title="Settings">...</button>
         </div>
       </header>
+
+      <aside id="notificationsPanel" class="notifications-panel" hidden>
+        <div class="section-head compact">
+          <h3>Notifications</h3>
+          <button id="enableNotificationsBtn" type="button" class="ghost-btn">Enable</button>
+        </div>
+        <div id="notificationsList" class="notification-list">
+          <div class="empty-state compact">No app notifications yet.</div>
+        </div>
+      </aside>
 
       <aside id="settingsPanel" class="settings-panel" hidden>
         <label class="stacked-field">
@@ -49,6 +63,9 @@
           <button id="saveTokenBtn" type="button">Save token</button>
           <button id="clearTokenBtn" type="button" class="ghost-btn">Clear</button>
         </div>
+        <div class="inline-actions">
+          <button id="settingsEnableNotificationsBtn" type="button" class="ghost-btn">Enable app notifications</button>
+        </div>
       </aside>
 
       <section class="status-bar">
@@ -61,15 +78,14 @@
       </section>
 
       <nav class="nav-tabs" aria-label="Hira views">
-        <button class="nav-tab active" data-view="chat">Chat</button>
-        <button class="nav-tab" data-view="home">Home</button>
+        <button class="nav-tab active" data-view="home">Home</button>
         <button class="nav-tab" data-view="agenda">Agenda</button>
         <button class="nav-tab" data-view="tasks">Tasks</button>
         <button class="nav-tab" data-view="gmail">Gmail</button>
         <button class="nav-tab" data-view="files">Files</button>
       </nav>
 
-      <section id="chatView" class="view active">
+      <section id="chatView" class="view">
         <div class="chat-shell">
           <aside class="command-rail" aria-label="Hira quick status">
             <section class="ops-card ops-card-dark rail-card">
@@ -116,7 +132,7 @@
         </div>
       </section>
 
-      <section id="homeView" class="view">
+      <section id="homeView" class="view active">
         <div class="section-head">
           <div>
             <h2>Today with Hira</h2>
@@ -129,6 +145,7 @@
           <button type="button" class="chip" data-home-days="3">3 days</button>
           <button type="button" class="chip" data-home-days="14">14 days</button>
         </div>
+        <div id="homeChatMount" class="home-chat-mount"></div>
         <div class="ops-grid">
           <section class="ops-card ops-card-dark">
             <p class="eyebrow">Local Time</p>

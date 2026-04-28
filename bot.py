@@ -158,6 +158,7 @@ Rules:
 - When he asks to cancel, remove, delete, or mark a calendar event as done, call delete_calendar_event_by_text with the event description.
 - Never offer to generate .ics files. Use Google Calendar directly.
 - The current date and time is already provided at the top of this prompt — always use it for any date/time reasoning.
+- Never guess weekdays. If you mention a date with a weekday, derive the weekday from the actual calendar date. For 2026, 1 May is Friday, not Thursday.
 - You have tools: create_calendar_event, add_reminder, add_marking_task, update_marking_progress, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, update_project_status, get_latest_news, and web_search. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
@@ -1197,6 +1198,43 @@ def build_task_brief(days: int = 7) -> str:
         )
     return "\n".join(lines)
 
+
+def build_task_structured(days: int = 7) -> dict:
+    today = datetime.now(SGT).date()
+    window = max(1, min(int(days or 7), 30))
+    end_date = today + timedelta(days=window)
+    tasks = [
+        task for task in gs.enriched_reminders()
+        if task.get("due", "9999-12-31") <= end_date.isoformat()
+    ]
+    items = []
+    for task in sorted(tasks, key=lambda item: _task_priority_score(item, today))[:30]:
+        due = task.get("due", "")
+        overdue = False
+        weekday = ""
+        try:
+            due_date = date.fromisoformat(due)
+            overdue = due_date < today
+            weekday = due_date.strftime("%A")
+        except Exception:
+            pass
+        items.append({
+            "id": str(task.get("id", "")),
+            "description": task.get("description", ""),
+            "due": due,
+            "weekday": weekday,
+            "category": task.get("category", ""),
+            "priority": task.get("priority", ""),
+            "effort": task.get("effort", ""),
+            "next_action": task.get("next_action", ""),
+            "overdue": overdue,
+        })
+    return {
+        "generated_at": datetime.now(SGT).strftime("%A, %-d %B %Y, %H:%M SGT"),
+        "end_date": end_date.isoformat(),
+        "items": items,
+    }
+
 def _format_followup(followup: dict) -> str:
     person = f"{followup['person']} - " if followup.get("person") else ""
     channel = f" via {followup['channel']}" if followup.get("channel") else ""
@@ -1490,6 +1528,86 @@ def _forced_tool_for_current_turn(messages: list[dict], tools: list[dict]) -> st
     if not isinstance(content, str):
         return None
     return _forced_tool_for_text(content, tools)
+
+
+_MONTH_LOOKUP = {
+    "jan": 1, "january": 1,
+    "feb": 2, "february": 2,
+    "mar": 3, "march": 3,
+    "apr": 4, "april": 4,
+    "may": 5,
+    "jun": 6, "june": 6,
+    "jul": 7, "july": 7,
+    "aug": 8, "august": 8,
+    "sep": 9, "sept": 9, "september": 9,
+    "oct": 10, "october": 10,
+    "nov": 11, "november": 11,
+    "dec": 12, "december": 12,
+}
+
+_WEEKDAY_LOOKUP = {
+    "mon": 0, "monday": 0,
+    "tue": 1, "tues": 1, "tuesday": 1,
+    "wed": 2, "wednesday": 2,
+    "thu": 3, "thur": 3, "thurs": 3, "thursday": 3,
+    "fri": 4, "friday": 4,
+    "sat": 5, "saturday": 5,
+    "sun": 6, "sunday": 6,
+}
+
+_WEEKDAY_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+_WEEKDAY_LONG = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+
+def _weekday_for(day: str, month: str, year: str = "") -> int | None:
+    try:
+        yr = int(year) if year else datetime.now(SGT).year
+        return date(yr, _MONTH_LOOKUP[month.lower().rstrip(".")], int(day)).weekday()
+    except Exception:
+        return None
+
+
+def _matching_weekday_label(original: str, weekday: int) -> str:
+    return _WEEKDAY_LONG[weekday] if len(original) > 3 else _WEEKDAY_SHORT[weekday]
+
+
+def _correct_weekday_date_mismatches(text: str) -> str:
+    """Correct obvious weekday/date mismatches in model prose before delivery."""
+    if not text:
+        return text
+    month_pattern = r"Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?"
+    weekday_pattern = r"Mon(?:day)?|Tue(?:s(?:day)?)?|Wed(?:nesday)?|Thu(?:r(?:s(?:day)?)?|rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?"
+
+    def fix_weekday_first(match):
+        weekday_text, day, month, year = match.group("weekday", "day", "month", "year")
+        actual = _weekday_for(day, month, year or "")
+        expected = _WEEKDAY_LOOKUP.get(weekday_text.lower())
+        if actual is None or expected == actual:
+            return match.group(0)
+        return match.group(0).replace(weekday_text, _matching_weekday_label(weekday_text, actual), 1)
+
+    def fix_date_first(match):
+        day, month, year, weekday_text = match.group("day", "month", "year", "weekday")
+        actual = _weekday_for(day, month, year or "")
+        expected = _WEEKDAY_LOOKUP.get(weekday_text.lower())
+        if actual is None or expected == actual:
+            return match.group(0)
+        return match.group(0).replace(weekday_text, _matching_weekday_label(weekday_text, actual), 1)
+
+    text = re.sub(
+        rf"\b(?P<weekday>{weekday_pattern})\s+(?P<day>\d{{1,2}})\s+(?P<month>{month_pattern})(?:\s+(?P<year>20\d{{2}}))?\b",
+        fix_weekday_first,
+        text,
+        flags=re.I,
+    )
+    text = re.sub(
+        rf"\b(?P<day>\d{{1,2}})\s+(?P<month>{month_pattern})(?:\s+(?P<year>20\d{{2}}))?\s*(?P<sep>[|,\-–—:])\s*(?P<weekday>{weekday_pattern})\b",
+        fix_date_first,
+        text,
+        flags=re.I,
+    )
+    return text
+
 
 def build_briefing():
     now = datetime.now(SGT)
@@ -2568,7 +2686,7 @@ async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
             })
         messages.append({"role": "user", "content": tool_results})
 
-    return reply_text or "Done."
+    return _correct_weekday_date_mismatches(reply_text or "Done.")
 
 async def handle_photo(update, context):
     """Extract schedule data from photos/screenshots and send to Claude vision."""
@@ -3147,14 +3265,33 @@ async def handle_voice(update, context):
 
 # ─── SCHEDULED JOBS ──────────────────────────────────────────────────────────
 
+def _queue_app_notification(kind: str, title: str, body: str, source: str = ""):
+    try:
+        item = gs.enqueue_app_notification(kind, title, body, source=source)
+        gs.send_web_push_notification(title, body, data={"id": item.get("id", ""), "kind": kind, "source": source})
+    except Exception as e:
+        logger.warning(f"App notification queue error: {e}")
+
+
+async def _send_telegram_notification(context, text: str):
+    try:
+        chat_id = gs.get_config("chat_id")
+        if not chat_id:
+            return False
+        await context.bot.send_message(chat_id=int(chat_id), text=text, parse_mode="Markdown")
+        return True
+    except Exception as e:
+        logger.warning(f"Telegram notification error: {e}")
+        return False
+
+
 async def morning_briefing_job(context):
     if not google_ok():
         return
     try:
-        chat_id = gs.get_config("chat_id")
-        if not chat_id:
-            return
-        await context.bot.send_message(chat_id=int(chat_id), text=build_briefing(), parse_mode="Markdown")
+        text = build_briefing()
+        await _send_telegram_notification(context, text)
+        _queue_app_notification("briefing", "Morning briefing", text, source="morning_briefing")
     except Exception as e:
         logger.error(f"Morning briefing error: {e}")
 
@@ -3162,9 +3299,6 @@ async def friday_checkin_job(context):
     if not google_ok():
         return
     try:
-        chat_id = gs.get_config("chat_id")
-        if not chat_id:
-            return
         projs = gs.get_projects()
         lines = ["*Weekly project check-in*\n"]
         for p in projs:
@@ -3172,7 +3306,9 @@ async def friday_checkin_job(context):
         if not projs:
             lines.append("No projects tracked yet.")
         lines.append("\nUse /update to log progress.")
-        await context.bot.send_message(chat_id=int(chat_id), text="\n".join(lines), parse_mode="Markdown")
+        text = "\n".join(lines)
+        await _send_telegram_notification(context, text)
+        _queue_app_notification("update", "Weekly project check-in", text, source="friday_checkin")
     except Exception as e:
         logger.error(f"Friday check-in error: {e}")
 
@@ -3180,10 +3316,9 @@ async def evening_briefing_job(context):
     if not google_ok():
         return
     try:
-        chat_id = gs.get_config("chat_id")
-        if not chat_id:
-            return
-        await context.bot.send_message(chat_id=int(chat_id), text=build_evening_briefing(), parse_mode="Markdown")
+        text = build_evening_briefing()
+        await _send_telegram_notification(context, text)
+        _queue_app_notification("briefing", "Evening prep", text, source="evening_briefing")
     except Exception as e:
         logger.error(f"Evening briefing error: {e}")
 
@@ -3191,10 +3326,9 @@ async def weekly_planning_job(context):
     if not google_ok():
         return
     try:
-        chat_id = gs.get_config("chat_id")
-        if not chat_id:
-            return
-        await context.bot.send_message(chat_id=int(chat_id), text=build_weekly_plan(), parse_mode="Markdown")
+        text = build_weekly_plan()
+        await _send_telegram_notification(context, text)
+        _queue_app_notification("update", "Weekly plan", text, source="weekly_planning")
     except Exception as e:
         logger.error(f"Weekly planning error: {e}")
 
@@ -3202,13 +3336,11 @@ async def proactive_nudges_job(context):
     if not google_ok():
         return
     try:
-        chat_id = gs.get_config("chat_id")
-        if not chat_id:
-            return
         now = datetime.now(SGT)
         for nudge in gs.due_nudges(now):
             text = f"*Hira nudge*\n\n{nudge['message']}"
-            await context.bot.send_message(chat_id=int(chat_id), text=text, parse_mode="Markdown")
+            await _send_telegram_notification(context, text)
+            _queue_app_notification("reminder", "Hira nudge", nudge["message"], source=f"nudge:{nudge['id']}")
             gs.mark_nudge_sent(nudge["id"])
     except Exception as e:
         logger.error(f"Proactive nudge error: {e}")
@@ -3217,14 +3349,12 @@ async def daily_checkins_job(context):
     if not google_ok():
         return
     try:
-        chat_id = gs.get_config("chat_id")
-        if not chat_id:
-            return
         now = datetime.now(SGT)
         due_checkins = gs.due_checkins(now) + _due_break_aware_checkins(now)
         for checkin in due_checkins:
             text = f"*Hira check-in*\n\n{checkin['question']}\n\nReply `yes`, `done`, or `alhamdulillah` once it is done and I’ll stop asking for today."
-            await context.bot.send_message(chat_id=int(chat_id), text=text, parse_mode="Markdown")
+            await _send_telegram_notification(context, text)
+            _queue_app_notification("reminder", "Hira check-in", checkin["question"], source=f"checkin:{checkin['id']}")
             gs.mark_checkin_prompted(checkin["id"], checkin["due_slot"], now)
     except Exception as e:
         logger.error(f"Daily check-in error: {e}")
@@ -3233,16 +3363,11 @@ async def followups_job(context):
     if not google_ok():
         return
     try:
-        chat_id = gs.get_config("chat_id")
-        if not chat_id:
-            return
         today = datetime.now(SGT).strftime("%Y-%m-%d")
         for followup in gs.due_followups(today):
-            await context.bot.send_message(
-                chat_id=int(chat_id),
-                text=f"*Hira follow-up*\n\n{_format_followup(followup)}\n\nUse `/donefollowup {followup['id']}` when settled.",
-                parse_mode="Markdown",
-            )
+            text = f"*Hira follow-up*\n\n{_format_followup(followup)}\n\nUse `/donefollowup {followup['id']}` when settled."
+            await _send_telegram_notification(context, text)
+            _queue_app_notification("reminder", "Hira follow-up", _format_followup(followup), source=f"followup:{followup['id']}")
             gs.mark_followup_prompted(followup["id"], today)
     except Exception as e:
         logger.error(f"Follow-up job error: {e}")

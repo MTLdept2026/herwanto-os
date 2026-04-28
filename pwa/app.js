@@ -3,10 +3,12 @@ const state = {
   theme: localStorage.getItem("hira_theme") || "light",
   clientId: localStorage.getItem("hira_client_id") || (crypto?.randomUUID ? crypto.randomUUID() : `hira-${Date.now()}`),
   deferredInstall: null,
-  currentView: "chat",
+  currentView: "home",
   homeDays: 7,
   chatBusy: false,
   chatHistory: JSON.parse(localStorage.getItem("hira_pwa_chat") || "[]"),
+  notifications: JSON.parse(localStorage.getItem("hira_pwa_notifications") || "[]"),
+  notificationPoll: null,
 };
 
 const quickPrompts = [
@@ -81,6 +83,165 @@ function setStatus(text, tone = "muted") {
   const el = $("#statusLine");
   el.textContent = text;
   el.dataset.tone = tone;
+}
+
+function plainNotificationText(text) {
+  return (text || "")
+    .replace(/[*_`]/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function saveNotifications() {
+  localStorage.setItem("hira_pwa_notifications", JSON.stringify(state.notifications.slice(0, 30)));
+}
+
+function urlBase64ToUint8Array(value) {
+  const padding = "=".repeat((4 - (value.length % 4)) % 4);
+  const base64 = (value + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map((char) => char.charCodeAt(0)));
+}
+
+function renderNotifications() {
+  const badge = $("#notificationBadge");
+  const list = $("#notificationsList");
+  const count = state.notifications.length;
+  badge.hidden = count === 0;
+  badge.textContent = String(Math.min(count, 99));
+  if (!count) {
+    list.innerHTML = "<div class='empty-state compact'>No app notifications yet.</div>";
+    return;
+  }
+  list.innerHTML = state.notifications
+    .slice(0, 12)
+    .map((item) => {
+      const created = item.created ? new Date(item.created).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
+      return `
+        <article class="notification-item ${item.kind || "notice"}">
+          <div>
+            <strong>${markdownish(item.title || "Hira")}</strong>
+            ${created ? `<small>${markdownish(created)}</small>` : ""}
+          </div>
+          <p>${markdownish(plainNotificationText(item.body || ""))}</p>
+        </article>
+      `;
+    })
+    .join("");
+}
+
+async function enableNotifications() {
+  if (!("Notification" in window)) {
+    setStatus("This browser does not support app notifications.", "warn");
+    return false;
+  }
+  if (Notification.permission === "granted") {
+    await subscribeForPushNotifications();
+    setStatus("App notifications are enabled.", "ok");
+    return true;
+  }
+  if (Notification.permission === "denied") {
+    setStatus("Notifications are blocked in browser settings.", "warn");
+    return false;
+  }
+  const permission = await Notification.requestPermission();
+  if (permission !== "granted") {
+    setStatus("Notifications were not enabled.", "warn");
+    return false;
+  }
+  await subscribeForPushNotifications();
+  setStatus("App notifications are enabled.", "ok");
+  return true;
+}
+
+async function subscribeForPushNotifications() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return false;
+  const config = await api("/api/notifications/config", { headers: headers(false) });
+  const publicKey = (config.vapid_public_key || "").trim();
+  if (!publicKey) return false;
+  const registration = await navigator.serviceWorker.ready;
+  const existing = await registration.pushManager.getSubscription();
+  const subscription = existing || await registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(publicKey),
+  });
+  await api("/api/notifications/subscribe", {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ subscription }),
+  });
+  return true;
+}
+
+async function showSystemNotification(item) {
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  const title = item.title || "Hira";
+  const body = plainNotificationText(item.body || "").slice(0, 240);
+  const options = {
+    body,
+    tag: `hira-${item.id}`,
+    icon: "/static/icon.svg",
+    badge: "/static/icon.svg",
+    data: { id: item.id },
+  };
+  try {
+    const registration = await navigator.serviceWorker?.ready;
+    if (registration?.showNotification) {
+      await registration.showNotification(title, options);
+      return;
+    }
+  } catch (_) {
+    // Fall through to the page Notification constructor.
+  }
+  new Notification(title, options);
+}
+
+function rememberNotification(item) {
+  if (state.notifications.some((existing) => String(existing.id) === String(item.id))) return false;
+  state.notifications.unshift(item);
+  state.notifications = state.notifications.slice(0, 30);
+  saveNotifications();
+  renderNotifications();
+  return true;
+}
+
+async function markNotificationsSeen(ids) {
+  if (!ids.length) return;
+  try {
+    await api("/api/notifications/seen", {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ ids }),
+    });
+  } catch (error) {
+    setStatus(`Notification sync: ${error.message}`, "warn");
+  }
+}
+
+async function pollNotifications() {
+  if (!state.token && $("#settingsPanel")?.hidden === false) return;
+  try {
+    const data = await api("/api/notifications?limit=12", { headers: headers(false) });
+    const items = data.notifications || [];
+    if (!items.length) return;
+    const fresh = [];
+    for (const item of items) {
+      if (rememberNotification(item)) {
+        fresh.push(item);
+        showSystemNotification(item);
+      }
+    }
+    await markNotificationsSeen(items.map((item) => item.id));
+    if (fresh.length) setStatus(`${fresh.length} app notification${fresh.length === 1 ? "" : "s"} received.`, "ok");
+  } catch (error) {
+    if (!/token/i.test(error.message)) setStatus(`Notifications: ${error.message}`, "warn");
+  }
+}
+
+function startNotificationPolling() {
+  if (state.notificationPoll) clearInterval(state.notificationPoll);
+  pollNotifications();
+  state.notificationPoll = setInterval(pollNotifications, 60000);
 }
 
 function countMeaningfulLines(text) {
@@ -281,6 +442,53 @@ function renderAgendaStructured(data) {
   `;
 }
 
+function renderTaskList(data) {
+  const items = data?.items || [];
+  if (!items.length) return "<div class='empty-state'>No active tasks in that window.</div>";
+  return `
+    <div class="task-list">
+      ${items
+        .map((item) => {
+          const due = [item.due, item.weekday].filter(Boolean).join(" | ");
+          const meta = [item.category, item.priority, item.effort].filter(Boolean).join(" / ");
+          return `
+            <article class="task-item ${item.overdue ? "overdue" : ""}" data-task-id="${markdownish(item.id)}">
+              <label class="task-check">
+                <input type="checkbox" data-task-done="${markdownish(item.id)}" aria-label="Mark task ${markdownish(item.id)} done" />
+                <span></span>
+              </label>
+              <div class="task-copy">
+                <div class="task-meta">
+                  <strong>#${markdownish(item.id)}</strong>
+                  <span>${markdownish(due || "No due date")}</span>
+                </div>
+                <p>${markdownish(item.description || "")}</p>
+                ${item.next_action ? `<small>Next: ${markdownish(item.next_action)}</small>` : ""}
+                ${meta ? `<small>${markdownish(meta)}</small>` : ""}
+              </div>
+            </article>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+async function completeTask(taskId, checkbox) {
+  checkbox.disabled = true;
+  try {
+    await api(`/api/tasks/${encodeURIComponent(taskId)}/done`, { method: "POST", headers: headers(false) });
+    checkbox.closest(".task-item")?.classList.add("completed");
+    setStatus(`Task #${taskId} completed.`, "ok");
+    await loadHome();
+    await loadTasks(Number($("#tasksDays").value || 7));
+  } catch (error) {
+    checkbox.checked = false;
+    checkbox.disabled = false;
+    setStatus(error.message, "error");
+  }
+}
+
 function addMessage(role, text, persist = true) {
   const el = document.createElement("article");
   el.className = `message ${role}`;
@@ -302,6 +510,12 @@ function renderStoredChat() {
     return;
   }
   for (const item of state.chatHistory) addMessage(item.role, item.text, false);
+}
+
+function mountChatInHome() {
+  const mount = $("#homeChatMount");
+  const chat = document.querySelector(".chat-shell");
+  if (mount && chat && chat.parentElement !== mount) mount.appendChild(chat);
 }
 
 function setView(name) {
@@ -384,7 +598,7 @@ async function loadTasks(days = 7) {
   $("#tasksOutput").innerHTML = "<div>Loading...</div>";
   try {
     const data = await api(`/api/tasks?days=${days}`, { headers: headers(false) });
-    $("#tasksOutput").innerHTML = renderTextBlock(data.text);
+    $("#tasksOutput").innerHTML = data.structured ? renderTaskList(data.structured) : renderTextBlock(data.text);
     setStatus("Tasks refreshed.", "ok");
   } catch (error) {
     $("#tasksOutput").textContent = `Error: ${error.message}`;
@@ -558,6 +772,12 @@ $("#installBtn").addEventListener("click", async () => {
 });
 
 $("#settingsBtn").addEventListener("click", () => $("#settingsPanel").toggleAttribute("hidden"));
+$("#notificationsBtn").addEventListener("click", () => {
+  $("#notificationsPanel").toggleAttribute("hidden");
+  renderNotifications();
+});
+$("#enableNotificationsBtn").addEventListener("click", enableNotifications);
+$("#settingsEnableNotificationsBtn").addEventListener("click", enableNotifications);
 document.querySelectorAll("[data-theme-choice], .theme-btn").forEach((button) => {
   button.dataset.theme = button.dataset.themeChoice || button.id.replace("theme", "").replace("Btn", "").toLowerCase();
   button.addEventListener("click", () => {
@@ -572,6 +792,7 @@ $("#saveTokenBtn").addEventListener("click", () => {
   localStorage.setItem("hira_web_token", state.token);
   $("#settingsPanel").hidden = true;
   setStatus("Token saved on this device.", "ok");
+  startNotificationPolling();
 });
 $("#clearTokenBtn").addEventListener("click", () => {
   state.token = "";
@@ -602,7 +823,7 @@ document.querySelectorAll("[data-home-days]").forEach((button) => {
 document.querySelectorAll(".prompt-chip").forEach((button) => {
   button.addEventListener("click", () => {
     $("#messageInput").value = button.dataset.prompt;
-    setView("chat");
+    setView("home");
     $("#messageInput").focus();
   });
 });
@@ -640,6 +861,11 @@ $("#agendaDays").addEventListener("change", () => loadAgenda(Number($("#agendaDa
 $("#refreshTasksBtn").addEventListener("click", () => loadTasks(Number($("#tasksDays").value || 7)));
 $("#tasksDays").addEventListener("change", () => loadTasks(Number($("#tasksDays").value || 7)));
 $("#refreshFilesBtn").addEventListener("click", () => setStatus("File upload is ready.", "ok"));
+$("#tasksOutput").addEventListener("change", (event) => {
+  const checkbox = event.target.closest("[data-task-done]");
+  if (!checkbox || !checkbox.checked) return;
+  completeTask(checkbox.dataset.taskDone, checkbox);
+});
 
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/service-worker.js");
@@ -660,12 +886,23 @@ quickPrompts.forEach((text) => {
   button.textContent = text;
   button.addEventListener("click", () => {
     $("#messageInput").value = text;
-    setView("chat");
+    setView("home");
     $("#messageInput").focus();
   });
   $("#promptRow").appendChild(button);
+  document.querySelector(".prompt-row-mirror")?.appendChild(button.cloneNode(true));
 });
 
+document.querySelectorAll(".prompt-row-mirror .prompt-chip").forEach((button) => {
+  button.addEventListener("click", () => {
+    $("#messageInput").value = button.dataset.prompt;
+    $("#messageInput").focus();
+  });
+});
+
+mountChatInHome();
 renderStoredChat();
-setView("chat");
+renderNotifications();
+setView("home");
 loadHome();
+startNotificationPolling();

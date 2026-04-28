@@ -41,6 +41,14 @@ class DraftRequest(BaseModel):
     cc: str = ""
 
 
+class NotificationSeenRequest(BaseModel):
+    ids: list[str] = []
+
+
+class PushSubscribeRequest(BaseModel):
+    subscription: dict
+
+
 def _history_key(client_id: str | None) -> str:
     clean = (client_id or "").strip()
     return f"pwa:{clean}" if clean else "pwa"
@@ -90,6 +98,11 @@ def _require_token(x_hira_token: Optional[str] = Header(default=None)):
     expected = os.environ.get("HIRA_WEB_TOKEN", "").strip()
     if expected and x_hira_token != expected:
         raise HTTPException(status_code=401, detail="Invalid Hira web token")
+
+
+def _client_key(client_id: str | None) -> str:
+    clean = (client_id or "").strip()
+    return clean or "pwa"
 
 
 @app.get("/")
@@ -174,7 +187,77 @@ def agenda(days: int = 7, x_hira_token: Optional[str] = Header(default=None)):
 @app.get("/api/tasks")
 def tasks(days: int = 7, x_hira_token: Optional[str] = Header(default=None)):
     _require_token(x_hira_token)
-    return {"text": _safe_text(lambda: bot.build_task_brief(days), "Task brief unavailable until Google is connected.")}
+    structured = None
+    try:
+        structured = bot.build_task_structured(days)
+    except Exception:
+        structured = None
+    return {
+        "text": _safe_text(lambda: bot.build_task_brief(days), "Task brief unavailable until Google is connected."),
+        "structured": structured,
+    }
+
+
+@app.post("/api/tasks/{task_id}/done")
+def task_done(task_id: str, x_hira_token: Optional[str] = Header(default=None)):
+    _require_token(x_hira_token)
+    try:
+        ok = bot.gs.mark_done(task_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not complete task: {exc}") from exc
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Task #{task_id} not found")
+    return {"ok": True}
+
+
+@app.get("/api/notifications")
+def notifications(
+    limit: int = 12,
+    x_hira_token: Optional[str] = Header(default=None),
+    x_hira_client: Optional[str] = Header(default=None),
+):
+    _require_token(x_hira_token)
+    try:
+        items = bot.gs.unseen_app_notifications(_client_key(x_hira_client), limit=limit)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Notifications unavailable: {exc}") from exc
+    return {"notifications": items}
+
+
+@app.get("/api/notifications/config")
+def notifications_config(x_hira_token: Optional[str] = Header(default=None)):
+    _require_token(x_hira_token)
+    return {"vapid_public_key": os.environ.get("HIRA_WEB_PUSH_PUBLIC_KEY", "").strip()}
+
+
+@app.post("/api/notifications/subscribe")
+def notifications_subscribe(
+    req: PushSubscribeRequest,
+    x_hira_token: Optional[str] = Header(default=None),
+    x_hira_client: Optional[str] = Header(default=None),
+):
+    _require_token(x_hira_token)
+    try:
+        ok = bot.gs.save_web_push_subscription(_client_key(x_hira_client), req.subscription)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not save notification subscription: {exc}") from exc
+    if not ok:
+        raise HTTPException(status_code=400, detail="Invalid notification subscription")
+    return {"ok": True}
+
+
+@app.post("/api/notifications/seen")
+def notifications_seen(
+    req: NotificationSeenRequest,
+    x_hira_token: Optional[str] = Header(default=None),
+    x_hira_client: Optional[str] = Header(default=None),
+):
+    _require_token(x_hira_token)
+    try:
+        marked = bot.gs.mark_app_notifications_seen(_client_key(x_hira_client), req.ids)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not update notifications: {exc}") from exc
+    return {"ok": True, "marked": marked}
 
 
 @app.get("/api/files")

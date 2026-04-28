@@ -245,6 +245,7 @@ h3 {
 }
 
 .settings-panel,
+.notifications-panel,
 .status-bar,
 .hero-card,
 .panel,
@@ -259,6 +260,91 @@ h3 {
   gap: var(--space-sm);
   padding: var(--space-md);
   margin-bottom: var(--space-md);
+}
+
+.notifications-panel {
+  display: grid;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+
+.notification-btn {
+  position: relative;
+}
+
+.notification-btn span {
+  display: inline-block;
+  font-weight: 700;
+}
+
+#notificationBadge {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--surface);
+  border-radius: 999px;
+  background: var(--accent);
+  color: #ffffff;
+  font-family: "Space Mono", monospace;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.notification-list {
+  display: grid;
+  gap: var(--space-sm);
+  max-height: 42vh;
+  overflow: auto;
+}
+
+.notification-item {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--interactive);
+  background: var(--surface-raised);
+}
+
+.notification-item.reminder {
+  border-left-color: var(--accent);
+}
+
+.notification-item.briefing {
+  border-left-color: var(--success);
+}
+
+.notification-item.update {
+  border-left-color: var(--warning);
+}
+
+.notification-item div {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-md);
+}
+
+.notification-item strong {
+  color: var(--text-display);
+}
+
+.notification-item small {
+  color: var(--text-secondary);
+  font-family: "Space Mono", monospace;
+  font-size: var(--label);
+  text-transform: uppercase;
+}
+
+.notification-item p {
+  color: var(--text-primary);
+  line-height: 1.45;
+  white-space: pre-line;
 }
 
 .status-bar {
@@ -299,7 +385,7 @@ h3 {
 
 .nav-tabs {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: var(--space-sm);
   margin-bottom: var(--space-md);
 }
@@ -592,6 +678,10 @@ html[data-theme="dark"] .segment {
   min-height: 62vh;
 }
 
+.home-chat-mount {
+  margin-bottom: var(--space-md);
+}
+
 .chat-shell {
   display: grid;
   grid-template-columns: minmax(240px, 0.78fr) minmax(0, 1.6fr);
@@ -818,6 +908,84 @@ html[data-theme="dark"] .segment {
   font-family: "Space Mono", monospace;
 }
 
+.task-list {
+  display: grid;
+  gap: var(--space-sm);
+}
+
+.task-item {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: var(--space-sm);
+  padding: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.task-item.overdue {
+  border-left: 4px solid var(--accent);
+}
+
+.task-item.completed {
+  opacity: 0.55;
+}
+
+.task-check {
+  display: grid;
+  place-items: start center;
+  padding-top: 3px;
+}
+
+.task-check input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.task-check span {
+  width: 28px;
+  height: 28px;
+  display: block;
+  border: 2px solid var(--border-visible);
+  background: var(--surface-raised);
+}
+
+.task-check input:checked + span {
+  border-color: var(--success);
+  background:
+    linear-gradient(45deg, transparent 42%, #ffffff 42% 58%, transparent 58%) 7px 12px / 8px 12px no-repeat,
+    linear-gradient(-45deg, transparent 42%, #ffffff 42% 58%, transparent 58%) 13px 8px / 12px 18px no-repeat,
+    var(--success);
+}
+
+.task-copy {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.task-copy p {
+  line-height: 1.4;
+}
+
+.task-copy small,
+.task-meta {
+  color: var(--text-secondary);
+  font-family: "Space Mono", monospace;
+  font-size: var(--caption);
+}
+
+.task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  text-transform: uppercase;
+}
+
+.task-meta strong {
+  color: var(--accent);
+}
+
 .composer {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -993,7 +1161,7 @@ html[data-theme="dark"] .segment {
   }
 
   .nav-tabs {
-    grid-template-columns: repeat(6, minmax(84px, 1fr));
+    grid-template-columns: repeat(5, minmax(62px, 1fr));
     overflow-x: auto;
     padding-bottom: 2px;
     scrollbar-width: none;
@@ -1005,7 +1173,8 @@ html[data-theme="dark"] .segment {
 
   .nav-tab {
     min-height: 42px;
-    padding: 0 12px;
+    padding: 0 6px;
+    font-size: 12px;
     white-space: nowrap;
   }
 

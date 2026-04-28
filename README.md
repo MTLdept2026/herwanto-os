@@ -354,8 +354,11 @@ Current PWA surfaces:
 - Voice-note upload/transcription when `OPENAI_API_KEY` is configured
 - Marking-load dashboard with marked/unmarked segmented bars
 - Light/dark/auto theme switcher
+- App notifications for nudges, check-ins, follow-ups, morning/evening briefings, weekly planning, and project check-ins
 
 The PWA chat uses the same Hira tool brain as Telegram. With the same production env vars, it can create/delete calendar events, add/complete reminders and follow-ups, manage marking progress, read Gmail, create drafts, generate DOCX/PPTX artifacts, process uploaded documents/images/voice notes, remember context, use timetable context, and fetch news when search is configured.
+
+For OS-level PWA notifications while the app is closed, generate VAPID keys with `vapid --gen`, set `HIRA_WEB_PUSH_PUBLIC_KEY` to `vapid --applicationServerKey`, set `HIRA_WEB_PUSH_PRIVATE_KEY` to a base64-encoded `private_key.pem`, and set `HIRA_WEB_PUSH_SUBJECT` to `mailto:you@example.com` on both Railway services. Then tap **Enable app notifications** in Hira. Without VAPID keys, Hira still shows queued app notifications the next time the PWA is open.
 
 **Personality:**
 

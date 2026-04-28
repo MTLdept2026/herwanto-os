@@ -8,6 +8,7 @@ Sheets acts as persistent storage for reminders, projects, and config.
 import os
 import json
 import base64
+import tempfile
 import pytz
 from datetime import datetime, timedelta
 from email.message import EmailMessage
@@ -582,6 +583,219 @@ def set_config(key: str, value: str):
         valueInputOption="RAW",
         body={"values": [[key, value]]},
     ).execute()
+
+
+# ─── SHEETS: APP NOTIFICATIONS ───────────────────────────────────────────────
+# Stored in Config as a compact JSON inbox shared by the bot and PWA services.
+
+def get_app_notifications(include_archived=False) -> list:
+    raw = get_config("app_notifications")
+    if not raw:
+        return []
+    try:
+        notifications = json.loads(raw)
+    except Exception:
+        return []
+
+    clean = []
+    for item in notifications:
+        if not isinstance(item, dict):
+            continue
+        archived = bool(item.get("archived", False))
+        if archived and not include_archived:
+            continue
+        clean.append({
+            "id": str(item.get("id", "")).strip(),
+            "kind": str(item.get("kind", "notice") or "notice").strip(),
+            "title": str(item.get("title", "Hira") or "Hira").strip(),
+            "body": str(item.get("body", "") or "").strip(),
+            "created": str(item.get("created", "") or "").strip(),
+            "source": str(item.get("source", "") or "").strip(),
+            "seen_by": [str(client) for client in item.get("seen_by", []) if str(client).strip()]
+            if isinstance(item.get("seen_by", []), list) else [],
+            "archived": archived,
+        })
+    return [item for item in clean if item["id"] and item["body"]]
+
+
+def set_app_notifications(notifications: list):
+    set_config("app_notifications", json.dumps(notifications[-80:], ensure_ascii=False))
+
+
+def enqueue_app_notification(kind: str, title: str, body: str, source: str = "") -> dict:
+    notifications = get_app_notifications(include_archived=True)
+    now = datetime.now(SGT).isoformat()
+    next_id = 1
+    numeric_ids = [int(item["id"]) for item in notifications if str(item.get("id", "")).isdigit()]
+    if numeric_ids:
+        next_id = max(numeric_ids) + 1
+    item = {
+        "id": str(next_id),
+        "kind": (kind or "notice").strip(),
+        "title": (title or "Hira").strip(),
+        "body": (body or "").strip(),
+        "created": now,
+        "source": (source or "").strip(),
+        "seen_by": [],
+        "archived": False,
+    }
+    if not item["body"]:
+        return item
+    notifications.append(item)
+    set_app_notifications(notifications)
+    return item
+
+
+def unseen_app_notifications(client_id: str, limit: int = 12) -> list:
+    client_id = str(client_id or "default").strip() or "default"
+    notifications = get_app_notifications(include_archived=False)
+    unseen = [item for item in notifications if client_id not in item.get("seen_by", [])]
+    return unseen[-max(1, int(limit or 12)):]
+
+
+def mark_app_notifications_seen(client_id: str, notification_ids: list[str]) -> int:
+    client_id = str(client_id or "default").strip() or "default"
+    ids = {str(item_id) for item_id in notification_ids}
+    if not ids:
+        return 0
+    notifications = get_app_notifications(include_archived=True)
+    changed = 0
+    for item in notifications:
+        if str(item.get("id")) not in ids:
+            continue
+        seen_by = item.get("seen_by") if isinstance(item.get("seen_by"), list) else []
+        if client_id not in seen_by:
+            seen_by.append(client_id)
+            item["seen_by"] = seen_by[-20:]
+            changed += 1
+    if changed:
+        set_app_notifications(notifications)
+    return changed
+
+
+def get_web_push_subscriptions() -> list:
+    raw = get_config("web_push_subscriptions")
+    if not raw:
+        return []
+    try:
+        subscriptions = json.loads(raw)
+    except Exception:
+        return []
+    clean = []
+    seen = set()
+    for item in subscriptions:
+        if not isinstance(item, dict):
+            continue
+        client_id = str(item.get("client_id", "")).strip()
+        subscription = item.get("subscription")
+        endpoint = subscription.get("endpoint") if isinstance(subscription, dict) else ""
+        if not client_id or not endpoint or endpoint in seen:
+            continue
+        seen.add(endpoint)
+        clean.append({
+            "client_id": client_id,
+            "subscription": subscription,
+            "created": str(item.get("created", "")).strip(),
+            "last_seen": str(item.get("last_seen", "")).strip(),
+        })
+    return clean
+
+
+def set_web_push_subscriptions(subscriptions: list):
+    set_config("web_push_subscriptions", json.dumps(subscriptions[-30:], ensure_ascii=False))
+
+
+def save_web_push_subscription(client_id: str, subscription: dict) -> bool:
+    client_id = str(client_id or "").strip()
+    endpoint = subscription.get("endpoint") if isinstance(subscription, dict) else ""
+    if not client_id or not endpoint:
+        return False
+    subscriptions = get_web_push_subscriptions()
+    now = datetime.now(SGT).isoformat()
+    updated = False
+    for item in subscriptions:
+        if item["subscription"].get("endpoint") == endpoint or item["client_id"] == client_id:
+            item["client_id"] = client_id
+            item["subscription"] = subscription
+            item["last_seen"] = now
+            updated = True
+            break
+    if not updated:
+        subscriptions.append({
+            "client_id": client_id,
+            "subscription": subscription,
+            "created": now,
+            "last_seen": now,
+        })
+    set_web_push_subscriptions(subscriptions)
+    return True
+
+
+def send_web_push_notification(title: str, body: str, data: dict | None = None) -> int:
+    private_key = os.environ.get("HIRA_WEB_PUSH_PRIVATE_KEY", "").strip()
+    subject = os.environ.get("HIRA_WEB_PUSH_SUBJECT", "mailto:hira@example.com").strip()
+    if not private_key:
+        return 0
+    try:
+        from pywebpush import WebPushException, webpush
+    except Exception:
+        return 0
+
+    payload = json.dumps({
+        "title": title or "Hira",
+        "body": body or "",
+        "icon": "/static/icon.svg",
+        "badge": "/static/icon.svg",
+        "data": data or {},
+    }, ensure_ascii=False)
+
+    key_file = None
+    key_for_webpush = private_key
+    try:
+        if "BEGIN" in private_key:
+            key_file = tempfile.NamedTemporaryFile("w", suffix=".pem", delete=False)
+            key_file.write(private_key.replace("\\n", "\n"))
+            key_file.close()
+            key_for_webpush = key_file.name
+        else:
+            decoded = base64.b64decode(private_key)
+            if decoded.startswith(b"-----BEGIN"):
+                key_file = tempfile.NamedTemporaryFile("wb", suffix=".pem", delete=False)
+                key_file.write(decoded)
+                key_file.close()
+                key_for_webpush = key_file.name
+    except Exception:
+        key_for_webpush = private_key
+
+    sent = 0
+    kept = []
+    subscriptions = get_web_push_subscriptions()
+    try:
+        for item in subscriptions:
+            try:
+                webpush(
+                    subscription_info=item["subscription"],
+                    data=payload,
+                    vapid_private_key=key_for_webpush,
+                    vapid_claims={"sub": subject},
+                )
+                sent += 1
+                kept.append(item)
+            except WebPushException as exc:
+                status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                if status_code not in (404, 410):
+                    kept.append(item)
+            except Exception:
+                kept.append(item)
+    finally:
+        if key_file:
+            try:
+                os.unlink(key_file.name)
+            except Exception:
+                pass
+    if len(kept) != len(subscriptions):
+        set_web_push_subscriptions(kept)
+    return sent
 
 
 # ─── SHEETS: ASSISTANT MEMORY ────────────────────────────────────────────────
