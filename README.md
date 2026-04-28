@@ -251,6 +251,14 @@ python scripts/rbs_mac_helper.py --once
 python scripts/rbs_mac_helper.py --poll
 ```
 
+Install as a macOS background checker:
+```bash
+chmod +x scripts/install_rbs_helper_launch_agent.sh scripts/uninstall_rbs_helper_launch_agent.sh
+scripts/install_rbs_helper_launch_agent.sh
+```
+
+The LaunchAgent checks once per minute and exits if there is no RBS job. Chrome only opens when Hira has queued an availability check.
+
 The helper uses the same Google environment variables as the bot so it can read/write the shared job queue in the Sheet `Config` tab. Optional local settings:
 ```bash
 export RBS_CHROME_PROFILE_DIR=~/.hira-rbs-chrome
