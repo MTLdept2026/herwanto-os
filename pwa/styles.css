@@ -504,7 +504,7 @@ h3 {
 #greetingDate {
   display: inline-block;
   margin-top: var(--space-xs);
-  font-size: 44px;
+  font-size: 36px;
   line-height: 1;
   color: var(--text-display);
 }
@@ -512,7 +512,7 @@ h3 {
 #greetingTime {
   margin-left: var(--space-xs);
   font-family: "Space Mono", monospace;
-  font-size: 28px;
+  font-size: 22px;
   color: var(--text-primary);
 }
 
@@ -1389,14 +1389,14 @@ html[data-theme="dark"] .segment {
 
   #greetingDate {
     display: block;
-    font-size: clamp(38px, 10vw, 56px);
+    font-size: clamp(30px, 8vw, 42px);
     overflow-wrap: anywhere;
   }
 
   #greetingTime {
     display: block;
     margin: 8px 0 0;
-    font-size: clamp(24px, 7vw, 34px);
+    font-size: clamp(20px, 5.5vw, 26px);
   }
 
   .nav-tabs {
