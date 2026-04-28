@@ -256,9 +256,10 @@ The helper uses the same Google environment variables as the bot so it can read/
 export RBS_CHROME_PROFILE_DIR=~/.hira-rbs-chrome
 export RBS_BROWSER_CHANNEL=chrome
 export RBS_SCREENSHOT_DIR=files/rbs
+export RBS_LOGIN_WAIT_SECONDS=180
 ```
 
-On the first run, log in to MIMS/RBS inside the helper-opened Chrome window if prompted. After that, the local profile should keep the session. If you want it to use your regular Chrome profile, set `RBS_CHROME_PROFILE_DIR` to that profile path, but close Chrome first because Chrome locks active profiles.
+On the first run, log in to MIMS/RBS inside the helper-opened Chrome window if prompted. The helper waits on the MIMS page for manual login, then continues after the RBS page loads. After that, the local profile should keep the session. If you want it to use your regular Chrome profile, set `RBS_CHROME_PROFILE_DIR` to that profile path, but close Chrome first because Chrome locks active profiles.
 
 **Pro assistant workflows:**
 ```

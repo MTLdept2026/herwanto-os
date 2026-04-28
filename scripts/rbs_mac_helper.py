@@ -37,6 +37,7 @@ RBS_URL = os.environ.get("RBS_URL", "https://rbs.avero-tech.com/login.html")
 PROFILE_DIR = Path(os.environ.get("RBS_CHROME_PROFILE_DIR", "~/.hira-rbs-chrome")).expanduser()
 SCREENSHOT_DIR = Path(os.environ.get("RBS_SCREENSHOT_DIR", str(ROOT / "files" / "rbs"))).expanduser()
 POLL_SECONDS = int(os.environ.get("RBS_HELPER_POLL_SECONDS", "15"))
+LOGIN_WAIT_SECONDS = int(os.environ.get("RBS_LOGIN_WAIT_SECONDS", "180"))
 
 
 def _log(message: str):
@@ -80,6 +81,38 @@ def _open_rbs(page):
     _click_if_visible(page, "button:has-text('Sign in')", timeout=2500)
     page.wait_for_load_state("domcontentloaded", timeout=60000)
     page.wait_for_timeout(2500)
+
+    if _looks_like_mims_login(page):
+        _log(
+            "MIMS login is still showing. Please sign in manually in the Chrome window; "
+            f"I will wait up to {LOGIN_WAIT_SECONDS}s."
+        )
+        _wait_for_manual_login(page)
+
+
+def _looks_like_mims_login(page) -> bool:
+    try:
+        text = page.locator("body").inner_text(timeout=1500).lower()
+    except Exception:
+        text = ""
+    url = page.url.lower()
+    return (
+        "mims portal" in text
+        or "forgot password" in text
+        or "please enter values for the user name and password" in text
+        or "mims" in url
+    ) and "resource booking" not in text
+
+
+def _wait_for_manual_login(page):
+    deadline = time.time() + LOGIN_WAIT_SECONDS
+    while time.time() < deadline:
+        if not _looks_like_mims_login(page):
+            page.wait_for_load_state("domcontentloaded", timeout=60000)
+            page.wait_for_timeout(2000)
+            return
+        page.wait_for_timeout(2000)
+    raise RuntimeError("Still on MIMS login page after waiting for manual sign-in.")
 
 
 def _go_to_make_booking(page):
@@ -174,53 +207,111 @@ def _search_resources(page, resources: list[str]):
 
 
 def _read_grid(page, resources: list[str], periods: list[str]) -> dict:
-    """Best-effort table reader. Empty cells in requested periods are treated as available."""
+    """Best-effort grid reader. Empty cells are available; green/grey icons are booked."""
     script = """
     ({resources, periods}) => {
       const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-      const rows = Array.from(document.querySelectorAll('tr'));
-      const headerRows = rows.filter(row => periods.some(p => row.innerText.includes(p)));
-      const headerRow = headerRows[0];
-      if (!headerRow) return {available: [], unavailable: resources, notes: 'Could not find period headers in the RBS grid.'};
+      const visible = (el) => {
+        const r = el.getBoundingClientRect();
+        const style = window.getComputedStyle(el);
+        return r.width > 0 && r.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+      };
+      const all = Array.from(document.querySelectorAll('body *')).filter(visible);
 
-      const headerCells = Array.from(headerRow.children);
-      const periodIndexes = {};
+      const periodHeaders = {};
       for (const period of periods) {
-        const idx = headerCells.findIndex(cell => norm(cell.innerText).startsWith(norm(period)));
-        if (idx >= 0) periodIndexes[period] = idx;
+        const found = all
+          .map(el => ({el, text: norm(el.innerText), rect: el.getBoundingClientRect()}))
+          .filter(item => item.text.startsWith(norm(period)) && item.text.includes(':'))
+          .sort((a, b) => (a.rect.width * a.rect.height) - (b.rect.width * b.rect.height))[0];
+        if (found) periodHeaders[period] = found.rect;
       }
-      if (Object.keys(periodIndexes).length === 0) {
-        return {available: [], unavailable: resources, notes: 'Could not map requested periods to grid columns.'};
+      if (Object.keys(periodHeaders).length === 0) {
+        return {available: [], unavailable: resources, notes: 'Could not find period headers in the RBS grid.'};
       }
 
+      const resourceRects = {};
+      for (const resource of resources) {
+        const found = all
+          .map(el => ({el, text: norm(el.innerText), rect: el.getBoundingClientRect()}))
+          .filter(item => item.text === norm(resource))
+          .sort((a, b) => (a.rect.width * a.rect.height) - (b.rect.width * b.rect.height))[0];
+        if (found) resourceRects[resource] = found.rect;
+      }
+
+      const isGreen = (color) => {
+        const nums = (color.match(/\\d+/g) || []).map(Number);
+        if (nums.length < 3) return false;
+        const [r, g, b] = nums;
+        return g > 120 && g > r * 1.25 && g > b * 1.25;
+      };
+      const isGrey = (color) => {
+        const nums = (color.match(/\\d+/g) || []).map(Number);
+        if (nums.length < 3) return false;
+        const [r, g, b] = nums;
+        return Math.abs(r - g) < 20 && Math.abs(g - b) < 20 && r > 70 && r < 180;
+      };
+      const elementBookingState = (el) => {
+        if (!el) return 'empty';
+        const chain = [el, ...Array.from(el.querySelectorAll('*'))];
+        for (const node of chain) {
+          const style = window.getComputedStyle(node);
+          if (isGreen(style.color) || isGreen(style.backgroundColor) || isGreen(style.fill)) return 'mine';
+        }
+        for (const node of chain) {
+          const style = window.getComputedStyle(node);
+          const cls = String(node.className || '').toLowerCase();
+          if (isGrey(style.color) || isGrey(style.backgroundColor) || cls.includes('book')) return 'blocked';
+        }
+        return norm(el.innerText) ? 'blocked' : 'empty';
+      };
+
+      const rows = Array.from(document.querySelectorAll('tr')).filter(visible);
       const available = [];
       const unavailable = [];
       for (const resource of resources) {
-        const row = rows.find(r => {
-          const first = r.children[0];
-          return first && norm(first.innerText) === norm(resource);
-        });
-        if (!row) {
+        const resourceRect = resourceRects[resource];
+        if (!resourceRect) {
           unavailable.push(`${resource} (row not found)`);
           continue;
         }
-        const cells = Array.from(row.children);
+        const y = resourceRect.top + resourceRect.height / 2;
+        const row = rows.find(r => {
+          const rr = r.getBoundingClientRect();
+          return y >= rr.top && y <= rr.bottom;
+        });
         const blocked = [];
+        const mine = [];
         for (const period of periods) {
-          const idx = periodIndexes[period];
-          const cell = cells[idx];
-          if (!cell) {
-            blocked.push(`${period}: missing cell`);
+          const header = periodHeaders[period];
+          if (!header) {
+            blocked.push(`${period}: header not found`);
             continue;
           }
-          const hasText = norm(cell.innerText).length > 0;
-          const hasIcon = cell.querySelector('i, svg, img, .fa, .glyphicon, [class*="icon"]');
-          const bg = window.getComputedStyle(cell).backgroundColor || '';
-          const looksSelected = bg.includes('92') || bg.includes('184') || bg.includes('green');
-          if (hasText || hasIcon || looksSelected) blocked.push(period);
+          const x = header.left + header.width / 2;
+          let state = 'empty';
+          if (row) {
+            const cells = Array.from(row.children).filter(visible);
+            const cell = cells.find(c => {
+              const r = c.getBoundingClientRect();
+              return x >= r.left && x <= r.right;
+            });
+            state = elementBookingState(cell);
+          } else {
+            const element = document.elementFromPoint(x, y);
+            state = elementBookingState(element);
+          }
+          if (state === 'blocked') blocked.push(period);
+          if (state === 'mine') mine.push(period);
         }
-        if (blocked.length) unavailable.push(`${resource} (${blocked.join(', ')})`);
-        else available.push(resource);
+        if (blocked.length || mine.length) {
+          const bits = [];
+          if (blocked.length) bits.push(`${blocked.join(', ')} booked`);
+          if (mine.length) bits.push(`${mine.join(', ')} already booked by you`);
+          unavailable.push(`${resource} (${bits.join('; ')})`);
+        } else {
+          available.push(resource);
+        }
       }
       return {available, unavailable, notes: ''};
     }
