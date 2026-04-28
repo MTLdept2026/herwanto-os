@@ -149,30 +149,48 @@ function renderNotifications() {
     .slice(0, 12)
     .map((item) => {
       const created = item.created ? new Date(item.created).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
+      const id = escapeHtml(String(item.id || ""));
       return `
-        <article class="notification-item ${item.kind || "notice"}">
-          <div>
+        <article class="notification-item ${item.kind || "notice"}" data-notification-id="${id}">
+          <div class="notification-item-head">
             <strong>${markdownish(item.title || "Hira")}</strong>
             ${created ? `<small>${markdownish(created)}</small>` : ""}
           </div>
           <p>${markdownish(plainNotificationText(item.body || ""))}</p>
+          <button type="button" class="ghost-btn notification-dismiss" data-notification-dismiss="${id}">
+            <span data-lucide="x" aria-hidden="true"></span>
+            Dismiss
+          </button>
         </article>
       `;
     })
     .join("");
+  refreshIcons(list);
 }
 
-function setNotificationButtons({ label, title, stateText, disabled = false }) {
+function setNotificationButtons({ label, title, stateText, tone = "neutral", disabled = false }) {
   const panelButton = $("#enableNotificationsBtn");
   const settingsButton = $("#settingsEnableNotificationsBtn");
   const stateLabel = $("#notificationStateText");
+  const notificationButton = $("#notificationsBtn");
   [panelButton, settingsButton].forEach((button) => {
     if (!button) return;
     button.textContent = label;
     button.title = title;
     button.disabled = disabled;
+    button.classList.toggle("notification-enabled", tone === "ok");
+    button.classList.toggle("notification-warning", tone === "warn");
   });
-  if (stateLabel) stateLabel.textContent = stateText || title;
+  if (notificationButton) {
+    notificationButton.classList.toggle("notification-enabled", tone === "ok");
+    notificationButton.classList.toggle("notification-warning", tone === "warn");
+    notificationButton.title = stateText || title;
+  }
+  if (stateLabel) {
+    stateLabel.textContent = stateText || title;
+    stateLabel.classList.toggle("status-ok", tone === "ok");
+    stateLabel.classList.toggle("status-warn", tone === "warn");
+  }
 }
 
 async function updateNotificationControls() {
@@ -181,6 +199,7 @@ async function updateNotificationControls() {
       label: "Notifications unavailable",
       title: "This browser does not support app notifications.",
       stateText: "State: unavailable in this browser.",
+      tone: "warn",
       disabled: true,
     });
     return;
@@ -191,6 +210,7 @@ async function updateNotificationControls() {
       label: "Notifications blocked",
       title: "Notifications are blocked in browser settings.",
       stateText: "State: blocked in browser settings.",
+      tone: "warn",
       disabled: true,
     });
     return;
@@ -211,10 +231,19 @@ async function updateNotificationControls() {
       label: "Notifications enabled",
       title: "Browser notifications are enabled on this device.",
       stateText: "State: enabled on this device.",
+      tone: "ok",
       disabled: true,
     });
     return;
   }
+
+  setNotificationButtons({
+    label: "Notifications enabled",
+    title: "Browser notification permission is enabled.",
+    stateText: "State: enabled; checking push connection.",
+    tone: "ok",
+    disabled: true,
+  });
 
   try {
     const registration = await navigator.serviceWorker.ready;
@@ -227,6 +256,7 @@ async function updateNotificationControls() {
       stateText: subscription
         ? "State: enabled and connected on this device."
         : "State: browser permission is on, push is not connected yet.",
+      tone: subscription ? "ok" : "warn",
       disabled: !!subscription,
     });
   } catch (_) {
@@ -234,6 +264,7 @@ async function updateNotificationControls() {
       label: "Notifications enabled",
       title: "Browser notification permission is enabled.",
       stateText: "State: enabled on this device.",
+      tone: "ok",
       disabled: true,
     });
   }
@@ -341,6 +372,28 @@ async function markNotificationsSeen(ids) {
     });
   } catch (error) {
     setStatus(`Notification sync: ${error.message}`, "warn");
+  }
+}
+
+async function dismissNotification(id) {
+  const notificationId = String(id || "");
+  if (!notificationId) return;
+  const previous = state.notifications;
+  state.notifications = state.notifications.filter((item) => String(item.id) !== notificationId);
+  saveNotifications();
+  renderNotifications();
+  try {
+    await api("/api/notifications/archive", {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ ids: [notificationId] }),
+    });
+    setStatus("Notification dismissed.", "ok");
+  } catch (error) {
+    state.notifications = previous;
+    saveNotifications();
+    renderNotifications();
+    setStatus(`Could not dismiss notification: ${error.message}`, "warn");
   }
 }
 
@@ -990,6 +1043,11 @@ $("#notificationsBtn").addEventListener("click", () => {
   $("#notificationsPanel").toggleAttribute("hidden");
   renderNotifications();
   updateNotificationControls();
+});
+$("#notificationsList").addEventListener("click", (event) => {
+  const dismiss = event.target.closest("[data-notification-dismiss]");
+  if (!dismiss) return;
+  dismissNotification(dismiss.dataset.notificationDismiss);
 });
 $("#enableNotificationsBtn").addEventListener("click", enableNotifications);
 $("#settingsEnableNotificationsBtn").addEventListener("click", enableNotifications);

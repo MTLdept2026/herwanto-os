@@ -331,6 +331,20 @@ h3 {
   color: var(--text-secondary);
 }
 
+.notification-enabled {
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 45%, transparent);
+}
+
+.notification-enabled:disabled {
+  opacity: 1;
+}
+
+.notification-warning {
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 45%, transparent);
+}
+
 .notification-item {
   display: grid;
   gap: 8px;
@@ -352,10 +366,24 @@ h3 {
   border-left-color: var(--warning);
 }
 
-.notification-item div {
+.notification-item-head {
   display: flex;
   justify-content: space-between;
   gap: var(--space-md);
+}
+
+.notification-dismiss {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  color: var(--text-secondary);
+}
+
+.notification-dismiss svg {
+  width: 14px;
+  height: 14px;
 }
 
 .notification-item strong {
@@ -632,6 +660,10 @@ html[data-theme="dark"] .segment {
 
 .status-ok {
   color: var(--success);
+}
+
+.status-warn {
+  color: var(--warning);
 }
 
 .status-off {

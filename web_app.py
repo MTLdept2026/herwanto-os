@@ -363,6 +363,19 @@ def notifications_seen(
     return {"ok": True, "marked": marked}
 
 
+@app.post("/api/notifications/archive")
+def notifications_archive(
+    req: NotificationSeenRequest,
+    x_hira_token: Optional[str] = Header(default=None),
+):
+    _require_token(x_hira_token)
+    try:
+        archived = bot.gs.archive_app_notifications(req.ids)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not dismiss notifications: {exc}") from exc
+    return {"ok": True, "archived": archived}
+
+
 @app.get("/api/files")
 def files(x_hira_token: Optional[str] = Header(default=None)):
     _require_token(x_hira_token)

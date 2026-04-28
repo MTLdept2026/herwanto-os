@@ -208,6 +208,48 @@ class AgenticClaudeTests(unittest.TestCase):
             self.assertEqual(bot.gs.get_marking_tasks(), [])
             self.assertEqual(len(bot.gs.get_marking_tasks(include_done=True)), 1)
 
+    def test_archive_app_notifications_hides_selected_items(self):
+        store = {
+            "app_notifications": json.dumps([
+                {
+                    "id": "1",
+                    "kind": "reminder",
+                    "title": "Hira nudge",
+                    "body": "Check bills",
+                    "created": "2026-04-28T19:19:00+08:00",
+                    "source": "nudge:1",
+                    "seen_by": [],
+                    "archived": False,
+                },
+                {
+                    "id": "2",
+                    "kind": "update",
+                    "title": "Hira",
+                    "body": "Still here",
+                    "created": "2026-04-28T19:20:00+08:00",
+                    "source": "",
+                    "seen_by": [],
+                    "archived": False,
+                },
+            ])
+        }
+
+        def fake_get_config(key):
+            return store.get(key, "")
+
+        def fake_set_config(key, value):
+            store[key] = value
+
+        with (
+            patch.object(bot.gs, "get_config", side_effect=fake_get_config),
+            patch.object(bot.gs, "set_config", side_effect=fake_set_config),
+        ):
+            archived = bot.gs.archive_app_notifications(["1"])
+            visible = bot.gs.get_app_notifications()
+
+        self.assertEqual(archived, 1)
+        self.assertEqual([item["id"] for item in visible], ["2"])
+
     def test_pdf_excerpt_prioritises_herwanto_timetable_pages(self):
         pages = [
             pdf_service.PdfPageText(1, "General staff briefing and school notices."),

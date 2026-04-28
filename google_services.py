@@ -695,6 +695,21 @@ def mark_app_notifications_seen(client_id: str, notification_ids: list[str]) -> 
     return changed
 
 
+def archive_app_notifications(notification_ids: list[str]) -> int:
+    ids = {str(item_id) for item_id in notification_ids}
+    if not ids:
+        return 0
+    notifications = get_app_notifications(include_archived=True)
+    changed = 0
+    for item in notifications:
+        if str(item.get("id")) in ids and not item.get("archived"):
+            item["archived"] = True
+            changed += 1
+    if changed:
+        set_app_notifications(notifications)
+    return changed
+
+
 def get_web_push_subscriptions() -> list:
     raw = get_config("web_push_subscriptions")
     if not raw:
