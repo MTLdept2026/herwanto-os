@@ -174,6 +174,7 @@ git push -u origin main
    - `ANTHROPIC_API_KEY`
    - `GOOGLE_SERVICE_ACCOUNT_JSON`
    - `GOOGLE_SHEET_ID`
+   - Optional school calendars: `STAFF_CALENDAR_IDS`, `SSC_CALENDAR_IDS`, `SCHOOL_LEADERS_CALENDAR_IDS`
    - Optional for editable generated Google Docs/Slides links: `GOOGLE_ARTIFACT_SHARE_EMAIL`
    - Optional for voice notes: `OPENAI_API_KEY`
    - Optional for Gmail: `GOOGLE_GMAIL_USER`

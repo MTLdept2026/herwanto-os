@@ -34,10 +34,31 @@ GMAIL_SCOPES = [
 
 SHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "")
 
-# Support multiple calendars via GOOGLE_CALENDAR_IDS (comma-separated)
-# Falls back to GOOGLE_CALENDAR_ID, then "primary"
-_cal_ids_raw = os.environ.get("GOOGLE_CALENDAR_IDS", "") or os.environ.get("GOOGLE_CALENDAR_ID", "primary")
-CALENDAR_IDS = [c.strip() for c in _cal_ids_raw.split(",") if c.strip()]
+def _split_ids(value: str) -> list[str]:
+    return [item.strip() for item in (value or "").split(",") if item.strip()]
+
+
+def _configured_calendar_ids() -> list[str]:
+    """Read all configured calendar IDs, preserving write-calendar first."""
+    ids = _split_ids(os.environ.get("GOOGLE_CALENDAR_IDS", ""))
+    if not ids:
+        ids = _split_ids(os.environ.get("GOOGLE_CALENDAR_ID", "")) or ["primary"]
+
+    # Optional grouped school calendars. These are read after the main calendar
+    # so calendar writes still go to the first GOOGLE_CALENDAR_IDS/ID entry.
+    for key in ("STAFF_CALENDAR_IDS", "SSC_CALENDAR_IDS", "SCHOOL_LEADERS_CALENDAR_IDS"):
+        ids.extend(_split_ids(os.environ.get(key, "")))
+
+    deduped = []
+    seen = set()
+    for cal_id in ids:
+        if cal_id not in seen:
+            deduped.append(cal_id)
+            seen.add(cal_id)
+    return deduped
+
+
+CALENDAR_IDS = _configured_calendar_ids()
 
 
 def _creds(scopes=None, subject: str = ""):
