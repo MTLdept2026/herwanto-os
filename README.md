@@ -29,7 +29,6 @@ Your AI second brain on Telegram. Calendar-aware, project-tracking, daily briefi
 | File memory | `/files` |
 | Prep briefings | `/evening`, `/weekly` |
 | Gmail brief/drafts | `/gmail`, `/gmaildraft` |
-| RBS lab availability via Mac helper | `/rbs check YYYY-MM-DD \| P5-P6 \| 1.com,2.com \| Purpose` |
 | All project statuses | `/projects` |
 | Update a project | `/update Project \| Status \| Milestone \| Date \| Notes` |
 | Latest news shortlist | `/news`, `/news Apple AI`, `/watch`, `/watchlist`, `/unwatch` |
@@ -233,57 +232,6 @@ Adding a check-in with the same name updates the existing one, so you can switch
 
 Hira creates downloadable `.docx` and `.pptx` files in Telegram. If Google Drive is connected and the Drive API is enabled, Hira also uploads and converts them into Google Docs or Google Slides links. Set `GOOGLE_ARTIFACT_SHARE_EMAIL` to your Gmail/Workspace email if you want those generated links shared back to your account automatically. Reusable template memories are applied to future generated worksheets, decks, lesson plans, proposals, and briefing materials.
 
-**RBS lab availability checks:**
-```
-/rbs check 2026-05-05 | P5-P6 | 1.com,2.com,3.com,4.com | Sec 2 ML lesson
-/rbs jobs
-Book lab for my Sec 2 ML lesson next Tuesday
-```
-
-RBS automation uses a local Mac helper because Railway cannot access your Chrome session or MIMS credentials. The first version is dry-run only: Hira queues the check, the Mac helper opens Chrome/RBS, reads availability, saves a screenshot, and reports back in Telegram. Computer lab checks default to `1.com`, `2.com`, `3.com`, and `4.com`. It does not submit bookings yet.
-
-Local setup:
-```bash
-python -m pip install playwright
-python -m playwright install chromium
-python scripts/rbs_mac_helper.py --once
-# or keep it listening:
-python scripts/rbs_mac_helper.py --poll
-```
-
-Install as a macOS background checker:
-```bash
-chmod +x scripts/install_rbs_helper_launch_agent.sh scripts/uninstall_rbs_helper_launch_agent.sh
-scripts/install_rbs_helper_launch_agent.sh
-```
-
-The LaunchAgent checks once per minute and exits if there is no RBS job. Chrome only opens when Hira has queued an availability check.
-
-The helper uses the same Google environment variables as the bot so it can read/write the shared job queue in the Sheet `Config` tab. Optional local settings:
-```bash
-export RBS_CHROME_PROFILE_DIR=~/.hira-rbs-chrome
-export RBS_BROWSER_CHANNEL=chrome
-export RBS_SCREENSHOT_DIR=files/rbs
-export RBS_LOGIN_WAIT_SECONDS=180
-```
-
-On the first run, log in to MIMS/RBS inside the helper-opened Chrome window if prompted. The helper waits on the MIMS page for manual login, then continues after the RBS page loads. After that, the local profile should keep the session. If you want it to use your regular Chrome profile, set `RBS_CHROME_PROFILE_DIR` to that profile path, but close Chrome first because Chrome locks active profiles.
-
-For daily use, keep the helper on its dedicated Chrome profile. It can stay logged into MIMS and run beside your normal Chrome:
-```bash
-export RBS_CHROME_PROFILE_DIR="$HOME/.hira-rbs-chrome"
-unset RBS_CHROME_USER_DATA_DIR
-unset RBS_CHROME_PROFILE_NAME
-```
-
-To use your real Chrome `Work` profile instead, normal Chrome must be fully closed first because Chrome locks active profiles:
-```bash
-export RBS_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome"
-export RBS_CHROME_PROFILE_NAME="Default"
-```
-
-If your Chrome profile is not `Default`, open `chrome://version` in Chrome and copy the final profile folder name from the Profile Path, such as `Profile 1` or `Profile 2`. Close normal Chrome before running the helper with your real profile.
-
 **Pro assistant workflows:**
 ```
 /tasks
@@ -423,8 +371,6 @@ What should my next milestone for Rūḥ be?
 herwanto-os/
 ├── bot.py              # Bot handlers + scheduler
 ├── google_services.py  # Calendar + Sheets integration
-├── scripts/
-│   └── rbs_mac_helper.py
 ├── requirements.txt
 ├── railway.toml
 ├── .env.example
