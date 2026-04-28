@@ -1,4 +1,4 @@
-const CACHE_NAME = "hira-os-v4";
+const CACHE_NAME = "hira-os-v5";
 const ASSETS = [
   "/",
   "/static/styles.css",

@@ -58,6 +58,8 @@ html,
 body {
   margin: 0;
   min-height: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
   background: #f5f5f5;
   color: var(--text-primary);
   font-family: "Space Grotesk", system-ui, sans-serif;
@@ -138,6 +140,7 @@ textarea {
   min-height: 100vh;
   display: grid;
   grid-template-rows: auto auto auto auto 1fr;
+  width: 100%;
   max-width: 1200px;
   margin: 0 auto;
   padding: env(safe-area-inset-top) 20px calc(20px + env(safe-area-inset-right)) calc(20px + env(safe-area-inset-bottom)) calc(20px + env(safe-area-inset-left));
@@ -157,6 +160,16 @@ textarea {
   display: flex;
   gap: var(--space-sm);
   align-items: center;
+}
+
+.topbar-actions {
+  justify-content: end;
+}
+
+.quick-theme-toggle {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
 }
 
 .eyebrow,
@@ -452,10 +465,15 @@ html[data-theme="dark"] .chip.active {
   grid-template-columns: repeat(12, minmax(0, 1fr));
   gap: 3px;
   align-self: end;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .segment {
   height: 10px;
+  min-width: 0;
   background: #ececec;
 }
 
@@ -564,9 +582,55 @@ html[data-theme="dark"] .segment {
 }
 
 #chatView.active {
-  display: grid;
-  grid-template-rows: auto 1fr auto;
   min-height: 62vh;
+}
+
+.chat-shell {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.78fr) minmax(0, 1.6fr);
+  gap: var(--space-md);
+  align-items: stretch;
+}
+
+.command-rail,
+.chat-main {
+  min-width: 0;
+}
+
+.command-rail {
+  display: grid;
+  gap: var(--space-md);
+  align-content: start;
+}
+
+.rail-card {
+  min-height: auto;
+}
+
+.mini-metric {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  font-family: "Space Mono", monospace;
+  font-size: var(--caption);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+}
+
+.mini-metric strong {
+  font-family: "Doto", "Space Mono", monospace;
+  font-size: 32px;
+  color: var(--text-display);
+}
+
+.chat-main {
+  display: grid;
+  grid-template-rows: auto auto minmax(300px, 1fr) auto;
+  min-height: 66vh;
+  padding: var(--space-lg);
+  background: var(--surface);
+  border: 1px solid var(--border-visible);
 }
 
 .messages,
@@ -598,6 +662,59 @@ html[data-theme="dark"] .segment {
 
 .message.hira {
   background: var(--surface);
+}
+
+.agenda-list {
+  display: grid;
+  gap: var(--space-sm);
+}
+
+.agenda-card {
+  display: grid;
+  grid-template-columns: minmax(76px, 0.22fr) minmax(0, 1fr);
+  gap: var(--space-md);
+  padding: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.agenda-time {
+  align-self: start;
+  padding: 8px 6px;
+  border-left: 4px solid var(--accent);
+  background: var(--surface-raised);
+  color: var(--text-display);
+  font-family: "Space Mono", monospace;
+  font-size: var(--caption);
+  line-height: 1.25;
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+}
+
+.agenda-copy {
+  min-width: 0;
+}
+
+.agenda-day {
+  margin-bottom: 4px;
+  color: var(--text-secondary);
+  font-family: "Space Mono", monospace;
+  font-size: var(--label);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.agenda-copy strong {
+  display: block;
+  color: var(--text-display);
+  line-height: 1.35;
+}
+
+.empty-state {
+  padding: var(--space-md);
+  color: var(--text-secondary);
+  font-family: "Space Mono", monospace;
+  text-transform: uppercase;
 }
 
 .message-body code,
@@ -714,7 +831,8 @@ html[data-theme="dark"] .segment {
   .files-grid,
   .ops-grid,
   .hero-grid,
-  .marking-summary {
+  .marking-summary,
+  .chat-shell {
     grid-template-columns: 1fr;
   }
 
@@ -724,13 +842,19 @@ html[data-theme="dark"] .segment {
 }
 
 @media (max-width: 640px) {
+  :root {
+    --space-md: 12px;
+    --space-lg: 16px;
+    --display-lg: 42px;
+    --heading: 22px;
+  }
+
   .shell {
-    padding-left: 12px;
-    padding-right: 12px;
+    padding-left: max(10px, env(safe-area-inset-left));
+    padding-right: max(10px, env(safe-area-inset-right));
   }
 
   .topbar,
-  .status-bar,
   .section-head,
   .inline-actions,
   .query-row,
@@ -738,22 +862,126 @@ html[data-theme="dark"] .segment {
     display: grid;
   }
 
+  .topbar {
+    grid-template-columns: 1fr auto;
+    align-items: start;
+    gap: var(--space-sm);
+  }
+
+  .topbar-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+    justify-items: end;
+  }
+
+  .quick-theme-toggle {
+    display: none;
+  }
+
+  .status-bar {
+    display: grid;
+    gap: var(--space-sm);
+    padding: 14px;
+    overflow: hidden;
+  }
+
+  #greetingDate {
+    display: block;
+    font-size: clamp(22px, 7vw, 34px);
+    overflow-wrap: anywhere;
+  }
+
+  #greetingTime {
+    display: block;
+    margin: 8px 0 0;
+    font-size: 16px;
+  }
+
   .nav-tabs {
-    grid-template-columns: repeat(6, max-content);
+    grid-template-columns: repeat(6, minmax(84px, 1fr));
     overflow-x: auto;
     padding-bottom: 2px;
+    scrollbar-width: none;
+  }
+
+  .nav-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .nav-tab {
+    min-height: 42px;
+    padding: 0 12px;
+    white-space: nowrap;
+  }
+
+  .ops-card {
+    min-height: 0;
+    padding: 16px;
+    overflow: hidden;
   }
 
   .clock-display {
-    font-size: 58px;
+    font-size: clamp(48px, 17vw, 70px);
   }
 
   .message {
-    max-width: 95%;
+    max-width: 100%;
   }
 
   .composer {
     grid-template-columns: 1fr;
+  }
+
+  .chat-main {
+    order: -1;
+    min-height: 0;
+    padding: 14px;
+    grid-template-rows: auto auto minmax(140px, 1fr) auto;
+  }
+
+  .chat-main .prompt-row {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 2px;
+    scrollbar-width: none;
+  }
+
+  .chat-main .prompt-row::-webkit-scrollbar {
+    display: none;
+  }
+
+  .chat-main .prompt-chip {
+    flex: 0 0 auto;
+  }
+
+  .command-rail {
+    grid-template-columns: 1fr;
+  }
+
+  .rail-card .hero-display {
+    font-size: 44px;
+  }
+
+  .metric-value {
+    font-size: 48px;
+  }
+
+  .segment-bar {
+    gap: 2px;
+  }
+
+  .segment {
+    height: 9px;
+  }
+
+  .agenda-card {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .agenda-time {
+    width: fit-content;
+    max-width: 100%;
   }
 
   h1 {

@@ -23,6 +23,10 @@
           <h1>Hira</h1>
         </div>
         <div class="topbar-actions">
+          <div class="quick-theme-toggle" role="group" aria-label="Quick theme toggle">
+            <button type="button" data-theme-choice="light" class="theme-btn active">Light</button>
+            <button type="button" data-theme-choice="dark" class="theme-btn">Dark</button>
+          </div>
           <button id="installBtn" class="icon-btn" hidden title="Install app">+</button>
           <button id="settingsBtn" class="icon-btn" title="Settings">...</button>
         </div>
@@ -57,15 +61,62 @@
       </section>
 
       <nav class="nav-tabs" aria-label="Hira views">
-        <button class="nav-tab active" data-view="home">Home</button>
-        <button class="nav-tab" data-view="chat">Chat</button>
+        <button class="nav-tab active" data-view="chat">Chat</button>
+        <button class="nav-tab" data-view="home">Home</button>
         <button class="nav-tab" data-view="agenda">Agenda</button>
         <button class="nav-tab" data-view="tasks">Tasks</button>
         <button class="nav-tab" data-view="gmail">Gmail</button>
         <button class="nav-tab" data-view="files">Files</button>
       </nav>
 
-      <section id="homeView" class="view active">
+      <section id="chatView" class="view active">
+        <div class="chat-shell">
+          <aside class="command-rail" aria-label="Hira quick status">
+            <section class="ops-card ops-card-dark rail-card">
+              <p class="eyebrow">Assistant Core</p>
+              <div class="hero-display">HIRA</div>
+              <div id="homeServicesBar" class="segment-bar services-segments" aria-hidden="true"></div>
+              <div class="metric-label">LIVE SYSTEM</div>
+            </section>
+            <section class="ops-card rail-card">
+              <p class="eyebrow">Marking Load</p>
+              <div class="mini-metric">
+                <span>Unmarked</span>
+                <strong id="markingUnmarkedValue">0</strong>
+              </div>
+              <div id="markingUnmarkedBar" class="segment-bar unmarked-segments" aria-hidden="true"></div>
+              <div class="mini-metric">
+                <span>Marked</span>
+                <strong id="markingMarkedValue">0</strong>
+              </div>
+              <div id="markingMarkedBar" class="segment-bar marked-segments" aria-hidden="true"></div>
+            </section>
+            <section class="ops-card rail-card file-memory-dial">
+              <p class="eyebrow">File Memory</p>
+              <div id="fileMemoryValue" class="metric-value">0</div>
+              <div id="fileMemoryLabel" class="metric-label">MEMORY STANDBY</div>
+              <div id="fileMemoryBar" class="segment-bar file-memory-segments" aria-hidden="true"></div>
+            </section>
+          </aside>
+          <section class="chat-main">
+            <div class="section-head">
+              <div>
+                <h2>Chat</h2>
+                <p class="subtle">Same Hira, just without the Telegram crowd.</p>
+              </div>
+              <button id="resetChatBtn" type="button" class="ghost-btn">Clear</button>
+            </div>
+            <div id="promptRow" class="prompt-row"></div>
+            <div id="messages" class="messages" aria-live="polite"></div>
+            <form id="chatForm" class="composer">
+              <textarea id="messageInput" rows="1" placeholder="Ask Hira anything"></textarea>
+              <button id="sendBtn" type="submit">Send</button>
+            </form>
+          </section>
+        </div>
+      </section>
+
+      <section id="homeView" class="view">
         <div class="section-head">
           <div>
             <h2>Today with Hira</h2>
@@ -89,7 +140,7 @@
             <p class="eyebrow">System Status</p>
             <div id="homeServicesSummary" class="metric-value">0/4</div>
             <div id="homeServicesLabel" class="metric-label">SERVICES CONNECTED</div>
-            <div id="homeServicesBar" class="segment-bar" aria-hidden="true"></div>
+            <div class="segment-bar services-segments" aria-hidden="true"></div>
           </section>
 
           <section class="ops-card">
@@ -107,7 +158,7 @@
                 <p class="eyebrow">Quick asks</p>
               </div>
             </div>
-            <div id="promptRow" class="prompt-row"></div>
+            <div class="prompt-row prompt-row-mirror"></div>
           </section>
 
           <section class="ops-card">
@@ -128,14 +179,14 @@
             <p class="eyebrow">Marking Load</p>
             <div class="marking-summary">
               <div class="marking-metric">
-                <div id="markingUnmarkedValue" class="metric-value">0</div>
+                <div id="markingUnmarkedValueHome" class="metric-value">0</div>
                 <div class="metric-label">UNMARKED SCRIPTS</div>
-                <div id="markingUnmarkedBar" class="segment-bar" aria-hidden="true"></div>
+                <div id="markingUnmarkedBarHome" class="segment-bar unmarked-segments" aria-hidden="true"></div>
               </div>
               <div class="marking-metric">
-                <div id="markingMarkedValue" class="metric-value">0</div>
+                <div id="markingMarkedValueHome" class="metric-value">0</div>
                 <div class="metric-label">MARKED SCRIPTS</div>
-                <div id="markingMarkedBar" class="segment-bar" aria-hidden="true"></div>
+                <div id="markingMarkedBarHome" class="segment-bar marked-segments" aria-hidden="true"></div>
               </div>
               <div class="marking-meta">
                 <div class="status-row">
@@ -162,28 +213,13 @@
             </div>
             <div id="homeTasks" class="rich-output"></div>
           </section>
-          <section class="panel full ops-panel">
-            <div class="section-head compact">
-              <h3>File memory</h3>
-            </div>
-            <div id="homeFiles" class="rich-output"></div>
+          <section class="ops-card file-memory-dial">
+            <p class="eyebrow">File Memory</p>
+            <div id="fileMemoryValueHome" class="metric-value">0</div>
+            <div id="fileMemoryLabelHome" class="metric-label">MEMORY STANDBY</div>
+            <div id="fileMemoryBarHome" class="segment-bar file-memory-segments" aria-hidden="true"></div>
           </section>
         </div>
-      </section>
-
-      <section id="chatView" class="view">
-        <div class="section-head">
-          <div>
-            <h2>Chat</h2>
-            <p class="subtle">Same Hira, just without the Telegram crowd.</p>
-          </div>
-          <button id="resetChatBtn" type="button" class="ghost-btn">Clear</button>
-        </div>
-        <div id="messages" class="messages" aria-live="polite"></div>
-        <form id="chatForm" class="composer">
-          <textarea id="messageInput" rows="1" placeholder="Ask Hira anything"></textarea>
-          <button id="sendBtn" type="submit">Send</button>
-        </form>
       </section>
 
       <section id="agendaView" class="view">

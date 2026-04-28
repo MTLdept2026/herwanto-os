@@ -3,7 +3,7 @@ const state = {
   theme: localStorage.getItem("hira_theme") || "light",
   clientId: localStorage.getItem("hira_client_id") || (crypto?.randomUUID ? crypto.randomUUID() : `hira-${Date.now()}`),
   deferredInstall: null,
-  currentView: "home",
+  currentView: "chat",
   homeDays: 7,
   chatBusy: false,
   chatHistory: JSON.parse(localStorage.getItem("hira_pwa_chat") || "[]"),
@@ -32,7 +32,7 @@ function applyTheme() {
   document.documentElement.dataset.theme = theme;
   const themeColor = theme === "dark" ? "#000000" : "#f5f5f5";
   document.querySelector('meta[name="theme-color"]')?.setAttribute("content", themeColor);
-  document.querySelectorAll(".theme-btn").forEach((btn) => {
+  document.querySelectorAll("[data-theme-choice], .theme-btn").forEach((btn) => {
     const selected = urlTheme ? btn.dataset.theme === urlTheme : btn.dataset.theme === state.theme;
     btn.classList.toggle("active", selected);
   });
@@ -46,15 +46,29 @@ function headers(json = true) {
   return base;
 }
 
-async function api(path, options = {}) {
-  const response = await fetch(path, options);
+function withAuth(options = {}) {
+  const next = { ...options, headers: { ...(options.headers || {}) } };
+  if (state.token) next.headers["X-Hira-Token"] = state.token;
+  if (state.clientId) next.headers["X-Hira-Client"] = state.clientId;
+  return next;
+}
+
+async function api(path, options = {}, tokenPrompted = false) {
+  const response = await fetch(path, withAuth(options));
   if (response.status === 401) {
+    if (tokenPrompted) {
+      $("#settingsPanel").hidden = false;
+      throw new Error("That token was rejected. Paste the Hira web token in Settings and save it once.");
+    }
     const token = prompt("Enter Hira web token");
     if (token) {
       state.token = token.trim();
       localStorage.setItem("hira_web_token", state.token);
-      return api(path, options);
+      $("#tokenInput").value = state.token;
+      return api(path, options, true);
     }
+    $("#settingsPanel").hidden = false;
+    throw new Error("Hira needs the web token before live data can load.");
   }
   if (!response.ok) {
     const detail = await response.json().catch(() => ({}));
@@ -86,6 +100,10 @@ function renderSegments(target, filled, total = 12, tone = "accent") {
   }).join("");
 }
 
+function renderSegmentsAll(selector, filled, total = 12, tone = "accent") {
+  document.querySelectorAll(selector).forEach((el) => renderSegments(el, filled, total, tone));
+}
+
 function renderConnections(services) {
   const labels = [
     ["Calendar", !!services.calendar],
@@ -103,6 +121,12 @@ function renderConnections(services) {
       `
     )
     .join("");
+}
+
+function fileMemorySegments(text) {
+  const count = countMeaningfulLines(text);
+  if (!count) return 1;
+  return Math.max(2, Math.min(12, Math.ceil(count / 2)));
 }
 
 function markingSegments(value, total) {
@@ -129,6 +153,44 @@ function renderTextBlock(text) {
       return `<div>${markdownish(line)}</div>`;
     })
     .join("");
+}
+
+function renderAgendaCards(text) {
+  const lines = (text || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return "<div class='empty-state'>No agenda items found.</div>";
+
+  const cards = [];
+  let currentDay = "";
+  for (const raw of lines) {
+    const line = raw.replace(/^[•\-*]\s*/, "").trim();
+    const plainLine = line.replace(/[*_`]/g, "").trim();
+    if (/^agenda$/i.test(plainLine) || /^google not connected/i.test(plainLine)) continue;
+    if (/\bSGT$/i.test(plainLine) && /\b\d{4}\b/.test(plainLine)) continue;
+    const dayMatch = line.match(/^(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}[\/\-.]\d{1,2}|\d{4}-\d{2}-\d{2})\b[:\s-]*/i);
+    const headingMatch = plainLine.match(/^(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|.+\b\d{4}\b).*/i);
+    if ((dayMatch || headingMatch) && plainLine.length < 90 && !plainLine.match(/\b\d{1,2}:\d{2}\b/)) {
+      currentDay = plainLine.replace(/[:\-]\s*$/, "");
+      continue;
+    }
+    const timeMatch = line.match(/(\b\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b\s*(?:[-–—to]+\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?)/i);
+    const time = timeMatch ? timeMatch[1].replace(/\s+/g, " ").trim() : "Anytime";
+    const title = line.replace(timeMatch?.[1] || "", "").replace(/^[:\-–\s]+/, "").trim() || line;
+    cards.push(`
+      <article class="agenda-card">
+        <div class="agenda-time">${markdownish(time)}</div>
+        <div class="agenda-copy">
+          ${currentDay ? `<p class="agenda-day">${markdownish(currentDay)}</p>` : ""}
+          <strong>${markdownish(title)}</strong>
+        </div>
+      </article>
+    `);
+  }
+
+  if (!cards.length) return renderTextBlock(text);
+  return `<div class="agenda-list">${cards.join("")}</div>`;
 }
 
 function addMessage(role, text, persist = true) {
@@ -167,21 +229,25 @@ function setView(name) {
 async function loadHome() {
   $("#homeAgenda").innerHTML = "<div>Loading...</div>";
   $("#homeTasks").innerHTML = "<div>Loading...</div>";
-  $("#homeFiles").innerHTML = "<div>Loading...</div>";
   try {
     const data = await api(`/api/home?days=${state.homeDays}`, { headers: headers(false) });
     $("#greetingDate").textContent = data.greeting;
     $("#greetingTime").textContent = data.time_label;
     $("#homeClockTime").textContent = (data.time_label || "").replace(" SGT", "");
     $("#homeClockDate").textContent = data.greeting || "";
-    $("#homeAgenda").innerHTML = renderTextBlock(data.agenda);
+    $("#homeAgenda").innerHTML = renderAgendaCards(data.agenda);
     $("#homeTasks").innerHTML = renderTextBlock(data.tasks);
-    $("#homeFiles").innerHTML = renderTextBlock(data.files);
+    const fileLines = countMeaningfulLines(data.files);
+    $("#fileMemoryValue").textContent = String(fileLines);
+    $("#fileMemoryLabel").textContent = fileLines ? "MEMORY ITEMS INDEXED" : "MEMORY STANDBY";
+    $("#fileMemoryValueHome").textContent = String(fileLines);
+    $("#fileMemoryLabelHome").textContent = fileLines ? "MEMORY ITEMS INDEXED" : "MEMORY STANDBY";
+    renderSegmentsAll(".file-memory-segments", fileMemorySegments(data.files), 12, fileLines > 8 ? "success" : "accent");
     const services = data.services || {};
     const connectedCount = Object.values(services).filter(Boolean).length;
     $("#homeServicesSummary").textContent = `${connectedCount}/4`;
     $("#homeServicesLabel").textContent = connectedCount ? "SERVICES CONNECTED" : "AWAITING CONNECTION";
-    renderSegments("#homeServicesBar", connectedCount * 3, 12, connectedCount ? "accent" : "muted");
+    renderSegmentsAll(".services-segments", connectedCount * 3, 12, connectedCount ? "accent" : "muted");
     renderConnections(services);
     const agendaCount = countMeaningfulLines(data.agenda);
     const taskCount = countMeaningfulLines(data.tasks);
@@ -195,15 +261,21 @@ async function loadHome() {
     const unmarkedScripts = Number(marking.unmarked_scripts || 0);
     $("#markingMarkedValue").textContent = String(markedScripts);
     $("#markingUnmarkedValue").textContent = String(unmarkedScripts);
+    $("#markingMarkedValueHome").textContent = String(markedScripts);
+    $("#markingUnmarkedValueHome").textContent = String(unmarkedScripts);
     $("#markingStackCount").textContent = String(Number(marking.active_stacks || 0));
     $("#markingTotalValue").textContent = String(totalScripts);
-    renderSegments("#markingMarkedBar", markingSegments(markedScripts, totalScripts), 12, "success");
-    renderSegments("#markingUnmarkedBar", markingSegments(unmarkedScripts, totalScripts), 12, unmarkedScripts > markedScripts ? "warning" : "accent");
+    renderSegmentsAll(".marked-segments", markingSegments(markedScripts, totalScripts), 12, "success");
+    renderSegmentsAll(".unmarked-segments", markingSegments(unmarkedScripts, totalScripts), 12, unmarkedScripts > markedScripts ? "warning" : "accent");
     setStatus(`Loaded ${state.homeDays}-day view.`, "ok");
   } catch (error) {
     $("#homeAgenda").textContent = `Error: ${error.message}`;
     $("#homeTasks").textContent = `Error: ${error.message}`;
-    $("#homeFiles").textContent = `Error: ${error.message}`;
+    $("#fileMemoryValue").textContent = "!";
+    $("#fileMemoryLabel").textContent = "MEMORY CHECK FAILED";
+    $("#fileMemoryValueHome").textContent = "!";
+    $("#fileMemoryLabelHome").textContent = "MEMORY CHECK FAILED";
+    renderSegmentsAll(".file-memory-segments", 1, 12, "warning");
     setStatus(error.message, "error");
   }
 }
@@ -212,7 +284,7 @@ async function loadAgenda(days = 7) {
   $("#agendaOutput").innerHTML = "<div>Loading...</div>";
   try {
     const data = await api(`/api/agenda?days=${days}`, { headers: headers(false) });
-    $("#agendaOutput").innerHTML = renderTextBlock(data.text);
+    $("#agendaOutput").innerHTML = renderAgendaCards(data.text);
     setStatus("Agenda refreshed.", "ok");
   } catch (error) {
     $("#agendaOutput").textContent = `Error: ${error.message}`;
@@ -398,8 +470,8 @@ $("#installBtn").addEventListener("click", async () => {
 });
 
 $("#settingsBtn").addEventListener("click", () => $("#settingsPanel").toggleAttribute("hidden"));
-document.querySelectorAll(".theme-btn").forEach((button) => {
-  button.dataset.theme = button.id.replace("theme", "").replace("Btn", "").toLowerCase();
+document.querySelectorAll("[data-theme-choice], .theme-btn").forEach((button) => {
+  button.dataset.theme = button.dataset.themeChoice || button.id.replace("theme", "").replace("Btn", "").toLowerCase();
   button.addEventListener("click", () => {
     state.theme = button.dataset.theme;
     localStorage.setItem("hira_theme", state.theme);
@@ -508,5 +580,5 @@ quickPrompts.forEach((text) => {
 });
 
 renderStoredChat();
-setView("home");
+setView("chat");
 loadHome();
