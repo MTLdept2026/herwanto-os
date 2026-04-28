@@ -20,6 +20,7 @@ Your AI second brain on Telegram. Calendar-aware, project-tracking, daily briefi
 | Store assistant memory | `/remember Category \| Fact` or say "remember..." |
 | View / clear memory | `/memory`, `/forget all` |
 | Screenshot/PDF schedule extraction | Send a photo, screenshot, image document, or PDF |
+| Heavy document analysis | Send searchable PDF, DOCX, or PPTX files |
 | Create DOCX / Google Docs | `/doc`, or ask naturally |
 | Create PPTX / Google Slides | `/slides`, or ask naturally |
 | Remember artifact templates | `/template`, `/templates`, `/artifacts` |
@@ -327,6 +328,14 @@ Anything interesting in AI or SG education today?
 Send a timetable screenshot, duty roster, match fixture, PDF letter, or event notice.
 Hira will extract dated schedule items, add clear events to Google Calendar,
 add dated tasks as reminders, and ask only for missing details when needed.
+```
+
+**Heavy documents:**
+```
+Send large searchable PDFs, Word documents, or PowerPoint decks.
+Hira extracts text locally first, ranks the most relevant pages/slides/sections,
+then analyses only those excerpts so large school files do not overload the model.
+For scanned/image-only PDFs, send an OCR/searchable version or the relevant page screenshots.
 ```
 
 **Update a project:**

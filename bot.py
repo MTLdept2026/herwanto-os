@@ -23,6 +23,8 @@ import google_services as gs
 import timetable as tt
 import search_service as ss
 import artifact_service as artifacts
+import pdf_service as pdfs
+import document_service as docs
 
 # ─── SETUP ───────────────────────────────────────────────────────────────────
 
@@ -2431,6 +2433,82 @@ async def handle_photo(update, context):
         logger.error(f"Photo error: {e}")
         await update.message.reply_text(f"Could not process photo: {e}")
 
+DOCUMENT_ANALYSIS_INSTRUCTION = """
+You are analysing extracted text from a potentially large uploaded work document.
+It may be a PDF, Word document, or PowerPoint deck. Work only from the excerpts given.
+
+Priority:
+1. Identify pages/sections relevant to Herwanto, Muhammad Herwanto Johari, MTL, Malay/Bahasa Melayu, and timetable entries.
+2. Extract useful details for school work: timetable entries, classes, days, periods, rooms, odd/even week notes, meeting/event details, deadlines, instructions, rubrics, tasks, and follow-ups.
+3. Extract dated calendar items or actionable deadlines only if the excerpt contains clear dates/times.
+4. If the excerpts are insufficient, say exactly what is missing and which page clues were found.
+5. Do not pretend to have read pages not included in the excerpt.
+6. Reply with a concise summary and page references.
+"""
+
+async def _process_office_document(update, doc, file_bytes: bytes, caption: str):
+    try:
+        kind, index_note, excerpt = docs.extract_supported_document(
+            file_bytes,
+            doc.mime_type or "",
+            filename=doc.file_name or "",
+            caption=caption,
+        )
+    except Exception as e:
+        logger.error(f"Document extraction error: {e}")
+        await update.message.reply_text(f"Could not read that document locally: {e}")
+        return
+
+    if not excerpt.strip():
+        summary = (
+            f"{index_note}\n\n"
+            "I could not extract searchable text from it. If this is a scanned PDF or image-based deck, send the relevant page/screenshot or an OCR/searchable export."
+        )
+        _remember_uploaded_file(
+            kind.lower(),
+            doc.file_id,
+            caption,
+            summary,
+            filename=doc.file_name or "",
+            mime_type=doc.mime_type or kind.lower(),
+        )
+        await reply(update, summary)
+        return
+
+    await reply(update, f"Got the {kind}. {index_note}\nAnalysing the most relevant parts now...")
+    prompt = (
+        f"{DOCUMENT_ANALYSIS_INSTRUCTION}\n\n"
+        f"Document type: {kind}\n"
+        f"User note: {caption}\n\n"
+        f"Document index: {index_note}\n\n"
+        f"Extracted relevant text:\n{excerpt}"
+    )
+    try:
+        reply_text = await _run_agentic_claude(
+            [{"role": "user", "content": prompt}],
+            max_tokens=3000,
+            tools=[CONTEXT_TOOL, CALENDAR_TOOL, REMINDER_TOOL, MEMORY_TOOL]
+        )
+    except Exception as e:
+        logger.error(f"Document Claude analysis error: {e}")
+        reply_text = (
+            f"I extracted the document text, but the AI analysis step failed: {e}\n\n"
+            f"{index_note}\nTry asking me a narrower question like: “find Herwanto in this timetable”."
+        )
+
+    try:
+        _remember_uploaded_file(
+            kind.lower(),
+            doc.file_id,
+            caption,
+            f"{index_note} Analysis: {reply_text}",
+            filename=doc.file_name or "",
+            mime_type=doc.mime_type or kind.lower(),
+        )
+    except Exception as e:
+        logger.warning(f"Could not store document memory: {e}")
+    await reply(update, reply_text)
+
 async def handle_document(update, context):
     """Handle PDFs/images and extract schedule data when present."""
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
@@ -2440,21 +2518,26 @@ async def handle_document(update, context):
         file = await context.bot.get_file(doc.file_id)
         buf = io.BytesIO()
         await file.download_to_memory(buf)
-        file_data = base64.b64encode(buf.getvalue()).decode()
+        raw_bytes = buf.getvalue()
 
-        if doc.mime_type == "application/pdf":
-            content_block = {
-                "type": "document",
-                "source": {"type": "base64", "media_type": "application/pdf", "data": file_data}
-            }
+        office_mimes = {
+            "application/pdf",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        }
+        filename = (doc.file_name or "").lower()
+        if doc.mime_type in office_mimes or filename.endswith((".pdf", ".docx", ".pptx")):
+            await _process_office_document(update, doc, raw_bytes, caption)
+            return
         elif doc.mime_type and doc.mime_type.startswith("image/"):
+            file_data = base64.b64encode(raw_bytes).decode()
             content_block = {
                 "type": "image",
                 "source": {"type": "base64", "media_type": doc.mime_type, "data": file_data}
             }
         else:
             await update.message.reply_text(
-                f"File type `{doc.mime_type}` not supported yet.\nSend PDFs or images.",
+                f"File type `{doc.mime_type}` not supported yet.\nSend PDFs, DOCX, PPTX, or images.",
                 parse_mode="Markdown")
             return
 

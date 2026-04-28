@@ -8,6 +8,7 @@ from unittest.mock import patch
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
 import bot
+import pdf_service
 
 
 class FakeMessages:
@@ -193,6 +194,24 @@ class AgenticClaudeTests(unittest.TestCase):
 
             self.assertEqual(bot.gs.get_marking_tasks(), [])
             self.assertEqual(len(bot.gs.get_marking_tasks(include_done=True)), 1)
+
+    def test_pdf_excerpt_prioritises_herwanto_timetable_pages(self):
+        pages = [
+            pdf_service.PdfPageText(1, "General staff briefing and school notices."),
+            pdf_service.PdfPageText(2, "T. MTL Muhammad Herwanto Johari\nMon P2 ML L3-10\nTue P5 ML L4-12"),
+            pdf_service.PdfPageText(3, "Canteen duty roster unrelated page."),
+        ]
+
+        excerpt, selected, text_pages = pdf_service.build_pdf_excerpt(
+            pages,
+            caption="Find Herwanto timetable",
+            max_pages=1,
+        )
+
+        self.assertEqual(text_pages, 3)
+        self.assertEqual(selected, [2])
+        self.assertIn("Muhammad Herwanto Johari", excerpt)
+        self.assertIn("Mon P2", excerpt)
 
 
 if __name__ == "__main__":
