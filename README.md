@@ -339,7 +339,7 @@ http://127.0.0.1:8000
 
 For Railway, create a second service from this repo and use:
 ```bash
-uvicorn web_app:app --host 0.0.0.0 --port $PORT
+HIRA_SERVICE_MODE=pwa
 ```
 
 Copy the same environment variables as the Telegram bot service. Set `HIRA_WEB_TOKEN` to a private phrase if you want the PWA API protected; the app will ask for it on first use.
