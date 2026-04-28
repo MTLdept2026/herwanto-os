@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#151515" />
+    <title>Hira OS</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Herwanto OS</p>
+          <h1>Hira</h1>
+        </div>
+        <button id="installBtn" class="icon-btn" hidden title="Install app">+</button>
+      </header>
+
+      <nav class="tabs" aria-label="Hira views">
+        <button class="tab active" data-view="chat">Chat</button>
+        <button class="tab" data-view="agenda">Agenda</button>
+        <button class="tab" data-view="tasks">Tasks</button>
+        <button class="tab" data-view="gmail">Gmail</button>
+        <button class="tab" data-view="files">Files</button>
+      </nav>
+
+      <section id="chat" class="view active">
+        <div id="messages" class="messages" aria-live="polite"></div>
+        <form id="chatForm" class="composer">
+          <textarea id="messageInput" rows="1" placeholder="Ask Hira anything"></textarea>
+          <button type="submit">Send</button>
+        </form>
+      </section>
+
+      <section id="agenda" class="view">
+        <div class="section-head">
+          <h2>Agenda</h2>
+          <button data-action="load-agenda">Refresh</button>
+        </div>
+        <pre id="agendaOutput" class="output"></pre>
+      </section>
+
+      <section id="tasks" class="view">
+        <div class="section-head">
+          <h2>Tasks</h2>
+          <button data-action="load-tasks">Refresh</button>
+        </div>
+        <pre id="tasksOutput" class="output"></pre>
+      </section>
+
+      <section id="gmail" class="view">
+        <div class="section-head">
+          <h2>Gmail</h2>
+          <select id="gmailAccount" aria-label="Gmail account">
+            <option value="work">Work</option>
+            <option value="personal">Personal</option>
+          </select>
+        </div>
+        <form id="gmailForm" class="query-row">
+          <input id="gmailQuery" placeholder="is:unread newer_than:7d" />
+          <button type="submit">Fetch</button>
+        </form>
+        <div id="gmailOutput" class="list"></div>
+      </section>
+
+      <section id="files" class="view">
+        <div class="section-head">
+          <h2>Files</h2>
+        </div>
+        <form id="uploadForm" class="upload">
+          <input id="fileInput" type="file" accept=".pdf,.docx,.pptx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation" />
+          <textarea id="fileNote" rows="3" placeholder="What should Hira look for?"></textarea>
+          <button type="submit">Analyse</button>
+        </form>
+        <pre id="fileOutput" class="output"></pre>
+      </section>
+    </main>
+    <script src="/static/app.js" type="module"></script>
+  </body>
+</html>

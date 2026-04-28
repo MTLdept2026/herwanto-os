@@ -35,6 +35,7 @@ Your AI second brain on Telegram. Calendar-aware, project-tracking, daily briefi
 | Latest news shortlist | `/news`, `/news Apple AI`, `/watch`, `/watchlist`, `/unwatch` |
 | Morning briefing now | `/briefing` |
 | AI chat (any topic) | Just type naturally |
+| Private PWA interface | `uvicorn web_app:app --reload` |
 | Auto morning briefing | 7:00 AM SGT daily |
 | Project check-in | Friday 5:00 PM SGT |
 
@@ -321,6 +322,35 @@ What should I focus on this week?
 Remember that my usual CCA training is on Tuesdays and Thursdays.
 GamePlan is now in pilot mode with first-school onboarding as the next milestone.
 ```
+
+**Hira PWA:**
+
+The PWA is a Telegram-free interface for Hira. It can be installed from Chrome/Edge/Safari-compatible browsers on Android and macOS.
+
+Local run:
+```bash
+python3 -m pip install -r requirements.txt
+uvicorn web_app:app --reload
+```
+
+Open:
+```text
+http://127.0.0.1:8000
+```
+
+For Railway, create a second service from this repo and use:
+```bash
+uvicorn web_app:app --host 0.0.0.0 --port $PORT
+```
+
+Copy the same environment variables as the Telegram bot service. Set `HIRA_WEB_TOKEN` to a private phrase if you want the PWA API protected; the app will ask for it on first use.
+
+Current PWA surfaces:
+- Chat with Hira
+- Agenda
+- Tasks
+- Personal/work Gmail fetch
+- PDF/DOCX/PPTX upload analysis
 
 **Personality:**
 
