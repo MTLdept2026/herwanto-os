@@ -35,6 +35,11 @@ import google_services as gs  # noqa: E402
 
 RBS_URL = os.environ.get("RBS_URL", "https://rbs.avero-tech.com/login.html")
 PROFILE_DIR = Path(os.environ.get("RBS_CHROME_PROFILE_DIR", "~/.hira-rbs-chrome")).expanduser()
+CHROME_USER_DATA_DIR = os.environ.get(
+    "RBS_CHROME_USER_DATA_DIR",
+    "~/Library/Application Support/Google/Chrome",
+).strip()
+CHROME_PROFILE_NAME = os.environ.get("RBS_CHROME_PROFILE_NAME", "Default").strip()
 SCREENSHOT_DIR = Path(os.environ.get("RBS_SCREENSHOT_DIR", str(ROOT / "files" / "rbs"))).expanduser()
 POLL_SECONDS = int(os.environ.get("RBS_HELPER_POLL_SECONDS", "15"))
 LOGIN_WAIT_SECONDS = int(os.environ.get("RBS_LOGIN_WAIT_SECONDS", "180"))
@@ -361,12 +366,16 @@ def process_once() -> bool:
 
     try:
         with sync_playwright() as p:
+            user_data_dir = Path(CHROME_USER_DATA_DIR).expanduser() if CHROME_USER_DATA_DIR else PROFILE_DIR
+            launch_args = ["--start-maximized"]
+            if CHROME_PROFILE_NAME:
+                launch_args.append(f"--profile-directory={CHROME_PROFILE_NAME}")
             context = p.chromium.launch_persistent_context(
-                user_data_dir=str(PROFILE_DIR),
+                user_data_dir=str(user_data_dir),
                 channel=os.environ.get("RBS_BROWSER_CHANNEL", "chrome"),
                 headless=False,
                 viewport={"width": 1600, "height": 1000},
-                args=["--start-maximized"],
+                args=launch_args,
             )
             page = context.pages[0] if context.pages else context.new_page()
             result = check_availability(page, job)
