@@ -679,6 +679,7 @@ html[data-theme="dark"] .segment {
 }
 
 .home-chat-mount {
+  margin-top: var(--space-lg);
   margin-bottom: var(--space-md);
 }
 
