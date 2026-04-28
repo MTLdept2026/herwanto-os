@@ -1,10 +1,16 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#151515" />
+    <meta name="theme-color" content="#f5f5f5" />
     <title>Hira OS</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Doto:wght@400..900&family=Space+Grotesk:wght@300;400;500;700&family=Space+Mono:wght@400;700&display=swap"
+      rel="stylesheet"
+    />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/static/styles.css" />
@@ -16,66 +22,304 @@
           <p class="eyebrow">Herwanto OS</p>
           <h1>Hira</h1>
         </div>
-        <button id="installBtn" class="icon-btn" hidden title="Install app">+</button>
+        <div class="topbar-actions">
+          <button id="installBtn" class="icon-btn" hidden title="Install app">+</button>
+          <button id="settingsBtn" class="icon-btn" title="Settings">...</button>
+        </div>
       </header>
 
-      <nav class="tabs" aria-label="Hira views">
-        <button class="tab active" data-view="chat">Chat</button>
-        <button class="tab" data-view="agenda">Agenda</button>
-        <button class="tab" data-view="tasks">Tasks</button>
-        <button class="tab" data-view="gmail">Gmail</button>
-        <button class="tab" data-view="files">Files</button>
+      <aside id="settingsPanel" class="settings-panel" hidden>
+        <label class="stacked-field">
+          <span>Theme</span>
+          <div class="theme-toggle" role="group" aria-label="Theme">
+            <button id="themeLightBtn" type="button" class="theme-btn active">Light</button>
+            <button id="themeDarkBtn" type="button" class="theme-btn">Dark</button>
+            <button id="themeAutoBtn" type="button" class="theme-btn">Auto</button>
+          </div>
+        </label>
+        <label class="stacked-field">
+          <span>Hira web token</span>
+          <input id="tokenInput" placeholder="Only needed if HIRA_WEB_TOKEN is set" />
+        </label>
+        <div class="inline-actions">
+          <button id="saveTokenBtn" type="button">Save token</button>
+          <button id="clearTokenBtn" type="button" class="ghost-btn">Clear</button>
+        </div>
+      </aside>
+
+      <section class="status-bar">
+        <div>
+          <p class="status-label">SYSTEM TIME</p>
+          <strong id="greetingDate">Loading...</strong>
+          <span id="greetingTime">...</span>
+        </div>
+        <p id="statusLine" data-tone="muted">Ready.</p>
+      </section>
+
+      <nav class="nav-tabs" aria-label="Hira views">
+        <button class="nav-tab active" data-view="home">Home</button>
+        <button class="nav-tab" data-view="chat">Chat</button>
+        <button class="nav-tab" data-view="agenda">Agenda</button>
+        <button class="nav-tab" data-view="tasks">Tasks</button>
+        <button class="nav-tab" data-view="gmail">Gmail</button>
+        <button class="nav-tab" data-view="files">Files</button>
       </nav>
 
-      <section id="chat" class="view active">
+      <section id="homeView" class="view active">
+        <div class="section-head">
+          <div>
+            <h2>Today with Hira</h2>
+            <p class="subtle">Quiet summary first, then the details.</p>
+          </div>
+          <button id="refreshHomeBtn" type="button">Refresh</button>
+        </div>
+        <div class="chip-row">
+          <button type="button" class="chip active" data-home-days="7">7 days</button>
+          <button type="button" class="chip" data-home-days="3">3 days</button>
+          <button type="button" class="chip" data-home-days="14">14 days</button>
+        </div>
+        <div class="ops-grid">
+          <section class="ops-card ops-card-dark">
+            <p class="eyebrow">Local Time</p>
+            <div id="homeClockTime" class="clock-display">--:--</div>
+            <div id="homeClockDate" class="clock-meta">Loading</div>
+          </section>
+
+          <section class="ops-card">
+            <p class="eyebrow">System Status</p>
+            <div id="homeServicesSummary" class="metric-value">0/4</div>
+            <div id="homeServicesLabel" class="metric-label">SERVICES CONNECTED</div>
+            <div id="homeServicesBar" class="segment-bar" aria-hidden="true"></div>
+          </section>
+
+          <section class="ops-card">
+            <p class="eyebrow">Connections</p>
+            <div id="homeConnectionsList" class="status-list"></div>
+          </section>
+
+          <section class="ops-card ops-card-wide">
+            <div class="hero-grid">
+              <div>
+                <p class="eyebrow">Assistant Core</p>
+                <div class="hero-display">HIRA</div>
+              </div>
+              <div>
+                <p class="eyebrow">Quick asks</p>
+              </div>
+            </div>
+            <div id="promptRow" class="prompt-row"></div>
+          </section>
+
+          <section class="ops-card">
+            <p class="eyebrow">Agenda Load</p>
+            <div id="homeAgendaCount" class="metric-value">0</div>
+            <div class="metric-label">ITEMS IN VIEW</div>
+            <div id="homeAgendaBar" class="segment-bar" aria-hidden="true"></div>
+          </section>
+
+          <section class="ops-card">
+            <p class="eyebrow">Task Load</p>
+            <div id="homeTaskCount" class="metric-value">0</div>
+            <div class="metric-label">TASKS IN WINDOW</div>
+            <div id="homeTaskBar" class="segment-bar" aria-hidden="true"></div>
+          </section>
+
+          <section class="ops-card ops-card-wide">
+            <p class="eyebrow">Marking Load</p>
+            <div class="marking-summary">
+              <div class="marking-metric">
+                <div id="markingUnmarkedValue" class="metric-value">0</div>
+                <div class="metric-label">UNMARKED SCRIPTS</div>
+                <div id="markingUnmarkedBar" class="segment-bar" aria-hidden="true"></div>
+              </div>
+              <div class="marking-metric">
+                <div id="markingMarkedValue" class="metric-value">0</div>
+                <div class="metric-label">MARKED SCRIPTS</div>
+                <div id="markingMarkedBar" class="segment-bar" aria-hidden="true"></div>
+              </div>
+              <div class="marking-meta">
+                <div class="status-row">
+                  <span>Active Stacks</span>
+                  <strong id="markingStackCount" class="status-ok">0</strong>
+                </div>
+                <div class="status-row">
+                  <span>Total Scripts</span>
+                  <strong id="markingTotalValue" class="status-off">0</strong>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel ops-panel">
+            <div class="section-head compact">
+              <h3>Agenda</h3>
+            </div>
+            <div id="homeAgenda" class="rich-output"></div>
+          </section>
+          <section class="panel ops-panel">
+            <div class="section-head compact">
+              <h3>Tasks</h3>
+            </div>
+            <div id="homeTasks" class="rich-output"></div>
+          </section>
+          <section class="panel full ops-panel">
+            <div class="section-head compact">
+              <h3>File memory</h3>
+            </div>
+            <div id="homeFiles" class="rich-output"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="chatView" class="view">
+        <div class="section-head">
+          <div>
+            <h2>Chat</h2>
+            <p class="subtle">Same Hira, just without the Telegram crowd.</p>
+          </div>
+          <button id="resetChatBtn" type="button" class="ghost-btn">Clear</button>
+        </div>
         <div id="messages" class="messages" aria-live="polite"></div>
         <form id="chatForm" class="composer">
           <textarea id="messageInput" rows="1" placeholder="Ask Hira anything"></textarea>
-          <button type="submit">Send</button>
+          <button id="sendBtn" type="submit">Send</button>
         </form>
       </section>
 
-      <section id="agenda" class="view">
+      <section id="agendaView" class="view">
         <div class="section-head">
-          <h2>Agenda</h2>
-          <button data-action="load-agenda">Refresh</button>
+          <div>
+            <h2>Agenda</h2>
+            <p class="subtle">Calendar, school week, and the next few days.</p>
+          </div>
+          <div class="inline-actions">
+            <select id="agendaDays" aria-label="Agenda range">
+              <option value="3">3 days</option>
+              <option value="7" selected>7 days</option>
+              <option value="14">14 days</option>
+            </select>
+            <button id="refreshAgendaBtn" type="button">Refresh</button>
+          </div>
         </div>
-        <pre id="agendaOutput" class="output"></pre>
+        <div id="agendaOutput" class="rich-output panel"></div>
       </section>
 
-      <section id="tasks" class="view">
+      <section id="gmailView" class="view">
         <div class="section-head">
-          <h2>Tasks</h2>
-          <button data-action="load-tasks">Refresh</button>
-        </div>
-        <pre id="tasksOutput" class="output"></pre>
-      </section>
-
-      <section id="gmail" class="view">
-        <div class="section-head">
-          <h2>Gmail</h2>
+          <div>
+            <h2>Gmail</h2>
+            <p class="subtle">Work and personal without switching windows.</p>
+          </div>
           <select id="gmailAccount" aria-label="Gmail account">
             <option value="work">Work</option>
             <option value="personal">Personal</option>
           </select>
         </div>
-        <form id="gmailForm" class="query-row">
-          <input id="gmailQuery" placeholder="is:unread newer_than:7d" />
-          <button type="submit">Fetch</button>
+        <div class="chip-row">
+          <button type="button" class="chip" data-gmail-preset="">Latest</button>
+          <button type="button" class="chip" data-gmail-preset="is:unread newer_than:7d">Unread</button>
+          <button type="button" class="chip" data-gmail-preset="newer_than:2d">Last 2 days</button>
+        </div>
+        <form id="gmailForm" class="query-stack panel">
+          <div class="query-row">
+            <input id="gmailQuery" placeholder="is:unread newer_than:7d" />
+            <select id="gmailCount" aria-label="Email count">
+              <option value="5">5</option>
+              <option value="10" selected>10</option>
+              <option value="15">15</option>
+            </select>
+            <button type="submit">Fetch</button>
+          </div>
+          <div id="gmailOutput" class="list"></div>
         </form>
-        <div id="gmailOutput" class="list"></div>
+        <section class="panel">
+          <div class="section-head compact">
+            <h3>Create draft</h3>
+          </div>
+          <form id="draftForm" class="draft-form">
+            <div class="split">
+              <label class="stacked-field">
+                <span>Account</span>
+                <select id="draftAccount" aria-label="Draft account">
+                  <option value="work">Work</option>
+                  <option value="personal">Personal</option>
+                </select>
+              </label>
+              <label class="stacked-field">
+                <span>To</span>
+                <input id="draftTo" type="email" placeholder="name@example.com" />
+              </label>
+            </div>
+            <label class="stacked-field">
+              <span>CC</span>
+              <input id="draftCc" type="text" placeholder="Optional" />
+            </label>
+            <label class="stacked-field">
+              <span>Subject</span>
+              <input id="draftSubject" type="text" placeholder="Subject" />
+            </label>
+            <label class="stacked-field">
+              <span>Body</span>
+              <textarea id="draftBody" rows="8" placeholder="Draft your email here"></textarea>
+            </label>
+            <div class="inline-actions">
+              <button type="submit">Create draft</button>
+              <p id="draftStatus" class="subtle"></p>
+            </div>
+          </form>
+        </section>
       </section>
 
-      <section id="files" class="view">
+      <section id="filesView" class="view">
         <div class="section-head">
-          <h2>Files</h2>
+          <div>
+            <h2>Files</h2>
+            <p class="subtle">Upload heavy PDFs, DOCX, and PPTX without feeding Telegram another monster attachment.</p>
+          </div>
+          <button id="refreshFilesBtn" type="button">Refresh</button>
         </div>
-        <form id="uploadForm" class="upload">
-          <input id="fileInput" type="file" accept=".pdf,.docx,.pptx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation" />
-          <textarea id="fileNote" rows="3" placeholder="What should Hira look for?"></textarea>
-          <button type="submit">Analyse</button>
-        </form>
-        <pre id="fileOutput" class="output"></pre>
+        <div class="dashboard-grid files-grid">
+          <section class="panel">
+            <div class="section-head compact">
+              <h3>Analyse document</h3>
+            </div>
+            <form id="uploadForm" class="upload">
+              <input
+                id="fileInput"
+                type="file"
+                accept=".pdf,.docx,.pptx,.png,.jpg,.jpeg,.webp,.gif,.ogg,.m4a,.mp3,.wav,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,image/*,audio/*"
+              />
+              <textarea id="fileNote" rows="4" placeholder="What should Hira look for? Eg deadlines, your own timetable, action items, clashes, or what to do from this voice note."></textarea>
+              <button type="submit">Analyse</button>
+            </form>
+            <div id="fileOutput" class="rich-output"></div>
+          </section>
+          <section class="panel">
+            <div class="section-head compact">
+              <h3>File memory</h3>
+            </div>
+            <div id="fileLibrary" class="rich-output"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="tasksView" class="view">
+        <div class="section-head">
+          <div>
+            <h2>Tasks</h2>
+            <p class="subtle">The near-term task pile, minus the drama.</p>
+          </div>
+          <div class="inline-actions">
+            <select id="tasksDays" aria-label="Task range">
+              <option value="3">3 days</option>
+              <option value="7" selected>7 days</option>
+              <option value="14">14 days</option>
+              <option value="30">30 days</option>
+            </select>
+            <button id="refreshTasksBtn" type="button">Refresh</button>
+          </div>
+        </div>
+        <div id="tasksOutput" class="rich-output panel"></div>
       </section>
     </main>
     <script src="/static/app.js" type="module"></script>

@@ -349,7 +349,13 @@ Current PWA surfaces:
 - Agenda
 - Tasks
 - Personal/work Gmail fetch
-- PDF/DOCX/PPTX upload analysis
+- Personal/work Gmail draft creation
+- PDF/DOCX/PPTX/image upload analysis
+- Voice-note upload/transcription when `OPENAI_API_KEY` is configured
+- Marking-load dashboard with marked/unmarked segmented bars
+- Light/dark/auto theme switcher
+
+The PWA chat uses the same Hira tool brain as Telegram. With the same production env vars, it can create/delete calendar events, add/complete reminders and follow-ups, manage marking progress, read Gmail, create drafts, generate DOCX/PPTX artifacts, process uploaded documents/images/voice notes, remember context, use timetable context, and fetch news when search is configured.
 
 **Personality:**
 

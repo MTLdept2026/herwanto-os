@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import base64
 import os
+import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -38,6 +41,51 @@ class DraftRequest(BaseModel):
     cc: str = ""
 
 
+def _history_key(client_id: str | None) -> str:
+    clean = (client_id or "").strip()
+    return f"pwa:{clean}" if clean else "pwa"
+
+
+def _safe_text(builder, fallback: str) -> str:
+    try:
+        return builder()
+    except Exception:
+        return fallback
+
+
+def _service_status() -> dict:
+    return {
+        "google": bot.google_ok(),
+        "calendar": bot.google_ok(),
+        "personal_gmail": bot.gs.gmail_ok("personal"),
+        "work_gmail": bot.gs.gmail_ok("work"),
+    }
+
+
+def _marking_summary() -> dict:
+    try:
+        tasks = bot.gs.get_marking_tasks()
+    except Exception:
+        return {
+            "active_stacks": 0,
+            "total_scripts": 0,
+            "marked_scripts": 0,
+            "unmarked_scripts": 0,
+            "connected": False,
+        }
+
+    total_scripts = sum(max(0, int(task.get("total_scripts") or 0)) for task in tasks)
+    marked_scripts = sum(max(0, int(task.get("marked_count") or 0)) for task in tasks)
+    marked_scripts = min(marked_scripts, total_scripts) if total_scripts else marked_scripts
+    return {
+        "active_stacks": len(tasks),
+        "total_scripts": total_scripts,
+        "marked_scripts": marked_scripts,
+        "unmarked_scripts": max(0, total_scripts - marked_scripts),
+        "connected": True,
+    }
+
+
 def _require_token(x_hira_token: Optional[str] = Header(default=None)):
     expected = os.environ.get("HIRA_WEB_TOKEN", "").strip()
     if expected and x_hira_token != expected:
@@ -59,14 +107,33 @@ def service_worker():
     return FileResponse(PWA_DIR / "service-worker.js", media_type="application/javascript")
 
 
+@app.get("/api/home")
+def home(days: int = 7, x_hira_token: Optional[str] = Header(default=None)):
+    _require_token(x_hira_token)
+    now = datetime.now(bot.SGT)
+    return {
+        "greeting": now.strftime("%A, %-d %B"),
+        "time_label": now.strftime("%H:%M SGT"),
+        "agenda": _safe_text(lambda: bot.build_agenda(days), "Agenda unavailable right now."),
+        "tasks": _safe_text(lambda: bot.build_task_brief(days), "Task brief unavailable until Google is connected."),
+        "files": _safe_text(lambda: bot.build_files_index(), "File memory unavailable until Google is connected."),
+        "services": _service_status(),
+        "marking": _marking_summary(),
+    }
+
+
 @app.post("/api/chat")
-async def chat(req: ChatRequest, x_hira_token: Optional[str] = Header(default=None)):
+async def chat(
+    req: ChatRequest,
+    x_hira_token: Optional[str] = Header(default=None),
+    x_hira_client: Optional[str] = Header(default=None),
+):
     _require_token(x_hira_token)
     message = (req.message or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="Message is required")
 
-    history_key = "pwa"
+    history_key = _history_key(x_hira_client)
     history = bot.get_history(history_key)
     user_content = message
     if bot.re.search(r"\b(?:work|moe|school|personal)\s+(?:gmail|email|emails|mail)\b", message, bot.re.I):
@@ -80,16 +147,32 @@ async def chat(req: ChatRequest, x_hira_token: Optional[str] = Header(default=No
     return {"reply": reply_text}
 
 
+@app.post("/api/chat/reset")
+def reset_chat(
+    x_hira_token: Optional[str] = Header(default=None),
+    x_hira_client: Optional[str] = Header(default=None),
+):
+    _require_token(x_hira_token)
+    bot.save_history(_history_key(x_hira_client), [])
+    return {"ok": True}
+
+
 @app.get("/api/agenda")
 def agenda(days: int = 7, x_hira_token: Optional[str] = Header(default=None)):
     _require_token(x_hira_token)
-    return {"text": bot.build_agenda(days)}
+    return {"text": _safe_text(lambda: bot.build_agenda(days), "Agenda unavailable right now.")}
 
 
 @app.get("/api/tasks")
 def tasks(days: int = 7, x_hira_token: Optional[str] = Header(default=None)):
     _require_token(x_hira_token)
-    return {"text": bot.build_task_brief(days)}
+    return {"text": _safe_text(lambda: bot.build_task_brief(days), "Task brief unavailable until Google is connected.")}
+
+
+@app.get("/api/files")
+def files(x_hira_token: Optional[str] = Header(default=None)):
+    _require_token(x_hira_token)
+    return {"text": _safe_text(lambda: bot.build_files_index(), "File memory unavailable until Google is connected.")}
 
 
 @app.post("/api/gmail")
@@ -123,11 +206,55 @@ async def upload_document(
     if not data:
         raise HTTPException(status_code=400, detail="Empty file")
 
+    mime = (file.content_type or "").lower()
+    filename = file.filename or ""
+
+    if mime.startswith("image/") or filename.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
+        encoded = base64.b64encode(data).decode()
+        reply_text = await bot._run_agentic_claude(
+            [{"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": mime or "image/png", "data": encoded}},
+                {"type": "text", "text": f"{bot.MEDIA_SCHEDULE_INSTRUCTION}\n\nUser note: {note or 'Extract useful schedule items, actions, dates, and reminders from this image.'}"}
+            ]}],
+            max_tokens=2200,
+            tools=[bot.CONTEXT_TOOL, bot.CALENDAR_TOOL, bot.REMINDER_TOOL, bot.MEMORY_TOOL],
+        )
+        return {"reply": reply_text, "index": f"Image analysed: {filename or 'uploaded image'}"}
+
+    if mime.startswith("audio/") or filename.lower().endswith((".ogg", ".m4a", ".mp3", ".wav")):
+        if not os.environ.get("OPENAI_API_KEY", "").strip():
+            raise HTTPException(status_code=400, detail="Voice notes need OPENAI_API_KEY configured first")
+        try:
+            from openai import OpenAI
+
+            suffix = Path(filename).suffix or ".ogg"
+            with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
+                tmp.write(data)
+                tmp.flush()
+                client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+                with open(tmp.name, "rb") as audio:
+                    transcript = client.audio.transcriptions.create(
+                        model=os.environ.get("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe"),
+                        file=audio,
+                    )
+            text = getattr(transcript, "text", str(transcript)).strip()
+            if not text:
+                raise HTTPException(status_code=400, detail="I could not transcribe that voice note")
+            reply_text = await bot._run_agentic_claude(
+                [{"role": "user", "content": text}],
+                max_tokens=1600,
+            )
+            return {"reply": reply_text, "index": f"Voice note transcribed: {text}"}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Could not process voice note: {exc}") from exc
+
     try:
         kind, index_note, excerpt = docs.extract_supported_document(
             data,
-            file.content_type or "",
-            filename=file.filename or "",
+            mime,
+            filename=filename,
             caption=note,
         )
     except Exception as exc:
