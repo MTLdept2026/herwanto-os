@@ -138,11 +138,20 @@ function saveChatHistory() {
   localStorage.setItem("hira_pwa_chat", JSON.stringify(state.chatHistory.slice(-30)));
 }
 
-function markdownish(text) {
+function escapeHtml(text) {
   return (text || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function markdownish(text) {
+  return escapeHtml(text || "")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/\*([^*]+)\*/g, "<strong>$1</strong>")
     .replace(/_([^_]+)_/g, "<em>$1</em>")
-    .replace(/`([^`]+)`/g, "<code>$1</code>");
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*/g, "");
 }
 
 function renderTextBlock(text) {
@@ -153,6 +162,38 @@ function renderTextBlock(text) {
       return `<div>${markdownish(line)}</div>`;
     })
     .join("");
+}
+
+function renderChatText(text) {
+  const blocks = [];
+  let openList = false;
+  for (const raw of (text || "").split("\n")) {
+    const line = raw.trim();
+    if (!line) {
+      if (openList) {
+        blocks.push("</ul>");
+        openList = false;
+      }
+      blocks.push("<div class='spacer'></div>");
+      continue;
+    }
+    const bullet = line.match(/^(?:[-•]|\d+[.)])\s*(.+)$/);
+    if (bullet) {
+      if (!openList) {
+        blocks.push("<ul class='chat-list'>");
+        openList = true;
+      }
+      blocks.push(`<li>${markdownish(bullet[1])}</li>`);
+      continue;
+    }
+    if (openList) {
+      blocks.push("</ul>");
+      openList = false;
+    }
+    blocks.push(`<p>${markdownish(line)}</p>`);
+  }
+  if (openList) blocks.push("</ul>");
+  return blocks.join("");
 }
 
 function renderAgendaCards(text) {
@@ -193,10 +234,57 @@ function renderAgendaCards(text) {
   return `<div class="agenda-list">${cards.join("")}</div>`;
 }
 
+function renderAgendaStructured(data) {
+  const days = data?.days || [];
+  if (!days.length) return "<div class='empty-state'>No agenda items found.</div>";
+  return `
+    <div class="agenda-day-list">
+      ${days
+        .map((day) => {
+          const items = [
+            ...(day.lessons || []).map((item) => ({ ...item, label: item.subject, meta: item.room })),
+            ...(day.events || []).map((item) => ({ ...item, label: "Event" })),
+            ...(day.due || []).map((item) => ({ ...item, time: "Due", label: item.category || "Task", meta: item.id ? `#${item.id}` : "" })),
+          ];
+          return `
+            <section class="agenda-day-group">
+              <div class="agenda-day-header">
+                <div>
+                  <h3>${markdownish(day.label)}</h3>
+                  <p>${markdownish(day.week || "Calendar day")}</p>
+                </div>
+                <strong>${items.length}</strong>
+              </div>
+              ${
+                items.length
+                  ? `<div class="agenda-list">${items
+                      .map(
+                        (item) => `
+                          <article class="agenda-card ${item.kind || ""}">
+                            <div class="agenda-time">${markdownish(item.time || "Anytime")}</div>
+                            <div class="agenda-copy">
+                              <p class="agenda-day">${markdownish(item.label || item.kind || "Item")}</p>
+                              <strong>${markdownish(item.title || "")}</strong>
+                              ${item.meta ? `<span>${markdownish(item.meta)}</span>` : ""}
+                            </div>
+                          </article>
+                        `
+                      )
+                      .join("")}</div>`
+                  : "<div class='empty-state compact'>No lessons, events, or due items.</div>"
+              }
+            </section>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
 function addMessage(role, text, persist = true) {
   const el = document.createElement("article");
   el.className = `message ${role}`;
-  el.innerHTML = `<div class="message-body">${renderTextBlock(text)}</div>`;
+  el.innerHTML = `<div class="message-body">${renderChatText(text)}</div>`;
   $("#messages").appendChild(el);
   el.scrollIntoView({ block: "end" });
   if (persist) {
@@ -284,7 +372,7 @@ async function loadAgenda(days = 7) {
   $("#agendaOutput").innerHTML = "<div>Loading...</div>";
   try {
     const data = await api(`/api/agenda?days=${days}`, { headers: headers(false) });
-    $("#agendaOutput").innerHTML = renderAgendaCards(data.text);
+    $("#agendaOutput").innerHTML = data.structured ? renderAgendaStructured(data.structured) : renderAgendaCards(data.text);
     setStatus("Agenda refreshed.", "ok");
   } catch (error) {
     $("#agendaOutput").textContent = `Error: ${error.message}`;
@@ -381,6 +469,7 @@ async function createDraft(event) {
 }
 
 async function loadFilesLibrary() {
+  if (!$("#fileLibrary")) return;
   $("#fileLibrary").innerHTML = "<div>Loading...</div>";
   try {
     const data = await api("/api/files", { headers: headers(false) });
@@ -404,8 +493,7 @@ async function uploadFile(event) {
       headers: headers(false),
       body: form,
     });
-    $("#fileOutput").innerHTML = renderTextBlock(data.reply || "Done.");
-    await loadFilesLibrary();
+    $("#fileOutput").innerHTML = renderChatText(data.reply || "Done.");
     setStatus(`${file.name} analysed.`, "ok");
   } catch (error) {
     $("#fileOutput").textContent = `Error: ${error.message}`;
@@ -425,7 +513,7 @@ async function sendChat(message) {
       headers: headers(),
       body: JSON.stringify({ message }),
     });
-    pending.querySelector(".message-body").innerHTML = renderTextBlock(data.reply || "Done.");
+    pending.querySelector(".message-body").innerHTML = renderChatText(data.reply || "Done.");
     state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: data.reply || "Done." };
     saveChatHistory();
     setStatus("Hira replied.", "ok");
@@ -499,7 +587,6 @@ document.querySelectorAll(".nav-tab").forEach((tab) => {
     if (view === "home") await loadHome();
     if (view === "agenda") await loadAgenda(7);
     if (view === "tasks") await loadTasks(7);
-    if (view === "files") await loadFilesLibrary();
   });
 });
 
@@ -552,7 +639,7 @@ $("#refreshAgendaBtn").addEventListener("click", () => loadAgenda(Number($("#age
 $("#agendaDays").addEventListener("change", () => loadAgenda(Number($("#agendaDays").value || 7)));
 $("#refreshTasksBtn").addEventListener("click", () => loadTasks(Number($("#tasksDays").value || 7)));
 $("#tasksDays").addEventListener("change", () => loadTasks(Number($("#tasksDays").value || 7)));
-$("#refreshFilesBtn").addEventListener("click", loadFilesLibrary);
+$("#refreshFilesBtn").addEventListener("click", () => setStatus("File upload is ready.", "ok"));
 
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/service-worker.js");

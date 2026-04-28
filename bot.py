@@ -891,17 +891,87 @@ def build_agenda(days: int = 7) -> str:
         lines.append("Nothing due in this window.")
     lines.append("")
 
-    try:
-        projects = gs.get_projects()
-        if projects:
-            lines.append("*Project pulse*")
-            for p in projects:
-                next_bit = f" Next: {p['next_milestone']} ({p['milestone_date']})." if p["next_milestone"] else ""
-                lines.append(f"- *{p['project']}* - {p['status']}.{next_bit}")
-    except Exception:
-        pass
-
     return "\n".join(lines).strip()
+
+def _event_to_agenda_item(event: dict) -> dict:
+    raw_start = event.get("start", {}).get("dateTime", event.get("start", {}).get("date", ""))
+    raw_end = event.get("end", {}).get("dateTime", event.get("end", {}).get("date", ""))
+    all_day = "T" not in raw_start
+    if all_day:
+        start_dt = datetime.fromisoformat(raw_start).date()
+        time_text = "All day"
+    else:
+        start_dt = datetime.fromisoformat(raw_start).astimezone(SGT)
+        time_text = start_dt.strftime("%H:%M")
+        if raw_end:
+            try:
+                end_dt = datetime.fromisoformat(raw_end).astimezone(SGT)
+                time_text = f"{time_text}-{end_dt.strftime('%H:%M')}"
+            except Exception:
+                pass
+    return {
+        "date": start_dt.isoformat() if hasattr(start_dt, "isoformat") else str(start_dt),
+        "time": time_text,
+        "title": event.get("summary", "(No title)"),
+        "meta": event.get("location", ""),
+        "kind": "event",
+    }
+
+def build_agenda_structured(days: int = 7) -> dict:
+    days = max(1, min(int(days or 7), 14))
+    now = datetime.now(SGT)
+    today = now.date()
+    end_date = today + timedelta(days=days - 1)
+    day_map = {}
+
+    for offset in range(days):
+        target = today + timedelta(days=offset)
+        lessons, wt_label = _lessons_for_date(target)
+        day_map[target.isoformat()] = {
+            "date": target.isoformat(),
+            "label": target.strftime("%A, %-d %B"),
+            "week": _week_display(wt_label, target) if wt_label else "",
+            "lessons": [
+                {
+                    "time": f"{lesson['start']}-{lesson['end']}",
+                    "subject": lesson["subject"],
+                    "title": lesson["description"],
+                    "room": lesson["room"] if lesson["room"] != "-" else "",
+                    "kind": "lesson",
+                }
+                for lesson in lessons
+            ],
+            "events": [],
+            "due": [],
+        }
+
+    if google_ok():
+        try:
+            for event in gs.get_events_for_days(days):
+                item = _event_to_agenda_item(event)
+                if item["date"] in day_map:
+                    day_map[item["date"]]["events"].append(item)
+        except Exception:
+            pass
+        try:
+            reminders = gs.get_reminders()
+            for reminder in reminders:
+                due = reminder.get("due", "")
+                if today.isoformat() <= due <= end_date.isoformat() and due in day_map:
+                    day_map[due]["due"].append({
+                        "id": reminder.get("id", ""),
+                        "title": reminder.get("description", ""),
+                        "category": reminder.get("category", ""),
+                        "kind": "due",
+                    })
+        except Exception:
+            pass
+
+    return {
+        "generated_at": now.strftime("%A, %-d %B %Y, %H:%M SGT"),
+        "days": list(day_map.values()),
+        "services": {"google": google_ok()},
+    }
 
 def _news_topics():
     if google_ok():

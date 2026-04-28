@@ -160,7 +160,15 @@ def reset_chat(
 @app.get("/api/agenda")
 def agenda(days: int = 7, x_hira_token: Optional[str] = Header(default=None)):
     _require_token(x_hira_token)
-    return {"text": _safe_text(lambda: bot.build_agenda(days), "Agenda unavailable right now.")}
+    structured = None
+    try:
+        structured = bot.build_agenda_structured(days)
+    except Exception:
+        structured = None
+    return {
+        "text": _safe_text(lambda: bot.build_agenda(days), "Agenda unavailable right now."),
+        "structured": structured,
+    }
 
 
 @app.get("/api/tasks")
