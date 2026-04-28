@@ -910,7 +910,7 @@ def _event_to_agenda_item(event: dict) -> dict:
             except Exception:
                 pass
     return {
-        "date": start_dt.isoformat() if hasattr(start_dt, "isoformat") else str(start_dt),
+        "date": start_dt.date().isoformat() if isinstance(start_dt, datetime) else start_dt.isoformat(),
         "time": time_text,
         "title": event.get("summary", "(No title)"),
         "meta": event.get("location", ""),
