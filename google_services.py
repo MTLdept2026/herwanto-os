@@ -8,6 +8,7 @@ Sheets acts as persistent storage for reminders, projects, and config.
 import os
 import json
 import base64
+import re
 import tempfile
 import pytz
 import threading
@@ -1365,6 +1366,42 @@ def gmail_label(account: str = "personal") -> str:
     return "personal Gmail"
 
 
+def _decode_gmail_part_body(part: dict) -> str:
+    data = part.get("body", {}).get("data", "")
+    if not data:
+        return ""
+    padded = data + "=" * (-len(data) % 4)
+    try:
+        return base64.urlsafe_b64decode(padded.encode()).decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def _gmail_body_text(payload: dict) -> str:
+    plain_parts: list[str] = []
+    html_parts: list[str] = []
+
+    def walk(part: dict):
+        mime_type = (part.get("mimeType") or "").lower()
+        if mime_type == "text/plain":
+            plain_parts.append(_decode_gmail_part_body(part))
+        elif mime_type == "text/html":
+            html_parts.append(_decode_gmail_part_body(part))
+        for child in part.get("parts", []) or []:
+            walk(child)
+
+    walk(payload or {})
+    text = "\n".join(item for item in plain_parts if item.strip())
+    if not text.strip() and html_parts:
+        html = "\n".join(html_parts)
+        html = re.sub(r"(?is)<(script|style).*?</\1>", " ", html)
+        html = re.sub(r"(?i)<br\s*/?>", "\n", html)
+        html = re.sub(r"(?i)</p\s*>", "\n", html)
+        text = re.sub(r"<[^>]+>", " ", html)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
 def list_gmail_messages(query: str = "", max_results: int = 10, account: str = "personal") -> list:
     service = _gmail(account)
     kwargs = {
@@ -1380,11 +1417,12 @@ def list_gmail_messages(query: str = "", max_results: int = 10, account: str = "
         msg = service.users().messages().get(
             userId="me",
             id=item["id"],
-            format="metadata",
+            format="full",
             metadataHeaders=["From", "Subject", "Date"],
-            fields="id,threadId,snippet,payload/headers/name,payload/headers/value",
+            fields="id,threadId,snippet,payload/mimeType,payload/body/data,payload/headers/name,payload/headers/value,payload/parts",
         ).execute()
         headers = {h["name"].lower(): h["value"] for h in msg.get("payload", {}).get("headers", [])}
+        body_text = _gmail_body_text(msg.get("payload", {}))
         messages.append({
             "id": msg.get("id", ""),
             "thread_id": msg.get("threadId", ""),
@@ -1392,6 +1430,7 @@ def list_gmail_messages(query: str = "", max_results: int = 10, account: str = "
             "subject": headers.get("subject", ""),
             "date": headers.get("date", ""),
             "snippet": msg.get("snippet", ""),
+            "body": body_text[:2400],
         })
     return messages
 

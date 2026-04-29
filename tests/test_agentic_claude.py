@@ -132,6 +132,28 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertIsNone(bot._forced_tool_for_current_turn(messages, [{"name": "get_gmail_brief"}]))
 
+    def test_email_followup_forces_gmail_before_action(self):
+        messages = [{"role": "user", "content": "read my latest work email and note the meeting details for follow up"}]
+        tools = [{"name": "get_gmail_brief"}, {"name": "create_followup"}]
+
+        self.assertEqual(bot._forced_tool_for_current_turn(messages, tools), "get_gmail_brief")
+
+    def test_gmail_body_text_decodes_plain_parts(self):
+        encoded = bot.base64.urlsafe_b64encode(
+            b"Meeting on Friday at 2pm. Please follow up with the vendor."
+        ).decode().rstrip("=")
+        payload = {
+            "mimeType": "multipart/alternative",
+            "parts": [
+                {
+                    "mimeType": "text/plain",
+                    "body": {"data": encoded},
+                }
+            ],
+        }
+
+        self.assertIn("Meeting on Friday at 2pm", bot.gs._gmail_body_text(payload))
+
     def test_task_brief_hides_internal_metadata(self):
         due = (bot.datetime.now(bot.SGT).date() + bot.timedelta(days=1)).isoformat()
         tasks = [

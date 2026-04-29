@@ -260,6 +260,7 @@ Rules:
 - When the user says "remember", "note that", or gives stable preferences/facts about himself — call remember_user_info.
 - When the user gives a project progress update — call update_project_status.
 - When the user asks to follow up with someone later, call create_followup.
+- When the user asks to follow up based on an email, Gmail, inbox, or a recent message, call get_gmail_brief first and use the returned sender, subject, date, snippet/body excerpt to create the follow-up. Do not ask him to paste email details unless Gmail is not connected or the matching email cannot be found.
 - When the user asks to mark a reminder/task/follow-up done, call complete_task_by_text or complete_followup_by_text.
 - When the user asks what to do now or how to prioritise tasks, call get_task_brief.
 - When the user asks about Gmail, emails, inbox, unread email, latest/last/recent mail, email summaries, or drafting an email, use get_gmail_brief or create_gmail_draft when Gmail is connected. For "last/latest/recent emails", leave the Gmail query empty and set max_items. Use is:unread only when he explicitly asks for unread mail. If he asks for a number, set max_items to that number.
@@ -1569,6 +1570,11 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     def has_any(words):
         return any(word in clean for word in words)
 
+    gmail_intent = has_any([
+        "email", "emails", "gmail", "inbox", "unread mail", "unread email",
+        "last mail", "latest mail", "recent mail", "message"
+    ])
+
     action_intent = has_any([
         "add ", "create ", "schedule ", "book ", "put ", "set up ",
         "remind me", "nudge me", "ping me", "check in", "check-in",
@@ -1578,6 +1584,13 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
         "done", "completed", "complete ", "mark as done", "mark done",
         "cancel ", "delete ", "remove ",
     ])
+    if (
+        "get_gmail_brief" in available
+        and gmail_intent
+        and has_any(["follow up", "follow-up", "chase", "note", "remember", "remind"])
+        and not has_any(["draft", "write", "compose", "reply", "send "])
+    ):
+        return "get_gmail_brief"
     if action_intent or completion_intent:
         return None
 
@@ -1587,10 +1600,7 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
         if not has_any(["calendar event", "calendar events", "appointment", "appointments"]):
             return "get_timetable"
 
-    if "get_gmail_brief" in available and has_any([
-        "email", "emails", "gmail", "inbox", "unread mail", "unread email",
-        "last mail", "latest mail", "recent mail"
-    ]):
+    if "get_gmail_brief" in available and gmail_intent:
         if not has_any(["draft", "write", "compose", "reply"]):
             return "get_gmail_brief"
 
@@ -3368,7 +3378,12 @@ async def _execute_tool(name: str, inp: dict) -> str:
                 return f"No {gs.gmail_label(account)} messages found."
             lines = []
             for msg in messages:
-                lines.append(f"- {msg['subject']} | From: {msg['from']} | {msg['snippet']}")
+                body = (msg.get("body") or "").strip()
+                excerpt = body or msg.get("snippet", "")
+                lines.append(
+                    f"- {msg['subject']} | From: {msg['from']} | Date: {msg.get('date', '')} | "
+                    f"Snippet: {msg.get('snippet', '')} | Body excerpt: {excerpt[:1200]}"
+                )
             return "\n".join(lines)
         except Exception as e:
             return f"Failed to get Gmail brief: {e}"
