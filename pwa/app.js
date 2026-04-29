@@ -6,6 +6,7 @@ const state = {
   currentView: "home",
   homeDays: 7,
   chatBusy: false,
+  chatAttachment: null,
   chatHistory: JSON.parse(localStorage.getItem("hira_pwa_chat") || "[]"),
   notifications: JSON.parse(localStorage.getItem("hira_pwa_notifications") || "[]"),
   notificationPoll: null,
@@ -992,6 +993,65 @@ async function uploadFile(event) {
   }
 }
 
+function setChatAttachment(file) {
+  state.chatAttachment = file || null;
+  const chip = $("#chatAttachment");
+  if (!chip) return;
+  chip.hidden = !state.chatAttachment;
+  $("#chatAttachmentName").textContent = state.chatAttachment ? state.chatAttachment.name : "";
+  refreshIcons(chip);
+}
+
+function clearChatAttachment() {
+  setChatAttachment(null);
+  $("#chatFileInput").value = "";
+}
+
+async function uploadChatAttachment(note) {
+  if (state.chatBusy || !state.chatAttachment) return;
+  const file = state.chatAttachment;
+  const userText = note
+    ? `Attached ${file.name}\n\n${note}`
+    : `Attached ${file.name}`;
+  state.chatBusy = true;
+  addMessage("user", userText);
+  const pending = addMessage("hira", "", true);
+  pending.classList.add("pending");
+  $("#sendBtn").disabled = true;
+  $("#attachBtn").disabled = true;
+  clearChatAttachment();
+  const form = new FormData();
+  form.append("file", file);
+  form.append("note", note || "Analyse this upload for reminders, follow-ups, deadlines, schedule items, and useful next actions.");
+  try {
+    setStatus(file.type.startsWith("audio/") ? "Transcribing attachment..." : "Analysing attachment...", "muted");
+    const data = await api("/api/upload", {
+      method: "POST",
+      headers: headers(false),
+      body: form,
+    });
+    const reply = data.reply || "Done.";
+    pending.classList.remove("pending");
+    updateMessage(pending, reply);
+    state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: reply };
+    saveChatHistory();
+    await loadHome();
+    setStatus(`${file.name} analysed.`, "ok");
+  } catch (error) {
+    const friendly = `I could not analyse ${file.name}: ${error.message}`;
+    pending.classList.remove("pending");
+    updateMessage(pending, friendly);
+    state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: friendly };
+    saveChatHistory();
+    console.error(error);
+    setStatus(error.message, "error");
+  } finally {
+    state.chatBusy = false;
+    $("#sendBtn").disabled = false;
+    $("#attachBtn").disabled = false;
+  }
+}
+
 async function sendChat(message) {
   if (state.chatBusy) return;
   state.chatBusy = true;
@@ -1145,11 +1205,28 @@ $("#chatForm").addEventListener("submit", (event) => {
   event.preventDefault();
   const input = $("#messageInput");
   const message = input.value.trim();
-  if (!message) return;
+  if (!message && !state.chatAttachment) return;
   input.value = "";
   input.style.height = "auto";
+  if (state.chatAttachment) {
+    uploadChatAttachment(message);
+    return;
+  }
   sendChat(message);
 });
+
+$("#attachBtn").addEventListener("click", () => {
+  $("#chatFileInput").click();
+});
+
+$("#chatFileInput").addEventListener("change", (event) => {
+  const file = event.currentTarget.files[0];
+  if (!file) return;
+  setChatAttachment(file);
+  setStatus(`${file.name} ready for chat analysis.`, "ok");
+});
+
+$("#clearAttachmentBtn").addEventListener("click", clearChatAttachment);
 
 $("#messageInput").addEventListener("input", (event) => {
   const el = event.currentTarget;

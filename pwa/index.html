@@ -137,7 +137,23 @@
             <div id="promptRow" class="prompt-row"></div>
             <div id="messages" class="messages" aria-live="polite"></div>
             <form id="chatForm" class="composer">
-              <textarea id="messageInput" rows="1" placeholder="Ask Hira anything"></textarea>
+              <input
+                id="chatFileInput"
+                class="sr-only"
+                type="file"
+                accept=".pdf,.docx,.pptx,.png,.jpg,.jpeg,.webp,.gif,.ogg,.m4a,.mp3,.wav,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,image/*,audio/*"
+              />
+              <button id="attachBtn" type="button" class="icon-btn" title="Attach file" aria-label="Attach file">
+                <span data-lucide="paperclip" aria-hidden="true"></span>
+              </button>
+              <textarea id="messageInput" rows="1" placeholder="Ask H.I.R.A anything"></textarea>
+              <div id="chatAttachment" class="attachment-chip" hidden>
+                <span data-lucide="file-up" aria-hidden="true"></span>
+                <span id="chatAttachmentName"></span>
+                <button id="clearAttachmentBtn" type="button" class="icon-btn compact" title="Remove attachment" aria-label="Remove attachment">
+                  <span data-lucide="x" aria-hidden="true"></span>
+                </button>
+              </div>
               <button id="sendBtn" type="submit" class="icon-label-btn">
                 <span data-lucide="send" aria-hidden="true"></span>
                 Send
