@@ -13,7 +13,7 @@
     />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260428-9" />
+    <link rel="stylesheet" href="./styles.css?v=20260429-1" />
   </head>
   <body>
     <main class="shell">
@@ -47,6 +47,7 @@
           <h3>Notifications</h3>
           <button id="enableNotificationsBtn" type="button" class="notification-toggle">Off</button>
         </div>
+        <p id="notificationPanelStateText" class="subtle notification-state">Checking notifications...</p>
         <div id="notificationsList" class="notification-list">
         </div>
       </aside>
@@ -61,7 +62,7 @@
           </div>
         </label>
         <label class="stacked-field">
-          <span>Hira web token</span>
+          <span>H.I.R.A web token</span>
           <input id="tokenInput" placeholder="Only needed if HIRA_WEB_TOKEN is set" />
         </label>
         <div class="inline-actions">
@@ -83,7 +84,7 @@
         <p id="statusLine" data-tone="muted">Ready.</p>
       </section>
 
-      <nav class="nav-tabs" aria-label="Hira views">
+      <nav class="nav-tabs" aria-label="H.I.R.A views">
         <button class="nav-tab active" data-view="home">Home</button>
         <button class="nav-tab" data-view="agenda">Agenda</button>
         <button class="nav-tab" data-view="tasks">Tasks</button>
@@ -93,7 +94,7 @@
 
       <section id="chatView" class="view">
         <div class="chat-shell">
-          <aside class="command-rail" aria-label="Hira quick status">
+          <aside class="command-rail" aria-label="H.I.R.A quick status">
             <section class="ops-card ops-card-dark rail-card">
               <p class="eyebrow">Assistant Core</p>
               <div class="brand-lockup">
@@ -127,7 +128,7 @@
             <div class="section-head">
               <div>
                 <h2>Chat</h2>
-                <p class="subtle">Same Hira, just without the Telegram crowd.</p>
+                <p class="subtle">Same H.I.R.A, just without the Telegram crowd.</p>
               </div>
               <button id="resetChatBtn" type="button" class="ghost-btn icon-label-btn">
                 <span data-lucide="trash-2" aria-hidden="true"></span>
@@ -166,7 +167,7 @@
       <section id="homeView" class="view active">
         <div class="section-head">
           <div>
-            <h2>Today with Hira</h2>
+            <h2>Today with H.I.R.A</h2>
             <p class="subtle">Quiet summary first, then the details.</p>
           </div>
           <button id="refreshHomeBtn" type="button">Refresh</button>
@@ -376,7 +377,7 @@
                 type="file"
                 accept=".pdf,.docx,.pptx,.png,.jpg,.jpeg,.webp,.gif,.ogg,.m4a,.mp3,.wav,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,image/*,audio/*"
               />
-              <textarea id="fileNote" rows="4" placeholder="What should Hira look for? Eg deadlines, your own timetable, action items, clashes, or what to do from this voice note."></textarea>
+              <textarea id="fileNote" rows="4" placeholder="What should H.I.R.A look for? Eg deadlines, your own timetable, action items, clashes, or what to do from this voice note."></textarea>
               <button type="submit">Analyse</button>
             </form>
             <div id="fileOutput" class="rich-output"></div>

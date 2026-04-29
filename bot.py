@@ -25,6 +25,7 @@ from telegram.ext import (
 import google_services as gs
 import timetable as tt
 import search_service as ss
+import weather_service as ws
 import artifact_service as artifacts
 import pdf_service as pdfs
 import document_service as docs
@@ -199,14 +200,14 @@ def SYSTEM_PROMPT():
 
     return f"""{date_ctx}{memory_ctx}
 
-You are Herwanto's personal AI assistant. Your name is Hira.
+You are Herwanto's personal AI assistant. Your name is H.I.R.A — Herwanto Interface for Responsive Assistance.
 You are Singapore-based, calm under pressure, quick with useful judgment, and quietly warm.
 You feel like a capable chief-of-staff in his pocket: practical, observant, wickedly witty when the moment allows, and never needy.
 
 Personality:
 - Speak like a trusted colleague who knows his life, not a generic chatbot.
 - Default vibe: concise, grounded, encouraging, lightly informal, and sharp without being cruel.
-- If he asks your name, answer naturally: "I'm Hira — your personal assistant."
+- If he asks your name, answer naturally: "I'm H.I.R.A — Herwanto Interface for Responsive Assistance."
 - Be decisive when the path is clear; ask only when a missing detail blocks action.
 - Have a wicked sense of humour and good wit: dry, clever, quick, and occasionally cheeky.
 - Use humour like seasoning, not gravy. Never force jokes, emojis, hype, or motivational fluff.
@@ -245,7 +246,7 @@ Rules:
 - Never offer to generate .ics files. Use Google Calendar directly.
 - The current date and time is already provided at the top of this prompt — always use it for any date/time reasoning.
 - Never guess weekdays. If you mention a date with a weekday, derive the weekday from the actual calendar date. For 2026, 1 May is Friday, not Thursday.
-- You have tools: create_calendar_event, add_reminder, add_marking_task, update_marking_progress, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, update_project_status, get_latest_news, and web_search. Use them proactively.
+- You have tools: create_calendar_event, add_reminder, add_marking_task, update_marking_progress, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, update_project_status, get_nea_weather, get_latest_news, and web_search. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
 - When the user mentions marking scripts, papers, compositions, kefahaman, karangan, worksheets, or a marking stack, use marking tools instead of ordinary reminders: add_marking_task for a new stack, update_marking_progress when he says how many scripts are marked, and get_marking_brief when he asks what marking is outstanding. Marking tasks are mission-critical and must persist even at 0 outstanding; only complete one when he explicitly says that marking stack is done, completed, or can be closed.
@@ -257,6 +258,7 @@ Rules:
 - Uploaded PDFs/images are saved as file memory after processing. When the user later refers to a previously uploaded file, use Stored memory / Files first; do not ask for a re-upload unless the stored summary lacks the exact detail needed.
 - When the user asks about his day, week, workload, priorities, deadlines, or project status — call get_assistant_context before answering.
 - When the user asks about latest news, current events, headlines, football, F1, AI, Singapore education, apps, Apple, Nothing OS, or his shortlisted topics — call get_latest_news before answering.
+- When the user asks about weather, rain, forecast, haze, PSI, umbrella, or whether it will rain in Singapore — call get_nea_weather before answering. If no area is specified, use Yishun.
 - When the user says "remember", "note that", or gives stable preferences/facts about himself — call remember_user_info.
 - When the user gives a project progress update — call update_project_status.
 - When the user asks to follow up with someone later, call create_followup.
@@ -339,11 +341,11 @@ REMINDER_TOOL = {
 
 NUDGE_TOOL = {
     "name": "create_proactive_nudge",
-    "description": "Schedule Hira to initiate a Telegram chat at a specific date and time with a short message or heads-up.",
+    "description": "Schedule H.I.R.A to initiate a Telegram chat at a specific date and time with a short message or heads-up.",
     "input_schema": {
         "type": "object",
         "properties": {
-            "message": {"type": "string", "description": "Message Hira should send later"},
+            "message": {"type": "string", "description": "Message H.I.R.A should send later"},
             "send_at": {"type": "string", "description": "ISO datetime in Asia/Singapore, e.g. 2026-05-01T16:30:00+08:00"}
         },
         "required": ["message", "send_at"]
@@ -352,12 +354,12 @@ NUDGE_TOOL = {
 
 DAILY_CHECKIN_TOOL = {
     "name": "create_daily_checkin",
-    "description": "Create a recurring daily check-in. Hira pings at configured times until Herwanto replies affirmatively, then stops for that day.",
+    "description": "Create a recurring daily check-in. H.I.R.A pings at configured times until Herwanto replies affirmatively, then stops for that day.",
     "input_schema": {
         "type": "object",
         "properties": {
             "name": {"type": "string", "description": "Short habit/check-in name"},
-            "question": {"type": "string", "description": "Question Hira should ask"},
+            "question": {"type": "string", "description": "Question H.I.R.A should ask"},
             "times": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -375,7 +377,7 @@ BREAK_AWARE_CHECKIN_TOOL = {
         "type": "object",
         "properties": {
             "name": {"type": "string", "description": "Short habit/check-in name"},
-            "question": {"type": "string", "description": "Question Hira should ask"},
+            "question": {"type": "string", "description": "Question H.I.R.A should ask"},
             "target_count": {
                 "type": "integer",
                 "description": "How many break-time reminders to aim for each day, usually 2 to 4"
@@ -490,6 +492,28 @@ NEWS_TOOL = {
             "max_items": {
                 "type": "integer",
                 "description": "Number of headlines per topic, usually 2 to 5."
+            }
+        }
+    }
+}
+
+WEATHER_TOOL = {
+    "name": "get_nea_weather",
+    "description": "Fetch latest Singapore weather from NEA/MSS via data.gov.sg. Use for weather, rain, forecast, haze, PSI, umbrella, or whether it will rain. If no area is specified, use Yishun.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "area": {
+                "type": "string",
+                "description": "Singapore area/town for the 2-hour forecast, e.g. Yishun, Woodlands, City, Tampines. Use Yishun if unspecified."
+            },
+            "include_24h": {
+                "type": "boolean",
+                "description": "Include the 24-hour general forecast and regional periods. Default true."
+            },
+            "include_4day": {
+                "type": "boolean",
+                "description": "Include the 4-day outlook when the user asks for this week, coming days, or outlook. Default false."
             }
         }
     }
@@ -1224,6 +1248,25 @@ def _find_best_marking_task(query: str):
     )
     return scored[0]
 
+def _is_marking_reminder(reminder: dict) -> bool:
+    text = f"{reminder.get('description', '')} {reminder.get('category', '')}".lower()
+    return bool(re.search(
+        r"\b(marking|marked|scripts?|papers?|compositions?|kefahaman|karangan|worksheets?|worksheet)\b",
+        text,
+    ))
+
+def complete_reminder_by_id(reminder_id: str) -> tuple[bool, dict | None]:
+    reminders = gs.get_reminders(include_done=True)
+    reminder = next((item for item in reminders if str(item.get("id")) == str(reminder_id)), None)
+    ok = gs.mark_done(reminder_id)
+    synced_marking = None
+    if ok and reminder and _is_marking_reminder(reminder):
+        query = f"{reminder.get('description', '')} {reminder.get('category', '')}"
+        marking, score = _find_best_marking_task(query)
+        if marking and score >= 0.35:
+            synced_marking = gs.update_marking_progress(marking["id"], done=True)
+    return ok, synced_marking
+
 def _marking_counts(task: dict) -> tuple[int, int, int | None]:
     total = int(task.get("total_scripts") or 0)
     marked = int(task.get("marked_count") or 0)
@@ -1476,7 +1519,7 @@ def _json_from_claude_text(raw: str):
 
 def _generate_document_spec(title: str, instructions: str, doc_type: str = "general", audience: str = "", language: str = "") -> dict:
     template_context = _artifact_template_context()
-    prompt = f"""Create a structured DOCX content spec for Hira to render.
+    prompt = f"""Create a structured DOCX content spec for H.I.R.A to render.
 
 Title: {title}
 Document type: {doc_type or "general"}
@@ -1513,7 +1556,7 @@ Rules:
 def _generate_slide_spec(title: str, instructions: str, audience: str = "", slide_count: int = 8, language: str = "") -> dict:
     template_context = _artifact_template_context()
     slide_count = max(3, min(int(slide_count or 8), 15))
-    prompt = f"""Create a structured PPTX content spec for Hira to render.
+    prompt = f"""Create a structured PPTX content spec for H.I.R.A to render.
 
 Title: {title}
 Audience: {audience or "Herwanto"}
@@ -1603,6 +1646,12 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     if "get_gmail_brief" in available and gmail_intent:
         if not has_any(["draft", "write", "compose", "reply"]):
             return "get_gmail_brief"
+
+    if "get_nea_weather" in available and has_any([
+        "weather", "forecast", "rain", "raining", "rainy", "showers",
+        "thunder", "storm", "umbrella", "haze", "psi", "nea", "mss"
+    ]):
+        return "get_nea_weather"
 
     if "get_assistant_context" in available and has_any([
         "today", "tomorrow", "schedule", "calendar", "agenda", "my day",
@@ -1914,6 +1963,7 @@ async def start(update, context):
         f"*Assistant*\n/agenda [days] /remember /memory /forget all\n\n"
         f"*Projects*\n/projects /update\n\n"
         f"*Search*\n/search [query]\n\n"
+        f"*Weather*\n/weather [area]\n\n"
         f"*News*\n/news [topic] /watch /watchlist /unwatch\n\n"
         f"*Briefing*\n/briefing (auto 7am SGT)\n\n"
         f"/clear - reset AI chat\nOr just talk to me.",
@@ -2632,6 +2682,15 @@ async def news_cmd(update, context):
     except Exception as e:
         await update.message.reply_text(f"News error: {e}")
 
+async def weather_cmd(update, context):
+    """Show latest NEA weather for a Singapore area."""
+    area = " ".join(context.args).strip() or "Yishun"
+    include_4day = bool(re.search(r"\b(week|days|outlook|4|four)\b", area.lower()))
+    try:
+        await reply(update, ws.build_weather_brief(area, include_24h=True, include_4day=include_4day), parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"Weather error: {e}")
+
 async def watch_cmd(update, context):
     if not google_ok():
         await update.message.reply_text("Google not connected.")
@@ -2772,6 +2831,7 @@ def _core_tools():
         MEMORY_TOOL,
         WEEK_TYPE_TOOL,
         PROJECT_TOOL,
+        WEATHER_TOOL,
         NEWS_TOOL,
     ]
     if ss.search_enabled():
@@ -2805,6 +2865,8 @@ def pwa_tools_for_message(text: str) -> list[dict]:
         add(NEWS_TOOL)
         if ss.search_enabled():
             add(SEARCH_TOOL)
+    if re.search(r"\b(weather|forecast|rain|raining|rainy|shower|showers|thunder|storm|umbrella|haze|psi|nea|mss)\b", text):
+        add(WEATHER_TOOL)
     if re.search(r"\b(document|docx|worksheet|letter|report|lesson plan|handout|memo|proposal|meeting notes)\b", text):
         add(DOCUMENT_ARTIFACT_TOOL, TEMPLATE_MEMORY_TOOL)
     if re.search(r"\b(slide|slides|deck|ppt|pptx|powerpoint|presentation|pitch)\b", text):
@@ -2908,7 +2970,7 @@ async def stream_quick_pwa_reply(messages: list[dict], message: str):
             model="claude-haiku-4-5-20251001",
             max_tokens=220,
             system=(
-                "You are Hira, Herwanto's concise personal assistant. "
+                "You are H.I.R.A, Herwanto's concise personal assistant. "
                 "Answer lightweight chat naturally in one or two short sentences. "
                 "Do not use tools or pretend to have checked live data."
             ),
@@ -3180,6 +3242,16 @@ async def _execute_tool(name: str, inp: dict) -> str:
         except Exception as e:
             return f"Failed to fetch news: {e}"
 
+    elif name == "get_nea_weather":
+        try:
+            return ws.build_weather_brief(
+                inp.get("area", "Yishun"),
+                include_24h=inp.get("include_24h", True),
+                include_4day=inp.get("include_4day", False),
+            )
+        except Exception as e:
+            return f"Failed to fetch NEA weather: {e}"
+
     elif name == "create_calendar_event":
         try:
             start_dt = SGT.localize(datetime.strptime(f"{inp['date']} {inp['start_time']}", "%Y-%m-%d %H:%M"))
@@ -3339,8 +3411,11 @@ async def _execute_tool(name: str, inp: dict) -> str:
             reminder, score = _find_best_reminder(inp["query"])
             if not reminder or score < 0.35:
                 return "No confident reminder match found."
-            gs.mark_done(reminder["id"])
-            return f"Marked reminder #{reminder['id']} done: {reminder['description']}"
+            ok, synced_marking = complete_reminder_by_id(reminder["id"])
+            if not ok:
+                return "No reminder found."
+            marking_note = f" Also completed marking stack: {synced_marking['title']}." if synced_marking else ""
+            return f"Marked reminder #{reminder['id']} done: {reminder['description']}.{marking_note}"
         except Exception as e:
             return f"Failed to mark task done: {e}"
 
@@ -3468,8 +3543,9 @@ async def _process_user_text(update, context, text: str):
                     await update.message.reply_text(f"Completed marking: {updated['title']}")
                     return
                 if reminder and r_score >= max(0.35, f_score, e_score):
-                    gs.mark_done(reminder["id"])
-                    await update.message.reply_text(f"Marked done: [{reminder['id']}] {reminder['description']}")
+                    _, synced_marking = complete_reminder_by_id(reminder["id"])
+                    marking_note = f" Also completed marking: {synced_marking['title']}." if synced_marking else ""
+                    await update.message.reply_text(f"Marked done: [{reminder['id']}] {reminder['description']}.{marking_note}")
                     return
                 if followup and f_score >= max(0.35, e_score):
                     gs.complete_followup(followup["id"])
@@ -3631,9 +3707,9 @@ async def proactive_nudges_job(context):
         _log_memory("before proactive_nudges")
         now = datetime.now(SGT)
         for nudge in gs.due_nudges(now):
-            text = f"*Hira nudge*\n\n{nudge['message']}"
+            text = f"*H.I.R.A nudge*\n\n{nudge['message']}"
             await _send_telegram_notification(context, text)
-            _queue_app_notification("reminder", "Hira nudge", nudge["message"], source=f"nudge:{nudge['id']}")
+            _queue_app_notification("reminder", "H.I.R.A nudge", nudge["message"], source=f"nudge:{nudge['id']}")
             gs.mark_nudge_sent(nudge["id"])
     except Exception as e:
         logger.error(f"Proactive nudge error: {e}")
@@ -3648,9 +3724,9 @@ async def daily_checkins_job(context):
         now = datetime.now(SGT)
         due_checkins = gs.due_checkins(now) + _due_break_aware_checkins(now)
         for checkin in due_checkins:
-            text = f"*Hira check-in*\n\n{checkin['question']}\n\nReply `yes`, `done`, or `alhamdulillah` once it is done and I’ll stop asking for today."
+            text = f"*H.I.R.A check-in*\n\n{checkin['question']}\n\nReply `yes`, `done`, or `alhamdulillah` once it is done and I’ll stop asking for today."
             await _send_telegram_notification(context, text)
-            _queue_app_notification("reminder", "Hira check-in", checkin["question"], source=f"checkin:{checkin['id']}")
+            _queue_app_notification("reminder", "H.I.R.A check-in", checkin["question"], source=f"checkin:{checkin['id']}")
             gs.mark_checkin_prompted(checkin["id"], checkin["due_slot"], now)
     except Exception as e:
         logger.error(f"Daily check-in error: {e}")
@@ -3664,9 +3740,9 @@ async def followups_job(context):
         _log_memory("before followups")
         today = datetime.now(SGT).strftime("%Y-%m-%d")
         for followup in gs.due_followups(today):
-            text = f"*Hira follow-up*\n\n{_format_followup(followup)}\n\nUse `/donefollowup {followup['id']}` when settled."
+            text = f"*H.I.R.A follow-up*\n\n{_format_followup(followup)}\n\nUse `/donefollowup {followup['id']}` when settled."
             await _send_telegram_notification(context, text)
-            _queue_app_notification("reminder", "Hira follow-up", _format_followup(followup), source=f"followup:{followup['id']}")
+            _queue_app_notification("reminder", "H.I.R.A follow-up", _format_followup(followup), source=f"followup:{followup['id']}")
             gs.mark_followup_prompted(followup["id"], today)
     except Exception as e:
         logger.error(f"Follow-up job error: {e}")
@@ -3721,6 +3797,7 @@ def main():
     app.add_handler(CommandHandler("memory",   memory_cmd))
     app.add_handler(CommandHandler("forget",   forget_cmd))
     app.add_handler(CommandHandler("search",   search_cmd))
+    app.add_handler(CommandHandler("weather",  weather_cmd))
     app.add_handler(CommandHandler("news",     news_cmd))
     app.add_handler(CommandHandler("watch",    watch_cmd))
     app.add_handler(CommandHandler("watchlist", watchlist_cmd))

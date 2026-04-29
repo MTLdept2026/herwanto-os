@@ -22,7 +22,7 @@ import document_service as docs
 APP_DIR = Path(__file__).resolve().parent
 PWA_DIR = APP_DIR / "pwa"
 
-app = FastAPI(title="Hira OS")
+app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
 try:
@@ -158,7 +158,7 @@ def _marking_summary() -> dict:
 def _require_token(x_hira_token: Optional[str] = Header(default=None)):
     expected = os.environ.get("HIRA_WEB_TOKEN", "").strip()
     if expected and x_hira_token != expected:
-        raise HTTPException(status_code=401, detail="Invalid Hira web token")
+        raise HTTPException(status_code=401, detail="Invalid H.I.R.A web token")
 
 
 def _client_key(client_id: str | None) -> str:
@@ -314,7 +314,7 @@ async def chat(
             bot.logger.exception(f"PWA chat failed: {exc}")
             yield sse({
                 "type": "error",
-                "message": "Hira hit a backend snag. Try again in a moment.",
+                "message": "H.I.R.A hit a backend snag. Try again in a moment.",
             })
 
     return StreamingResponse(events(), media_type="text/event-stream")
@@ -362,12 +362,12 @@ def tasks(days: int = 7, x_hira_token: Optional[str] = Header(default=None)):
 def task_done(task_id: str, x_hira_token: Optional[str] = Header(default=None)):
     _require_token(x_hira_token)
     try:
-        ok = bot.gs.mark_done(task_id)
+        ok, synced_marking = bot.complete_reminder_by_id(task_id)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Could not complete task: {exc}") from exc
     if not ok:
         raise HTTPException(status_code=404, detail=f"Task #{task_id} not found")
-    return {"ok": True}
+    return {"ok": True, "synced_marking": synced_marking}
 
 
 @app.get("/api/notifications")

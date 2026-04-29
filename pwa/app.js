@@ -84,9 +84,9 @@ async function api(path, options = {}, tokenPrompted = false) {
   if (response.status === 401) {
     if (tokenPrompted) {
       $("#settingsPanel").hidden = false;
-      throw new Error("That token was rejected. Paste the Hira web token in Settings and save it once.");
+      throw new Error("That token was rejected. Paste the H.I.R.A web token in Settings and save it once.");
     }
-    const token = prompt("Enter Hira web token");
+    const token = prompt("Enter H.I.R.A web token");
     if (token) {
       state.token = token.trim();
       localStorage.setItem("hira_web_token", state.token);
@@ -94,7 +94,7 @@ async function api(path, options = {}, tokenPrompted = false) {
       return api(path, options, true);
     }
     $("#settingsPanel").hidden = false;
-    throw new Error("Hira needs the web token before live data can load.");
+    throw new Error("H.I.R.A needs the web token before live data can load.");
   }
   if (!response.ok) {
     const detail = await response.json().catch(() => ({}));
@@ -108,9 +108,9 @@ async function fetchWithToken(path, options = {}, tokenPrompted = false) {
   if (response.status === 401) {
     if (tokenPrompted) {
       $("#settingsPanel").hidden = false;
-      throw new Error("That token was rejected. Paste the Hira web token in Settings and save it once.");
+      throw new Error("That token was rejected. Paste the H.I.R.A web token in Settings and save it once.");
     }
-    const token = prompt("Enter Hira web token");
+    const token = prompt("Enter H.I.R.A web token");
     if (token) {
       state.token = token.trim();
       localStorage.setItem("hira_web_token", state.token);
@@ -118,7 +118,7 @@ async function fetchWithToken(path, options = {}, tokenPrompted = false) {
       return fetchWithToken(path, options, true);
     }
     $("#settingsPanel").hidden = false;
-    throw new Error("Hira needs the web token before live data can load.");
+    throw new Error("H.I.R.A needs the web token before live data can load.");
   }
   if (!response.ok) {
     const detail = await response.json().catch(() => ({}));
@@ -167,8 +167,12 @@ function renderNotifications() {
   badge.hidden = count === 0;
   badge.textContent = String(Math.min(count, 99));
   if (!count) {
-    list.innerHTML = "";
-    if (panel) panel.hidden = true;
+    list.innerHTML = `
+      <div class="notification-empty">
+        <p>No app notifications yet.</p>
+        <small>Use the toggle above to enable device alerts for nudges and check-ins.</small>
+      </div>
+    `;
     return;
   }
   list.innerHTML = state.notifications
@@ -179,7 +183,7 @@ function renderNotifications() {
       return `
         <article class="notification-item ${item.kind || "notice"}" data-notification-id="${id}">
           <div class="notification-item-head">
-            <strong>${markdownish(item.title || "Hira")}</strong>
+            <strong>${markdownish(item.title || "H.I.R.A")}</strong>
             ${created ? `<small>${markdownish(created)}</small>` : ""}
           </div>
           <p>${markdownish(plainNotificationText(item.body || ""))}</p>
@@ -208,6 +212,7 @@ function setNotificationButtons({ label, title, stateText, tone = "neutral", dis
   const panelButton = $("#enableNotificationsBtn");
   const settingsButton = $("#settingsEnableNotificationsBtn");
   const stateLabel = $("#notificationStateText");
+  const panelStateLabel = $("#notificationPanelStateText");
   const notificationButton = $("#notificationsBtn");
   [panelButton, settingsButton].forEach((button) => {
     if (!button) return;
@@ -228,6 +233,11 @@ function setNotificationButtons({ label, title, stateText, tone = "neutral", dis
     stateLabel.textContent = stateText || title;
     stateLabel.classList.toggle("status-ok", tone === "ok");
     stateLabel.classList.toggle("status-warn", tone === "warn");
+  }
+  if (panelStateLabel) {
+    panelStateLabel.textContent = stateText || title;
+    panelStateLabel.classList.toggle("status-ok", tone === "ok");
+    panelStateLabel.classList.toggle("status-warn", tone === "warn");
   }
 }
 
@@ -370,7 +380,7 @@ async function subscribeForPushNotifications() {
 
 async function showSystemNotification(item) {
   if (!("Notification" in window) || Notification.permission !== "granted") return;
-  const title = item.title || "Hira";
+  const title = item.title || "H.I.R.A";
   const body = plainNotificationText(item.body || "").slice(0, 240);
   const options = {
     body,
@@ -807,6 +817,7 @@ function appendToolStatus(el, name) {
     get_task_brief: "Checking tasks...",
     get_gmail_brief: "Checking Gmail...",
     create_gmail_draft: "Drafting email...",
+    get_nea_weather: "Checking NEA weather...",
     get_latest_news: "Checking latest news...",
     web_search: "Searching...",
   };
@@ -860,7 +871,7 @@ async function streamChatResponse(message, onEvent) {
 function renderStoredChat() {
   $("#messages").innerHTML = "";
   if (!state.chatHistory.length) {
-    addMessage("hira", "I’m here. Same Hira, less Telegram noise.", false);
+    addMessage("hira", "I’m here. Same H.I.R.A, less Telegram noise.", false);
     return;
   }
   for (const item of state.chatHistory) addMessage(item.role, item.text, false);
@@ -1139,10 +1150,10 @@ async function sendChat(message) {
         setStatus(event.name === "quick" ? "Quick reply path." : "Thinking with tools ready.", "muted");
       }
       if (event.type === "tools") {
-        console.info("Hira tool route", event.names || []);
+        console.info("H.I.R.A tool route", event.names || []);
       }
       if (event.type === "timing") {
-        console.info(`Hira timing: ${event.phase}`, `${event.elapsed_ms}ms`, `phase ${event.phase_ms}ms`);
+        console.info(`H.I.R.A timing: ${event.phase}`, `${event.elapsed_ms}ms`, `phase ${event.phase_ms}ms`);
       }
       if (event.type === "tool") appendToolStatus(pending, event.name);
       if (event.type === "text" || event.type === "replace") {
@@ -1157,9 +1168,9 @@ async function sendChat(message) {
     pending.querySelectorAll(".tool-status").forEach((item) => item.remove());
     state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: reply };
     saveChatHistory();
-    setStatus("Hira replied.", "ok");
+    setStatus("H.I.R.A replied.", "ok");
   } catch (error) {
-    const friendly = "Hira hit a backend snag. Try again in a moment.";
+    const friendly = "H.I.R.A hit a backend snag. Try again in a moment.";
     pending.classList.remove("pending");
     pending.querySelector(".message-body").textContent = friendly;
     state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: friendly };
@@ -1206,8 +1217,9 @@ $("#settingsBtn").addEventListener("click", () => {
   updateNotificationControls();
 });
 $("#notificationsBtn").addEventListener("click", () => {
+  const panel = $("#notificationsPanel");
+  panel.hidden = !panel.hidden;
   renderNotifications();
-  if (state.notifications.length) $("#notificationsPanel").toggleAttribute("hidden");
   updateNotificationControls();
 });
 $("#notificationsList").addEventListener("click", (event) => {

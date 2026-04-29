@@ -315,9 +315,9 @@ h3 {
 
 .notification-btn {
   position: relative;
-  grid-template-columns: 18px auto;
-  gap: 7px;
-  width: 76px;
+  grid-template-columns: 22px 32px;
+  gap: 12px;
+  width: 92px;
   border-color: transparent;
   box-shadow: none;
 }
@@ -386,6 +386,24 @@ h3 {
   gap: var(--space-sm);
   max-height: 42vh;
   overflow: auto;
+}
+
+.notification-empty {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px dashed var(--border-visible);
+  border-radius: 4px;
+  color: var(--text-secondary);
+}
+
+.notification-empty p {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.notification-empty small {
+  line-height: 1.4;
 }
 
 .notification-state {

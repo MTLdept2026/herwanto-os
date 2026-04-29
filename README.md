@@ -1,6 +1,6 @@
 # Herwanto OS — Personal AI Assistant
 
-Your AI second brain on Telegram. Calendar-aware, project-tracking, daily briefings, and a steady assistant personality named Hira.
+Your AI second brain on Telegram. Calendar-aware, project-tracking, daily briefings, and a steady assistant personality named H.I.R.A.
 
 ---
 
@@ -208,7 +208,7 @@ The bot stores your chat ID on first `/start`. This is needed for the scheduled 
 /cancelnudge 3
 ```
 
-Hira checks pending nudges every minute and sends the message proactively in Telegram. Use this for time-specific heads-ups when you are likely to be buried in work.
+H.I.R.A checks pending nudges every minute and sends the message proactively in Telegram. Use this for time-specific heads-ups when you are likely to be buried in work.
 
 **Daily check-ins:**
 ```
@@ -218,9 +218,9 @@ Hira checks pending nudges every minute and sends the message proactively in Tel
 /cancelcheckin 1
 ```
 
-Hira checks every minute. For each daily check-in, it pings at the configured times until you reply `yes`, `done`, or `alhamdulillah`. Once you reply affirmatively, it stays quiet for that check-in until the next day.
+H.I.R.A checks daily check-ins on a configurable interval, defaulting to every 5 minutes. For each daily check-in, it pings at the configured times until you reply `yes`, `done`, or `alhamdulillah`. Once you reply affirmatively, it stays quiet for that check-in until the next day.
 
-Use `breaks` instead of fixed times when the reminder should adapt to the day. Hira will read today's timetable and Google Calendar, find free windows, and place the check-ins during suitable breaks.
+Use `breaks` instead of fixed times when the reminder should adapt to the day. H.I.R.A will read today's timetable and Google Calendar, find free windows, and place the check-ins during suitable breaks.
 Adding a check-in with the same name updates the existing one, so you can switch `Istighfar & Selawat` from fixed times to break-aware reminders without creating duplicates.
 
 **Documents, slides, and templates:**
@@ -232,7 +232,7 @@ Adding a check-in with the same name updates the existing one, so you can switch
 /artifacts
 ```
 
-Hira creates downloadable `.docx` and `.pptx` files in Telegram. If Google Drive is connected and the Drive API is enabled, Hira also uploads and converts them into Google Docs or Google Slides links. Set `GOOGLE_ARTIFACT_SHARE_EMAIL` to your Gmail/Workspace email if you want those generated links shared back to your account automatically. Reusable template memories are applied to future generated worksheets, decks, lesson plans, proposals, and briefing materials.
+H.I.R.A creates downloadable `.docx` and `.pptx` files in Telegram. If Google Drive is connected and the Drive API is enabled, H.I.R.A also uploads and converts them into Google Docs or Google Slides links. Set `GOOGLE_ARTIFACT_SHARE_EMAIL` to your Gmail/Workspace email if you want those generated links shared back to your account automatically. Reusable template memories are applied to future generated worksheets, decks, lesson plans, proposals, and briefing materials.
 
 **Pro assistant workflows:**
 ```
@@ -249,14 +249,14 @@ Hira creates downloadable `.docx` and `.pptx` files in Telegram. If Google Drive
 
 For marking, just say it naturally: "add 1 stack of kefahaman 2G3 to marking task", "I collected kefahaman 2G3 today, 34 scripts", "I've marked 12 scripts for kefahaman 2G3", or "what marking is outstanding?"
 
-Hira can now prioritise reminders with priority/effort/next-action metadata, track marking stacks and follow-ups, send evening prep and weekly planning briefings, and search remembered file/artifact summaries.
+H.I.R.A can now prioritise reminders with priority/effort/next-action metadata, track marking stacks and follow-ups, send evening prep and weekly planning briefings, and search remembered file/artifact summaries.
 
 **Voice notes:**
 ```
 Send a Telegram voice note.
 ```
 
-Voice notes require `OPENAI_API_KEY`. Hira transcribes the note and then treats it like a normal message, so it can create reminders, events, documents, follow-ups, or drafts from speech.
+Voice notes require `OPENAI_API_KEY`. H.I.R.A transcribes the note and then treats it like a normal message, so it can create reminders, events, documents, follow-ups, or drafts from speech.
 
 **Gmail:**
 ```
@@ -267,6 +267,16 @@ Voice notes require `OPENAI_API_KEY`. Hira transcribes the note and then treats 
 /gmaildraft recipient@example.com | Subject | Email body
 /gmaildraft work recipient@example.com | Subject | Email body
 ```
+
+**NEA weather:**
+```
+/weather
+/weather Woodlands
+Will it rain in Yishun later?
+What's the NEA 4-day outlook?
+```
+
+H.I.R.A fetches Singapore weather from NEA/MSS through data.gov.sg. If no area is specified, it defaults to Yishun for the latest 2-hour nowcast and includes the 24-hour general forecast.
 
 Gmail support is optional. It requires the Gmail API and delegated access for `GOOGLE_GMAIL_USER`; for ordinary Gmail accounts this is not as simple as Calendar/Sheets service-account sharing. If Gmail is not configured, the commands fail gracefully.
 
@@ -299,7 +309,7 @@ GOOGLE_GMAIL_REFRESH_TOKEN=...
 ```env
 GOOGLE_WORK_GMAIL_REFRESH_TOKEN=...
 ```
-If you are using the same OAuth app, you do not need separate work client ID/secret. Hira will reuse `GOOGLE_GMAIL_CLIENT_ID` and `GOOGLE_GMAIL_CLIENT_SECRET`. If you create a separate OAuth app for work, set:
+If you are using the same OAuth app, you do not need separate work client ID/secret. H.I.R.A will reuse `GOOGLE_GMAIL_CLIENT_ID` and `GOOGLE_GMAIL_CLIENT_SECRET`. If you create a separate OAuth app for work, set:
 ```env
 GOOGLE_WORK_GMAIL_CLIENT_ID=...
 GOOGLE_WORK_GMAIL_CLIENT_SECRET=...
@@ -308,7 +318,7 @@ GOOGLE_WORK_GMAIL_CLIENT_SECRET=...
 ```text
 /gmail is:unread newer_than:7d
 /gmail work is:unread newer_than:7d
-/gmaildraft someone@example.com | Test from Hira | Hello, this is a draft created by Hira.
+/gmaildraft someone@example.com | Test from H.I.R.A | Hello, this is a draft created by H.I.R.A.
 ```
 
 **Use it like a full assistant:**
@@ -322,9 +332,9 @@ Remember that my usual CCA training is on Tuesdays and Thursdays.
 GamePlan is now in pilot mode with first-school onboarding as the next milestone.
 ```
 
-**Hira PWA:**
+**H.I.R.A PWA:**
 
-The PWA is a Telegram-free interface for Hira. It can be installed from Chrome/Edge/Safari-compatible browsers on Android and macOS.
+The PWA is a Telegram-free interface for H.I.R.A. It can be installed from Chrome/Edge/Safari-compatible browsers on Android and macOS.
 
 Local run:
 ```bash
@@ -345,24 +355,25 @@ HIRA_SERVICE_MODE=pwa
 Copy the same environment variables as the Telegram bot service. Set `HIRA_WEB_TOKEN` to a private phrase if you want the PWA API protected; the app will ask for it on first use.
 
 Current PWA surfaces:
-- Chat with Hira
+- Chat with H.I.R.A
 - Agenda
 - Tasks
 - Personal/work Gmail fetch
 - Personal/work Gmail draft creation
+- Latest NEA weather lookup
 - PDF/DOCX/PPTX/image upload analysis
 - Voice-note upload/transcription when `OPENAI_API_KEY` is configured
 - Marking-load dashboard with marked/unmarked segmented bars
 - Light/dark/auto theme switcher
 - App notifications for nudges, check-ins, follow-ups, morning/evening briefings, weekly planning, and project check-ins
 
-The PWA chat uses the same Hira tool brain as Telegram. With the same production env vars, it can create/delete calendar events, add/complete reminders and follow-ups, manage marking progress, read Gmail, create drafts, generate DOCX/PPTX artifacts, process uploaded documents/images/voice notes, remember context, use timetable context, and fetch news when search is configured.
+The PWA chat uses the same H.I.R.A tool brain as Telegram. With the same production env vars, it can create/delete calendar events, add/complete reminders and follow-ups, manage marking progress, read Gmail, create drafts, generate DOCX/PPTX artifacts, process uploaded documents/images/voice notes, remember context, use timetable context, fetch NEA weather, and fetch news when search is configured.
 
-For OS-level PWA notifications while the app is closed, generate VAPID keys with `vapid --gen`, set `HIRA_WEB_PUSH_PUBLIC_KEY` to `vapid --applicationServerKey`, set `HIRA_WEB_PUSH_PRIVATE_KEY` to a base64-encoded `private_key.pem`, and set `HIRA_WEB_PUSH_SUBJECT` to `mailto:you@example.com` on both Railway services. Then tap **Enable app notifications** in Hira. Without VAPID keys, Hira still shows queued app notifications the next time the PWA is open.
+For OS-level PWA notifications while the app is closed, generate VAPID keys with `vapid --gen`, set `HIRA_WEB_PUSH_PUBLIC_KEY` to `vapid --applicationServerKey`, set `HIRA_WEB_PUSH_PRIVATE_KEY` to a base64-encoded `private_key.pem`, and set `HIRA_WEB_PUSH_SUBJECT` to `mailto:you@example.com` on both Railway services. Then tap **Enable app notifications** in H.I.R.A. Without VAPID keys, H.I.R.A still shows queued app notifications the next time the PWA is open.
 
 **Personality:**
 
-Hira is designed to feel like a calm chief-of-staff in your pocket: concise, observant, Singapore-aware, wickedly witty when appropriate, and protective of your attention. It should prioritise next actions over long explanations, steady things when workload piles up, and adapt naturally across teaching, coding, business, normal conversation, and the latest news you care about.
+H.I.R.A is designed to feel like a calm chief-of-staff in your pocket: concise, observant, Singapore-aware, wickedly witty when appropriate, and protective of your attention. It should prioritise next actions over long explanations, steady things when workload piles up, and adapt naturally across teaching, coding, business, normal conversation, and the latest news you care about.
 
 **News shortlist:**
 ```
@@ -378,14 +389,14 @@ Anything interesting in AI or SG education today?
 **Screenshots and PDFs:**
 ```
 Send a timetable screenshot, duty roster, match fixture, PDF letter, or event notice.
-Hira will extract dated schedule items, add clear events to Google Calendar,
+H.I.R.A will extract dated schedule items, add clear events to Google Calendar,
 add dated tasks as reminders, and ask only for missing details when needed.
 ```
 
 **Heavy documents:**
 ```
 Send large searchable PDFs, Word documents, or PowerPoint decks.
-Hira extracts text locally first, ranks the most relevant pages/slides/sections,
+H.I.R.A extracts text locally first, ranks the most relevant pages/slides/sections,
 then analyses only those excerpts so large school files do not overload the model.
 For scanned/image-only PDFs, send an OCR/searchable version or the relevant page screenshots.
 ```

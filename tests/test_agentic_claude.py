@@ -138,6 +138,27 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(bot._forced_tool_for_current_turn(messages, tools), "get_gmail_brief")
 
+    def test_weather_question_forces_nea_weather_tool(self):
+        forced = bot._forced_tool_for_text(
+            "Will it rain in Yishun later?",
+            [{"name": "get_nea_weather"}, {"name": "get_latest_news"}],
+        )
+
+        self.assertEqual(forced, "get_nea_weather")
+
+    def test_pwa_weather_message_gets_weather_tool(self):
+        tools = bot.pwa_tools_for_message("latest weather from NEA")
+        names = [tool["name"] for tool in tools]
+
+        self.assertIn("get_nea_weather", names)
+
+    def test_execute_weather_tool_uses_weather_service(self):
+        async def run():
+            with patch.object(bot.ws, "build_weather_brief", return_value="NEA weather: Yishun"):
+                return await bot._execute_tool("get_nea_weather", {"area": "Yishun"})
+
+        self.assertEqual(asyncio.run(run()), "NEA weather: Yishun")
+
     def test_gmail_body_text_decodes_plain_parts(self):
         encoded = bot.base64.urlsafe_b64encode(
             b"Meeting on Friday at 2pm. Please follow up with the vendor."
@@ -230,13 +251,48 @@ class AgenticClaudeTests(unittest.TestCase):
             self.assertEqual(bot.gs.get_marking_tasks(), [])
             self.assertEqual(len(bot.gs.get_marking_tasks(include_done=True)), 1)
 
+    def test_completing_marking_reminder_closes_matching_marking_stack(self):
+        reminders = [
+            {
+                "id": "12",
+                "description": "Finish Kefahaman 2G3 marking",
+                "due": "2026-04-29",
+                "category": "Marking",
+                "done": False,
+            }
+        ]
+        marking_tasks = [
+            {
+                "id": "1",
+                "title": "Kefahaman 2G3",
+                "total_scripts": 34,
+                "marked_count": 34,
+                "stack_count": 1,
+                "collected_date": "2026-04-27",
+                "notes": "",
+                "done": False,
+            }
+        ]
+
+        with (
+            patch.object(bot.gs, "get_reminders", return_value=reminders),
+            patch.object(bot.gs, "mark_done", return_value=True),
+            patch.object(bot.gs, "get_marking_tasks", return_value=marking_tasks),
+            patch.object(bot.gs, "update_marking_progress", return_value={**marking_tasks[0], "done": True}) as update_marking,
+        ):
+            ok, synced = bot.complete_reminder_by_id("12")
+
+        self.assertTrue(ok)
+        self.assertEqual(synced["title"], "Kefahaman 2G3")
+        update_marking.assert_called_once_with("1", done=True)
+
     def test_archive_app_notifications_hides_selected_items(self):
         store = {
             "app_notifications": json.dumps([
                 {
                     "id": "1",
                     "kind": "reminder",
-                    "title": "Hira nudge",
+                    "title": "H.I.R.A nudge",
                     "body": "Check bills",
                     "created": "2026-04-28T19:19:00+08:00",
                     "source": "nudge:1",
@@ -246,7 +302,7 @@ class AgenticClaudeTests(unittest.TestCase):
                 {
                     "id": "2",
                     "kind": "update",
-                    "title": "Hira",
+                    "title": "H.I.R.A",
                     "body": "Still here",
                     "created": "2026-04-28T19:20:00+08:00",
                     "source": "",
