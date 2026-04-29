@@ -434,6 +434,39 @@ function rememberNotification(item) {
   return true;
 }
 
+function rememberPushedNotification(item) {
+  const notification = {
+    id: String(item?.id || ""),
+    kind: String(item?.kind || "reminder"),
+    title: String(item?.title || "H.I.R.A"),
+    body: String(item?.body || ""),
+    source: String(item?.source || ""),
+    created: item?.created || new Date().toISOString(),
+  };
+  if (!notification.id || !notification.body) return false;
+  return rememberNotification(notification);
+}
+
+function rememberNotificationFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  if (!params.has("notification_id")) return;
+  rememberPushedNotification({
+    id: params.get("notification_id"),
+    kind: params.get("notification_kind") || "reminder",
+    source: params.get("notification_source") || "",
+    title: params.get("notification_title") || "H.I.R.A",
+    body: params.get("notification_body") || "",
+  });
+  params.delete("notification_id");
+  params.delete("notification_kind");
+  params.delete("notification_source");
+  params.delete("notification_title");
+  params.delete("notification_body");
+  const query = params.toString();
+  const nextUrl = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
+  window.history.replaceState({}, "", nextUrl);
+}
+
 async function markNotificationsSeen(ids) {
   if (!ids.length) return;
   try {
@@ -1304,6 +1337,10 @@ if ("serviceWorker" in navigator) {
       updateNotificationControls();
     })
     .catch(updateNotificationControls);
+  navigator.serviceWorker.addEventListener("message", (event) => {
+    if (event.data?.type !== "hira-notification") return;
+    rememberPushedNotification(event.data.item || {});
+  });
 }
 
 document.addEventListener("visibilitychange", () => {
@@ -1342,6 +1379,7 @@ document.querySelectorAll(".prompt-row-mirror .prompt-chip").forEach((button) =>
 
 mountChatInHome();
 renderStoredChat();
+rememberNotificationFromUrl();
 mirrorStoredNotificationsToChat();
 renderNotifications();
 updateNotificationControls();
