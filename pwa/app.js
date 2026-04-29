@@ -9,6 +9,7 @@ const state = {
   chatAttachment: null,
   chatHistory: JSON.parse(localStorage.getItem("hira_pwa_chat") || "[]"),
   notifications: JSON.parse(localStorage.getItem("hira_pwa_notifications") || "[]"),
+  chatNotificationIds: JSON.parse(localStorage.getItem("hira_pwa_chat_notification_ids") || "[]"),
   notificationPoll: null,
 };
 
@@ -390,12 +391,46 @@ async function showSystemNotification(item) {
   new Notification(title, options);
 }
 
+function chatPromptNotification(item) {
+  const source = String(item?.source || "");
+  if (!/^(checkin|nudge):/.test(source)) return "";
+  const body = plainNotificationText(item.body || "");
+  if (!body) return "";
+  if (source.startsWith("checkin:")) {
+    return `${body}\n\nReply yes, done, or alhamdulillah here and I’ll stop asking for today.`;
+  }
+  return body;
+}
+
+function mirrorNotificationToChat(item) {
+  const id = String(item?.id || "");
+  if (!id || state.chatNotificationIds.map(String).includes(id)) return false;
+  const text = chatPromptNotification(item);
+  if (!text) return false;
+  addMessage("hira", text);
+  state.chatNotificationIds.push(id);
+  saveChatNotificationIds();
+  return true;
+}
+
+function mirrorStoredNotificationsToChat() {
+  let mirrored = 0;
+  for (const item of state.notifications) {
+    if (mirrorNotificationToChat(item)) mirrored += 1;
+    if (mirrored >= 3) break;
+  }
+}
+
 function rememberNotification(item) {
-  if (state.notifications.some((existing) => String(existing.id) === String(item.id))) return false;
+  if (state.notifications.some((existing) => String(existing.id) === String(item.id))) {
+    mirrorNotificationToChat(item);
+    return false;
+  }
   state.notifications.unshift(item);
   state.notifications = state.notifications.slice(0, 30);
   saveNotifications();
   renderNotifications();
+  mirrorNotificationToChat(item);
   return true;
 }
 
@@ -513,6 +548,11 @@ function markingSegments(value, total) {
 
 function saveChatHistory() {
   localStorage.setItem("hira_pwa_chat", JSON.stringify(state.chatHistory.slice(-30)));
+}
+
+function saveChatNotificationIds() {
+  state.chatNotificationIds = [...new Set(state.chatNotificationIds.map(String))].slice(-80);
+  localStorage.setItem("hira_pwa_chat_notification_ids", JSON.stringify(state.chatNotificationIds));
 }
 
 function escapeHtml(text) {
@@ -1302,6 +1342,7 @@ document.querySelectorAll(".prompt-row-mirror .prompt-chip").forEach((button) =>
 
 mountChatInHome();
 renderStoredChat();
+mirrorStoredNotificationsToChat();
 renderNotifications();
 updateNotificationControls();
 setView("home");

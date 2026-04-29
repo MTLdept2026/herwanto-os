@@ -223,6 +223,36 @@ async def chat(
     history.append({"role": "user", "content": user_content})
     history = history[-bot.MAX_TURNS:]
 
+    quick_checkin_reply = ""
+    if bot.google_ok() and bot._is_affirmative(message):
+        try:
+            completed = []
+            for checkin in bot.gs.awaiting_checkins():
+                if bot.gs.complete_checkin_today(checkin["id"]):
+                    completed.append(checkin["name"])
+            if completed:
+                quick_checkin_reply = (
+                    f"Marked done for today: {', '.join(completed)}. "
+                    "I’ll leave you in peace until tomorrow."
+                )
+        except Exception as exc:
+            bot.logger.warning(f"PWA check-in affirmation error: {exc}")
+
+    if quick_checkin_reply:
+        history.append({"role": "assistant", "content": quick_checkin_reply})
+        bot.save_history(history_key, history[-bot.MAX_TURNS:])
+
+        async def quick_checkin_events():
+            def sse(payload: dict) -> str:
+                return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+            yield sse({"type": "route", "name": "quick"})
+            yield sse({"type": "text", "text": quick_checkin_reply})
+            yield sse({"type": "done", "text": quick_checkin_reply})
+            yield sse({"type": "saved"})
+
+        return StreamingResponse(quick_checkin_events(), media_type="text/event-stream")
+
     async def events():
         reply_parts: list[str] = []
         final_text = ""
