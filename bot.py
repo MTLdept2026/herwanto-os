@@ -1830,6 +1830,18 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     ]):
         return "get_nea_weather"
 
+    if (
+        "update_project_status" in available
+        and has_any(["gameplan", "ruh", "rūḥ", "app", "apps", "project", "client", "demo"])
+        and has_any([
+            " is ", " got ", " now ", "currently", "status", "progress", "milestone",
+            "approved", "rejected", "submitted", "review", "launched", "shipped",
+            "released", "blocked", "done", "completed",
+        ])
+        and not has_any(["what", "show", "check", "list", "how", "when", "why", "?"])
+    ):
+        return "update_project_status"
+
     if "get_assistant_context" in available and has_any([
         "today", "tomorrow", "schedule", "calendar", "agenda", "my day",
         "my week", "what's on", "whats on"
@@ -2107,11 +2119,23 @@ def build_weekly_plan():
             if projects:
                 lines.append("*Projects*")
                 for p in projects:
-                    milestone = f" Next: {p['next_milestone']} ({p['milestone_date']})." if p["next_milestone"] else ""
-                    lines.append(f"- *{p['project']}* - {p['status']}.{milestone}")
+                    lines.append(_format_project_line(p, include_updated=False))
         except Exception:
             pass
     return "\n".join(lines).strip()
+
+def _format_project_line(p: dict, include_updated: bool = True) -> str:
+    details = []
+    if p.get("next_milestone"):
+        milestone = f"Next: {p['next_milestone']}"
+        if p.get("milestone_date"):
+            milestone += f" ({p['milestone_date']})"
+        details.append(milestone)
+    if p.get("notes"):
+        details.append(f"Notes: {p['notes']}")
+    detail_text = f" {' '.join(details)}" if details else ""
+    updated = f" _(updated {p['last_update']})_" if include_updated and p.get("last_update") else ""
+    return f"- *{p.get('project', '')}* - {p.get('status', '')}.{detail_text}{updated}"
 
 # ─── COMMANDS ────────────────────────────────────────────────────────────────
 
@@ -3051,6 +3075,8 @@ def pwa_tools_for_message(text: str) -> list[dict]:
         add(SLIDE_ARTIFACT_TOOL, TEMPLATE_MEMORY_TOOL)
     if re.search(r"\b(remember|note that|preference|prefer|template|style|project status|milestone)\b", text):
         add(MEMORY_TOOL, PROJECT_TOOL, TEMPLATE_MEMORY_TOOL)
+    if re.search(r"\b(gameplan|ruh|rūḥ|app|apps|project|projects|product|products|app store|play store|review|approved|rejected|submitted|launched|shipped|released|blocked|progress|status|milestone|client|demo)\b", text):
+        add(CONTEXT_TOOL, PROJECT_TOOL, MEMORY_TOOL)
 
     return tools or _core_tools()
 
@@ -3100,7 +3126,9 @@ def _looks_tool_heavy(text: str) -> bool:
         r"\b(calendar|schedule|meeting|event|remind|nudge|task|due|marking|scripts?|"
         r"email|gmail|inbox|draft|reply|timetable|lesson|news|latest|search|remember|"
         r"weather|forecast|rain|raining|rainy|shower|showers|thunder|storm|umbrella|"
-        r"haze|psi|nea|mss|document|worksheet|slides?|ppt|deck|follow\s*up|done|complete)\b",
+        r"haze|psi|nea|mss|project|projects|gameplan|ruh|rūḥ|apps?|app store|"
+        r"milestone|launched|shipped|released|approved|rejected|submitted|blocked|"
+        r"document|worksheet|slides?|ppt|deck|follow\s*up|done|complete)\b",
         text,
         re.I,
     ))
@@ -3859,10 +3887,10 @@ async def friday_checkin_job(context):
         projs = gs.get_projects()
         lines = ["*Weekly project check-in*\n"]
         for p in projs:
-            lines.append(f"- *{p['project']}* - {p['status']} _(updated {p['last_update']})_")
+            lines.append(_format_project_line(p, include_updated=True))
         if not projs:
             lines.append("No projects tracked yet.")
-        lines.append("\nUse /update to log progress.")
+        lines.append("\nTell H.I.R.A naturally or use /update to log progress.")
         text = "\n".join(lines)
         await _send_telegram_notification(context, text)
         _queue_app_notification("update", "Weekly project check-in", text, source="friday_checkin")
