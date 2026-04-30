@@ -14,7 +14,7 @@
   --success: #18a66a;
   --warning: #f4a51c;
   --danger: #e31b23;
-  --interactive: #2563eb;
+  --interactive: #ff7a12;
   --space-2xs: 2px;
   --space-xs: 4px;
   --space-sm: 8px;
@@ -257,7 +257,17 @@ h3 {
 
 .topbar-actions .icon-btn:hover {
   border-color: transparent;
-  background: var(--surface-raised);
+  color: var(--success);
+  background: transparent;
+}
+
+.topbar-actions .icon-btn:active,
+.topbar-actions .icon-btn:focus-visible,
+.topbar-actions .icon-btn.is-open {
+  color: var(--success);
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
 }
 
 .icon-btn svg,
@@ -454,6 +464,13 @@ h3 {
 }
 
 .notification-enabled {
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 45%, transparent);
+}
+
+.notification-enabled:hover,
+.notification-enabled:active,
+.notification-enabled:focus-visible {
   color: var(--success);
   border-color: color-mix(in srgb, var(--success) 45%, transparent);
 }
@@ -1036,6 +1053,8 @@ html[data-theme="dark"] .segment {
 }
 
 .daily-load-body {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.35fr) minmax(0, 1fr);
   align-items: end;
 }
 
@@ -1043,14 +1062,16 @@ html[data-theme="dark"] .segment {
   display: grid;
   grid-template-columns: repeat(4, minmax(62px, 1fr));
   gap: 8px;
-  width: min(100%, 560px);
+  width: 100%;
 }
 
 .load-stat {
   display: grid;
+  justify-items: center;
   gap: 8px;
   min-height: 74px;
   padding: 10px 8px;
+  text-align: center;
   background: var(--surface-raised);
   border-radius: 8px;
 }
@@ -1069,6 +1090,16 @@ html[data-theme="dark"] .segment {
   font-family: "Doto", "Space Mono", monospace;
   font-size: 34px;
   line-height: 0.9;
+  text-align: center;
+}
+
+.home-refresh-row {
+  display: grid;
+  margin-bottom: var(--space-md);
+}
+
+.home-refresh-row #refreshHomeBtn {
+  width: 100%;
 }
 
 .load-note {
@@ -2066,6 +2097,10 @@ html[data-theme="dark"] .segment {
   .daily-load-body {
     display: grid;
     gap: var(--space-md);
+  }
+
+  .daily-load-body {
+    grid-template-columns: 1fr;
   }
 
   .load-badge {

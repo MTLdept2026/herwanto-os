@@ -13,7 +13,7 @@
     />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260430-6" />
+    <link rel="stylesheet" href="./styles.css?v=20260430-7" />
   </head>
   <body>
     <main class="shell">
@@ -129,9 +129,8 @@
             <div class="section-head">
               <div>
                 <h2>Chat</h2>
-                <p class="subtle">Same H.I.R.A, just without the Telegram crowd.</p>
               </div>
-              <button id="resetChatBtn" type="button" class="ghost-btn icon-label-btn">
+              <button id="resetChatBtn" type="button" class="ghost-btn icon-label-btn" hidden>
                 <span data-lucide="trash-2" aria-hidden="true"></span>
                 Clear
               </button>
@@ -166,11 +165,7 @@
       </section>
 
       <section id="homeView" class="view active">
-        <div class="section-head">
-          <div>
-            <h2>Today with H.I.R.A</h2>
-            <p class="subtle">Quiet summary first, then the details.</p>
-          </div>
+        <div class="home-refresh-row">
           <button id="refreshHomeBtn" type="button">Refresh</button>
         </div>
         <div id="homeChatMount" class="home-chat-mount"></div>

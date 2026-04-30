@@ -942,6 +942,7 @@ function addMessage(role, text, persist = true) {
     state.chatHistory.push({ role, text });
     state.chatHistory = state.chatHistory.slice(-30);
     saveChatHistory();
+    updateChatChrome();
   }
   return el;
 }
@@ -1014,11 +1015,12 @@ async function streamChatResponse(message, onEvent) {
 
 function renderStoredChat() {
   $("#messages").innerHTML = "";
-  if (!state.chatHistory.length) {
-    addMessage("hira", "I’m here. Same H.I.R.A, less Telegram noise.", false);
-    return;
-  }
   for (const item of state.chatHistory) addMessage(item.role, item.text, false);
+  updateChatChrome();
+}
+
+function updateChatChrome() {
+  $("#resetChatBtn").hidden = state.chatHistory.length === 0;
 }
 
 function mountChatInHome() {
@@ -1361,12 +1363,15 @@ $("#installBtn").addEventListener("click", async () => {
 });
 
 $("#settingsBtn").addEventListener("click", () => {
-  $("#settingsPanel").toggleAttribute("hidden");
+  const panel = $("#settingsPanel");
+  panel.toggleAttribute("hidden");
+  $("#settingsBtn").classList.toggle("is-open", !panel.hidden);
   updateNotificationControls();
 });
 $("#notificationsBtn").addEventListener("click", () => {
   const panel = $("#notificationsPanel");
   panel.hidden = !panel.hidden;
+  $("#notificationsBtn").classList.toggle("is-open", !panel.hidden);
   renderNotifications();
   updateNotificationControls();
 });
