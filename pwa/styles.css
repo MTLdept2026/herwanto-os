@@ -150,7 +150,7 @@ textarea {
   width: 100%;
   max-width: 1200px;
   margin: 0 auto;
-  padding: env(safe-area-inset-top) 20px calc(20px + env(safe-area-inset-right)) calc(20px + env(safe-area-inset-bottom)) calc(20px + env(safe-area-inset-left));
+  padding: env(safe-area-inset-top) calc(20px + env(safe-area-inset-right)) calc(20px + env(safe-area-inset-bottom)) calc(20px + env(safe-area-inset-left));
 }
 
 .topbar {
@@ -1503,7 +1503,7 @@ html[data-theme="dark"] .segment {
 
 .chat-main {
   display: grid;
-  grid-template-rows: auto auto auto minmax(300px, 1fr) auto;
+  grid-template-rows: auto auto minmax(300px, 1fr) auto;
   min-height: 66vh;
   padding: var(--space-lg);
   background: var(--surface);
@@ -1512,7 +1512,7 @@ html[data-theme="dark"] .segment {
 }
 
 .chat-main.chat-empty {
-  grid-template-rows: auto auto auto 0 auto;
+  grid-template-rows: auto auto 0 auto;
   min-height: 0;
 }
 
@@ -1892,6 +1892,8 @@ html[data-theme="dark"] .segment {
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: var(--space-sm);
   align-items: stretch;
+  min-width: 0;
+  max-width: 100%;
   margin-top: var(--space-sm);
 }
 
@@ -2289,8 +2291,11 @@ html[data-theme="dark"] .segment {
   }
 
   .shell {
-    padding-left: max(var(--mobile-edge), env(safe-area-inset-left));
-    padding-right: max(var(--mobile-edge), env(safe-area-inset-right));
+    width: 100vw;
+    max-width: 100vw;
+    padding-left: var(--mobile-edge);
+    padding-right: var(--mobile-edge);
+    overflow-x: hidden;
   }
 
   .topbar,
@@ -2459,14 +2464,53 @@ html[data-theme="dark"] .segment {
   }
 
   .composer {
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-columns: 52px minmax(0, 1fr);
+    align-items: stretch;
+    overflow: hidden;
+  }
+
+  .composer textarea {
+    min-width: 0;
+    width: 100%;
+    min-height: 64px;
+    padding: 13px 12px;
+    font-size: 16px;
+  }
+
+  #attachBtn,
+  #sendBtn {
+    min-width: 0;
+    width: 100%;
+    height: 64px;
+    min-height: 64px;
+    padding: 0;
+  }
+
+  #sendBtn {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    gap: 8px;
+    font-size: 13px;
+  }
+
+  #sendBtn svg {
+    width: 22px;
+    height: 22px;
   }
 
   .chat-main {
     order: -1;
+    width: 100%;
+    max-width: calc(100vw - (var(--mobile-edge) * 2));
+    justify-self: center;
     min-height: 0;
     padding: 18px;
     grid-template-rows: auto auto minmax(140px, 1fr) auto;
+    overflow: hidden;
+  }
+
+  .chat-main.chat-empty {
+    grid-template-rows: auto auto 0 auto;
   }
 
   .command-rail {

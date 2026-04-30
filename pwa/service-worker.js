@@ -1,7 +1,7 @@
-const CACHE_NAME = "hira-os-v29";
+const CACHE_NAME = "hira-os-v30";
 const ASSETS = [
   "/",
-  "/styles.css?v=20260430-14",
+  "/styles.css?v=20260430-15",
   "/app.js?v=20260430-7",
   "/static/icon.svg",
   "/manifest.webmanifest"
