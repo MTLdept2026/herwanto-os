@@ -899,6 +899,38 @@ html[data-theme="dark"] .segment {
   gap: 12px;
 }
 
+.marking-sets {
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.marking-set {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 10px;
+  align-items: center;
+  font-family: "Space Mono", monospace;
+  font-size: 12px;
+  letter-spacing: 0.03em;
+}
+
+.marking-set span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.marking-set small {
+  grid-column: 1 / -1;
+  color: var(--text-secondary);
+}
+
+.marking-set.empty strong {
+  color: var(--success);
+}
+
 .files-grid {
   grid-template-columns: 1.1fr 0.9fr;
 }

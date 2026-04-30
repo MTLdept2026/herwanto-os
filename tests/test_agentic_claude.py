@@ -287,8 +287,7 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(synced["title"], "Kefahaman 2G3")
         update_marking.assert_called_once_with("1", done=True)
 
-    def test_home_marking_summary_shows_recent_completed_stack_as_clear(self):
-        today = bot.datetime.now(bot.SGT).date().isoformat()
+    def test_home_marking_summary_ignores_completed_stacks(self):
         completed = {
             "id": "1",
             "title": "Kefahaman 2G3",
@@ -298,18 +297,54 @@ class AgenticClaudeTests(unittest.TestCase):
             "collected_date": "2026-04-27",
             "notes": "",
             "done": True,
-            "completed_at": today,
+            "completed_at": bot.datetime.now(bot.SGT).date().isoformat(),
         }
 
-        with patch.object(web_app.bot.gs, "get_marking_tasks", side_effect=[[], [completed]]):
+        with patch.object(web_app.bot.gs, "get_marking_tasks", return_value=[]):
             summary = web_app._marking_summary()
 
         self.assertEqual(summary["active_stacks"], 0)
-        self.assertEqual(summary["total_scripts"], 34)
-        self.assertEqual(summary["marked_scripts"], 34)
+        self.assertEqual(summary["total_scripts"], 0)
+        self.assertEqual(summary["marked_scripts"], 0)
         self.assertEqual(summary["unmarked_scripts"], 0)
         self.assertTrue(summary["all_clear"])
-        self.assertTrue(summary["completed_recently"])
+        self.assertEqual(summary["sets"], [])
+
+    def test_home_marking_summary_returns_per_set_breakdown(self):
+        tasks = [
+            {
+                "id": "1",
+                "title": "1G2: Karangan",
+                "total_scripts": 34,
+                "marked_count": 12,
+                "stack_count": 1,
+                "collected_date": "2026-04-27",
+                "notes": "",
+                "done": False,
+            },
+            {
+                "id": "2",
+                "title": "1G2: Kefahaman",
+                "total_scripts": 22,
+                "marked_count": 5,
+                "stack_count": 1,
+                "collected_date": "2026-04-29",
+                "notes": "",
+                "done": False,
+            },
+        ]
+
+        with patch.object(web_app.bot.gs, "get_marking_tasks", return_value=tasks):
+            summary = web_app._marking_summary()
+
+        self.assertEqual(summary["active_stacks"], 2)
+        self.assertEqual(summary["total_scripts"], 56)
+        self.assertEqual(summary["marked_scripts"], 17)
+        self.assertEqual(summary["unmarked_scripts"], 39)
+        self.assertEqual(summary["sets"][0]["title"], "1G2: Karangan")
+        self.assertEqual(summary["sets"][1]["title"], "1G2: Kefahaman")
+        self.assertEqual(summary["sets"][0]["progress_label"], "12/34")
+        self.assertEqual(summary["sets"][0]["unmarked_scripts"], 22)
 
     def test_archive_app_notifications_hides_selected_items(self):
         store = {

@@ -589,6 +589,33 @@ function markingSegments(value, total) {
   return Math.max(1, Math.min(12, Math.round((value / total) * 12)));
 }
 
+function renderMarkingSets(items = []) {
+  if (!items.length) {
+    return `
+      <div class="marking-set empty">
+        <span>All clear</span>
+        <strong>0 active</strong>
+      </div>
+    `;
+  }
+  return items
+    .slice(0, 5)
+    .map((item) => {
+      const total = Number(item.total_scripts || 0);
+      const marked = Number(item.marked_scripts || 0);
+      const unmarked = Number(item.unmarked_scripts || 0);
+      const progress = item.progress_label || (total ? `${marked}/${total}` : `${marked} marked`);
+      return `
+        <div class="marking-set">
+          <span>${markdownish(item.title || "Marking set")}</span>
+          <strong>${markdownish(progress)}</strong>
+          <small>${unmarked} left</small>
+        </div>
+      `;
+    })
+    .join("");
+}
+
 function saveChatHistory() {
   localStorage.setItem("hira_pwa_chat", JSON.stringify(state.chatHistory.slice(-30)));
 }
@@ -923,14 +950,14 @@ async function loadHome() {
     const totalScripts = Number(marking.total_scripts || 0);
     const markedScripts = Number(marking.marked_scripts || 0);
     const unmarkedScripts = Number(marking.unmarked_scripts || 0);
-    const markedSegmentCount = marking.all_clear && totalScripts > 0 ? 12 : markingSegments(markedScripts, totalScripts);
     $("#markingMarkedValue").textContent = String(markedScripts);
     $("#markingUnmarkedValue").textContent = String(unmarkedScripts);
     $("#markingMarkedValueHome").textContent = String(markedScripts);
     $("#markingUnmarkedValueHome").textContent = String(unmarkedScripts);
     $("#markingStackCount").textContent = String(Number(marking.active_stacks || 0));
     $("#markingTotalValue").textContent = String(totalScripts);
-    renderSegmentsAll(".marked-segments", markedSegmentCount, 12, "success");
+    $("#markingSetsList").innerHTML = renderMarkingSets(marking.sets || []);
+    renderSegmentsAll(".marked-segments", markingSegments(markedScripts, totalScripts), 12, "success");
     renderSegmentsAll(".unmarked-segments", markingSegments(unmarkedScripts, totalScripts), 12, unmarkedScripts > markedScripts ? "warning" : "accent");
     setStatus(`Loaded ${state.homeDays}-day view.`, "ok");
   } catch (error) {
