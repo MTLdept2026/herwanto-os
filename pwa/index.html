@@ -13,7 +13,7 @@
     />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260430-12" />
+    <link rel="stylesheet" href="./styles.css?v=20260430-13" />
   </head>
   <body>
     <main class="shell">
@@ -135,6 +135,51 @@
                 Clear
               </button>
             </div>
+            <section id="hiraSignal" class="hira-signal" aria-label="H.I.R.A output signal">
+              <div class="hira-signal-head">
+                <p class="eyebrow">HIRA OUT</p>
+                <div class="signal-state">
+                  <span aria-hidden="true"></span>
+                  <strong id="hiraSignalState">Standby</strong>
+                </div>
+              </div>
+              <div class="hira-signal-bars" aria-hidden="true">
+                <span style="--voice-index:0; --voice-height:18px"></span>
+                <span style="--voice-index:1; --voice-height:25px"></span>
+                <span style="--voice-index:2; --voice-height:15px"></span>
+                <span style="--voice-index:3; --voice-height:42px"></span>
+                <span style="--voice-index:4; --voice-height:21px"></span>
+                <span style="--voice-index:5; --voice-height:17px"></span>
+                <span style="--voice-index:6; --voice-height:31px"></span>
+                <span style="--voice-index:7; --voice-height:70px"></span>
+                <span style="--voice-index:8; --voice-height:26px"></span>
+                <span style="--voice-index:9; --voice-height:22px"></span>
+                <span style="--voice-index:10; --voice-height:19px"></span>
+                <span style="--voice-index:11; --voice-height:54px"></span>
+                <span style="--voice-index:12; --voice-height:38px"></span>
+                <span style="--voice-index:13; --voice-height:28px"></span>
+                <span style="--voice-index:14; --voice-height:49px"></span>
+                <span style="--voice-index:15; --voice-height:18px"></span>
+                <span style="--voice-index:16; --voice-height:14px"></span>
+                <span style="--voice-index:17; --voice-height:12px"></span>
+                <span style="--voice-index:18; --voice-height:23px"></span>
+                <span style="--voice-index:19; --voice-height:44px"></span>
+                <span style="--voice-index:20; --voice-height:20px"></span>
+                <span style="--voice-index:21; --voice-height:24px"></span>
+                <span style="--voice-index:22; --voice-height:52px"></span>
+                <span style="--voice-index:23; --voice-height:34px"></span>
+                <span style="--voice-index:24; --voice-height:47px"></span>
+                <span style="--voice-index:25; --voice-height:22px"></span>
+                <span style="--voice-index:26; --voice-height:43px"></span>
+                <span style="--voice-index:27; --voice-height:18px"></span>
+                <span style="--voice-index:28; --voice-height:16px"></span>
+                <span style="--voice-index:29; --voice-height:36px"></span>
+                <span style="--voice-index:30; --voice-height:29px"></span>
+                <span style="--voice-index:31; --voice-height:66px"></span>
+                <span style="--voice-index:32; --voice-height:25px"></span>
+                <span style="--voice-index:33; --voice-height:50px"></span>
+              </div>
+            </section>
             <div id="promptRow" class="prompt-row"></div>
             <div id="messages" class="messages" aria-live="polite"></div>
             <form id="chatForm" class="composer">
@@ -445,6 +490,6 @@
       </section>
     </main>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-    <script src="./app.js?v=20260430-5" type="module"></script>
+    <script src="./app.js?v=20260430-6" type="module"></script>
   </body>
 </html>

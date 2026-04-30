@@ -779,6 +779,13 @@ h3 {
   background: var(--surface);
   border: 1px solid var(--border-visible);
   box-shadow: var(--shadow-soft);
+  animation: panel-rise 220ms ease both;
+  transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+}
+
+.ops-card:hover {
+  border-color: color-mix(in srgb, var(--interactive) 32%, var(--border-visible));
+  transform: translateY(-1px);
 }
 
 .ops-card-wide {
@@ -843,6 +850,12 @@ h3 {
   height: 10px;
   min-width: 0;
   background: #ececec;
+  transform-origin: bottom;
+  transition: background-color 180ms ease, opacity 180ms ease, transform 180ms ease;
+}
+
+.segment.active {
+  animation: segment-pop 260ms steps(3, end) both;
 }
 
 html[data-theme="dark"] .segment {
@@ -1104,6 +1117,7 @@ html[data-theme="dark"] .segment {
   height: 18px;
   border-radius: 999px;
   background: var(--success);
+  animation: load-dot-in 220ms ease both;
 }
 
 .load-green {
@@ -1144,6 +1158,12 @@ html[data-theme="dark"] .segment {
   text-align: center;
   background: var(--surface-raised);
   border-radius: 8px;
+  animation: panel-rise 220ms ease both;
+  transition: transform 160ms ease, border-color 160ms ease;
+}
+
+.load-stat:hover {
+  transform: translateY(-1px);
 }
 
 .load-stat span {
@@ -1493,15 +1513,16 @@ html[data-theme="dark"] .segment {
 
 .chat-main {
   display: grid;
-  grid-template-rows: auto auto minmax(300px, 1fr) auto;
+  grid-template-rows: auto auto auto minmax(300px, 1fr) auto;
   min-height: 66vh;
   padding: var(--space-lg);
   background: var(--surface);
   border: 1px solid var(--border-visible);
+  animation: panel-rise 220ms ease both;
 }
 
 .chat-main.chat-empty {
-  grid-template-rows: auto auto 0 auto;
+  grid-template-rows: auto auto auto 0 auto;
   min-height: 0;
 }
 
@@ -1519,6 +1540,80 @@ html[data-theme="dark"] .segment {
 
 .messages {
   padding: var(--space-sm) 0 var(--space-md);
+}
+
+.hira-signal {
+  display: grid;
+  gap: 10px;
+  min-height: 126px;
+  padding: 14px 16px 12px;
+  overflow: hidden;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-visible);
+  border-radius: 8px;
+  animation: panel-rise 220ms ease both;
+}
+
+.hira-signal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+}
+
+.signal-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-secondary);
+  font-family: "Space Mono", monospace;
+  font-size: var(--label);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.signal-state span {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--text-secondary);
+  opacity: 0.48;
+}
+
+.hira-signal.is-speaking .signal-state span {
+  background: var(--interactive);
+  opacity: 1;
+  animation: signal-lamp 720ms steps(2, end) infinite;
+}
+
+.hira-signal-bars {
+  display: flex;
+  align-items: end;
+  gap: 4px;
+  height: 76px;
+  padding: 0 0 2px;
+  background:
+    repeating-linear-gradient(
+      to right,
+      rgba(20, 20, 20, 0.045) 0 1px,
+      transparent 1px 14px
+    );
+}
+
+.hira-signal-bars span {
+  width: 4px;
+  height: var(--voice-height);
+  min-height: 8px;
+  background: color-mix(in srgb, var(--text-display) 62%, var(--surface));
+  opacity: 0.7;
+  transform-origin: bottom;
+}
+
+.hira-signal.is-speaking .hira-signal-bars span {
+  background: color-mix(in srgb, var(--text-display) 76%, var(--surface));
+  opacity: 0.94;
+  animation: hira-voice-wave 860ms steps(5, end) infinite;
+  animation-delay: calc(var(--voice-index) * -38ms);
 }
 
 .message {
@@ -1541,40 +1636,6 @@ html[data-theme="dark"] .segment {
 
 .message.hira {
   background: var(--surface);
-}
-
-.hira-voice {
-  display: none;
-  align-items: end;
-  gap: 2px;
-  width: min(190px, 100%);
-  height: 44px;
-  margin-bottom: 10px;
-  padding: 5px 0 2px;
-  background:
-    repeating-linear-gradient(
-      to right,
-      rgba(20, 20, 20, 0.045) 0 1px,
-      transparent 1px 4px
-    );
-}
-
-.hira-voice span {
-  width: 2px;
-  height: var(--voice-height);
-  min-height: 5px;
-  background: color-mix(in srgb, var(--text-display) 72%, var(--surface));
-  opacity: 0.86;
-  transform-origin: bottom;
-}
-
-.message.hira.speaking .hira-voice {
-  display: flex;
-}
-
-.message.hira.speaking .hira-voice span {
-  animation: hira-voice-wave 860ms steps(5, end) infinite;
-  animation-delay: calc(var(--voice-index) * -38ms);
 }
 
 .message.pending .message-body:empty::after {
@@ -2035,6 +2096,7 @@ html[data-theme="dark"] .segment {
   background: color-mix(in srgb, var(--success) 14%, var(--surface));
   border-color: color-mix(in srgb, var(--success) 45%, transparent);
   color: var(--success);
+  animation: button-confirm 900ms ease both;
 }
 
 #sendBtn:hover,
@@ -2053,6 +2115,39 @@ html[data-theme="dark"] .segment {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes panel-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes segment-pop {
+  from {
+    opacity: 0.48;
+    transform: scaleY(0.42);
+  }
+  to {
+    opacity: 1;
+    transform: scaleY(1);
+  }
+}
+
+@keyframes load-dot-in {
+  from {
+    opacity: 0.42;
+    transform: scale(0.72);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
   }
 }
 
@@ -2079,8 +2174,38 @@ html[data-theme="dark"] .segment {
   }
 }
 
+@keyframes signal-lamp {
+  0%,
+  100% {
+    transform: scale(0.84);
+  }
+
+  50% {
+    transform: scale(1.18);
+  }
+}
+
+@keyframes button-confirm {
+  0% {
+    transform: translateY(0);
+  }
+
+  35% {
+    transform: translateY(-1px);
+  }
+
+  100% {
+    transform: translateY(0);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .message.hira.speaking .hira-voice span {
+  .hira-signal.is-speaking .hira-signal-bars span,
+  .hira-signal.is-speaking .signal-state span,
+  .ops-card,
+  .load-stat,
+  .load-dot,
+  .segment.active {
     animation: none;
   }
 }
