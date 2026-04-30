@@ -937,8 +937,11 @@ function addMessage(role, text, persist = true) {
   el.className = `message ${role}`;
   const voiceGraph =
     role === "hira"
-      ? `<div class="hira-voice" aria-hidden="true">${[...Array(12)]
-          .map((_, index) => `<span style="--voice-index:${index}"></span>`)
+      ? `<div class="hira-voice" aria-hidden="true">${[
+          8, 11, 7, 14, 26, 10, 8, 12, 34, 9, 7, 24, 18, 12, 29, 10, 8,
+          13, 23, 11, 9, 10, 16, 14, 19, 11, 22, 10, 8, 18, 12, 32, 9, 25,
+        ]
+          .map((height, index) => `<span style="--voice-index:${index}; --voice-height:${height}px"></span>`)
           .join("")}</div>`
       : "";
   el.innerHTML = `${voiceGraph}<div class="message-body">${renderChatText(text)}</div>`;
