@@ -902,7 +902,7 @@ html[data-theme="dark"] .segment {
   width: 40px;
   height: 22px;
   padding: 3px;
-  background: #191c1f;
+  background: var(--success);
   border-radius: 999px;
 }
 
@@ -978,7 +978,7 @@ html[data-theme="dark"] .segment {
 
 .load-strip {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(54px, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 6px;
 }
 
@@ -1043,14 +1043,14 @@ html[data-theme="dark"] .segment {
   display: grid;
   grid-template-columns: repeat(4, minmax(62px, 1fr));
   gap: 8px;
-  min-width: min(100%, 420px);
+  width: min(100%, 560px);
 }
 
 .load-stat {
   display: grid;
   gap: 8px;
   min-height: 74px;
-  padding: 10px;
+  padding: 10px 8px;
   background: var(--surface-raised);
   border-radius: 8px;
 }
@@ -1058,6 +1058,9 @@ html[data-theme="dark"] .segment {
 .load-stat span {
   color: var(--text-secondary);
   font-size: var(--caption);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .load-stat strong {
@@ -2070,12 +2073,41 @@ html[data-theme="dark"] .segment {
   }
 
   .load-strip {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 3px;
   }
 
   .load-stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    min-width: 0;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .load-day {
+    gap: 5px;
+    padding: 6px 2px;
+  }
+
+  .load-day small,
+  .load-day strong {
+    font-size: 9px;
+  }
+
+  .load-dot {
+    width: 16px;
+    height: 16px;
+  }
+
+  .load-stat {
+    min-height: 68px;
+    padding: 8px 5px;
+  }
+
+  .load-stat span {
+    font-size: 10px;
+  }
+
+  .load-stat strong {
+    font-size: 28px;
   }
 
   .composer {

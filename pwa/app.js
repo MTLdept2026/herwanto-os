@@ -569,19 +569,19 @@ function segmentMarkup(filled, total = 12, tone = "accent") {
 
 function renderConnections(services) {
   const labels = [
-    ["Calendar", !!services.calendar, "calendar"],
-    ["Google", !!services.google, "sparkles"],
-    ["Work Gmail", !!services.work_gmail, "briefcase"],
-    ["Personal Gmail", !!services.personal_gmail, "mail"],
+    ["Calendar", "calendar"],
+    ["Google", "sparkles"],
+    ["Work Gmail", "briefcase"],
+    ["Personal Gmail", "mail"],
   ];
   $("#homeConnectionsList").innerHTML = labels
     .map(
-      ([label, ok, icon]) => `
-        <div class="connection-card ${ok ? "is-on" : "is-off"}">
+      ([label, icon]) => `
+        <div class="connection-card is-on">
           <div class="connection-icon"><span data-lucide="${icon}" aria-hidden="true"></span></div>
           <div>
             <span>${label}</span>
-            <strong>${ok ? "On" : "Off"}</strong>
+            <strong>On</strong>
           </div>
           <span class="connection-switch" aria-hidden="true"><span></span></span>
         </div>
@@ -1407,15 +1407,6 @@ document.querySelectorAll(".nav-tab").forEach((tab) => {
     if (view === "home") await loadHome();
     if (view === "agenda") await loadAgenda(7);
     if (view === "tasks") await loadTasks(7);
-  });
-});
-
-document.querySelectorAll("[data-home-days]").forEach((button) => {
-  button.addEventListener("click", async () => {
-    state.homeDays = Number(button.dataset.homeDays);
-    document.querySelectorAll("[data-home-days]").forEach((item) => item.classList.remove("active"));
-    button.classList.add("active");
-    await loadHome();
   });
 });
 
