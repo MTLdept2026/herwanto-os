@@ -1430,6 +1430,16 @@ html[data-theme="dark"] .segment {
   border: 1px solid var(--border-visible);
 }
 
+.chat-main.chat-empty {
+  grid-template-rows: auto auto 0 auto;
+  min-height: 0;
+}
+
+.chat-main.chat-empty .messages {
+  padding: 0;
+  overflow: hidden;
+}
+
 .messages,
 .rich-output,
 .list {
@@ -1906,6 +1916,21 @@ html[data-theme="dark"] .segment {
 .theme-btn:hover {
   border-color: var(--interactive);
   color: var(--interactive);
+}
+
+#refreshHomeBtn:active,
+#refreshHomeBtn:focus,
+#refreshHomeBtn:focus-visible {
+  background: var(--surface);
+  border-color: var(--border-visible);
+  color: var(--text-primary);
+  box-shadow: none;
+}
+
+#refreshHomeBtn.is-updated {
+  background: color-mix(in srgb, var(--success) 14%, var(--surface));
+  border-color: color-mix(in srgb, var(--success) 45%, transparent);
+  color: var(--success);
 }
 
 #sendBtn:hover,

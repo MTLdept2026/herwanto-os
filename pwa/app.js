@@ -1020,7 +1020,9 @@ function renderStoredChat() {
 }
 
 function updateChatChrome() {
-  $("#resetChatBtn").hidden = state.chatHistory.length === 0;
+  const hasChat = state.chatHistory.length > 0;
+  $("#resetChatBtn").hidden = !hasChat;
+  document.querySelector(".chat-main")?.classList.toggle("chat-empty", !hasChat);
 }
 
 function mountChatInHome() {
@@ -1040,6 +1042,12 @@ function setView(name) {
 }
 
 async function loadHome() {
+  const refreshButton = $("#refreshHomeBtn");
+  if (refreshButton) {
+    refreshButton.disabled = true;
+    refreshButton.textContent = "Refreshing";
+    refreshButton.classList.remove("is-updated");
+  }
   $("#homeAgenda").innerHTML = "<div>Loading...</div>";
   $("#homeTasks").innerHTML = "<div>Loading...</div>";
   try {
@@ -1081,6 +1089,14 @@ async function loadHome() {
     renderSegmentsAll(".marked-segments", markingSegments(markedScripts, totalScripts), 12, "success");
     renderSegmentsAll(".unmarked-segments", markingSegments(unmarkedScripts, totalScripts), 12, unmarkedScripts > markedScripts ? "warning" : "accent");
     setStatus(`Loaded ${state.homeDays}-day view.`, "ok");
+    if (refreshButton) {
+      refreshButton.textContent = "Updated";
+      refreshButton.classList.add("is-updated");
+      window.setTimeout(() => {
+        refreshButton.textContent = "Refresh";
+        refreshButton.classList.remove("is-updated");
+      }, 1400);
+    }
   } catch (error) {
     $("#homeAgenda").textContent = `Error: ${error.message}`;
     $("#homeTasks").textContent = `Error: ${error.message}`;
@@ -1090,6 +1106,9 @@ async function loadHome() {
     $("#fileMemoryLabelHome").textContent = "MEMORY CHECK FAILED";
     renderSegmentsAll(".file-memory-segments", 1, 12, "warning");
     setStatus(error.message, "error");
+    if (refreshButton) refreshButton.textContent = "Try again";
+  } finally {
+    if (refreshButton) refreshButton.disabled = false;
   }
 }
 
