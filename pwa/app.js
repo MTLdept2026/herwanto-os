@@ -56,7 +56,7 @@ function resolvedTheme() {
 function applyTheme() {
   const theme = resolvedTheme();
   document.documentElement.dataset.theme = theme;
-  const themeColor = theme === "dark" ? "#000000" : "#f5f5f5";
+  const themeColor = theme === "dark" ? "#000000" : "#e4e3df";
   document.querySelector('meta[name="theme-color"]')?.setAttribute("content", themeColor);
   document.querySelectorAll("[data-theme-choice], .theme-btn").forEach((btn) => {
     const selected = urlTheme ? btn.dataset.theme === urlTheme : btn.dataset.theme === state.theme;
@@ -569,27 +569,124 @@ function segmentMarkup(filled, total = 12, tone = "accent") {
 
 function renderConnections(services) {
   const labels = [
-    ["Calendar", !!services.calendar],
-    ["Google", !!services.google],
-    ["Work Gmail", !!services.work_gmail],
-    ["Personal Gmail", !!services.personal_gmail],
+    ["Calendar", !!services.calendar, "calendar"],
+    ["Google", !!services.google, "sparkles"],
+    ["Work Gmail", !!services.work_gmail, "briefcase"],
+    ["Personal Gmail", !!services.personal_gmail, "mail"],
   ];
   $("#homeConnectionsList").innerHTML = labels
     .map(
-      ([label, ok]) => `
-        <div class="status-row">
-          <span>${label}</span>
-          <strong class="${ok ? "status-ok" : "status-off"}">${ok ? "CONNECTED" : "OFFLINE"}</strong>
+      ([label, ok, icon]) => `
+        <div class="connection-card ${ok ? "is-on" : "is-off"}">
+          <div class="connection-icon"><span data-lucide="${icon}" aria-hidden="true"></span></div>
+          <div>
+            <span>${label}</span>
+            <strong>${ok ? "On" : "Off"}</strong>
+          </div>
+          <span class="connection-switch" aria-hidden="true"><span></span></span>
         </div>
       `
     )
     .join("");
+  refreshIcons($("#homeConnectionsList"));
 }
 
 function fileMemorySegments(text) {
   const count = countMeaningfulLines(text);
   if (!count) return 1;
   return Math.max(2, Math.min(12, Math.ceil(count / 2)));
+}
+
+function loadToneClass(tone) {
+  return `load-${["green", "yellow", "orange", "red"].includes(tone) ? tone : "green"}`;
+}
+
+function renderDailyLoad(load = {}) {
+  const today = load.today || {};
+  const toneClass = loadToneClass(today.tone);
+  $("#dailyLoadTitle").textContent = today.label || "Today";
+  $("#dailyLoadBadge").textContent = today.load || "Pretty chill";
+  $("#dailyLoadBadge").className = `load-badge ${toneClass}`;
+  $("#dailyLoadScore").textContent = String(today.score ?? 0);
+  $("#dailyLoadScoreLabel").textContent = `${String(today.tone || "green").toUpperCase()} DAY`;
+  $("#dailyLoadLessons").textContent = String(today.lessons ?? 0);
+  $("#dailyLoadEvents").textContent = String(today.events ?? 0);
+  $("#dailyLoadDue").textContent = String(today.due ?? 0);
+  $("#dailyLoadMarking").textContent = String(today.marking_scripts ?? 0);
+  $("#dailyLoadNote").textContent = load.note || "Daily load will appear here.";
+  $("#dailyLoadRestNote").textContent = load.rest_note || "Rest guidance will appear here.";
+
+  const days = Array.isArray(load.days) ? load.days.slice(0, state.homeDays) : [];
+  $("#dailyLoadStrip").innerHTML = days.length
+    ? days
+        .map((day, index) => {
+          const active = index === 0 ? "active" : "";
+          const dayTone = loadToneClass(day.tone);
+          return `
+            <div class="load-day ${active}">
+              <small>${markdownish(day.day_number || "")}</small>
+              <span class="load-dot ${dayTone}" title="${escapeHtml(day.load || "")}"></span>
+              <strong>${markdownish(day.label || "")}</strong>
+            </div>
+          `;
+        })
+        .join("")
+    : "<div class='empty-state compact'>Load data unavailable.</div>";
+  renderWorkloadTrend(load);
+}
+
+function renderWorkloadTrend(load = {}) {
+  const el = $("#workloadTrendChart");
+  if (!el) return;
+  const history = Array.isArray(load.previous_week) ? load.previous_week.slice(-5) : [];
+  const future = Array.isArray(load.next_week) ? load.next_week.slice(0, 5) : [];
+  const points = [...history, ...(load.today ? [{ ...load.today, label: "Now" }] : []), ...future];
+  const scores = points.map((item) => Number(item.score || 0));
+  if (!scores.length) {
+    el.innerHTML = "<div class='empty-state compact'>No trend data yet.</div>";
+    return;
+  }
+
+  const width = 360;
+  const height = 150;
+  const pad = 18;
+  const usableWidth = width - pad * 2;
+  const usableHeight = height - pad * 2;
+  const maxScore = Math.max(100, ...scores);
+  const minScore = 0;
+  const coords = points.map((item, index) => {
+    const x = pad + (points.length === 1 ? usableWidth / 2 : (index / (points.length - 1)) * usableWidth);
+    const y = pad + usableHeight - ((Number(item.score || 0) - minScore) / (maxScore - minScore || 1)) * usableHeight;
+    return { ...item, x, y };
+  });
+  const line = coords.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
+  const average = Math.round(scores.reduce((sum, value) => sum + value, 0) / scores.length);
+  const highest = Math.max(...scores);
+  const lowest = Math.min(...scores);
+  const highestDay = points[scores.indexOf(highest)]?.label || "";
+  const lowestDay = points[scores.indexOf(lowest)]?.label || "";
+
+  el.innerHTML = `
+    <div class="trend-plot" role="img" aria-label="Workload trend from last five workdays through next five workdays">
+      <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">
+        <line x1="${pad}" y1="${pad}" x2="${pad}" y2="${height - pad}" class="trend-axis" />
+        <line x1="${pad}" y1="${height - pad}" x2="${width - pad}" y2="${height - pad}" class="trend-axis" />
+        <line x1="${pad}" y1="${pad + usableHeight * 0.25}" x2="${width - pad}" y2="${pad + usableHeight * 0.25}" class="trend-grid" />
+        <line x1="${pad}" y1="${pad + usableHeight * 0.5}" x2="${width - pad}" y2="${pad + usableHeight * 0.5}" class="trend-grid" />
+        <line x1="${pad}" y1="${pad + usableHeight * 0.75}" x2="${width - pad}" y2="${pad + usableHeight * 0.75}" class="trend-grid" />
+        <polyline points="${line}" class="trend-line" />
+        ${coords.map((point) => `<circle cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="${point.label === "Now" ? 4.2 : 2.8}" class="trend-dot ${loadToneClass(point.tone)}" />`).join("")}
+      </svg>
+      <div class="trend-labels">
+        ${points.map((item) => `<span>${markdownish(item.label || "")}</span>`).join("")}
+      </div>
+    </div>
+    <div class="trend-stats">
+      <div><span>Average</span><strong>${average}</strong></div>
+      <div><span>Highest${highestDay ? ` · ${markdownish(highestDay)}` : ""}</span><strong>${highest}</strong></div>
+      <div><span>Lowest${lowestDay ? ` · ${markdownish(lowestDay)}` : ""}</span><strong>${lowest}</strong></div>
+    </div>
+  `;
 }
 
 function markingSegments(value, total) {
@@ -960,6 +1057,7 @@ async function loadHome() {
     $("#homeServicesLabel").textContent = connectedCount ? "SERVICES CONNECTED" : "AWAITING CONNECTION";
     renderSegmentsAll(".services-segments", connectedCount * 3, 12, connectedCount ? "accent" : "muted");
     renderConnections(services);
+    renderDailyLoad(data.daily_load || {});
     const agendaCount = countMeaningfulLines(data.agenda);
     const taskCount = countMeaningfulLines(data.tasks);
     $("#homeAgendaCount").textContent = String(agendaCount);
@@ -1366,7 +1464,7 @@ $("#clearAttachmentBtn").addEventListener("click", clearChatAttachment);
 $("#messageInput").addEventListener("input", (event) => {
   const el = event.currentTarget;
   el.style.height = "auto";
-  el.style.height = `${Math.min(el.scrollHeight, 150)}px`;
+  el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
 });
 
 $("#resetChatBtn").addEventListener("click", clearChat);

@@ -1102,6 +1102,168 @@ def build_agenda_structured(days: int = 7) -> dict:
         "services": {"google": google_ok()},
     }
 
+def _daily_load_tone(score: int) -> str:
+    if score >= 82:
+        return "red"
+    if score >= 58:
+        return "orange"
+    if score >= 34:
+        return "yellow"
+    return "green"
+
+def _daily_load_label(tone: str) -> str:
+    return {
+        "red": "Full day",
+        "orange": "Packed",
+        "yellow": "Steady",
+        "green": "Pretty chill",
+    }.get(tone, "Steady")
+
+def _daily_load_note(today_load: dict) -> str:
+    tone = today_load.get("tone", "green")
+    lessons = int(today_load.get("lessons", 0) or 0)
+    events = int(today_load.get("events", 0) or 0)
+    due = int(today_load.get("due", 0) or 0)
+    marking = int(today_load.get("marking_scripts", 0) or 0)
+    if tone == "red":
+        return "Heavy day. Keep decisions simple and protect the first clear pocket."
+    if tone == "orange":
+        return "Packed but movable. Triage the must-dos before the day starts pulling."
+    if tone == "yellow":
+        return "Steady day. Keep the middle of the day clear enough to breathe."
+    if due or marking:
+        return "Steady load. Clear one due item early so the day feels less sticky."
+    if lessons >= 4 or events:
+        return "Teaching rhythm day. Keep the small admin from breeding in corners."
+    return "Pretty chill on paper. Good day to move one thing forward quietly."
+
+def _workload_score(lessons: int, events: int, due: int, marking_scripts: int = 0) -> int:
+    return min(100, (lessons * 12) + (events * 10) + (due * 9) + min(24, marking_scripts * 2))
+
+def _daily_load_item(target, today, lesson_count: int, event_count: int, due_count: int, marking_scripts: int = 0) -> dict:
+    score = _workload_score(lesson_count, event_count, due_count, marking_scripts)
+    tone = _daily_load_tone(score)
+    return {
+        "date": target.isoformat(),
+        "label": "Today" if target == today else target.strftime("%a"),
+        "day_number": target.strftime("%-d/%-m"),
+        "score": score,
+        "tone": tone,
+        "load": _daily_load_label(tone),
+        "lessons": lesson_count,
+        "events": event_count,
+        "due": due_count,
+        "marking_scripts": marking_scripts,
+    }
+
+def _weekday_neighbors(today, direction: int, count: int = 5) -> list:
+    out = []
+    cursor = today
+    while len(out) < count:
+        cursor = cursor + timedelta(days=direction)
+        if cursor.weekday() < 5:
+            out.append(cursor)
+    if direction < 0:
+        out.reverse()
+    return out
+
+def _load_days_for_dates(dates: list, today) -> list:
+    if not dates:
+        return []
+    event_counts = {target.isoformat(): 0 for target in dates}
+    due_counts = {target.isoformat(): 0 for target in dates}
+    if google_ok():
+        try:
+            start = SGT.localize(datetime.combine(min(dates), datetime.min.time()))
+            end = SGT.localize(datetime.combine(max(dates) + timedelta(days=1), datetime.min.time()))
+            for event in gs.get_events_between(start, end):
+                item = _event_to_agenda_item(event)
+                if item["date"] in event_counts:
+                    event_counts[item["date"]] += 1
+        except Exception:
+            pass
+        try:
+            date_set = set(due_counts.keys())
+            for reminder in gs.get_reminders():
+                due = reminder.get("due", "")
+                if due in date_set:
+                    due_counts[due] += 1
+        except Exception:
+            pass
+
+    load_days = []
+    for target in dates:
+        lessons, _ = _lessons_for_date(target)
+        key = target.isoformat()
+        load_days.append(_daily_load_item(
+            target,
+            today,
+            len(lessons),
+            event_counts.get(key, 0),
+            due_counts.get(key, 0),
+            0,
+        ))
+    return load_days
+
+def _rest_load_note(previous_week: list, next_week: list) -> str:
+    upcoming = max(next_week, key=lambda item: item.get("score", 0), default=None)
+    previous_scores = [int(item.get("score", 0) or 0) for item in previous_week]
+    previous_average = round(sum(previous_scores) / len(previous_scores)) if previous_scores else 0
+    if not upcoming:
+        return "No workload pattern yet. Keep rest steady and check back once the week fills in."
+    day = upcoming.get("label", "next week")
+    score = int(upcoming.get("score", 0) or 0)
+    if score >= 82:
+        return f"Peak ahead: {day} looks full. Plan recovery the night before and keep that morning friction-free."
+    if score >= 58:
+        return f"{day} is the next packed day. Put one lighter pocket before it and one after it."
+    if previous_average >= 58 and score < 58:
+        return "Next week eases up compared with last week. Good window for recovery, admin cleanup, and one deeper task."
+    return "No major spike ahead. Keep sleep and breaks regular so the quiet days actually restore you."
+
+def build_daily_load(days: int = 7) -> dict:
+    days = max(1, min(int(days or 7), 14))
+    agenda = build_agenda_structured(days)
+    today = datetime.now(SGT).date()
+    marking_scripts = 0
+    if google_ok():
+        try:
+            marking_scripts = sum(
+                max(0, int(task.get("total_scripts") or 0) - int(task.get("marked_count") or 0))
+                for task in gs.get_marking_tasks()
+            )
+        except Exception:
+            marking_scripts = 0
+
+    load_days = []
+    for index, day in enumerate(agenda.get("days", [])):
+        lesson_count = len(day.get("lessons", []))
+        event_count = len(day.get("events", []))
+        due_count = len(day.get("due", []))
+        scripts_today = marking_scripts if index == 0 else 0
+        date_obj = datetime.fromisoformat(day["date"]).date()
+        load_days.append(_daily_load_item(date_obj, today, lesson_count, event_count, due_count, scripts_today))
+
+    today_load = load_days[0] if load_days else {
+        "score": 0,
+        "tone": "green",
+        "load": "Pretty chill",
+        "lessons": 0,
+        "events": 0,
+        "due": 0,
+        "marking_scripts": 0,
+    }
+    previous_week = _load_days_for_dates(_weekday_neighbors(today, -1), today)
+    next_week = _load_days_for_dates(_weekday_neighbors(today, 1), today)
+    return {
+        "today": today_load,
+        "days": load_days,
+        "note": _daily_load_note(today_load),
+        "previous_week": previous_week,
+        "next_week": next_week,
+        "rest_note": _rest_load_note(previous_week, next_week),
+    }
+
 def _news_topics():
     if google_ok():
         try:

@@ -84,6 +84,7 @@ def _safe_text(builder, fallback: str) -> str:
 def _parallel_home_data(days: int) -> dict:
     jobs = {
         "agenda": lambda: bot.build_agenda(days),
+        "daily_load": lambda: bot.build_daily_load(days),
         "tasks": lambda: bot.build_task_brief(days),
         "files": bot.build_files_index,
         "services": _service_status,
@@ -91,6 +92,22 @@ def _parallel_home_data(days: int) -> dict:
     }
     fallbacks = {
         "agenda": "Agenda unavailable right now.",
+        "daily_load": {
+            "today": {
+                "score": 0,
+                "tone": "green",
+                "load": "Pretty chill",
+                "lessons": 0,
+                "events": 0,
+                "due": 0,
+                "marking_scripts": 0,
+            },
+            "days": [],
+            "note": "Daily load unavailable until schedule data is connected.",
+            "previous_week": [],
+            "next_week": [],
+            "rest_note": "Workload comparison unavailable until schedule data is connected.",
+        },
         "tasks": "Task brief unavailable until Google is connected.",
         "files": "File memory unavailable until Google is connected.",
         "services": {

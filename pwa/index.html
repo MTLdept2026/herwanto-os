@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#f5f5f5" />
+    <meta name="theme-color" content="#e4e3df" />
     <title>H.I.R.A</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -13,7 +13,7 @@
     />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260429-1" />
+    <link rel="stylesheet" href="./styles.css?v=20260430-5" />
   </head>
   <body>
     <main class="shell">
@@ -180,6 +180,52 @@
         </div>
         <div id="homeChatMount" class="home-chat-mount"></div>
         <div class="ops-grid">
+          <section class="ops-card daily-load-card ops-card-wide">
+            <div class="daily-load-head">
+              <div>
+                <p class="eyebrow">Daily Load</p>
+                <h3 id="dailyLoadTitle">Today</h3>
+              </div>
+              <strong id="dailyLoadBadge" class="load-badge load-green">Pretty chill</strong>
+            </div>
+            <div id="dailyLoadStrip" class="load-strip" aria-label="Daily load for the selected window"></div>
+            <div class="daily-load-body">
+              <div>
+                <div id="dailyLoadScore" class="metric-value">0</div>
+                <div id="dailyLoadScoreLabel" class="metric-label">LOAD SCORE</div>
+              </div>
+              <div class="load-stats">
+                <div class="load-stat">
+                  <span>Lessons</span>
+                  <strong id="dailyLoadLessons">0</strong>
+                </div>
+                <div class="load-stat">
+                  <span>Events</span>
+                  <strong id="dailyLoadEvents">0</strong>
+                </div>
+                <div class="load-stat">
+                  <span>Due</span>
+                  <strong id="dailyLoadDue">0</strong>
+                </div>
+                <div class="load-stat">
+                  <span>Marking</span>
+                  <strong id="dailyLoadMarking">0</strong>
+                </div>
+              </div>
+            </div>
+            <div class="load-note">
+              <span class="load-note-icon" aria-hidden="true">H</span>
+              <p id="dailyLoadNote">Daily load will appear here.</p>
+            </div>
+            <div class="workload-preview">
+              <div class="workload-preview-head">
+                <p class="eyebrow">Workload Trend</p>
+                <p id="dailyLoadRestNote">Rest guidance will appear here.</p>
+              </div>
+              <div id="workloadTrendChart" class="workload-trend-card"></div>
+            </div>
+          </section>
+
           <section class="ops-card ops-card-dark">
             <p class="eyebrow">Local Time</p>
             <div id="homeClockTime" class="clock-display">--:--</div>
@@ -407,6 +453,6 @@
       </section>
     </main>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-    <script src="./app.js?v=20260429-3" type="module"></script>
+    <script src="./app.js?v=20260430-1" type="module"></script>
   </body>
 </html>
