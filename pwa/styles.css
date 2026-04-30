@@ -1605,8 +1605,11 @@ html[data-theme="dark"] .segment {
   height: var(--voice-height);
   min-height: 8px;
   background: color-mix(in srgb, var(--text-display) 62%, var(--surface));
-  opacity: 0.7;
+  opacity: 0.28;
+  transform: scaleY(0.08);
   transform-origin: bottom;
+  animation: signal-idle 1800ms steps(4, end) infinite;
+  animation-delay: calc(var(--voice-index) * -41ms);
 }
 
 .hira-signal.is-speaking .hira-signal-bars span {
@@ -2174,6 +2177,29 @@ html[data-theme="dark"] .segment {
   }
 }
 
+@keyframes signal-idle {
+  0%,
+  100% {
+    opacity: 0.22;
+    transform: scaleY(0.055);
+  }
+
+  45% {
+    opacity: 0.34;
+    transform: scaleY(0.085);
+  }
+
+  50% {
+    opacity: 0.5;
+    transform: scaleY(0.12);
+  }
+
+  54% {
+    opacity: 0.26;
+    transform: scaleY(0.065);
+  }
+}
+
 @keyframes signal-lamp {
   0%,
   100% {
@@ -2200,6 +2226,7 @@ html[data-theme="dark"] .segment {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .hira-signal-bars span,
   .hira-signal.is-speaking .hira-signal-bars span,
   .hira-signal.is-speaking .signal-state span,
   .ops-card,
