@@ -559,6 +559,14 @@ function renderSegmentsAll(selector, filled, total = 12, tone = "accent") {
   document.querySelectorAll(selector).forEach((el) => renderSegments(el, filled, total, tone));
 }
 
+function segmentMarkup(filled, total = 12, tone = "accent") {
+  const amount = Math.max(0, Math.min(total, filled));
+  return Array.from({ length: total }, (_, index) => {
+    const active = index < amount ? "active" : "";
+    return `<span class="segment ${active} ${tone}"></span>`;
+  }).join("");
+}
+
 function renderConnections(services) {
   const labels = [
     ["Calendar", !!services.calendar],
@@ -605,11 +613,13 @@ function renderMarkingSets(items = []) {
       const marked = Number(item.marked_scripts || 0);
       const unmarked = Number(item.unmarked_scripts || 0);
       const progress = item.progress_label || (total ? `${marked}/${total}` : `${marked} marked`);
+      const segments = segmentMarkup(markingSegments(marked, total), 12, unmarked ? "accent" : "success");
       return `
         <div class="marking-set">
-          <span>${markdownish(item.title || "Marking set")}</span>
+          <span>${markdownish(item.display_title || item.title || "Marking set")}</span>
           <strong>${markdownish(progress)}</strong>
-          <small>${unmarked} left</small>
+          <div class="segment-bar marking-set-bar" aria-hidden="true">${segments}</div>
+          <small>Total ${total || "unset"}${total ? ` · ${unmarked} left` : ""}</small>
         </div>
       `;
     })

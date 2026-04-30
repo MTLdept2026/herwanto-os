@@ -342,9 +342,15 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(summary["marked_scripts"], 17)
         self.assertEqual(summary["unmarked_scripts"], 39)
         self.assertEqual(summary["sets"][0]["title"], "1G2: Karangan")
+        self.assertEqual(summary["sets"][0]["display_title"], "1G2 [Karangan]")
         self.assertEqual(summary["sets"][1]["title"], "1G2: Kefahaman")
+        self.assertEqual(summary["sets"][1]["display_title"], "1G2 [Kefahaman]")
         self.assertEqual(summary["sets"][0]["progress_label"], "12/34")
         self.assertEqual(summary["sets"][0]["unmarked_scripts"], 22)
+
+    def test_marking_display_title_accepts_bracket_format(self):
+        self.assertEqual(web_app._marking_display_title("3G3: karangan naratif"), "3G3 [karangan naratif]")
+        self.assertEqual(web_app._marking_display_title("2G3 [HBL on SLS]"), "2G3 [HBL on SLS]")
 
     def test_archive_app_notifications_hides_selected_items(self):
         store = {

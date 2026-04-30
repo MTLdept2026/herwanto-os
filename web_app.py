@@ -131,6 +131,17 @@ def _service_status() -> dict:
     }
 
 
+def _marking_display_title(title: str) -> str:
+    clean = " ".join((title or "").split())
+    if not clean or "[" in clean:
+        return clean
+    if ":" in clean:
+        class_label, work_type = [part.strip() for part in clean.split(":", 1)]
+        if class_label and work_type:
+            return f"{class_label} [{work_type}]"
+    return clean
+
+
 def _marking_summary() -> dict:
     try:
         tasks = bot.gs.get_marking_tasks()
@@ -157,6 +168,7 @@ def _marking_summary() -> dict:
         sets.append({
             "id": str(task.get("id", "")),
             "title": task.get("title", ""),
+            "display_title": _marking_display_title(task.get("title", "")),
             "total_scripts": task_total,
             "marked_scripts": task_marked,
             "unmarked_scripts": max(0, task_total - task_marked) if task_total else 0,
