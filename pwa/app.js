@@ -34,8 +34,6 @@ function updateLiveClock() {
   const date = dateFormatter.format(now).replace(",", "").toUpperCase();
   $("#greetingTime").textContent = time;
   $("#greetingDate").textContent = date;
-  $("#homeClockTime").textContent = time;
-  $("#homeClockDate").textContent = date;
 }
 
 function resolvedTheme() {
@@ -612,6 +610,11 @@ function renderDailyLoad(load = {}) {
   $("#dailyLoadMarking").textContent = String(today.marking_scripts ?? 0);
   $("#dailyLoadNote").textContent = load.note || "Daily load will appear here.";
   $("#dailyLoadRestNote").textContent = load.rest_note || "Rest guidance will appear here.";
+  $("#homeNextCount").textContent = String(today.lessons ?? 0);
+  $("#homeNextLabel").textContent = today.lessons ? "LESSONS TODAY" : "NO LESSONS LISTED";
+  $("#homeFocusValue").textContent = load.rest_note || load.note || "Standby";
+  $("#homeFocusLabel").textContent = today.load ? `${String(today.load).toUpperCase()} DAY` : "LOAD GUIDANCE";
+  renderSegments("#homeNextBar", Math.min(12, Math.max(1, Number(today.lessons || 0) * 3)), 12, Number(today.lessons || 0) ? "accent" : "muted");
 
   const days = Array.isArray(load.days) ? load.days.slice(0, state.homeDays) : [];
   $("#dailyLoadStrip").innerHTML = days.length
@@ -898,12 +901,14 @@ function renderTaskList(data, heading = "Task Brief · Now to 7 May") {
       ${items
         .map((item) => {
           const due = item.due || item.weekday || "No due date";
+          const meta = [item.category, item.priority, item.effort].filter(Boolean).join(" / ");
           return `
             <article class="task-item ${item.overdue ? "overdue" : ""}" data-task-id="${markdownish(item.id)}">
               <div class="task-num">${markdownish(item.id)}</div>
               <div class="task-copy">
                 <div class="task-date">${markdownish(due)}</div>
                 <p>${markdownish(item.description || "")}</p>
+                ${meta ? `<small>${markdownish(meta)}</small>` : ""}
               </div>
             </article>
           `;
@@ -923,7 +928,7 @@ function renderTaskBriefFromText(text) {
   for (const line of lines) {
     const plain = line.replace(/[*_`]/g, "").trim();
     if (/^(task brief|tasks?|no active tasks)/i.test(plain)) continue;
-    const match = plain.match(/^(?:#|\[)?(\d+)(?:\])?\s*[:\-–]\s*(?:(\d{4}-\d{2}-\d{2})\s*[:\-–]\s*)?(.*)$/);
+    const match = plain.match(/^(?:#|\[)?(\d+)(?:\])?\s*(?:[:\-–]\s*)?(?:(\d{4}-\d{2}-\d{2})\s*[:\-–]\s*)?(.*)$/);
     if (!match) continue;
     items.push({ id: match[1], due: match[2] || "", description: match[3] || "" });
   }
@@ -1045,43 +1050,6 @@ function updateChatChrome() {
   const hasChat = state.chatHistory.length > 0;
   $("#resetChatBtn").hidden = !hasChat;
   document.querySelector(".chat-main")?.classList.toggle("chat-empty", !hasChat);
-}
-
-function startHiraTypewriter() {
-  const el = $("#hiraTypewriterText");
-  if (!el) return;
-  const messages = [
-    "You have 3 lessons today.",
-    "10 scripts unmarked - 3G3.",
-    "Wed is your heaviest day.",
-    "Task 11 is due 7 May.",
-  ];
-  let messageIndex = 0;
-  let charIndex = 0;
-  let deleting = false;
-
-  const tick = () => {
-    const message = messages[messageIndex];
-    if (deleting) {
-      charIndex = Math.max(0, charIndex - 1);
-    } else {
-      charIndex = Math.min(message.length, charIndex + 1);
-    }
-    el.textContent = message.slice(0, charIndex);
-
-    let delay = deleting ? 26 : 46;
-    if (!deleting && charIndex === message.length) {
-      deleting = true;
-      delay = 1300;
-    } else if (deleting && charIndex === 0) {
-      deleting = false;
-      messageIndex = (messageIndex + 1) % messages.length;
-      delay = 240;
-    }
-    window.setTimeout(tick, delay);
-  };
-
-  tick();
 }
 
 function mountChatInHome() {
@@ -1630,7 +1598,6 @@ renderNotifications();
 updateNotificationControls();
 setView("home");
 updateLiveClock();
-startHiraTypewriter();
 setInterval(updateLiveClock, 1000);
 loadHome();
 startNotificationPolling();

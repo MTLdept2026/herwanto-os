@@ -13,7 +13,7 @@
     />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260430-22" />
+    <link rel="stylesheet" href="./styles.css?v=20260430-24" />
   </head>
   <body>
     <main class="shell">
@@ -180,11 +180,8 @@
                 <span style="--voice-index:32; --voice-height:25px"></span>
                 <span style="--voice-index:33; --voice-height:50px"></span>
               </div>
-              <div class="hira-typewriter" aria-live="polite">
-                <span id="hiraTypewriterText"></span><span class="hira-typewriter-cursor" aria-hidden="true"></span>
-              </div>
+              <div id="messages" class="messages" aria-live="polite"></div>
             </section>
-            <div id="messages" class="messages" aria-live="polite"></div>
             <form id="chatForm" class="composer">
               <input
                 id="chatFileInput"
@@ -195,7 +192,7 @@
               <button id="attachBtn" type="button" class="icon-btn" title="Attach file" aria-label="Attach file">
                 <span data-lucide="paperclip" aria-hidden="true"></span>
               </button>
-              <textarea id="messageInput" rows="1" placeholder="Ask H.I.R.A anything"></textarea>
+              <textarea id="messageInput" rows="1" placeholder="█"></textarea>
               <div id="chatAttachment" class="attachment-chip" hidden>
                 <span data-lucide="file-up" aria-hidden="true"></span>
                 <span id="chatAttachmentName"></span>
@@ -274,10 +271,11 @@
             </div>
           </section>
 
-          <section class="ops-card ops-card-dark">
-            <p class="eyebrow">Local Time</p>
-            <div id="homeClockTime" class="clock-display">--:--</div>
-            <div id="homeClockDate" class="clock-meta">Loading</div>
+          <section class="ops-card">
+            <p class="eyebrow">Next Up</p>
+            <div id="homeNextCount" class="metric-value">0</div>
+            <div id="homeNextLabel" class="metric-label">LESSONS TODAY</div>
+            <div id="homeNextBar" class="segment-bar" aria-hidden="true"></div>
           </section>
 
           <section class="ops-card">
@@ -292,17 +290,10 @@
             <div id="homeConnectionsList" class="status-list"></div>
           </section>
 
-          <section class="ops-card ops-card-wide">
-            <div class="hero-grid">
-              <div>
-                <p class="eyebrow">Assistant Core</p>
-                <div class="brand-lockup">
-                  <div class="hero-display">H.I.R.A</div>
-                  <div class="brand-subtitle">herwanto interface for responsive assistance</div>
-                </div>
-                <div class="live-system-label"><span aria-hidden="true"></span>LIVE SYSTEM</div>
-              </div>
-            </div>
+          <section class="ops-card ops-card-wide focus-card">
+            <p class="eyebrow">Focus Window</p>
+            <div id="homeFocusValue" class="focus-value">Standby</div>
+            <div id="homeFocusLabel" class="metric-label">LOAD GUIDANCE</div>
           </section>
 
           <section class="ops-card">
@@ -498,6 +489,6 @@
       </section>
     </main>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-    <script src="./app.js?v=20260430-8" type="module"></script>
+    <script src="./app.js?v=20260430-9" type="module"></script>
   </body>
 </html>
