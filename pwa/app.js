@@ -607,6 +607,10 @@ function renderDailyLoad(load = {}) {
   $("#dailyLoadTitle").textContent = today.label || "Today";
   $("#dailyLoadBadge").textContent = today.load || "Pretty chill";
   $("#dailyLoadBadge").className = `load-badge ${toneClass}`;
+  const score = Number(today.score ?? 0);
+  const scorePct = Math.max(0, Math.min(100, score));
+  $("#dailyLoadScore").closest(".daily-load-score").className = `daily-load-score score-${String(today.tone || "green").toLowerCase()}`;
+  $("#dailyLoadScore").closest(".daily-load-score").style.setProperty("--score-arc", `${scorePct * 2.7}deg`);
   $("#dailyLoadScore").textContent = String(today.score ?? 0);
   $("#dailyLoadScoreLabel").textContent = `${String(today.tone || "green").toUpperCase()} DAY`;
   $("#dailyLoadLessons").textContent = String(today.lessons ?? 0);

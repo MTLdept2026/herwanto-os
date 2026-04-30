@@ -13,7 +13,7 @@
     />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260430-11" />
+    <link rel="stylesheet" href="./styles.css?v=20260430-12" />
   </head>
   <body>
     <main class="shell">
@@ -178,7 +178,9 @@
                 <strong id="dailyLoadBadge" class="load-badge load-green">Pretty chill</strong>
               </div>
               <div class="daily-load-score" aria-label="Daily load score">
-                <div id="dailyLoadScore" class="metric-value">0</div>
+                <div class="daily-load-gauge">
+                  <div id="dailyLoadScore" class="metric-value">0</div>
+                </div>
                 <div id="dailyLoadScoreLabel" class="metric-label">LOAD SCORE</div>
               </div>
             </div>
@@ -443,6 +445,6 @@
       </section>
     </main>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-    <script src="./app.js?v=20260430-4" type="module"></script>
+    <script src="./app.js?v=20260430-5" type="module"></script>
   </body>
 </html>
