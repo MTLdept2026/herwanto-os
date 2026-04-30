@@ -962,6 +962,29 @@ html[data-theme="dark"] .segment {
   line-height: 0.95;
 }
 
+.daily-load-title-block {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-sm);
+}
+
+.daily-load-score {
+  display: grid;
+  justify-items: end;
+  gap: 3px;
+  min-width: 106px;
+  text-align: right;
+}
+
+.daily-load-score .metric-value {
+  font-size: clamp(44px, 6vw, 76px);
+  line-height: 0.86;
+}
+
+.daily-load-score .metric-label {
+  max-width: 11ch;
+}
+
 .load-badge {
   display: inline-flex;
   align-items: center;
@@ -1054,7 +1077,7 @@ html[data-theme="dark"] .segment {
 
 .daily-load-body {
   display: grid;
-  grid-template-columns: minmax(130px, 0.35fr) minmax(0, 1fr);
+  grid-template-columns: 1fr;
   align-items: end;
 }
 
@@ -1471,6 +1494,37 @@ html[data-theme="dark"] .segment {
 
 .message.hira {
   background: var(--surface);
+}
+
+.hira-voice {
+  display: none;
+  align-items: center;
+  gap: 3px;
+  width: max-content;
+  height: 26px;
+  margin-bottom: 9px;
+  padding: 5px 7px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.hira-voice span {
+  width: 3px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--interactive);
+  opacity: 0.82;
+  transform-origin: center;
+}
+
+.message.hira.speaking .hira-voice {
+  display: flex;
+}
+
+.message.hira.speaking .hira-voice span {
+  animation: hira-voice-wave 720ms ease-in-out infinite;
+  animation-delay: calc(var(--voice-index) * -62ms);
 }
 
 .message.pending .message-body:empty::after {
@@ -1952,6 +2006,30 @@ html[data-theme="dark"] .segment {
   }
 }
 
+@keyframes hira-voice-wave {
+  0%,
+  100% {
+    height: 7px;
+    opacity: 0.48;
+  }
+
+  35% {
+    height: 20px;
+    opacity: 1;
+  }
+
+  65% {
+    height: 12px;
+    opacity: 0.76;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message.hira.speaking .hira-voice span {
+    animation: none;
+  }
+}
+
 @keyframes panel-slide {
   from {
     opacity: 0;
@@ -2122,6 +2200,11 @@ html[data-theme="dark"] .segment {
   .daily-load-body {
     display: grid;
     gap: var(--space-md);
+  }
+
+  .daily-load-head {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
   }
 
   .daily-load-body {

@@ -935,7 +935,13 @@ async function completeTask(taskId, checkbox) {
 function addMessage(role, text, persist = true) {
   const el = document.createElement("article");
   el.className = `message ${role}`;
-  el.innerHTML = `<div class="message-body">${renderChatText(text)}</div>`;
+  const voiceGraph =
+    role === "hira"
+      ? `<div class="hira-voice" aria-hidden="true">${[...Array(12)]
+          .map((_, index) => `<span style="--voice-index:${index}"></span>`)
+          .join("")}</div>`
+      : "";
+  el.innerHTML = `${voiceGraph}<div class="message-body">${renderChatText(text)}</div>`;
   $("#messages").appendChild(el);
   el.scrollIntoView({ block: "end" });
   if (persist) {
@@ -945,6 +951,10 @@ function addMessage(role, text, persist = true) {
     updateChatChrome();
   }
   return el;
+}
+
+function setHiraSpeaking(el, speaking) {
+  el?.classList.toggle("speaking", Boolean(speaking));
 }
 
 function updateMessage(el, text) {
@@ -1269,6 +1279,7 @@ async function uploadChatAttachment(note) {
   addMessage("user", userText);
   const pending = addMessage("hira", "", true);
   pending.classList.add("pending");
+  setHiraSpeaking(pending, true);
   $("#sendBtn").disabled = true;
   $("#attachBtn").disabled = true;
   clearChatAttachment();
@@ -1284,6 +1295,7 @@ async function uploadChatAttachment(note) {
     });
     const reply = data.reply || "Done.";
     pending.classList.remove("pending");
+    setHiraSpeaking(pending, false);
     updateMessage(pending, reply);
     state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: reply };
     saveChatHistory();
@@ -1292,6 +1304,7 @@ async function uploadChatAttachment(note) {
   } catch (error) {
     const friendly = `I could not analyse ${file.name}: ${error.message}`;
     pending.classList.remove("pending");
+    setHiraSpeaking(pending, false);
     updateMessage(pending, friendly);
     state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: friendly };
     saveChatHistory();
@@ -1310,6 +1323,7 @@ async function sendChat(message) {
   addMessage("user", message);
   const pending = addMessage("hira", "", true);
   pending.classList.add("pending");
+  setHiraSpeaking(pending, true);
   $("#sendBtn").disabled = true;
   try {
     let latestText = "";
@@ -1332,6 +1346,7 @@ async function sendChat(message) {
       if (event.type === "error") throw new Error(event.message);
     });
     pending.classList.remove("pending");
+    setHiraSpeaking(pending, false);
     updateMessage(pending, reply);
     pending.querySelectorAll(".tool-status").forEach((item) => item.remove());
     state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: reply };
@@ -1341,6 +1356,7 @@ async function sendChat(message) {
   } catch (error) {
     const friendly = "H.I.R.A hit a backend snag. Try again in a moment.";
     pending.classList.remove("pending");
+    setHiraSpeaking(pending, false);
     pending.querySelector(".message-body").textContent = friendly;
     state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: friendly };
     saveChatHistory();

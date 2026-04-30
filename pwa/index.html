@@ -13,7 +13,7 @@
     />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260430-8" />
+    <link rel="stylesheet" href="./styles.css?v=20260430-9" />
   </head>
   <body>
     <main class="shell">
@@ -172,18 +172,18 @@
         <div class="ops-grid">
           <section class="ops-card daily-load-card ops-card-wide">
             <div class="daily-load-head">
-              <div>
+              <div class="daily-load-title-block">
                 <p class="eyebrow">Daily Load</p>
                 <h3 id="dailyLoadTitle">Today</h3>
+                <strong id="dailyLoadBadge" class="load-badge load-green">Pretty chill</strong>
               </div>
-              <strong id="dailyLoadBadge" class="load-badge load-green">Pretty chill</strong>
-            </div>
-            <div id="dailyLoadStrip" class="load-strip" aria-label="Daily load for the selected window"></div>
-            <div class="daily-load-body">
-              <div>
+              <div class="daily-load-score" aria-label="Daily load score">
                 <div id="dailyLoadScore" class="metric-value">0</div>
                 <div id="dailyLoadScoreLabel" class="metric-label">LOAD SCORE</div>
               </div>
+            </div>
+            <div id="dailyLoadStrip" class="load-strip" aria-label="Daily load for the selected window"></div>
+            <div class="daily-load-body">
               <div class="load-stats">
                 <div class="load-stat">
                   <span>Lessons</span>
@@ -443,6 +443,6 @@
       </section>
     </main>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-    <script src="./app.js?v=20260430-1" type="module"></script>
+    <script src="./app.js?v=20260430-2" type="module"></script>
   </body>
 </html>
