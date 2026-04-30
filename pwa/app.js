@@ -923,13 +923,14 @@ async function loadHome() {
     const totalScripts = Number(marking.total_scripts || 0);
     const markedScripts = Number(marking.marked_scripts || 0);
     const unmarkedScripts = Number(marking.unmarked_scripts || 0);
+    const markedSegmentCount = marking.all_clear && totalScripts > 0 ? 12 : markingSegments(markedScripts, totalScripts);
     $("#markingMarkedValue").textContent = String(markedScripts);
     $("#markingUnmarkedValue").textContent = String(unmarkedScripts);
     $("#markingMarkedValueHome").textContent = String(markedScripts);
     $("#markingUnmarkedValueHome").textContent = String(unmarkedScripts);
     $("#markingStackCount").textContent = String(Number(marking.active_stacks || 0));
     $("#markingTotalValue").textContent = String(totalScripts);
-    renderSegmentsAll(".marked-segments", markingSegments(markedScripts, totalScripts), 12, "success");
+    renderSegmentsAll(".marked-segments", markedSegmentCount, 12, "success");
     renderSegmentsAll(".unmarked-segments", markingSegments(unmarkedScripts, totalScripts), 12, unmarkedScripts > markedScripts ? "warning" : "accent");
     setStatus(`Loaded ${state.homeDays}-day view.`, "ok");
   } catch (error) {
@@ -1168,6 +1169,7 @@ async function sendChat(message) {
     pending.querySelectorAll(".tool-status").forEach((item) => item.remove());
     state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: reply };
     saveChatHistory();
+    if (state.currentView === "home") await loadHome();
     setStatus("H.I.R.A replied.", "ok");
   } catch (error) {
     const friendly = "H.I.R.A hit a backend snag. Try again in a moment.";

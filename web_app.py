@@ -6,7 +6,7 @@ import os
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -134,23 +134,48 @@ def _service_status() -> dict:
 def _marking_summary() -> dict:
     try:
         tasks = bot.gs.get_marking_tasks()
+        completed_tasks = bot.gs.get_marking_tasks(include_done=True)
     except Exception:
         return {
             "active_stacks": 0,
             "total_scripts": 0,
             "marked_scripts": 0,
             "unmarked_scripts": 0,
+            "all_clear": False,
+            "completed_recently": False,
             "connected": False,
         }
+
+    active_tasks = list(tasks)
+    completed_recently = False
+    if not tasks:
+        cutoff = datetime.now(bot.SGT).date() - timedelta(days=2)
+        recent_completed = []
+        for task in completed_tasks:
+            if not task.get("done"):
+                continue
+            completed_at = task.get("completed_at", "")
+            try:
+                if date.fromisoformat(completed_at) >= cutoff:
+                    recent_completed.append(task)
+            except Exception:
+                continue
+        if recent_completed:
+            tasks = recent_completed
+            completed_recently = True
 
     total_scripts = sum(max(0, int(task.get("total_scripts") or 0)) for task in tasks)
     marked_scripts = sum(max(0, int(task.get("marked_count") or 0)) for task in tasks)
     marked_scripts = min(marked_scripts, total_scripts) if total_scripts else marked_scripts
+    if completed_recently and total_scripts:
+        marked_scripts = total_scripts
     return {
-        "active_stacks": len(tasks),
+        "active_stacks": 0 if completed_recently else len(tasks),
         "total_scripts": total_scripts,
         "marked_scripts": marked_scripts,
         "unmarked_scripts": max(0, total_scripts - marked_scripts),
+        "all_clear": not active_tasks,
+        "completed_recently": completed_recently,
         "connected": True,
     }
 

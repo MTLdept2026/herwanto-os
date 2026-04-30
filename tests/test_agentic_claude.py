@@ -9,6 +9,7 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
 import bot
 import pdf_service
+import web_app
 
 
 class FakeMessages:
@@ -285,6 +286,30 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(synced["title"], "Kefahaman 2G3")
         update_marking.assert_called_once_with("1", done=True)
+
+    def test_home_marking_summary_shows_recent_completed_stack_as_clear(self):
+        today = bot.datetime.now(bot.SGT).date().isoformat()
+        completed = {
+            "id": "1",
+            "title": "Kefahaman 2G3",
+            "total_scripts": 34,
+            "marked_count": 34,
+            "stack_count": 1,
+            "collected_date": "2026-04-27",
+            "notes": "",
+            "done": True,
+            "completed_at": today,
+        }
+
+        with patch.object(web_app.bot.gs, "get_marking_tasks", side_effect=[[], [completed]]):
+            summary = web_app._marking_summary()
+
+        self.assertEqual(summary["active_stacks"], 0)
+        self.assertEqual(summary["total_scripts"], 34)
+        self.assertEqual(summary["marked_scripts"], 34)
+        self.assertEqual(summary["unmarked_scripts"], 0)
+        self.assertTrue(summary["all_clear"])
+        self.assertTrue(summary["completed_recently"])
 
     def test_archive_app_notifications_hides_selected_items(self):
         store = {
