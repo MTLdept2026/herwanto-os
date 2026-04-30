@@ -156,8 +156,22 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(forced, "get_nea_weather")
 
+    def test_temperature_question_forces_nea_weather_tool(self):
+        forced = bot._forced_tool_for_text(
+            "Yishun high temp tomorrow?",
+            [{"name": "get_nea_weather"}, {"name": "get_latest_news"}],
+        )
+
+        self.assertEqual(forced, "get_nea_weather")
+
     def test_pwa_weather_message_gets_weather_tool(self):
         tools = bot.pwa_tools_for_message("latest weather from NEA")
+        names = [tool["name"] for tool in tools]
+
+        self.assertIn("get_nea_weather", names)
+
+    def test_pwa_temperature_message_gets_weather_tool(self):
+        tools = bot.pwa_tools_for_message("Yishun high temp tomorrow?")
         names = [tool["name"] for tool in tools]
 
         self.assertIn("get_nea_weather", names)
