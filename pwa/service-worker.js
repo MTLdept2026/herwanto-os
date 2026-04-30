@@ -1,7 +1,7 @@
 const CACHE_NAME = "hira-os-v15";
 const ASSETS = [
   "/",
-  "/styles.css?v=20260428-5",
+  "/styles.css?v=20260429-1",
   "/app.js?v=20260429-3",
   "/static/icon.svg",
   "/manifest.webmanifest"
@@ -30,7 +30,7 @@ self.addEventListener("fetch", (event) => {
 
 self.addEventListener("push", (event) => {
   const payload = event.data ? event.data.json() : {};
-  const title = payload.title || "Hira";
+  const title = payload.title || "H.I.R.A";
   const body = payload.body || "";
   const data = {
     ...(payload.data || {}),

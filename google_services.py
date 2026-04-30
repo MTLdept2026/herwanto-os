@@ -38,6 +38,9 @@ GMAIL_SCOPES = [
 
 SHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "")
 _thread_local = threading.local()
+APP_NOTIFICATION_PUSH_BODY_LIMIT = 1800
+APP_NOTIFICATION_SHEET = "AppNotifications"
+APP_NOTIFICATION_HEADERS = ["id", "kind", "title", "body", "created", "source", "seen_by", "archived"]
 
 
 @lru_cache(maxsize=4)
@@ -277,7 +280,7 @@ def artifact_folder_id(category: str = "General") -> str:
     if not root_id:
         root_id = get_config("artifact_root_folder_id") or ""
     if not root_id:
-        root_id = _ensure_drive_folder("Hira")
+        root_id = _ensure_drive_folder("H.I.R.A")
         set_config("artifact_root_folder_id", root_id)
     category_name = (category or "General").strip().title()
     cache_key = f"artifact_folder_{category_name.lower().replace(' ', '_')}"
@@ -633,9 +636,40 @@ def set_config(key: str, value: str):
 
 
 # ─── SHEETS: APP NOTIFICATIONS ───────────────────────────────────────────────
-# Stored in Config as a compact JSON inbox shared by the bot and PWA services.
+# Stored row-by-row so full briefings/digests can appear in the app.
 
-def get_app_notifications(include_archived=False) -> list:
+_app_notifications_sheet_ready = False
+
+def _ensure_app_notifications_sheet():
+    global _app_notifications_sheet_ready
+    if _app_notifications_sheet_ready:
+        return
+    try:
+        _sheets().spreadsheets().values().get(
+            spreadsheetId=SHEET_ID,
+            range=f"{APP_NOTIFICATION_SHEET}!A1:H1",
+        ).execute()
+        _app_notifications_sheet_ready = True
+        return
+    except HttpError as exc:
+        status = getattr(getattr(exc, "resp", None), "status", None)
+        if status not in (400, 404):
+            raise
+
+    _sheets().spreadsheets().batchUpdate(
+        spreadsheetId=SHEET_ID,
+        body={"requests": [{"addSheet": {"properties": {"title": APP_NOTIFICATION_SHEET}}}]},
+    ).execute()
+    _sheets().spreadsheets().values().update(
+        spreadsheetId=SHEET_ID,
+        range=f"{APP_NOTIFICATION_SHEET}!A1:H1",
+        valueInputOption="RAW",
+        body={"values": [APP_NOTIFICATION_HEADERS]},
+    ).execute()
+    _app_notifications_sheet_ready = True
+
+
+def _legacy_config_app_notifications(include_archived=False) -> list:
     raw = get_config("app_notifications")
     if not raw:
         return []
@@ -643,7 +677,6 @@ def get_app_notifications(include_archived=False) -> list:
         notifications = json.loads(raw)
     except Exception:
         return []
-
     clean = []
     for item in notifications:
         if not isinstance(item, dict):
@@ -651,22 +684,131 @@ def get_app_notifications(include_archived=False) -> list:
         archived = bool(item.get("archived", False))
         if archived and not include_archived:
             continue
+        seen_by = item.get("seen_by", [])
         clean.append({
             "id": str(item.get("id", "")).strip(),
             "kind": str(item.get("kind", "notice") or "notice").strip(),
-            "title": str(item.get("title", "Hira") or "Hira").strip(),
+            "title": str(item.get("title", "H.I.R.A") or "H.I.R.A").strip(),
             "body": str(item.get("body", "") or "").strip(),
             "created": str(item.get("created", "") or "").strip(),
             "source": str(item.get("source", "") or "").strip(),
-            "seen_by": [str(client) for client in item.get("seen_by", []) if str(client).strip()]
-            if isinstance(item.get("seen_by", []), list) else [],
+            "seen_by": [str(client) for client in seen_by if str(client).strip()] if isinstance(seen_by, list) else [],
             "archived": archived,
         })
     return [item for item in clean if item["id"] and item["body"]]
 
 
-def set_app_notifications(notifications: list):
+def _set_legacy_config_app_notifications(notifications: list):
     set_config("app_notifications", json.dumps(notifications[-80:], ensure_ascii=False))
+
+
+def _app_notification_rows() -> list[list[str]]:
+    _ensure_app_notifications_sheet()
+    result = _sheets().spreadsheets().values().get(
+        spreadsheetId=SHEET_ID,
+        range=f"{APP_NOTIFICATION_SHEET}!A2:H",
+    ).execute()
+    return result.get("values", [])
+
+
+def _normalise_app_notification_row(row: list[str]) -> dict | None:
+    padded = [*row, *[""] * (8 - len(row))]
+    nid, kind, title, body, created, source, seen_by_raw, archived_raw = padded[:8]
+    try:
+        seen_by = json.loads(seen_by_raw) if seen_by_raw else []
+    except Exception:
+        seen_by = []
+    if not isinstance(seen_by, list):
+        seen_by = []
+    item = {
+        "id": str(nid).strip(),
+        "kind": str(kind or "notice").strip(),
+        "title": str(title or "H.I.R.A").strip(),
+        "body": str(body or "").strip(),
+        "created": str(created or "").strip(),
+        "source": str(source or "").strip(),
+        "seen_by": [str(client) for client in seen_by if str(client).strip()],
+        "archived": str(archived_raw or "").strip().upper() == "TRUE",
+    }
+    if not item["id"] or not item["body"]:
+        return None
+    return item
+
+
+def _merge_app_notifications(primary: list, legacy: list) -> list:
+    merged = []
+    seen = set()
+    for source in (primary, legacy):
+        for item in source:
+            nid = str(item.get("id", "")).strip() if isinstance(item, dict) else ""
+            if not nid or nid in seen:
+                continue
+            seen.add(nid)
+            merged.append(item)
+    return merged
+
+
+def get_app_notifications(include_archived=False) -> list:
+    try:
+        rows = _app_notification_rows()
+    except Exception:
+        return _legacy_config_app_notifications(include_archived=include_archived)
+
+    clean = [_normalise_app_notification_row(row) for row in rows]
+    clean = [item for item in clean if item]
+    legacy = _legacy_config_app_notifications(include_archived=True)
+    if legacy:
+        merged = _merge_app_notifications(clean, legacy)
+        if len(merged) != len(clean):
+            set_app_notifications(merged)
+        clean = merged
+    if not include_archived:
+        clean = [item for item in clean if not item["archived"]]
+    return clean
+
+
+def set_app_notifications(notifications: list):
+    try:
+        _ensure_app_notifications_sheet()
+    except Exception:
+        _set_legacy_config_app_notifications(notifications)
+        return
+    kept = notifications[-80:]
+    values = []
+    for item in kept:
+        if not isinstance(item, dict):
+            continue
+        values.append([
+            str(item.get("id", "")).strip(),
+            str(item.get("kind", "notice") or "notice").strip(),
+            str(item.get("title", "H.I.R.A") or "H.I.R.A").strip(),
+            str(item.get("body", "") or "").strip(),
+            str(item.get("created", "") or "").strip(),
+            str(item.get("source", "") or "").strip(),
+            json.dumps(item.get("seen_by", [])[-20:] if isinstance(item.get("seen_by", []), list) else [], ensure_ascii=False),
+            "TRUE" if item.get("archived") else "FALSE",
+        ])
+    try:
+        _sheets().spreadsheets().values().clear(
+            spreadsheetId=SHEET_ID,
+            range=f"{APP_NOTIFICATION_SHEET}!A2:H",
+            body={},
+        ).execute()
+        if values:
+            _sheets().spreadsheets().values().update(
+                spreadsheetId=SHEET_ID,
+                range=f"{APP_NOTIFICATION_SHEET}!A2:H",
+                valueInputOption="RAW",
+                body={"values": values},
+            ).execute()
+    except Exception:
+        _set_legacy_config_app_notifications(notifications)
+
+def _compact_notification_body(body: str) -> str:
+    clean = str(body or "").strip()
+    if len(clean) <= APP_NOTIFICATION_PUSH_BODY_LIMIT:
+        return clean
+    return clean[: APP_NOTIFICATION_PUSH_BODY_LIMIT - 80].rstrip() + "\n\n[Open H.I.R.A for the full context.]"
 
 
 def enqueue_app_notification(kind: str, title: str, body: str, source: str = "") -> dict:
@@ -679,7 +821,7 @@ def enqueue_app_notification(kind: str, title: str, body: str, source: str = "")
     item = {
         "id": str(next_id),
         "kind": (kind or "notice").strip(),
-        "title": (title or "Hira").strip(),
+        "title": (title or "H.I.R.A").strip(),
         "body": (body or "").strip(),
         "created": now,
         "source": (source or "").strip(),
@@ -804,8 +946,8 @@ def send_web_push_notification(title: str, body: str, data: dict | None = None) 
         return 0
 
     payload = json.dumps({
-        "title": title or "Hira",
-        "body": body or "",
+        "title": title or "H.I.R.A",
+        "body": _compact_notification_body(body),
         "icon": "/static/icon.svg",
         "badge": "/static/icon.svg",
         "data": data or {},
@@ -999,7 +1141,7 @@ def remove_news_topic(label: str) -> list:
 
 
 # ─── SHEETS: PROACTIVE NUDGES ───────────────────────────────────────────────
-# Stored in Config as JSON so Hira can initiate chats at specific times.
+# Stored in Config as JSON so H.I.R.A can initiate chats at specific times.
 
 def get_nudges(include_sent=False) -> list:
     raw = get_config("proactive_nudges")
@@ -1094,7 +1236,7 @@ def mark_nudge_sent(nudge_id: str):
 
 
 # ─── SHEETS: DAILY CHECK-INS ────────────────────────────────────────────────
-# Recurring habits Hira can ask about daily until marked done for the day.
+# Recurring habits H.I.R.A can ask about daily until marked done for the day.
 
 def get_checkins(include_inactive=False) -> list:
     raw = get_config("daily_checkins")
@@ -1271,7 +1413,7 @@ def complete_checkin_today(checkin_id: str) -> bool:
 
 
 # ─── SHEETS: FOLLOW-UPS ─────────────────────────────────────────────────────
-# Stored in Config as JSON so Hira can track people/topic/date/status.
+# Stored in Config as JSON so H.I.R.A can track people/topic/date/status.
 
 def get_followups(include_done=False) -> list:
     raw = get_config("followups")
