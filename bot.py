@@ -3099,7 +3099,8 @@ def _looks_tool_heavy(text: str) -> bool:
     return bool(re.search(
         r"\b(calendar|schedule|meeting|event|remind|nudge|task|due|marking|scripts?|"
         r"email|gmail|inbox|draft|reply|timetable|lesson|news|latest|search|remember|"
-        r"document|worksheet|slides?|ppt|deck|follow\s*up|done|complete)\b",
+        r"weather|forecast|rain|raining|rainy|shower|showers|thunder|storm|umbrella|"
+        r"haze|psi|nea|mss|document|worksheet|slides?|ppt|deck|follow\s*up|done|complete)\b",
         text,
         re.I,
     ))
