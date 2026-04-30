@@ -13,13 +13,6 @@ const state = {
   notificationPoll: null,
 };
 
-const quickPrompts = [
-  "What do I need to focus on today?",
-  "Show my last 5 work emails",
-  "What tasks are due this week?",
-  "Summarise this week in plain English",
-];
-
 const $ = (selector) => document.querySelector(selector);
 const urlTheme = new URLSearchParams(window.location.search).get("theme");
 const clockFormatter = new Intl.DateTimeFormat("en-SG", {
@@ -1475,14 +1468,6 @@ document.querySelectorAll(".nav-tab").forEach((tab) => {
   });
 });
 
-document.querySelectorAll(".prompt-chip").forEach((button) => {
-  button.addEventListener("click", () => {
-    $("#messageInput").value = button.dataset.prompt;
-    setView("home");
-    $("#messageInput").focus();
-  });
-});
-
 document.querySelectorAll("[data-gmail-preset]").forEach((button) => {
   button.addEventListener("click", () => {
     $("#gmailQuery").value = button.dataset.gmailPreset;
@@ -1571,28 +1556,6 @@ $("#tokenInput").value = state.token;
 localStorage.setItem("hira_client_id", state.clientId);
 applyTheme();
 refreshIcons();
-quickPrompts.forEach((text) => {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "prompt-chip";
-  button.dataset.prompt = text;
-  button.textContent = text;
-  button.addEventListener("click", () => {
-    $("#messageInput").value = text;
-    setView("home");
-    $("#messageInput").focus();
-  });
-  $("#promptRow").appendChild(button);
-  document.querySelector(".prompt-row-mirror")?.appendChild(button.cloneNode(true));
-});
-
-document.querySelectorAll(".prompt-row-mirror .prompt-chip").forEach((button) => {
-  button.addEventListener("click", () => {
-    $("#messageInput").value = button.dataset.prompt;
-    $("#messageInput").focus();
-  });
-});
-
 mountChatInHome();
 renderStoredChat();
 rememberNotificationFromUrl();

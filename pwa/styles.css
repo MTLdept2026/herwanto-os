@@ -692,16 +692,14 @@ h3 {
   color: var(--interactive);
 }
 
-.chip-row,
-.prompt-row {
+.chip-row {
   display: flex;
   gap: var(--space-sm);
   flex-wrap: wrap;
 }
 
 .pill,
-.chip,
-.prompt-chip {
+.chip {
   display: inline-flex;
   align-items: center;
   min-height: 36px;
@@ -748,14 +746,6 @@ h3 {
 
 .brand-lockup .brand-subtitle {
   max-width: 34ch;
-}
-
-.prompt-row {
-  margin-top: var(--space-sm);
-}
-
-.prompt-chip {
-  cursor: pointer;
 }
 
 .dashboard-grid {
@@ -2477,21 +2467,6 @@ html[data-theme="dark"] .segment {
     min-height: 0;
     padding: 18px;
     grid-template-rows: auto auto minmax(140px, 1fr) auto;
-  }
-
-  .chat-main .prompt-row {
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    padding-bottom: 2px;
-    scrollbar-width: none;
-  }
-
-  .chat-main .prompt-row::-webkit-scrollbar {
-    display: none;
-  }
-
-  .chat-main .prompt-chip {
-    flex: 0 0 auto;
   }
 
   .command-rail {
