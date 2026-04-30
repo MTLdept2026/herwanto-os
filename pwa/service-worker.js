@@ -1,8 +1,8 @@
-const CACHE_NAME = "hira-os-v24";
+const CACHE_NAME = "hira-os-v25";
 const ASSETS = [
   "/",
   "/styles.css?v=20260430-11",
-  "/app.js?v=20260430-3",
+  "/app.js?v=20260430-4",
   "/static/icon.svg",
   "/manifest.webmanifest"
 ];
@@ -10,6 +10,10 @@ const ASSETS = [
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)));
   self.skipWaiting();
+});
+
+self.addEventListener("message", (event) => {
+  if (event.data?.type === "SKIP_WAITING") self.skipWaiting();
 });
 
 self.addEventListener("activate", (event) => {

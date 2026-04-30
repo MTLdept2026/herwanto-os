@@ -1125,6 +1125,29 @@ async function loadHome() {
   }
 }
 
+async function checkForAppUpdate({ silent = false } = {}) {
+  if (!("serviceWorker" in navigator)) return false;
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    await registration.update();
+    if (registration.installing || registration.waiting) {
+      setStatus("New app update found. Reloading...", "ok");
+      registration.waiting?.postMessage({ type: "SKIP_WAITING" });
+      return true;
+    }
+    if (!silent) setStatus("Dashboard refreshed. App shell is up to date.", "ok");
+    return false;
+  } catch (error) {
+    if (!silent) setStatus(`App update check: ${error.message}`, "warn");
+    return false;
+  }
+}
+
+async function refreshHomeAndApp() {
+  await loadHome();
+  await checkForAppUpdate();
+}
+
 async function loadAgenda(days = 7) {
   $("#agendaOutput").innerHTML = "<div>Loading...</div>";
   try {
@@ -1505,7 +1528,7 @@ $("#resetChatBtn").addEventListener("click", clearChat);
 $("#gmailForm").addEventListener("submit", loadGmail);
 $("#draftForm").addEventListener("submit", createDraft);
 $("#uploadForm").addEventListener("submit", uploadFile);
-$("#refreshHomeBtn").addEventListener("click", loadHome);
+$("#refreshHomeBtn").addEventListener("click", refreshHomeAndApp);
 $("#refreshAgendaBtn").addEventListener("click", () => loadAgenda(Number($("#agendaDays").value || 7)));
 $("#agendaDays").addEventListener("change", () => loadAgenda(Number($("#agendaDays").value || 7)));
 $("#refreshTasksBtn").addEventListener("click", () => loadTasks(Number($("#tasksDays").value || 7)));
