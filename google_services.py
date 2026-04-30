@@ -471,6 +471,26 @@ def set_marking_tasks(tasks: list):
     set_config("marking_tasks", json.dumps(tasks, ensure_ascii=False))
 
 
+def reset_marking_tasks() -> dict:
+    tasks = get_marking_tasks(include_done=True)
+    completed_at = datetime.now(SGT).strftime("%Y-%m-%d")
+    cleared = []
+    for task in tasks:
+        if task.get("done"):
+            continue
+        task["done"] = True
+        task["completed_at"] = completed_at
+        cleared.append({
+            "id": str(task.get("id", "")),
+            "title": task.get("title", ""),
+            "total_scripts": int(task.get("total_scripts") or 0),
+            "marked_count": int(task.get("marked_count") or 0),
+        })
+    if cleared:
+        set_marking_tasks(tasks)
+    return {"cleared_count": len(cleared), "cleared": cleared}
+
+
 def add_marking_task(
     title: str,
     total_scripts: int = 0,

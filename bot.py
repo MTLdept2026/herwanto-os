@@ -246,10 +246,10 @@ Rules:
 - Never offer to generate .ics files. Use Google Calendar directly.
 - The current date and time is already provided at the top of this prompt — always use it for any date/time reasoning.
 - Never guess weekdays. If you mention a date with a weekday, derive the weekday from the actual calendar date. For 2026, 1 May is Friday, not Thursday.
-- You have tools: create_calendar_event, add_reminder, add_marking_task, update_marking_progress, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, update_project_status, get_nea_weather, get_latest_news, and web_search. Use them proactively.
+- You have tools: create_calendar_event, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, update_project_status, get_nea_weather, get_latest_news, and web_search. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
-- When the user mentions marking scripts, papers, compositions, kefahaman, karangan, worksheets, or a marking stack, use marking tools instead of ordinary reminders: add_marking_task for a new stack, update_marking_progress when he says how many scripts are marked, and get_marking_brief when he asks what marking is outstanding. Marking tasks are mission-critical and must persist even at 0 outstanding; only complete one when he explicitly says that marking stack is done, completed, or can be closed.
+- When the user mentions marking scripts, papers, compositions, kefahaman, karangan, worksheets, or a marking stack, use marking tools instead of ordinary reminders: add_marking_task for a new stack, update_marking_progress when he says how many scripts are marked, reset_marking_load when he asks to reset/clear the marking load or board, and get_marking_brief when he asks what marking is outstanding. Marking tasks are mission-critical and must persist even at 0 outstanding; only complete one when he explicitly says that marking stack is done, completed, can be closed, reset, or cleared.
 - When the user asks you to nudge, ping, check in, remind him at a specific time, or initiate a chat later — call create_proactive_nudge. Use this for time-specific heads-ups, not ordinary all-day deadlines.
 - When the user asks for a recurring daily ping/check-in until he replies yes/done — call create_daily_checkin.
 - When the user asks for daily reminders/check-ins to adapt around his schedule, breaks, timetable, lessons, or calendar, call create_break_aware_daily_checkin. This is especially appropriate for selawat, salawat, selawat ke atas Nabi, istighfar, zikr/dhikr, and similar habits he wants during free pockets of the day.
@@ -638,6 +638,15 @@ UPDATE_MARKING_TOOL = {
 MARKING_BRIEF_TOOL = {
     "name": "get_marking_brief",
     "description": "Get active marking stacks with marked and outstanding script counts.",
+    "input_schema": {
+        "type": "object",
+        "properties": {}
+    }
+}
+
+RESET_MARKING_TOOL = {
+    "name": "reset_marking_load",
+    "description": "Clear all active marking stacks from the marking-load board. Use when Herwanto asks to reset or clear marking load, outstanding marking, or the marking board.",
     "input_schema": {
         "type": "object",
         "properties": {}
@@ -1634,6 +1643,12 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
         and not has_any(["draft", "write", "compose", "reply", "send "])
     ):
         return "get_gmail_brief"
+    if (
+        "reset_marking_load" in available
+        and has_any(["marking", "scripts", "script", "papers", "paper", "unmarked", "marked"])
+        and has_any(["reset", "clear", "clear all", "wipe"])
+    ):
+        return "reset_marking_load"
     if action_intent or completion_intent:
         return None
 
@@ -2823,6 +2838,7 @@ def _core_tools():
         COMPLETE_FOLLOWUP_TOOL,
         ADD_MARKING_TOOL,
         UPDATE_MARKING_TOOL,
+        RESET_MARKING_TOOL,
         MARKING_BRIEF_TOOL,
         TASK_BRIEF_TOOL,
         TIMETABLE_TOOL,
@@ -2856,7 +2872,7 @@ def pwa_tools_for_message(text: str) -> list[dict]:
     if re.search(r"\b(task|tasks|due|deadline|remind|reminder|prepare|submit|complete|done|priority|prioritise|prioritize|focus)\b", text):
         add(CONTEXT_TOOL, TASK_BRIEF_TOOL, REMINDER_TOOL, COMPLETE_TASK_TOOL)
     if re.search(r"\b(marking|scripts?|papers?|compositions?|kefahaman|karangan|worksheets?|marked|unmarked)\b", text):
-        add(ADD_MARKING_TOOL, UPDATE_MARKING_TOOL, MARKING_BRIEF_TOOL)
+        add(ADD_MARKING_TOOL, UPDATE_MARKING_TOOL, RESET_MARKING_TOOL, MARKING_BRIEF_TOOL)
     if re.search(r"\b(nudge|ping|check[- ]?in|check in|selawat|salawat|istighfar|zikir|zikr|dhikr)\b", text):
         add(NUDGE_TOOL, DAILY_CHECKIN_TOOL, BREAK_AWARE_CHECKIN_TOOL)
     if re.search(r"\b(follow[- ]?up|follow up|owe replies|chase)\b", text):
@@ -3317,6 +3333,16 @@ async def _execute_tool(name: str, inp: dict) -> str:
             return f"Updated. {_format_marking_task(updated)}"
         except Exception as e:
             return f"Failed to update marking: {e}"
+
+    elif name == "reset_marking_load":
+        try:
+            result = gs.reset_marking_tasks()
+            count = int(result.get("cleared_count") or 0)
+            if count:
+                return f"Marking load reset to zero - cleared {count} active stack{'s' if count != 1 else ''} from the board."
+            return "Marking load is already at zero - no active stacks on the board."
+        except Exception as e:
+            return f"Failed to reset marking load: {e}"
 
     elif name == "get_marking_brief":
         try:

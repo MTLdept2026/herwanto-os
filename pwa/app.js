@@ -626,6 +626,16 @@ function renderMarkingSets(items = []) {
     .join("");
 }
 
+function markingRailContext(marking = {}) {
+  const items = Array.isArray(marking.sets) ? marking.sets : [];
+  if (!items.length) return "ALL CLEAR";
+  const item = items[0];
+  const title = item.display_title || item.title || "Marking set";
+  const progress = item.progress_label || `${Number(item.marked_scripts || 0)} marked`;
+  const extra = items.length > 1 ? ` +${items.length - 1} more` : "";
+  return `${title} - ${progress}${extra}`;
+}
+
 function saveChatHistory() {
   localStorage.setItem("hira_pwa_chat", JSON.stringify(state.chatHistory.slice(-30)));
 }
@@ -967,6 +977,7 @@ async function loadHome() {
     $("#markingStackCount").textContent = String(Number(marking.active_stacks || 0));
     $("#markingTotalValue").textContent = String(totalScripts);
     $("#markingSetsList").innerHTML = renderMarkingSets(marking.sets || []);
+    $("#markingRailContext").textContent = markingRailContext(marking);
     renderSegmentsAll(".marked-segments", markingSegments(markedScripts, totalScripts), 12, "success");
     renderSegmentsAll(".unmarked-segments", markingSegments(unmarkedScripts, totalScripts), 12, unmarkedScripts > markedScripts ? "warning" : "accent");
     setStatus(`Loaded ${state.homeDays}-day view.`, "ok");
@@ -1206,7 +1217,7 @@ async function sendChat(message) {
     pending.querySelectorAll(".tool-status").forEach((item) => item.remove());
     state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: reply };
     saveChatHistory();
-    if (state.currentView === "home") await loadHome();
+    await loadHome();
     setStatus("H.I.R.A replied.", "ok");
   } catch (error) {
     const friendly = "H.I.R.A hit a backend snag. Try again in a moment.";

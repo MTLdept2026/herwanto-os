@@ -1026,6 +1026,18 @@ html[data-theme="dark"] .segment {
   color: var(--text-display);
 }
 
+.marking-rail-context {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Space Mono", monospace;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
 .chat-main {
   display: grid;
   grid-template-rows: auto auto minmax(300px, 1fr) auto;

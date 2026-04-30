@@ -103,6 +103,14 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIsNone(calendar_forced)
         self.assertIsNone(task_forced)
 
+    def test_reset_marking_request_forces_reset_tool(self):
+        forced = bot._forced_tool_for_text(
+            "reset marking load",
+            [{"name": "reset_marking_load"}, {"name": "update_marking_progress"}],
+        )
+
+        self.assertEqual(forced, "reset_marking_load")
+
     def test_forced_tool_does_not_repeat_after_tool_result(self):
         fake_messages = FakeMessages()
         fake_claude = SimpleNamespace(messages=fake_messages)
@@ -251,6 +259,28 @@ class AgenticClaudeTests(unittest.TestCase):
 
             self.assertEqual(bot.gs.get_marking_tasks(), [])
             self.assertEqual(len(bot.gs.get_marking_tasks(include_done=True)), 1)
+
+    def test_reset_marking_tasks_clears_active_stacks(self):
+        store = {}
+
+        def fake_get_config(key):
+            return store.get(key, "")
+
+        def fake_set_config(key, value):
+            store[key] = value
+
+        with (
+            patch.object(bot.gs, "get_config", side_effect=fake_get_config),
+            patch.object(bot.gs, "set_config", side_effect=fake_set_config),
+        ):
+            bot.gs.add_marking_task("1G2: Karangan", total_scripts=10, collected_date="2026-04-30")
+            bot.gs.add_marking_task("2G3: Kefahaman", total_scripts=12, collected_date="2026-04-30")
+
+            result = bot.gs.reset_marking_tasks()
+
+            self.assertEqual(result["cleared_count"], 2)
+            self.assertEqual(bot.gs.get_marking_tasks(), [])
+            self.assertEqual(len(bot.gs.get_marking_tasks(include_done=True)), 2)
 
     def test_completing_marking_reminder_closes_matching_marking_stack(self):
         reminders = [
