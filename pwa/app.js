@@ -672,7 +672,10 @@ function renderWorkloadTrend(load = {}) {
         <line x1="${pad}" y1="${pad + usableHeight * 0.5}" x2="${width - pad}" y2="${pad + usableHeight * 0.5}" class="trend-grid" />
         <line x1="${pad}" y1="${pad + usableHeight * 0.75}" x2="${width - pad}" y2="${pad + usableHeight * 0.75}" class="trend-grid" />
         <polyline points="${line}" class="trend-line" />
-        ${coords.map((point) => `<circle cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="${point.label === "Now" ? 4.2 : 2.8}" class="trend-dot ${loadToneClass(point.tone)}" />`).join("")}
+        ${coords.map((point) => {
+          const size = point.label === "Now" ? 6 : 4;
+          return `<rect x="${(point.x - size / 2).toFixed(1)}" y="${(point.y - size / 2).toFixed(1)}" width="${size}" height="${size}" class="trend-dot ${loadToneClass(point.tone)}" />`;
+        }).join("")}
       </svg>
       <div class="trend-labels">
         ${points.map((item) => `<span>${markdownish(item.label || "")}</span>`).join("")}
@@ -819,13 +822,15 @@ function renderAgendaCards(text) {
     }
     const timeMatch = line.match(/(\b\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b\s*(?:[-–—to]+\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?)/i);
     const time = timeMatch ? timeMatch[1].replace(/\s+/g, " ").trim() : "Anytime";
-    const title = line.replace(timeMatch?.[1] || "", "").replace(/^[:\-–\s]+/, "").trim() || line;
+    const remainder = line.replace(timeMatch?.[1] || "", "").replace(/^[:\-–\s]+/, "").trim() || line;
+    const [titlePart, locationPart] = remainder.split(/\s+[·|]\s+/);
     cards.push(`
       <article class="agenda-card">
         <div class="agenda-time">${markdownish(time)}</div>
         <div class="agenda-copy">
-          ${currentDay ? `<p class="agenda-day">${markdownish(currentDay)}</p>` : ""}
-          <strong>${markdownish(title)}</strong>
+          <p class="agenda-day">${markdownish(currentDay || "Today at school")}</p>
+          <strong>${markdownish(titlePart || remainder)}</strong>
+          ${locationPart ? `<span>${markdownish(locationPart)}</span>` : ""}
         </div>
       </article>
     `);
@@ -847,6 +852,7 @@ function renderAgendaStructured(data) {
             ...(day.events || []).map((item) => ({ ...item, label: "Event" })),
             ...(day.due || []).map((item) => ({ ...item, time: "Due", label: item.category || "Task", meta: item.id ? `#${item.id}` : "" })),
           ];
+          const context = [day.label, day.week].filter(Boolean).join(" · ") || "Calendar day";
           return `
             <section class="agenda-day-group">
               <div class="agenda-day-header">
@@ -864,8 +870,8 @@ function renderAgendaStructured(data) {
                           <article class="agenda-card ${item.kind || ""}">
                             <div class="agenda-time">${markdownish(item.time || "Anytime")}</div>
                             <div class="agenda-copy">
-                              <p class="agenda-day">${markdownish(item.label || item.kind || "Item")}</p>
-                              <strong>${markdownish(item.title || "")}</strong>
+                              <p class="agenda-day">${markdownish(context)}</p>
+                              <strong>${markdownish(item.title || item.label || "")}</strong>
                               ${item.meta ? `<span>${markdownish(item.meta)}</span>` : ""}
                             </div>
                           </article>
@@ -882,36 +888,47 @@ function renderAgendaStructured(data) {
   `;
 }
 
-function renderTaskList(data) {
+function renderTaskList(data, heading = "Task Brief · Now to 7 May") {
   const items = data?.items || [];
   if (!items.length) return "<div class='empty-state'>No active tasks in that window.</div>";
   return `
-    <div class="task-list">
+    <div class="task-brief-card">
+      <div class="task-brief-head">${markdownish(heading)}</div>
+      <div class="task-list">
       ${items
         .map((item) => {
-          const due = [item.due, item.weekday].filter(Boolean).join(" | ");
-          const meta = [item.category, item.priority, item.effort].filter(Boolean).join(" / ");
+          const due = item.due || item.weekday || "No due date";
           return `
             <article class="task-item ${item.overdue ? "overdue" : ""}" data-task-id="${markdownish(item.id)}">
-              <label class="task-check">
-                <input type="checkbox" data-task-done="${markdownish(item.id)}" aria-label="Mark task ${markdownish(item.id)} done" />
-                <span></span>
-              </label>
+              <div class="task-num">${markdownish(item.id)}</div>
               <div class="task-copy">
-                <div class="task-meta">
-                  <strong>#${markdownish(item.id)}</strong>
-                  <span>${markdownish(due || "No due date")}</span>
-                </div>
+                <div class="task-date">${markdownish(due)}</div>
                 <p>${markdownish(item.description || "")}</p>
-                ${item.next_action ? `<small>Next: ${markdownish(item.next_action)}</small>` : ""}
-                ${meta ? `<small>${markdownish(meta)}</small>` : ""}
               </div>
             </article>
           `;
         })
         .join("")}
+      </div>
     </div>
   `;
+}
+
+function renderTaskBriefFromText(text) {
+  const lines = (text || "")
+    .split("\n")
+    .map((line) => line.replace(/^[•\-*]\s*/, "").trim())
+    .filter(Boolean);
+  const items = [];
+  for (const line of lines) {
+    const plain = line.replace(/[*_`]/g, "").trim();
+    if (/^(task brief|tasks?|no active tasks)/i.test(plain)) continue;
+    const match = plain.match(/^(?:#|\[)?(\d+)(?:\])?\s*[:\-–]\s*(?:(\d{4}-\d{2}-\d{2})\s*[:\-–]\s*)?(.*)$/);
+    if (!match) continue;
+    items.push({ id: match[1], due: match[2] || "", description: match[3] || "" });
+  }
+  if (!items.length) return renderTextBlock(text);
+  return renderTaskList({ items });
 }
 
 async function completeTask(taskId, checkbox) {
@@ -949,7 +966,7 @@ function setHiraSpeaking(el, speaking) {
   const signal = $("#hiraSignal");
   signal?.classList.toggle("is-speaking", Boolean(speaking));
   const label = $("#hiraSignalState");
-  if (label) label.textContent = speaking ? "Speaking" : "Standby";
+  if (label) label.textContent = "Live";
 }
 
 function updateMessage(el, text) {
@@ -1030,6 +1047,43 @@ function updateChatChrome() {
   document.querySelector(".chat-main")?.classList.toggle("chat-empty", !hasChat);
 }
 
+function startHiraTypewriter() {
+  const el = $("#hiraTypewriterText");
+  if (!el) return;
+  const messages = [
+    "You have 3 lessons today.",
+    "10 scripts unmarked - 3G3.",
+    "Wed is your heaviest day.",
+    "Task 11 is due 7 May.",
+  ];
+  let messageIndex = 0;
+  let charIndex = 0;
+  let deleting = false;
+
+  const tick = () => {
+    const message = messages[messageIndex];
+    if (deleting) {
+      charIndex = Math.max(0, charIndex - 1);
+    } else {
+      charIndex = Math.min(message.length, charIndex + 1);
+    }
+    el.textContent = message.slice(0, charIndex);
+
+    let delay = deleting ? 26 : 46;
+    if (!deleting && charIndex === message.length) {
+      deleting = true;
+      delay = 1300;
+    } else if (deleting && charIndex === 0) {
+      deleting = false;
+      messageIndex = (messageIndex + 1) % messages.length;
+      delay = 240;
+    }
+    window.setTimeout(tick, delay);
+  };
+
+  tick();
+}
+
 function mountChatInHome() {
   const mount = $("#homeChatMount");
   const chat = document.querySelector(".chat-shell");
@@ -1059,7 +1113,7 @@ async function loadHome() {
     const data = await api(`/api/home?days=${state.homeDays}`, { headers: headers(false) });
     updateLiveClock();
     $("#homeAgenda").innerHTML = renderAgendaCards(data.agenda);
-    $("#homeTasks").innerHTML = renderTextBlock(data.tasks);
+    $("#homeTasks").innerHTML = renderTaskBriefFromText(data.tasks);
     const fileLines = countMeaningfulLines(data.files);
     $("#fileMemoryValue").textContent = String(fileLines);
     $("#fileMemoryLabel").textContent = fileLines ? "MEMORY ITEMS INDEXED" : "MEMORY STANDBY";
@@ -1098,7 +1152,8 @@ async function loadHome() {
       refreshButton.textContent = "Updated";
       refreshButton.classList.add("is-updated");
       window.setTimeout(() => {
-        refreshButton.textContent = "Refresh";
+        refreshButton.innerHTML = `<span data-lucide="rotate-ccw" aria-hidden="true"></span>Refresh System`;
+        refreshIcons(refreshButton);
         refreshButton.classList.remove("is-updated");
       }, 1400);
     }
@@ -1156,7 +1211,7 @@ async function loadTasks(days = 7) {
   $("#tasksOutput").innerHTML = "<div>Loading...</div>";
   try {
     const data = await api(`/api/tasks?days=${days}`, { headers: headers(false) });
-    $("#tasksOutput").innerHTML = data.structured ? renderTaskList(data.structured) : renderTextBlock(data.text);
+    $("#tasksOutput").innerHTML = data.structured ? renderTaskList(data.structured) : renderTaskBriefFromText(data.text);
     setStatus("Tasks refreshed.", "ok");
   } catch (error) {
     $("#tasksOutput").textContent = `Error: ${error.message}`;
@@ -1513,6 +1568,17 @@ $("#gmailForm").addEventListener("submit", loadGmail);
 $("#draftForm").addEventListener("submit", createDraft);
 $("#uploadForm").addEventListener("submit", uploadFile);
 $("#refreshHomeBtn").addEventListener("click", refreshHomeAndApp);
+$("#viewAgendaBtn").addEventListener("click", async () => {
+  setView("agenda");
+  await loadAgenda(Number($("#agendaDays").value || 7));
+});
+$("#homeSettingsBtn").addEventListener("click", () => {
+  const panel = $("#settingsPanel");
+  panel.hidden = false;
+  $("#settingsBtn").classList.add("is-open");
+  updateNotificationControls();
+  panel.scrollIntoView({ block: "start" });
+});
 $("#refreshAgendaBtn").addEventListener("click", () => loadAgenda(Number($("#agendaDays").value || 7)));
 $("#agendaDays").addEventListener("change", () => loadAgenda(Number($("#agendaDays").value || 7)));
 $("#refreshTasksBtn").addEventListener("click", () => loadTasks(Number($("#tasksDays").value || 7)));
@@ -1564,6 +1630,7 @@ renderNotifications();
 updateNotificationControls();
 setView("home");
 updateLiveClock();
+startHiraTypewriter();
 setInterval(updateLiveClock, 1000);
 loadHome();
 startNotificationPolling();

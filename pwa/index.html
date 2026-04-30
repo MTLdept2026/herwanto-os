@@ -8,12 +8,12 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Doto:wght@400..900&family=Space+Grotesk:wght@300;400;500;700&family=Space+Mono:wght@400;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Doto:wght@400..900&family=Space+Grotesk:wght@300;400;500;700&family=VT323&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap"
       rel="stylesheet"
     />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260430-15" />
+    <link rel="stylesheet" href="./styles.css?v=20260430-22" />
   </head>
   <body>
     <main class="shell">
@@ -81,6 +81,7 @@
           <div id="greetingTime" class="clock-display clock-display-top">--:--</div>
           <strong id="greetingDate" class="clock-meta">Loading</strong>
         </div>
+        <div class="clock-live-label"><span aria-hidden="true"></span>LIVE</div>
         <p id="statusLine" data-tone="muted">Ready.</p>
       </section>
 
@@ -102,7 +103,7 @@
                 <div class="brand-subtitle">herwanto interface for responsive assistance</div>
               </div>
               <div id="homeServicesBar" class="segment-bar services-segments" aria-hidden="true"></div>
-              <div class="metric-label">LIVE SYSTEM</div>
+              <div class="live-system-label"><span aria-hidden="true"></span>LIVE SYSTEM</div>
             </section>
             <section class="ops-card rail-card">
               <p class="eyebrow">Marking Load</p>
@@ -126,7 +127,7 @@
             </section>
           </aside>
           <section class="chat-main">
-            <div class="section-head">
+            <div class="section-head chat-title-row">
               <div>
                 <h2>Chat</h2>
               </div>
@@ -137,10 +138,10 @@
             </div>
             <section id="hiraSignal" class="hira-signal" aria-label="H.I.R.A output signal">
               <div class="hira-signal-head">
-                <p class="eyebrow">HIRA OUT</p>
-                <div class="signal-state">
+                <p class="eyebrow">H.I.R.A Output</p>
+                <div class="signal-state is-live">
                   <span aria-hidden="true"></span>
-                  <strong id="hiraSignalState">Standby</strong>
+                  <strong id="hiraSignalState">Live</strong>
                 </div>
               </div>
               <div class="hira-signal-bars" aria-hidden="true">
@@ -179,6 +180,9 @@
                 <span style="--voice-index:32; --voice-height:25px"></span>
                 <span style="--voice-index:33; --voice-height:50px"></span>
               </div>
+              <div class="hira-typewriter" aria-live="polite">
+                <span id="hiraTypewriterText"></span><span class="hira-typewriter-cursor" aria-hidden="true"></span>
+              </div>
             </section>
             <div id="messages" class="messages" aria-live="polite"></div>
             <form id="chatForm" class="composer">
@@ -209,8 +213,16 @@
       </section>
 
       <section id="homeView" class="view active">
-        <div class="home-refresh-row">
-          <button id="refreshHomeBtn" type="button">Refresh</button>
+        <div class="home-actions">
+          <button id="refreshHomeBtn" type="button" class="home-action-btn home-action-primary">
+            <span data-lucide="rotate-ccw" aria-hidden="true"></span>
+            Refresh System
+          </button>
+          <button id="viewAgendaBtn" type="button" class="home-action-btn home-action-secondary">View All Agenda</button>
+          <button id="homeSettingsBtn" type="button" class="home-action-btn home-action-dark">
+            <span data-lucide="settings" aria-hidden="true"></span>
+            Settings
+          </button>
         </div>
         <div id="homeChatMount" class="home-chat-mount"></div>
         <div class="ops-grid">
@@ -288,6 +300,7 @@
                   <div class="hero-display">H.I.R.A</div>
                   <div class="brand-subtitle">herwanto interface for responsive assistance</div>
                 </div>
+                <div class="live-system-label"><span aria-hidden="true"></span>LIVE SYSTEM</div>
               </div>
             </div>
           </section>
@@ -485,6 +498,6 @@
       </section>
     </main>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-    <script src="./app.js?v=20260430-7" type="module"></script>
+    <script src="./app.js?v=20260430-8" type="module"></script>
   </body>
 </html>
