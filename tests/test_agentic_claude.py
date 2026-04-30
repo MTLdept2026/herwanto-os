@@ -9,6 +9,7 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
 import bot
 import pdf_service
+import weather_service
 import web_app
 
 
@@ -167,6 +168,48 @@ class AgenticClaudeTests(unittest.TestCase):
                 return await bot._execute_tool("get_nea_weather", {"area": "Yishun"})
 
         self.assertEqual(asyncio.run(run()), "NEA weather: Yishun")
+
+    def test_weather_brief_includes_current_readings_and_air_quality(self):
+        payloads = {
+            weather_service.TWO_HOUR_V2: {
+                "code": 0,
+                "data": {
+                    "items": [{
+                        "update_timestamp": "2026-04-30T20:00:00+08:00",
+                        "valid_period": {"start": "2026-04-30T20:00:00+08:00", "end": "2026-04-30T22:00:00+08:00"},
+                        "forecasts": [{"area": "Yishun", "forecast": {"text": "Cloudy"}}],
+                    }]
+                },
+            },
+            weather_service.AIR_TEMPERATURE_V1: {
+                "metadata": {"stations": [{"id": "S1", "name": "Yishun"}]},
+                "items": [{"readings": [{"station_id": "S1", "value": 29.4}]}],
+            },
+            weather_service.RELATIVE_HUMIDITY_V1: {
+                "metadata": {"stations": [{"id": "S2", "name": "Yishun"}]},
+                "items": [{"readings": [{"station_id": "S2", "value": 78}]}],
+            },
+            weather_service.PSI_V1: {
+                "items": [{
+                    "readings": {
+                        "psi_twenty_four_hourly": {"north": 42},
+                        "pm25_twenty_four_hourly": {"north": 8},
+                    }
+                }],
+            },
+            weather_service.PM25_V1: {
+                "items": [{"readings": {"pm25_one_hourly": {"north": 6}}}],
+            },
+        }
+
+        with patch.object(weather_service, "_get_json", side_effect=lambda url: payloads[url]):
+            brief = weather_service.build_weather_brief("Yishun", include_24h=False)
+
+        self.assertIn("Nowcast: Cloudy", brief)
+        self.assertIn("Temp 29.4 deg C", brief)
+        self.assertIn("Humidity 78%", brief)
+        self.assertIn("24h PSI 42", brief)
+        self.assertIn("1h PM2.5 6 ug/m3", brief)
 
     def test_gmail_body_text_decodes_plain_parts(self):
         encoded = bot.base64.urlsafe_b64encode(

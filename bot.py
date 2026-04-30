@@ -258,7 +258,7 @@ Rules:
 - Uploaded PDFs/images are saved as file memory after processing. When the user later refers to a previously uploaded file, use Stored memory / Files first; do not ask for a re-upload unless the stored summary lacks the exact detail needed.
 - When the user asks about his day, week, workload, priorities, deadlines, or project status — call get_assistant_context before answering.
 - When the user asks about latest news, current events, headlines, football, F1, AI, Singapore education, apps, Apple, Nothing OS, or his shortlisted topics — call get_latest_news before answering.
-- When the user asks about weather, rain, forecast, haze, PSI, umbrella, or whether it will rain in Singapore — call get_nea_weather before answering. If no area is specified, use Yishun.
+- When the user asks about weather, rain, forecast, haze, PSI, air quality, umbrella, or whether it will rain in Singapore — call get_nea_weather before answering. If no area is specified, use Yishun. Weather answers must include available temperature, humidity, PSI/PM2.5 air quality, 2-hour nowcast, and 24-hour forecast details.
 - When the user says "remember", "note that", or gives stable preferences/facts about himself — call remember_user_info.
 - When the user gives a project progress update — call update_project_status.
 - When the user asks to follow up with someone later, call create_followup.
@@ -499,7 +499,7 @@ NEWS_TOOL = {
 
 WEATHER_TOOL = {
     "name": "get_nea_weather",
-    "description": "Fetch latest Singapore weather from NEA/MSS via data.gov.sg. Use for weather, rain, forecast, haze, PSI, umbrella, or whether it will rain. If no area is specified, use Yishun.",
+    "description": "Fetch latest Singapore weather from NEA/MSS via data.gov.sg, including 2-hour nowcast, temperature, humidity, PSI/PM2.5 air quality, and forecast details. Use for weather, rain, forecast, haze, PSI, air quality, umbrella, or whether it will rain. If no area is specified, use Yishun.",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -1826,7 +1826,8 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
 
     if "get_nea_weather" in available and has_any([
         "weather", "forecast", "rain", "raining", "rainy", "showers",
-        "thunder", "storm", "umbrella", "haze", "psi", "nea", "mss"
+        "thunder", "storm", "umbrella", "haze", "psi", "pm2.5",
+        "air quality", "nea", "mss"
     ]):
         return "get_nea_weather"
 
@@ -1896,6 +1897,16 @@ def _forced_tool_for_current_turn(messages: list[dict], tools: list[dict]) -> st
     if not isinstance(content, str):
         return None
     return _forced_tool_for_text(content, tools)
+
+
+async def _run_forced_weather_fallback(tool_choice: str | None) -> str | None:
+    if tool_choice != "get_nea_weather":
+        return None
+    return await _execute_tool("get_nea_weather", {
+        "area": "Yishun",
+        "include_24h": True,
+        "include_4day": False,
+    })
 
 
 _MONTH_LOOKUP = {
@@ -3067,7 +3078,7 @@ def pwa_tools_for_message(text: str) -> list[dict]:
         add(NEWS_TOOL)
         if ss.search_enabled():
             add(SEARCH_TOOL)
-    if re.search(r"\b(weather|forecast|rain|raining|rainy|shower|showers|thunder|storm|umbrella|haze|psi|nea|mss)\b", text):
+    if re.search(r"\b(weather|forecast|rain|raining|rainy|shower|showers|thunder|storm|umbrella|haze|psi|pm2\.5|air quality|nea|mss)\b", text):
         add(WEATHER_TOOL)
     if re.search(r"\b(document|docx|worksheet|letter|report|lesson plan|handout|memo|proposal|meeting notes)\b", text):
         add(DOCUMENT_ARTIFACT_TOOL, TEMPLATE_MEMORY_TOOL)
@@ -3101,7 +3112,9 @@ async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
         )
 
         if resp.stop_reason != "tool_use":
-            reply_text = next((b.text for b in resp.content if b.type == "text"), "Done.")
+            reply_text = await _run_forced_weather_fallback(forced_tool)
+            if not reply_text:
+                reply_text = next((b.text for b in resp.content if b.type == "text"), "Done.")
             break
 
         messages.append({"role": "assistant", "content": resp.content})
@@ -3126,7 +3139,7 @@ def _looks_tool_heavy(text: str) -> bool:
         r"\b(calendar|schedule|meeting|event|remind|nudge|task|due|marking|scripts?|"
         r"email|gmail|inbox|draft|reply|timetable|lesson|news|latest|search|remember|"
         r"weather|forecast|rain|raining|rainy|shower|showers|thunder|storm|umbrella|"
-        r"haze|psi|nea|mss|project|projects|gameplan|ruh|rūḥ|apps?|app store|"
+        r"haze|psi|pm2\.5|air quality|nea|mss|project|projects|gameplan|ruh|rūḥ|apps?|app store|"
         r"milestone|launched|shipped|released|approved|rejected|submitted|blocked|"
         r"document|worksheet|slides?|ppt|deck|follow\s*up|done|complete)\b",
         text,
@@ -3219,7 +3232,12 @@ async def stream_agentic_claude(messages, max_tokens=650, tools=None):
             resp = await stream.get_final_message()
 
         if resp.stop_reason != "tool_use":
-            reply_text = "".join(text_parts) or next((b.text for b in resp.content if b.type == "text"), "Done.")
+            fallback_text = await _run_forced_weather_fallback(forced_tool)
+            if fallback_text:
+                reply_text = fallback_text
+                yield {"type": "replace", "text": reply_text}
+            else:
+                reply_text = "".join(text_parts) or next((b.text for b in resp.content if b.type == "text"), "Done.")
             break
 
         messages.append({"role": "assistant", "content": resp.content})

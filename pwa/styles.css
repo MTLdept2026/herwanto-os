@@ -165,7 +165,7 @@ textarea {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 4px 0 var(--space-sm);
+  padding: 4px 0 var(--space-sm) clamp(38px, 3.8vw, 46px);
 }
 
 .topbar-actions,
@@ -2622,7 +2622,7 @@ html[data-theme="dark"] .segment {
     grid-template-columns: 1fr auto;
     align-items: center;
     gap: var(--space-sm);
-    padding-left: 0;
+    padding-left: 20px;
     padding-right: 0;
   }
 

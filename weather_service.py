@@ -21,8 +21,40 @@ FOUR_DAY_V2 = "https://api-open.data.gov.sg/v2/real-time/api/four-day-outlook"
 
 TWO_HOUR_V1 = "https://api.data.gov.sg/v1/environment/2-hour-weather-forecast"
 TWENTY_FOUR_HOUR_V1 = "https://api.data.gov.sg/v1/environment/24-hour-weather-forecast"
+AIR_TEMPERATURE_V1 = "https://api.data.gov.sg/v1/environment/air-temperature"
+RELATIVE_HUMIDITY_V1 = "https://api.data.gov.sg/v1/environment/relative-humidity"
+PSI_V1 = "https://api.data.gov.sg/v1/environment/psi"
+PM25_V1 = "https://api.data.gov.sg/v1/environment/pm25"
 
 DEFAULT_AREA = "Yishun"
+
+REGION_AREAS = {
+    "north": {
+        "admiralty", "ang mo kio", "canberra", "choa chu kang", "khatib",
+        "kranji", "lim chu kang", "marsiling", "seletar", "sembawang",
+        "sengkang", "serangoon", "woodlands", "yio chu kang", "yishun",
+    },
+    "south": {
+        "bukit merah", "harbourfront", "keppel", "marina bay", "orchard",
+        "outram", "queenstown", "sentosa", "southern islands", "tanjong pagar",
+        "telok blangah",
+    },
+    "east": {
+        "bedok", "changi", "eunos", "geylang", "hougang", "joo chiat",
+        "katong", "pasir ris", "paya lebar", "pulau ubin", "simei",
+        "tampines", "toa payoh",
+    },
+    "west": {
+        "boon lay", "bukit batok", "bukit panjang", "bukit timah", "clementi",
+        "jurong", "jurong east", "jurong west", "pioneer", "tuas",
+        "western islands", "western water catchment",
+    },
+    "central": {
+        "bishan", "bukit timah", "city", "downtown core", "kallang",
+        "macritchie", "mandai", "marina centre", "newton", "novena",
+        "potong pasir", "river valley", "rochor", "toa payoh",
+    },
+}
 
 
 def _get_json(url: str) -> dict:
@@ -100,6 +132,88 @@ def _match_area(area: str, forecasts: list[dict]) -> dict | None:
         forecasts,
         key=lambda item: SequenceMatcher(None, wanted, item.get("area", "").lower()).ratio(),
     )
+
+
+def _region_for_area(area: str) -> str:
+    wanted = " ".join((area or DEFAULT_AREA).lower().split())
+    for region, areas in REGION_AREAS.items():
+        if wanted in areas:
+            return region
+    best_region = "national"
+    best_score = 0.0
+    for region, areas in REGION_AREAS.items():
+        for candidate in areas:
+            score = SequenceMatcher(None, wanted, candidate).ratio()
+            if score > best_score:
+                best_region = region
+                best_score = score
+    return best_region if best_score >= 0.62 else "national"
+
+
+def _latest_station_reading(url: str, area: str) -> dict:
+    payload = _get_json(url)
+    stations = (payload.get("metadata") or {}).get("stations") or []
+    readings = ((payload.get("items") or [{}])[0]).get("readings") or []
+    station_by_id = {station.get("id"): station for station in stations}
+    wanted = " ".join((area or DEFAULT_AREA).lower().split())
+    reading_by_station = {reading.get("station_id"): reading.get("value") for reading in readings}
+    available = [
+        {
+            "station": station,
+            "value": reading_by_station.get(station.get("id")),
+        }
+        for station in stations
+        if station.get("id") in reading_by_station
+    ]
+    if not available:
+        return {}
+
+    exact = [
+        item for item in available
+        if (item["station"].get("name") or "").lower() == wanted
+    ]
+    if exact:
+        selected = exact[0]
+    else:
+        selected = max(
+            available,
+            key=lambda item: SequenceMatcher(None, wanted, (item["station"].get("name") or "").lower()).ratio(),
+        )
+    station = selected.get("station") or station_by_id.get(selected.get("station_id")) or {}
+    return {"station": station.get("name", ""), "value": selected.get("value")}
+
+
+def _air_quality(area: str) -> dict:
+    region = _region_for_area(area)
+    result = {"region": region}
+    try:
+        item = (_get_json(PSI_V1).get("items") or [{}])[0]
+        readings = item.get("readings") or {}
+        result["psi_24h"] = (readings.get("psi_twenty_four_hourly") or {}).get(region)
+        result["pm25_24h"] = (readings.get("pm25_twenty_four_hourly") or {}).get(region)
+    except Exception as e:
+        logger.warning(f"NEA PSI fetch failed: {e}")
+    try:
+        item = (_get_json(PM25_V1).get("items") or [{}])[0]
+        readings = item.get("readings") or {}
+        result["pm25_1h"] = (readings.get("pm25_one_hourly") or {}).get(region)
+    except Exception as e:
+        logger.warning(f"NEA PM2.5 fetch failed: {e}")
+    return result
+
+
+def _current_conditions(area: str) -> dict:
+    conditions = {}
+    try:
+        conditions["temperature"] = _latest_station_reading(AIR_TEMPERATURE_V1, area)
+    except Exception as e:
+        logger.warning(f"NEA air temperature fetch failed: {e}")
+    try:
+        conditions["humidity"] = _latest_station_reading(RELATIVE_HUMIDITY_V1, area)
+    except Exception as e:
+        logger.warning(f"NEA relative humidity fetch failed: {e}")
+    conditions["air_quality"] = _air_quality(area)
+    return conditions
 
 
 def _two_hour_forecast(area: str = "") -> dict:
@@ -190,6 +304,27 @@ def build_weather_brief(area: str = "", include_24h: bool = True, include_4day: 
         lines.append("Nowcast: area not found; closest NEA areas available are " + ", ".join(item["area"] for item in forecasts[:8]))
     else:
         lines.append("Nowcast: unavailable.")
+
+    conditions = _current_conditions(matched.get("area", area) if matched else area)
+    current_parts = []
+    temperature = conditions.get("temperature") or {}
+    humidity_now = conditions.get("humidity") or {}
+    air_quality = conditions.get("air_quality") or {}
+    if temperature.get("value") is not None:
+        current_parts.append(f"Temp {temperature['value']} deg C at {temperature.get('station') or 'nearest station'}")
+    if humidity_now.get("value") is not None:
+        current_parts.append(f"Humidity {humidity_now['value']}% at {humidity_now.get('station') or 'nearest station'}")
+    aq_parts = []
+    if air_quality.get("psi_24h") is not None:
+        aq_parts.append(f"24h PSI {air_quality['psi_24h']}")
+    if air_quality.get("pm25_1h") is not None:
+        aq_parts.append(f"1h PM2.5 {air_quality['pm25_1h']} ug/m3")
+    if air_quality.get("pm25_24h") is not None:
+        aq_parts.append(f"24h PM2.5 {air_quality['pm25_24h']} ug/m3")
+    if aq_parts:
+        current_parts.append(f"Air quality ({air_quality.get('region', 'national').title()}): " + ", ".join(aq_parts))
+    if current_parts:
+        lines.append("Current readings: " + "; ".join(current_parts))
 
     if include_24h:
         day = _twenty_four_hour_forecast()
