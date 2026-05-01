@@ -1140,7 +1140,7 @@ html[data-theme="dark"] .segment {
   align-items: center;
   min-height: 34px;
   padding: 0 12px;
-  color: #111111;
+  color: var(--text-primary);
   border: 1px solid transparent;
   border-radius: 0;
   font-family: var(--font-ui);
@@ -1150,7 +1150,15 @@ html[data-theme="dark"] .segment {
 }
 
 .load-badge.load-green {
-  background: color-mix(in srgb, var(--success) 20%, var(--surface-raised));
+  color: #052316;
+  border-color: color-mix(in srgb, var(--success) 58%, transparent);
+  background: color-mix(in srgb, var(--success) 72%, #ffffff);
+}
+
+html[data-theme="dark"] .load-badge.load-green {
+  color: #06130d;
+  border-color: color-mix(in srgb, var(--success) 78%, transparent);
+  background: color-mix(in srgb, var(--success) 82%, #ffffff);
 }
 
 .load-badge.load-yellow {
