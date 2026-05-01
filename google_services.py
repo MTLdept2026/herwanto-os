@@ -877,6 +877,77 @@ def archive_app_notifications(notification_ids: list[str]) -> int:
     return changed
 
 
+def get_insight_feedback() -> list:
+    raw = get_config("insight_feedback")
+    if not raw:
+        return []
+    try:
+        feedback = json.loads(raw)
+        return feedback if isinstance(feedback, list) else []
+    except Exception:
+        return []
+
+
+def add_insight_feedback(kind: str, target: str, rating: str, note: str = "") -> list:
+    item = {
+        "created": datetime.now(SGT).isoformat(),
+        "kind": str(kind or "insight").strip(),
+        "target": str(target or "").strip()[:240],
+        "rating": str(rating or "").strip()[:40],
+        "note": str(note or "").strip()[:500],
+    }
+    feedback = get_insight_feedback()
+    feedback.append(item)
+    feedback = feedback[-120:]
+    set_config("insight_feedback", json.dumps(feedback, ensure_ascii=False))
+    return feedback
+
+
+DEFAULT_TASTE_PROFILE = {
+    "sources_to_trust": [],
+    "sources_to_avoid": [],
+    "quality_bar": "",
+    "preferred_depth": "",
+    "design_taste": "",
+    "business_lens": "",
+    "islamic_content_tone": "",
+}
+
+
+def get_taste_profile() -> dict:
+    raw = get_config("taste_profile")
+    profile = dict(DEFAULT_TASTE_PROFILE)
+    if not raw:
+        return profile
+    try:
+        stored = json.loads(raw)
+    except Exception:
+        return profile
+    if isinstance(stored, dict):
+        for key in profile:
+            value = stored.get(key)
+            if isinstance(profile[key], list):
+                profile[key] = [str(item).strip() for item in value if str(item).strip()] if isinstance(value, list) else []
+            else:
+                profile[key] = str(value or "").strip()
+    return profile
+
+
+def set_taste_profile(profile: dict) -> dict:
+    clean = dict(DEFAULT_TASTE_PROFILE)
+    for key in clean:
+        value = profile.get(key) if isinstance(profile, dict) else None
+        if isinstance(clean[key], list):
+            if isinstance(value, str):
+                clean[key] = [part.strip() for part in value.split(",") if part.strip()]
+            elif isinstance(value, list):
+                clean[key] = [str(item).strip() for item in value if str(item).strip()]
+        else:
+            clean[key] = str(value or "").strip()[:1000]
+    set_config("taste_profile", json.dumps(clean, ensure_ascii=False))
+    return clean
+
+
 def get_web_push_subscriptions() -> list:
     raw = get_config("web_push_subscriptions")
     if not raw:
@@ -1078,14 +1149,30 @@ DEFAULT_NEWS_TOPICS = [
     {"label": "Liverpool / EPL", "query": "Liverpool FC Premier League"},
     {"label": "F1", "query": "Formula 1"},
     {"label": "AI", "query": "Claude Gemini Codex AI"},
-    {"label": "Islam", "query": "Islam Muslim"},
+    {"label": "Android", "query": "Android OS Google Pixel app ecosystem"},
+    {"label": "iOS", "query": "iOS iPhone Apple developer"},
+    {"label": "Developer Updates", "query": "iOS Android React Vite Capacitor developer updates"},
+    {"label": "Islam", "query": "Islam Muslim spirituality Singapore"},
     {"label": "SG Education", "query": "Singapore education MOE"},
-    {"label": "Current Affairs", "query": "Singapore news today"},
+    {"label": "SG News", "query": "Singapore news today"},
     {"label": "Design / UI/UX", "query": "UI UX design"},
     {"label": "App Dev", "query": "iOS Android app development"},
     {"label": "macOS", "query": "macOS Apple"},
-    {"label": "Nothing OS", "query": "Nothing Phone Android"},
+    {"label": "Nothing Products", "query": "Nothing Phone CMF earbuds product launch"},
+    {"label": "Nothing OS", "query": "Nothing OS Nothing Phone Android update"},
 ]
+
+PINNED_NEWS_TOPIC_LABELS = {
+    "f1",
+    "android",
+    "ios",
+    "developer updates",
+    "islam",
+    "sg education",
+    "sg news",
+    "nothing products",
+    "nothing os",
+}
 
 
 def get_news_topics() -> list:
@@ -1105,7 +1192,14 @@ def get_news_topics() -> list:
         query = str(topic.get("query", "")).strip()
         if label and query:
             clean.append({"label": label, "query": query})
-    return clean or [dict(topic) for topic in DEFAULT_NEWS_TOPICS]
+    if not clean:
+        return [dict(topic) for topic in DEFAULT_NEWS_TOPICS]
+    seen = {topic["label"].lower() for topic in clean}
+    for topic in DEFAULT_NEWS_TOPICS:
+        if topic["label"].lower() in PINNED_NEWS_TOPIC_LABELS and topic["label"].lower() not in seen:
+            clean.append(dict(topic))
+            seen.add(topic["label"].lower())
+    return clean
 
 
 def set_news_topics(topics: list):

@@ -13,7 +13,7 @@
     />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260430-25" />
+    <link rel="stylesheet" href="./styles.css?v=20260501-1" />
   </head>
   <body>
     <main class="shell">
@@ -296,6 +296,13 @@
             <div id="homeFocusLabel" class="metric-label">LOAD GUIDANCE</div>
           </section>
 
+          <section class="panel ops-panel ops-card-wide">
+            <div class="section-head compact">
+              <h3>Islamic Rhythm</h3>
+            </div>
+            <div id="homeIslamic" class="rich-output"></div>
+          </section>
+
           <section class="ops-card">
             <p class="eyebrow">Agenda Load</p>
             <div id="homeAgendaCount" class="metric-value">0</div>
@@ -348,6 +355,19 @@
               <h3>Tasks</h3>
             </div>
             <div id="homeTasks" class="rich-output"></div>
+          </section>
+          <section class="panel ops-panel ops-card-wide">
+            <div class="section-head compact">
+              <h3>Anticipatory Signals</h3>
+            </div>
+            <div id="homeAnticipatory" class="rich-output"></div>
+          </section>
+          <section class="panel ops-panel ops-card-wide">
+            <div class="section-head compact">
+              <h3>Taste Calibration</h3>
+              <button id="saveTasteBtn" type="button" class="ghost-btn">Save</button>
+            </div>
+            <div id="tasteQuestions" class="taste-questions"></div>
           </section>
           <section class="ops-card file-memory-dial">
             <p class="eyebrow">File Memory</p>
@@ -489,6 +509,6 @@
       </section>
     </main>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-    <script src="./app.js?v=20260430-9" type="module"></script>
+    <script src="./app.js?v=20260501-1" type="module"></script>
   </body>
 </html>

@@ -29,6 +29,7 @@ import weather_service as ws
 import artifact_service as artifacts
 import pdf_service as pdfs
 import document_service as docs
+import islamic_service as isl
 
 # ─── SETUP ───────────────────────────────────────────────────────────────────
 
@@ -253,6 +254,7 @@ Rules:
 - When the user asks you to nudge, ping, check in, remind him at a specific time, or initiate a chat later — call create_proactive_nudge. Use this for time-specific heads-ups, not ordinary all-day deadlines.
 - When the user asks for a recurring daily ping/check-in until he replies yes/done — call create_daily_checkin.
 - When the user asks for daily reminders/check-ins to adapt around his schedule, breaks, timetable, lessons, or calendar, call create_break_aware_daily_checkin. This is especially appropriate for selawat, salawat, selawat ke atas Nabi, istighfar, zikr/dhikr, and similar habits he wants during free pockets of the day.
+- Islamic practice is first-class context: use MUIS Singapore prayer times, Hijri context, fasting windows, and his timetable/calendar to help him protect prayer time. If a prayer enters during a lesson, advise praying as soon as the lesson ends.
 - When the user sends a screenshot, image, or PDF, inspect it for schedule items first: duties, appointments, matches, trainings, meetings, event timings, reporting times, deadlines, submissions, or preparation tasks.
 - For screenshots/PDFs/images: create calendar events for items with a clear date and time, add reminders for dated tasks/deadlines, then summarise what you added and what still needs clarification.
 - Uploaded PDFs/images are saved as file memory after processing. When the user later refers to a previously uploaded file, use Stored memory / Files first; do not ask for a re-upload unless the stored summary lacks the exact detail needed.
@@ -1281,6 +1283,225 @@ def build_news_digest(query: str = "", max_items: int = 2) -> str:
     digest = ss.get_digest_for_topics(_news_topics(), max_items=max_items)
     return f"*Latest from your shortlist*\n\n{digest or 'No news found.'}"
 
+
+TASTE_CALIBRATION_QUESTIONS = [
+    {
+        "id": "quality_bar",
+        "question": "When H.I.R.A shows you news or analysis, what makes something worth your time?",
+        "hint": "For example: original reporting, practical school relevance, product strategy, technical depth, spiritual usefulness.",
+    },
+    {
+        "id": "sources",
+        "question": "Which sources or styles should H.I.R.A trust, and which should it quietly avoid?",
+        "hint": "Name outlets, newsletters, channels, or patterns like press releases, listicles, rumours, generic AI SEO posts.",
+    },
+    {
+        "id": "design_taste",
+        "question": "What product/design taste should H.I.R.A learn from you?",
+        "hint": "Think Nothing OS, Apple, Japanese minimalism, school ops dashboards, tactical football visuals, or anything else.",
+    },
+    {
+        "id": "business_lens",
+        "question": "When connecting dots for GamePlan or Rūḥ, what commercial lens should H.I.R.A use?",
+        "hint": "Examples: school leader buyer psychology, App Store risk, Singapore parent/teacher adoption, pricing, demo value.",
+    },
+    {
+        "id": "islamic_content_tone",
+        "question": "For Islamic reminders and reflections, what tone feels right?",
+        "hint": "Gentle, scholarly, practical, Malay/Singapore context, short dalil, reflective, no preachiness, etc.",
+    },
+]
+
+
+def taste_calibration_prompt() -> dict:
+    profile = gs.get_taste_profile() if google_ok() else {}
+    return {
+        "profile": profile,
+        "questions": TASTE_CALIBRATION_QUESTIONS,
+    }
+
+
+def save_taste_profile(answers: dict) -> dict:
+    if not google_ok():
+        raise ValueError("Google is not connected")
+    current = gs.get_taste_profile()
+    sources_text = str(answers.get("sources", "") or "").strip()
+    next_profile = {
+        **current,
+        "quality_bar": answers.get("quality_bar", current.get("quality_bar", "")),
+        "design_taste": answers.get("design_taste", current.get("design_taste", "")),
+        "business_lens": answers.get("business_lens", current.get("business_lens", "")),
+        "islamic_content_tone": answers.get("islamic_content_tone", current.get("islamic_content_tone", "")),
+    }
+    if sources_text:
+        avoid_markers = ("avoid:", "ignore:", "skip:")
+        lower = sources_text.lower()
+        if any(marker in lower for marker in avoid_markers):
+            trusted, _, avoid = sources_text.partition(";")
+            next_profile["sources_to_trust"] = trusted.replace("trust:", "").strip()
+            next_profile["sources_to_avoid"] = avoid.replace("avoid:", "").replace("ignore:", "").replace("skip:", "").strip()
+        else:
+            next_profile["sources_to_trust"] = sources_text
+    return gs.set_taste_profile(next_profile)
+
+
+def _insight(key: str, title: str, body: str, score: int, reason: str, actions: list[str] | None = None) -> dict:
+    return {
+        "key": key,
+        "title": title,
+        "body": body,
+        "score": max(0, min(100, int(score))),
+        "reason": reason,
+        "actions": actions or [],
+    }
+
+
+def build_project_radar(projects: list[dict] | None = None, topic_labels: list[str] | None = None) -> list[dict]:
+    projects = projects or []
+    topic_labels = topic_labels or [label.lower() for label, _ in _news_topics()]
+    project_names = {str(p.get("project", "")).lower(): p for p in projects if p.get("project")}
+    radar = []
+    if "gameplan" in project_names:
+        if any("education" in label or "sg" in label for label in topic_labels):
+            radar.append(_insight(
+                "radar:gameplan:sg-education",
+                "SG education may shape GamePlan positioning",
+                "Watch for school policy, CCA, admin workload, and student development angles that sharpen the pitch.",
+                74,
+                "GamePlan sells into Singapore schools, and your watchlist includes SG education.",
+                ["Open latest SG Education headlines", "Draft one pitch-deck implication"],
+            ))
+        if any("f1" in label or "liverpool" in label for label in topic_labels):
+            radar.append(_insight(
+                "radar:gameplan:sports-models",
+                "Sports news may contain reusable coaching models",
+                "Training setups, tactical language, or elite team routines can become Football CCA/GamePlan examples.",
+                62,
+                "You track sports and run Football CCA while building GamePlan.",
+                ["Capture coaching example"],
+            ))
+    if any(name in project_names for name in ("ruh", "rūḥ")):
+        if any("islam" in label for label in topic_labels):
+            radar.append(_insight(
+                "radar:ruh:islam-content",
+                "Islam reading may feed Rūḥ content taste",
+                "Look for gentle, useful reflections that match your preferred Islamic reminder tone.",
+                70,
+                "Rūḥ is active and Islamic content is now first-class in H.I.R.A.",
+                ["Save as Rūḥ content idea"],
+            ))
+        if any("ios" in label or "developer" in label for label in topic_labels):
+            radar.append(_insight(
+                "radar:ruh:developer-risk",
+                "Developer updates may affect Rūḥ shipping risk",
+                "App Store, iOS, or framework changes can matter before they become blockers.",
+                68,
+                "Rūḥ is in the iOS/App Store lane and you track developer updates.",
+                ["Check release risk"],
+            ))
+    if any("nothing" in label for label in topic_labels):
+        radar.append(_insight(
+            "radar:taste:nothing",
+            "Nothing updates are product taste signals",
+            "Scan them for UI tone, launch language, and product restraint, not only gadget news.",
+            55,
+            "You explicitly care about Nothing products/OS and product aesthetics.",
+            ["Save product taste note"],
+        ))
+    return radar
+
+
+def build_anticipatory_insight_items(days: int = 2, limit: int = 6) -> list[dict]:
+    now = datetime.now(SGT)
+    today = now.date()
+    insights = []
+
+    projects = []
+    reminders = []
+    if google_ok():
+        try:
+            projects = gs.get_projects()
+        except Exception:
+            projects = []
+        try:
+            reminders = gs.enriched_reminders()
+        except Exception:
+            reminders = []
+
+    if google_ok():
+        try:
+            events = gs.get_tomorrow_events()
+            for event in events[:3]:
+                title = event.get("summary", "")
+                text = " ".join([title, event.get("location", ""), event.get("description", "")]).lower()
+                related = [
+                    p.get("project", "")
+                    for p in projects
+                    if p.get("project") and p.get("project", "").lower() in text
+                ]
+                if related:
+                    insights.append(_insight(
+                        f"calendar-project:{title}",
+                        "Cross-check",
+                        f"Tomorrow's calendar has {title}; it appears connected to {', '.join(related)}.",
+                        76,
+                        "Calendar language overlaps with an active project.",
+                        ["Open project radar"],
+                    ))
+        except Exception:
+            pass
+
+    urgent = []
+    for task in reminders:
+        due = task.get("due", "9999-12-31")
+        if due <= (today + timedelta(days=max(1, min(days, 7)))).isoformat():
+            urgent.append(task)
+    for task in sorted(urgent, key=lambda item: _task_priority_score(item, today))[:2]:
+        next_action = f" Next move: {task['next_action']}." if task.get("next_action") else ""
+        insights.append(_insight(
+            f"task:{task.get('id', task.get('description', ''))}",
+            "Do-not-miss",
+            f"{task.get('description', '')} is due {task.get('due', '')}.{next_action}",
+            88 if task.get("due", "") <= today.isoformat() else 72,
+            "Near-term task with due-date pressure.",
+            ["Mark done", "Create follow-up"],
+        ))
+
+    topic_labels = [label.lower() for label, _ in _news_topics()]
+    insights.extend(build_project_radar(projects, topic_labels))
+
+    if not insights:
+        return []
+
+    deduped = []
+    seen = set()
+    feedback = gs.get_insight_feedback() if google_ok() else []
+    penalties = {item.get("target", "") for item in feedback[-30:] if item.get("rating") in {"not_now", "not_useful"}}
+    for insight in sorted(insights, key=lambda item: item["score"], reverse=True):
+        key = insight["key"]
+        if key in seen:
+            continue
+        if key in penalties:
+            insight = {**insight, "score": max(0, insight["score"] - 18)}
+            if insight["score"] < 45:
+                continue
+        seen.add(key)
+        deduped.append(insight)
+        if len(deduped) >= limit:
+            break
+    return deduped
+
+
+def build_anticipatory_insights(days: int = 2, limit: int = 6) -> str:
+    items = build_anticipatory_insight_items(days, limit)
+    if not items:
+        return "No anticipatory signals yet. Add projects, tasks, or upcoming context and I will start connecting the dots."
+    lines = ["*Anticipatory signals*\n"]
+    for item in items:
+        actions = f" Actions: {', '.join(item['actions'])}." if item.get("actions") else ""
+        lines.append(f"- *{item['title']}* ({item['score']}/100): {item['body']} _Why: {item['reason']}._{actions}")
+    return "\n".join(lines)
+
 def _parse_iso_sgt(value: str) -> datetime:
     dt = datetime.fromisoformat(value)
     if dt.tzinfo is None:
@@ -1605,6 +1826,83 @@ def _event_busy_intervals_for_date(target: date) -> list[tuple[int, int]]:
         end_min = min(24 * 60, end_dt.hour * 60 + end_dt.minute)
         intervals.append((start_min, end_min))
     return intervals
+
+
+def _lesson_busy_intervals_for_date(target: date) -> list[tuple[int, int, str]]:
+    intervals = []
+    lessons, _ = _lessons_for_date(target)
+    for lesson in lessons:
+        try:
+            start = _hm_to_minutes(lesson["start"])
+            end = _hm_to_minutes(lesson["end"])
+        except Exception:
+            continue
+        label = f"{lesson.get('subject', '')} {lesson.get('description', '')}".strip()
+        intervals.append((start, end, label))
+    return intervals
+
+
+def _prayer_plan_for_date(target: date) -> list[dict]:
+    plan = []
+    lesson_busy = _lesson_busy_intervals_for_date(target)
+
+    for prayer in isl.prayer_schedule(target):
+        minute = _hm_to_minutes(prayer["time"])
+        note = "Pray as soon as it enters."
+        blocked_until = None
+        blocker = ""
+        for start, end, label in lesson_busy:
+            if start <= minute < end:
+                blocked_until = end
+                blocker = label or "lesson"
+                break
+        if blocked_until is not None:
+            note = f"During {blocker}; pray as soon as it ends around {_minutes_to_hm(blocked_until)}."
+        plan.append({**prayer, "note": note, "blocked_until": blocked_until, "blocker": blocker})
+    return plan
+
+
+def build_islamic_brief(target: date | None = None) -> str:
+    target = target or datetime.now(SGT).date()
+    try:
+        prayer_line = isl.format_prayer_times(target)
+        hijri = isl.hijri_context(target)
+        reflection = isl.daily_reflection(target)
+        fasting = isl.is_sunnah_fasting_day(target)
+        lines = [f"*Islamic rhythm* - {hijri}", prayer_line]
+        if fasting:
+            lines.append(f"*Fasting:* {fasting}")
+        lines.append(f"*Reflection:* {reflection['text']} _({reflection['ref']})_")
+        zohor_asar = [item for item in _prayer_plan_for_date(target) if item["key"] in {"zohor", "asar", "maghrib"}]
+        for item in zohor_asar:
+            if item.get("blocked_until") is not None:
+                lines.append(f"- {item['label']} {item['time']}: {item['note']}")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"Islamic rhythm unavailable: {exc}"
+
+
+def _prayer_reminder_due(now: datetime) -> dict | None:
+    now = now.astimezone(SGT)
+    today_key = now.strftime("%Y-%m-%d")
+    now_minute = now.hour * 60 + now.minute
+    try:
+        plan = _prayer_plan_for_date(now.date())
+    except Exception as exc:
+        logger.warning("Prayer reminder plan unavailable: %s", exc)
+        return None
+
+    for item in plan:
+        key = f"prayer_prompt:{today_key}:{item['key']}"
+        if gs.get_config(key):
+            continue
+        prayer_minute = _hm_to_minutes(item["time"])
+        due_minute = item.get("blocked_until") or prayer_minute
+        if 0 <= now_minute - due_minute <= 3:
+            gs.set_config(key, now.strftime("%H:%M"))
+            return item
+    return None
+
 
 def _break_aware_slots(checkin: dict, target: date) -> list[str]:
     window_start = _hm_to_minutes(checkin.get("window_start", "08:00"))
@@ -2003,6 +2301,9 @@ def build_briefing():
         lines.append("_Timetable: use /setweek to activate_")
     lines.append("")
 
+    lines.append(build_islamic_brief(today))
+    lines.append("")
+
     if google_ok():
         try:
             events = gs.get_today_events()
@@ -2048,9 +2349,17 @@ def build_briefing():
         except Exception:
             pass
 
+    try:
+        signals = build_anticipatory_insights(days=2, limit=4)
+        if "No anticipatory" not in signals:
+            lines.append("")
+            lines.append(signals)
+    except Exception:
+        pass
+
     # Morning news digest
     try:
-        digest = ss.get_morning_digest()
+        digest = ss.get_morning_digest(_news_topics())
         if digest:
             lines.append("")
             lines.append("*Morning digest:*")
@@ -2063,14 +2372,46 @@ def build_briefing():
 
 def build_evening_briefing():
     now = datetime.now(SGT)
+    today = now.date()
     tomorrow = now.date() + timedelta(days=1)
-    lines = [f"*Evening prep*\n_{now.strftime('%A, %-d %B %Y, %H:%M SGT')}_\n"]
+    lines = [f"*Evening roundup*\n_{now.strftime('%A, %-d %B %Y, %H:%M SGT')}_\n"]
 
-    lessons, wt_label = _lessons_for_date(tomorrow)
-    lines.append(f"*Tomorrow ({tomorrow.strftime('%A, %-d %B')})*")
+    lines.append("*Today in review*")
+    lessons, wt_label = _lessons_for_date(today)
     if wt_label:
-        lines.append(f"Lessons ({_week_display(wt_label, tomorrow)}):")
-        lines.append(tt.format_lessons(lessons))
+        lesson_count = len(lessons)
+        lines.append(f"- Lessons: {lesson_count} block{'s' if lesson_count != 1 else ''} ({_week_display(wt_label, today)})")
+        if lessons:
+            lines.append(tt.format_lessons(lessons))
+    else:
+        lines.append("- Lessons: no active timetable reference.")
+    if google_ok():
+        try:
+            events = gs.get_today_events()
+            event_count = len(events)
+            lines.append(f"- Calendar: {event_count} item{'s' if event_count != 1 else ''} today")
+            formatted_today = gs.format_events(events)
+            if "Nothing" not in formatted_today:
+                lines.append(formatted_today)
+        except Exception as e:
+            lines.append(f"- Calendar unavailable: {e}")
+        try:
+            reminders = gs.get_reminders()
+            today_str = today.strftime("%Y-%m-%d")
+            due_today = [r for r in reminders if r["due"] == today_str]
+            overdue = [r for r in reminders if r["due"] < today_str]
+            lines.append(f"- Tasks: {len(due_today)} due today, {len(overdue)} overdue")
+        except Exception:
+            pass
+    lines.append("")
+
+    tomorrow_lessons, tomorrow_wt_label = _lessons_for_date(tomorrow)
+    lines.append(f"*Tomorrow prep ({tomorrow.strftime('%A, %-d %B')})*")
+    lines.append(build_islamic_brief(tomorrow))
+    lines.append("")
+    if tomorrow_wt_label:
+        lines.append(f"Lessons ({_week_display(tomorrow_wt_label, tomorrow)}):")
+        lines.append(tt.format_lessons(tomorrow_lessons))
     else:
         lines.append("No timetable reference for tomorrow.")
     lines.append("")
@@ -2078,7 +2419,7 @@ def build_evening_briefing():
     if google_ok():
         try:
             events = gs.get_tomorrow_events()
-            lines.append("*Calendar:*")
+            lines.append("*Tomorrow calendar:*")
             lines.append(gs.format_events(events))
             lines.append("")
         except Exception as e:
@@ -2092,7 +2433,15 @@ def build_evening_briefing():
         except Exception:
             pass
 
-    lines.append("\nPack/prep what future-you will quietly thank you for.")
+    try:
+        signals = build_anticipatory_insights(days=3, limit=5)
+        if "No anticipatory" not in signals:
+            lines.append("")
+            lines.append(signals)
+    except Exception:
+        pass
+
+    lines.append("\nTake note of anything that needs packing, charging, printing, replying, or mentally parking before sleep.")
     return "\n".join(lines).strip()
 
 def build_weekly_plan():
@@ -2795,6 +3144,9 @@ async def gmaildraft_cmd(update, context):
 
 async def briefing_cmd(update, context):
     await reply(update, build_briefing(), parse_mode="Markdown")
+
+async def prayers_cmd(update, context):
+    await reply(update, build_islamic_brief(), parse_mode="Markdown")
 
 async def agenda_cmd(update, context):
     if not google_ok():
@@ -3872,13 +4224,65 @@ async def handle_voice(update, context):
 def _queue_app_notification(kind: str, title: str, body: str, source: str = ""):
     try:
         item = gs.enqueue_app_notification(kind, title, body, source=source)
-        gs.send_web_push_notification(title, body, data={"id": item.get("id", ""), "kind": kind, "source": source})
+        if not _quiet_hours_active() or kind in {"urgent"}:
+            gs.send_web_push_notification(title, body, data={"id": item.get("id", ""), "kind": kind, "source": source})
     except Exception as e:
         logger.warning(f"App notification queue error: {e}")
 
 
+def _quiet_hours_active(now: datetime | None = None) -> bool:
+    now = (now or datetime.now(SGT)).astimezone(SGT)
+    start = int(os.environ.get("HIRA_QUIET_START_HOUR", "23") or 23)
+    end = int(os.environ.get("HIRA_QUIET_END_HOUR", "5") or 5)
+    return now.hour >= start or now.hour < end
+
+
+MORNING_BRIEFING_SENT_KEY = "last_morning_briefing_date"
+EVENING_BRIEFING_SENT_KEY = "last_evening_briefing_date"
+
+
+async def send_morning_briefing_once(context=None, force: bool = False, source: str = "morning_briefing") -> bool:
+    if not google_ok():
+        logger.warning("Morning briefing skipped: Google services are not connected")
+        return False
+    today_key = datetime.now(SGT).strftime("%Y-%m-%d")
+    try:
+        if not force and gs.get_config(MORNING_BRIEFING_SENT_KEY) == today_key:
+            return False
+        text = build_briefing()
+        if context is not None:
+            await _send_telegram_notification(context, text)
+        _queue_app_notification("briefing", "Morning briefing", text, source=f"{source}:{today_key}")
+        gs.set_config(MORNING_BRIEFING_SENT_KEY, today_key)
+        return True
+    except Exception as e:
+        logger.error(f"Morning briefing error: {e}")
+        return False
+
+
+async def send_evening_briefing_once(context=None, force: bool = False, source: str = "evening_briefing") -> bool:
+    if not google_ok():
+        logger.warning("Evening briefing skipped: Google services are not connected")
+        return False
+    today_key = datetime.now(SGT).strftime("%Y-%m-%d")
+    try:
+        if not force and gs.get_config(EVENING_BRIEFING_SENT_KEY) == today_key:
+            return False
+        text = build_evening_briefing()
+        if context is not None:
+            await _send_telegram_notification(context, text)
+        _queue_app_notification("briefing", "Evening roundup", text, source=f"{source}:{today_key}")
+        gs.set_config(EVENING_BRIEFING_SENT_KEY, today_key)
+        return True
+    except Exception as e:
+        logger.error(f"Evening briefing error: {e}")
+        return False
+
+
 async def _send_telegram_notification(context, text: str):
     try:
+        if _quiet_hours_active():
+            return False
         chat_id = gs.get_config("chat_id")
         if not chat_id:
             return False
@@ -3890,14 +4294,7 @@ async def _send_telegram_notification(context, text: str):
 
 
 async def morning_briefing_job(context):
-    if not google_ok():
-        return
-    try:
-        text = build_briefing()
-        await _send_telegram_notification(context, text)
-        _queue_app_notification("briefing", "Morning briefing", text, source="morning_briefing")
-    except Exception as e:
-        logger.error(f"Morning briefing error: {e}")
+    await send_morning_briefing_once(context, source="morning_briefing")
 
 async def friday_checkin_job(context):
     if not google_ok():
@@ -3917,14 +4314,7 @@ async def friday_checkin_job(context):
         logger.error(f"Friday check-in error: {e}")
 
 async def evening_briefing_job(context):
-    if not google_ok():
-        return
-    try:
-        text = build_evening_briefing()
-        await _send_telegram_notification(context, text)
-        _queue_app_notification("briefing", "Evening prep", text, source="evening_briefing")
-    except Exception as e:
-        logger.error(f"Evening briefing error: {e}")
+    await send_evening_briefing_once(context, source="evening_briefing")
 
 async def weekly_planning_job(context):
     if not google_ok():
@@ -3968,6 +4358,21 @@ async def daily_checkins_job(context):
         logger.error(f"Daily check-in error: {e}")
     finally:
         _finish_background_job("daily_checkins")
+
+
+async def prayer_reminders_job(context):
+    if not google_ok():
+        return
+    try:
+        due = _prayer_reminder_due(datetime.now(SGT))
+        if not due:
+            return
+        text = f"*Prayer reminder*\n\n{due['label']} entered at {due['time']}. {due['note']}"
+        await _send_telegram_notification(context, text)
+        _queue_app_notification("reminder", f"{due['label']} prayer", text, source=f"prayer:{due['key']}")
+    except Exception as e:
+        logger.error(f"Prayer reminder error: {e}")
+
 
 async def followups_job(context):
     if not google_ok():
@@ -4028,6 +4433,7 @@ def main():
     app.add_handler(CommandHandler("gmail",    gmail_cmd))
     app.add_handler(CommandHandler("gmaildraft", gmaildraft_cmd))
     app.add_handler(CommandHandler("briefing", briefing_cmd))
+    app.add_handler(CommandHandler("prayers",  prayers_cmd))
     app.add_handler(CommandHandler("agenda",   agenda_cmd))
     app.add_handler(CommandHandler("remember", remember_cmd))
     app.add_handler(CommandHandler("memory",   memory_cmd))
@@ -4046,7 +4452,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     jq = app.job_queue
     jq.run_daily(morning_briefing_job, time=dt_time(7, 0, 0, tzinfo=SGT), name="morning_briefing")
-    jq.run_daily(evening_briefing_job, time=dt_time(20, 30, 0, tzinfo=SGT), name="evening_briefing")
+    jq.run_daily(evening_briefing_job, time=dt_time(21, 0, 0, tzinfo=SGT), name="evening_briefing")
     jq.run_daily(weekly_planning_job, time=dt_time(19, 30, 0, tzinfo=SGT), days=(6,), name="weekly_planning")
     jq.run_daily(friday_checkin_job,   time=dt_time(17, 0, 0, tzinfo=SGT), days=(4,), name="friday_checkin")
     jq.run_repeating(
@@ -4061,6 +4467,13 @@ def main():
         interval=JOB_INTERVALS["daily_checkins"],
         first=20,
         name="daily_checkins",
+        job_kwargs={"coalesce": True, "max_instances": 1},
+    )
+    jq.run_repeating(
+        prayer_reminders_job,
+        interval=60,
+        first=30,
+        name="prayer_reminders",
         job_kwargs={"coalesce": True, "max_instances": 1},
     )
     jq.run_repeating(

@@ -182,6 +182,10 @@ function renderNotifications() {
             <span data-lucide="x" aria-hidden="true"></span>
             Dismiss
           </button>
+          <div class="notification-feedback">
+            <button type="button" class="ghost-btn" data-feedback-rating="useful" data-feedback-target="${id}">Useful</button>
+            <button type="button" class="ghost-btn" data-feedback-rating="not_now" data-feedback-target="${id}">Not now</button>
+          </div>
         </article>
       `;
     })
@@ -500,6 +504,19 @@ async function dismissNotification(id) {
     saveNotifications();
     renderNotifications();
     setStatus(`Could not dismiss notification: ${error.message}`, "warn");
+  }
+}
+
+async function sendInsightFeedback(target, rating, kind = "notification") {
+  try {
+    await api("/api/insights/feedback", {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ kind, target: String(target || ""), rating }),
+    });
+    setStatus(rating === "useful" ? "Noted. More like this." : "Noted. I will quieten signals like that.", "ok");
+  } catch (error) {
+    setStatus(`Could not save feedback: ${error.message}`, "warn");
   }
 }
 
@@ -1052,6 +1069,68 @@ function updateChatChrome() {
   document.querySelector(".chat-main")?.classList.toggle("chat-empty", !hasChat);
 }
 
+function renderTasteQuestions(taste = {}) {
+  const root = $("#tasteQuestions");
+  if (!root) return;
+  const questions = taste.questions || [];
+  const profile = taste.profile || {};
+  if (!questions.length) {
+    root.innerHTML = "<div class='empty-state compact'>Taste calibration unavailable.</div>";
+    return;
+  }
+  root.innerHTML = questions.map((item) => {
+    const value = profile[item.id] || "";
+    return `
+      <label class="taste-question">
+        <strong>${escapeHtml(item.question || "")}</strong>
+        <small>${escapeHtml(item.hint || "")}</small>
+        <textarea data-taste-answer="${escapeHtml(item.id)}" rows="3">${escapeHtml(Array.isArray(value) ? value.join(", ") : value)}</textarea>
+      </label>
+    `;
+  }).join("");
+}
+
+function renderInsightCards(items = []) {
+  if (!items.length) return renderTextBlock("No anticipatory signals yet.");
+  return `
+    <div class="insight-card-list">
+      ${items.map((item) => `
+        <article class="insight-card" data-insight-key="${escapeHtml(item.key || item.title || "")}">
+          <div class="insight-card-head">
+            <strong>${escapeHtml(item.title || "Signal")}</strong>
+            <span>${escapeHtml(String(item.score ?? "--"))}/100</span>
+          </div>
+          <p>${escapeHtml(item.body || "")}</p>
+          <small>${escapeHtml(item.reason || "")}</small>
+          ${(item.actions || []).length ? `<div class="chip-row">${item.actions.map((action) => `<span class="pill">${escapeHtml(action)}</span>`).join("")}</div>` : ""}
+          <div class="notification-feedback">
+            <button type="button" class="ghost-btn" data-insight-rating="useful" data-insight-target="${escapeHtml(item.key || "")}">Useful</button>
+            <button type="button" class="ghost-btn" data-insight-rating="not_now" data-insight-target="${escapeHtml(item.key || "")}">Not now</button>
+          </div>
+        </article>
+      `).join("")}
+    </div>
+  `;
+}
+
+async function saveTasteProfile() {
+  const answers = {};
+  document.querySelectorAll("[data-taste-answer]").forEach((field) => {
+    answers[field.dataset.tasteAnswer] = field.value.trim();
+  });
+  try {
+    await api("/api/taste", {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ answers }),
+    });
+    setStatus("Taste profile updated.", "ok");
+    await loadHome();
+  } catch (error) {
+    setStatus(`Taste profile: ${error.message}`, "error");
+  }
+}
+
 function mountChatInHome() {
   const mount = $("#homeChatMount");
   const chat = document.querySelector(".chat-shell");
@@ -1077,11 +1156,16 @@ async function loadHome() {
   }
   $("#homeAgenda").innerHTML = "<div>Loading...</div>";
   $("#homeTasks").innerHTML = "<div>Loading...</div>";
+  $("#homeAnticipatory").innerHTML = "<div>Loading...</div>";
+  $("#homeIslamic").innerHTML = "<div>Loading...</div>";
   try {
     const data = await api(`/api/home?days=${state.homeDays}`, { headers: headers(false) });
     updateLiveClock();
     $("#homeAgenda").innerHTML = renderAgendaCards(data.agenda);
     $("#homeTasks").innerHTML = renderTaskBriefFromText(data.tasks);
+    $("#homeAnticipatory").innerHTML = renderInsightCards(data.insights || []);
+    renderTasteQuestions(data.taste || {});
+    $("#homeIslamic").innerHTML = renderTextBlock(data.islamic || "Islamic rhythm unavailable right now.");
     const fileLines = countMeaningfulLines(data.files);
     $("#fileMemoryValue").textContent = String(fileLines);
     $("#fileMemoryLabel").textContent = fileLines ? "MEMORY ITEMS INDEXED" : "MEMORY STANDBY";
@@ -1128,6 +1212,8 @@ async function loadHome() {
   } catch (error) {
     $("#homeAgenda").textContent = `Error: ${error.message}`;
     $("#homeTasks").textContent = `Error: ${error.message}`;
+    $("#homeAnticipatory").textContent = `Error: ${error.message}`;
+    $("#homeIslamic").textContent = `Error: ${error.message}`;
     $("#fileMemoryValue").textContent = "--";
     $("#fileMemoryLabel").textContent = "MEMORY CHECK FAILED";
     $("#fileMemoryValueHome").textContent = "--";
@@ -1452,9 +1538,19 @@ $("#notificationsBtn").addEventListener("click", () => {
   updateNotificationControls();
 });
 $("#notificationsList").addEventListener("click", (event) => {
+  const feedback = event.target.closest("[data-feedback-rating]");
+  if (feedback) {
+    sendInsightFeedback(feedback.dataset.feedbackTarget, feedback.dataset.feedbackRating);
+    return;
+  }
   const dismiss = event.target.closest("[data-notification-dismiss]");
   if (!dismiss) return;
   dismissNotification(dismiss.dataset.notificationDismiss);
+});
+$("#homeAnticipatory").addEventListener("click", (event) => {
+  const feedback = event.target.closest("[data-insight-rating]");
+  if (!feedback) return;
+  sendInsightFeedback(feedback.dataset.insightTarget, feedback.dataset.insightRating, "insight");
 });
 $("#enableNotificationsBtn").addEventListener("click", enableNotifications);
 $("#settingsEnableNotificationsBtn").addEventListener("click", enableNotifications);
@@ -1535,6 +1631,7 @@ $("#resetChatBtn").addEventListener("click", clearChat);
 $("#gmailForm").addEventListener("submit", loadGmail);
 $("#draftForm").addEventListener("submit", createDraft);
 $("#uploadForm").addEventListener("submit", uploadFile);
+$("#saveTasteBtn").addEventListener("click", saveTasteProfile);
 $("#refreshHomeBtn").addEventListener("click", refreshHomeAndApp);
 $("#viewAgendaBtn").addEventListener("click", async () => {
   setView("agenda");

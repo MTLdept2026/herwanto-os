@@ -21,13 +21,17 @@ DIGEST_TOPICS = [
     ("⚽ Liverpool / EPL",  "Liverpool FC Premier League"),
     ("🏎️ F1",               "Formula 1"),
     ("🤖 AI",               "Claude Gemini Codex AI"),
-    ("☪️  Islam",            "Islam Muslim"),
+    ("🤖 Android",          "Android OS Google Pixel app ecosystem"),
+    ("🍎 iOS",              "iOS iPhone Apple developer"),
+    ("🧑‍💻 Developer",       "iOS Android React Vite Capacitor developer updates"),
+    ("☪️  Islam",            "Islam Muslim spirituality Singapore"),
     ("🇸🇬 SG Education",    "Singapore education MOE"),
-    ("🌍 Current Affairs",  "Singapore news today"),
+    ("🇸🇬 SG News",         "Singapore news today"),
     ("🎨 Design / UI/UX",  "UI UX design"),
     ("📱 App Dev",          "iOS Android app development"),
     ("🍎 macOS",            "macOS Apple"),
-    ("📦 Nothing OS",       "Nothing Phone Android"),
+    ("📦 Nothing Products", "Nothing Phone CMF earbuds product launch"),
+    ("📦 Nothing OS",       "Nothing OS Nothing Phone Android update"),
 ]
 
 
@@ -88,14 +92,14 @@ def google_news(query, max_items=5):
     try:
         feed = feedparser.parse(url)
         items = []
-        for entry in feed.entries[:max_items]:
+        for entry in feed.entries[: max_items * 4]:
             items.append({
                 "title": getattr(entry, "title", ""),
                 "url": getattr(entry, "link", ""),
                 "published": getattr(entry, "published", ""),
                 "source": getattr(getattr(entry, "source", None), "title", ""),
             })
-        return items
+        return _rank_news_items(items)[:max_items]
     except Exception as e:
         logger.warning(f"RSS error for '{query}': {e}")
         return []
@@ -118,6 +122,42 @@ def format_news_items(items):
     return "\n".join(lines)
 
 
+LOW_SIGNAL_NEWS_TERMS = (
+    "sponsored", "press release", "pr newswire", "globenewswire", "accesswire",
+    "rumour roundup", "rumor roundup", "leak suggests", "you won't believe",
+    "top 10", "best deals", "buy now", "coupon", "price drop",
+)
+
+HIGH_SIGNAL_NEWS_TERMS = (
+    "analysis", "explainer", "policy", "research", "report", "interview",
+    "launches", "announces", "updates", "reform", "curriculum", "developer",
+    "release notes", "security", "education", "ministry", "moe",
+)
+
+
+def _news_quality_score(item: dict) -> int:
+    text = f"{item.get('title', '')} {item.get('source', '')}".lower()
+    score = 10
+    for term in LOW_SIGNAL_NEWS_TERMS:
+        if term in text:
+            score -= 8
+    for term in HIGH_SIGNAL_NEWS_TERMS:
+        if term in text:
+            score += 4
+    title = item.get("title", "")
+    if len(title) < 35:
+        score -= 2
+    if "|" in title or title.count("-") > 2:
+        score -= 1
+    return score
+
+
+def _rank_news_items(items: list[dict]) -> list[dict]:
+    filtered = [item for item in items if _news_quality_score(item) > 0]
+    ranked = filtered or items
+    return sorted(ranked, key=_news_quality_score, reverse=True)
+
+
 def get_digest_for_topics(topics, max_items=2):
     """Return latest headlines for a list of (label, query) topics."""
     lines = []
@@ -133,14 +173,14 @@ def get_digest_for_topics(topics, max_items=2):
     return "\n".join(lines)
 
 
-def get_morning_digest():
+def get_morning_digest(topics=None):
     """
     Fetch one headline per topic using Google News RSS.
     No API key needed — always works.
     """
     lines = []
-    for label, query in DIGEST_TOPICS:
-        headlines = _google_news_headline(query, max_items=1)
-        if headlines:
-            lines.append(f"{label}: {headlines[0][:85]}")
+    for label, query in (topics or DIGEST_TOPICS):
+        items = google_news(query, max_items=1)
+        if items:
+            lines.append(f"{label}: {items[0]['title'][:85]}")
     return "\n".join(lines)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import json
 import os
 import tempfile
@@ -31,6 +32,7 @@ except ValueError:
     _HOME_EXECUTOR_WORKERS = 2
 _HOME_EXECUTOR_WORKERS = max(1, min(3, _HOME_EXECUTOR_WORKERS))
 _HOME_EXECUTOR = ThreadPoolExecutor(max_workers=_HOME_EXECUTOR_WORKERS)
+_WEB_SCHEDULER_TASKS: list[asyncio.Task] = []
 
 
 @app.middleware("http")
@@ -41,6 +43,66 @@ async def add_static_cache_headers(request: Request, call_next):
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
     return response
+
+
+async def _web_daily_briefing_loop(hour: int, minute: int, sender, source: str):
+    while True:
+        try:
+            now = datetime.now(bot.SGT)
+            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if now >= target:
+                await sender(context=None, source=source)
+                target = target + bot.timedelta(days=1)
+            sleep_for = max(60, min(1800, (target - now).total_seconds()))
+            await asyncio.sleep(sleep_for)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            bot.logger.warning(f"Web {source} scheduler error: {exc}")
+            await asyncio.sleep(300)
+
+
+async def _web_prayer_reminder_loop():
+    while True:
+        try:
+            due = bot._prayer_reminder_due(datetime.now(bot.SGT))
+            if due:
+                text = f"*Prayer reminder*\n\n{due['label']} entered at {due['time']}. {due['note']}"
+                bot._queue_app_notification("reminder", f"{due['label']} prayer", text, source=f"web_prayer:{due['key']}")
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            bot.logger.warning(f"Web prayer reminder scheduler error: {exc}")
+            await asyncio.sleep(300)
+
+
+@app.on_event("startup")
+async def start_web_scheduler():
+    global _WEB_SCHEDULER_TASKS
+    enabled = os.environ.get("HIRA_WEB_MORNING_BRIEFING", "1").strip().lower() not in {"0", "false", "no", "off"}
+    evening_enabled = os.environ.get("HIRA_WEB_EVENING_BRIEFING", "1").strip().lower() not in {"0", "false", "no", "off"}
+    prayer_enabled = os.environ.get("HIRA_WEB_PRAYER_REMINDERS", "1").strip().lower() not in {"0", "false", "no", "off"}
+    if _WEB_SCHEDULER_TASKS:
+        return
+    if enabled:
+        _WEB_SCHEDULER_TASKS.append(asyncio.create_task(
+            _web_daily_briefing_loop(7, 0, bot.send_morning_briefing_once, "web_morning_briefing")
+        ))
+    if evening_enabled:
+        _WEB_SCHEDULER_TASKS.append(asyncio.create_task(
+            _web_daily_briefing_loop(21, 0, bot.send_evening_briefing_once, "web_evening_briefing")
+        ))
+    if prayer_enabled:
+        _WEB_SCHEDULER_TASKS.append(asyncio.create_task(_web_prayer_reminder_loop()))
+
+
+@app.on_event("shutdown")
+async def stop_web_scheduler():
+    global _WEB_SCHEDULER_TASKS
+    for task in _WEB_SCHEDULER_TASKS:
+        task.cancel()
+    _WEB_SCHEDULER_TASKS = []
 
 
 class ChatRequest(BaseModel):
@@ -69,6 +131,17 @@ class PushSubscribeRequest(BaseModel):
     subscription: dict
 
 
+class InsightFeedbackRequest(BaseModel):
+    kind: str = "insight"
+    target: str
+    rating: str
+    note: str = ""
+
+
+class TasteProfileRequest(BaseModel):
+    answers: dict
+
+
 def _history_key(client_id: str | None) -> str:
     clean = (client_id or "").strip()
     return f"pwa:{clean}" if clean else "pwa"
@@ -86,6 +159,10 @@ def _parallel_home_data(days: int) -> dict:
         "agenda": lambda: bot.build_agenda(days),
         "daily_load": lambda: bot.build_daily_load(days),
         "tasks": lambda: bot.build_task_brief(days),
+        "anticipatory": lambda: bot.build_anticipatory_insights(days=2, limit=6),
+        "insights": lambda: bot.build_anticipatory_insight_items(days=2, limit=6),
+        "taste": bot.taste_calibration_prompt,
+        "islamic": lambda: bot.build_islamic_brief(),
         "files": bot.build_files_index,
         "services": _service_status,
         "marking": _marking_summary,
@@ -109,6 +186,10 @@ def _parallel_home_data(days: int) -> dict:
             "rest_note": "Workload comparison unavailable until schedule data is connected.",
         },
         "tasks": "Task brief unavailable until Google is connected.",
+        "anticipatory": "Anticipatory signals unavailable until Google is connected.",
+        "insights": [],
+        "taste": {"profile": {}, "questions": []},
+        "islamic": "Islamic rhythm unavailable right now.",
         "files": "File memory unavailable until Google is connected.",
         "services": {
             "google": False,
@@ -406,6 +487,12 @@ def tasks(days: int = 7, x_hira_token: Optional[str] = Header(default=None)):
     }
 
 
+@app.get("/api/islamic")
+def islamic(x_hira_token: Optional[str] = Header(default=None)):
+    _require_token(x_hira_token)
+    return {"text": _safe_text(lambda: bot.build_islamic_brief(), "Islamic rhythm unavailable right now.")}
+
+
 @app.post("/api/tasks/{task_id}/done")
 def task_done(task_id: str, x_hira_token: Optional[str] = Header(default=None)):
     _require_token(x_hira_token)
@@ -479,6 +566,38 @@ def notifications_archive(
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Could not dismiss notifications: {exc}") from exc
     return {"ok": True, "archived": archived}
+
+
+@app.post("/api/insights/feedback")
+def insight_feedback(
+    req: InsightFeedbackRequest,
+    x_hira_token: Optional[str] = Header(default=None),
+):
+    _require_token(x_hira_token)
+    try:
+        feedback = bot.gs.add_insight_feedback(req.kind, req.target, req.rating, req.note)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not save feedback: {exc}") from exc
+    return {"ok": True, "count": len(feedback)}
+
+
+@app.get("/api/taste")
+def taste_profile(x_hira_token: Optional[str] = Header(default=None)):
+    _require_token(x_hira_token)
+    return bot.taste_calibration_prompt()
+
+
+@app.post("/api/taste")
+def taste_profile_save(
+    req: TasteProfileRequest,
+    x_hira_token: Optional[str] = Header(default=None),
+):
+    _require_token(x_hira_token)
+    try:
+        profile = bot.save_taste_profile(req.answers)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not save taste profile: {exc}") from exc
+    return {"ok": True, "profile": profile}
 
 
 @app.get("/api/files")

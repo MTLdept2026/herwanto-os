@@ -558,6 +558,19 @@ h3 {
   height: 14px;
 }
 
+.notification-feedback {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.notification-feedback button {
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 10px;
+}
+
 .notification-item strong {
   color: var(--text-display);
 }
@@ -573,6 +586,45 @@ h3 {
   color: var(--text-primary);
   line-height: 1.45;
   white-space: pre-line;
+}
+
+.insight-card-list {
+  display: grid;
+  gap: var(--space-sm);
+}
+
+.insight-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border-visible);
+  background: var(--surface-raised);
+}
+
+.insight-card-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: var(--space-md);
+}
+
+.insight-card-head span {
+  flex: 0 0 auto;
+  color: var(--interactive);
+  font-family: var(--font-ui);
+  font-size: var(--label);
+  font-weight: 700;
+}
+
+.insight-card p {
+  color: var(--text-primary);
+  line-height: 1.45;
+}
+
+.insight-card small {
+  color: var(--text-secondary);
+  font-family: var(--font-readable);
+  line-height: 1.35;
 }
 
 .status-bar {
@@ -1547,6 +1599,22 @@ html[data-theme="dark"] .segment {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   max-width: 820px;
+}
+
+.taste-questions {
+  display: grid;
+  gap: var(--space-sm);
+}
+
+.taste-question {
+  display: grid;
+  gap: 6px;
+}
+
+.taste-question small {
+  color: var(--text-secondary);
+  font-family: var(--font-readable);
+  line-height: 1.35;
 }
 
 .panel {
@@ -2646,6 +2714,10 @@ html[data-theme="dark"] .segment {
   .status-clockbar {
     min-height: 150px;
     padding: 18px 20px;
+  }
+
+  .nav-tabs {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .clock-live-label {
