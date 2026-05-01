@@ -1567,22 +1567,6 @@ html[data-theme="dark"] .segment {
   max-width: 820px;
 }
 
-.taste-questions {
-  display: grid;
-  gap: var(--space-sm);
-}
-
-.taste-question {
-  display: grid;
-  gap: 6px;
-}
-
-.taste-question small {
-  color: var(--text-secondary);
-  font-family: var(--font-readable);
-  line-height: 1.35;
-}
-
 .panel {
   padding: var(--space-md);
 }

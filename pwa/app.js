@@ -1076,45 +1076,6 @@ function updateChatChrome() {
   document.querySelector(".chat-main")?.classList.toggle("chat-empty", !hasChat);
 }
 
-function renderTasteQuestions(taste = {}) {
-  const root = $("#tasteQuestions");
-  if (!root) return;
-  const questions = taste.questions || [];
-  const profile = taste.profile || {};
-  if (!questions.length) {
-    root.innerHTML = "<div class='empty-state compact'>Taste calibration unavailable.</div>";
-    return;
-  }
-  root.innerHTML = questions.map((item) => {
-    const value = profile[item.id] || "";
-    return `
-      <label class="taste-question">
-        <strong>${escapeHtml(item.question || "")}</strong>
-        <small>${escapeHtml(item.hint || "")}</small>
-        <textarea data-taste-answer="${escapeHtml(item.id)}" rows="3">${escapeHtml(Array.isArray(value) ? value.join(", ") : value)}</textarea>
-      </label>
-    `;
-  }).join("");
-}
-
-async function saveTasteProfile() {
-  const answers = {};
-  document.querySelectorAll("[data-taste-answer]").forEach((field) => {
-    answers[field.dataset.tasteAnswer] = field.value.trim();
-  });
-  try {
-    await api("/api/taste", {
-      method: "POST",
-      headers: headers(),
-      body: JSON.stringify({ answers }),
-    });
-    setStatus("Taste profile updated.", "ok");
-    await loadHome();
-  } catch (error) {
-    setStatus(`Taste profile: ${error.message}`, "error");
-  }
-}
-
 function mountChatInHome() {
   const mount = $("#homeChatMount");
   const chat = document.querySelector(".chat-shell");
@@ -1146,7 +1107,6 @@ async function loadHome() {
     updateLiveClock();
     $("#homeAgenda").innerHTML = renderAgendaCards(data.agenda);
     $("#homeTasks").innerHTML = renderTaskBriefFromText(data.tasks);
-    renderTasteQuestions(data.taste || {});
     $("#homeIslamic").innerHTML = renderTextBlock(data.islamic || "Islamic rhythm unavailable right now.");
     const fileLines = countMeaningfulLines(data.files);
     $("#fileMemoryValue").textContent = String(fileLines);
@@ -1607,7 +1567,6 @@ $("#resetChatBtn").addEventListener("click", clearChat);
 $("#gmailForm").addEventListener("submit", loadGmail);
 $("#draftForm").addEventListener("submit", createDraft);
 $("#uploadForm").addEventListener("submit", uploadFile);
-$("#saveTasteBtn").addEventListener("click", saveTasteProfile);
 $("#refreshHomeBtn").addEventListener("click", refreshHomeAndApp);
 $("#viewAgendaBtn").addEventListener("click", async () => {
   setView("agenda");

@@ -1361,6 +1361,40 @@ def save_taste_profile(answers: dict) -> dict:
     return gs.set_taste_profile(next_profile)
 
 
+def absorb_taste_hint(text: str) -> bool:
+    if not google_ok():
+        return False
+    clean = str(text or "").strip()
+    if len(clean) < 12:
+        return False
+    lower = clean.lower()
+    taste_markers = (
+        "i like", "i prefer", "my taste", "my style", "i hate", "i dislike",
+        "avoid", "don't show me", "dont show me", "quality bar", "feels premium",
+        "too noisy", "too cluttered", "not my vibe", "my vibe",
+    )
+    if not any(marker in lower for marker in taste_markers):
+        return False
+    try:
+        profile = gs.get_taste_profile()
+        field = "quality_bar"
+        if any(marker in lower for marker in ("design", "ui", "font", "style", "aesthetic", "vibe", "premium", "cluttered")):
+            field = "design_taste"
+        if any(marker in lower for marker in ("source", "article", "news", "digest", "show me", "don't show me", "dont show me")):
+            field = "sources_to_avoid" if any(marker in lower for marker in ("avoid", "don't", "dont", "hate", "dislike")) else "sources_to_trust"
+        existing = profile.get(field, "")
+        existing_text = ", ".join(existing) if isinstance(existing, list) else str(existing or "").strip()
+        hint = clean[:240]
+        if hint.lower() in existing_text.lower():
+            return False
+        profile[field] = f"{existing_text}\n- {hint}".strip() if existing_text else f"- {hint}"
+        gs.set_taste_profile(profile)
+        return True
+    except Exception as exc:
+        logger.warning(f"Taste hint capture failed: {exc}")
+        return False
+
+
 def _insight(key: str, title: str, body: str, score: int, reason: str, actions: list[str] | None = None) -> dict:
     return {
         "key": key,
@@ -4088,6 +4122,7 @@ async def handle_message(update, context):
 
 async def _process_user_text(update, context, text: str):
     user_id = update.effective_user.id
+    absorb_taste_hint(text)
     inferred_week_type, inferred_week_number = _school_week_from_text(text)
     if inferred_week_type and google_ok():
         try:

@@ -161,7 +161,6 @@ def _parallel_home_data(days: int) -> dict:
         "agenda": lambda: bot.build_agenda(days),
         "daily_load": lambda: bot.build_daily_load(days),
         "tasks": lambda: bot.build_task_brief(days),
-        "taste": bot.taste_calibration_prompt,
         "islamic": lambda: bot.build_islamic_brief(),
         "files": bot.build_files_index,
         "services": _service_status,
@@ -186,7 +185,6 @@ def _parallel_home_data(days: int) -> dict:
             "rest_note": "Workload comparison unavailable until schedule data is connected.",
         },
         "tasks": "Task brief unavailable until Google is connected.",
-        "taste": {"profile": {}, "questions": []},
         "islamic": "Islamic rhythm unavailable right now.",
         "files": "File memory unavailable until Google is connected.",
         "services": {
@@ -343,6 +341,7 @@ async def chat(
 
     history_key = _history_key(x_hira_client)
     history = bot.get_history(history_key)
+    bot.absorb_taste_hint(message)
     user_content = message
     if bot.re.search(r"\b(?:work|moe|school|personal)\s+(?:gmail|email|emails|mail)\b", message, bot.re.I):
         account_hint, _ = bot._extract_gmail_account_from_text(message)
