@@ -242,6 +242,43 @@ def _norm_cell(value: str) -> str:
     return re.sub(r"[^A-Z0-9]+", " ", str(value or "").upper()).strip()
 
 
+def _class_query_variants(value: str) -> set[str]:
+    norm = _norm_cell(value)
+    variants = {norm} if norm else set()
+    compact = norm.replace(" ", "")
+    match = re.match(r"SEC(?:ONDARY)?([1-4])G([1-9])", compact)
+    if match:
+        level, group = match.groups()
+        variants.update({
+            f"{level}G{group}",
+            f"{level} G{group}",
+            f"G{group}",
+            f"ML G{group}",
+            f"{level}G{group} ML",
+            f"{level} G{group} ML",
+        })
+    match = re.match(r"([1-4])G([1-9])", compact)
+    if match:
+        level, group = match.groups()
+        variants.update({
+            f"{level}G{group}",
+            f"{level} G{group}",
+            f"G{group}",
+            f"ML G{group}",
+            f"{level}G{group} ML",
+            f"{level} G{group} ML",
+        })
+    return {_norm_cell(item) for item in variants if _norm_cell(item)}
+
+
+def _class_query_matches(class_query: str, *values: str) -> bool:
+    variants = _class_query_variants(class_query)
+    if not variants:
+        return True
+    haystack = _norm_cell(" ".join(str(value or "") for value in values))
+    return any(variant in haystack for variant in variants)
+
+
 def _cell_value(cell: dict) -> str:
     if not isinstance(cell, dict):
         return ""
@@ -414,11 +451,9 @@ def get_mtl_classlists(
             if class_filter:
                 students = [
                     student for student in students
-                    if class_filter in _norm_cell(student.get("class", ""))
-                    or class_filter in _norm_cell(student.get("name", ""))
-                    or class_filter in _norm_cell(grouping)
+                    if _class_query_matches(class_query, student.get("class", ""), student.get("name", ""), grouping)
                 ]
-                if not students and class_filter not in _norm_cell(grouping):
+                if not students and not _class_query_matches(class_query, grouping, sheet_title):
                     continue
             lists.append({
                 "spreadsheet_id": spreadsheet_id,
@@ -549,11 +584,11 @@ def _score_sheet_matches(teacher_query: str, class_query: str) -> list[dict]:
                 continue
             header_idx, name_col, class_col, no_col = header
             grouping = _first_after_label(rows, "GROUPING")
-            if class_filter and class_filter not in _norm_cell(grouping) and class_filter not in _norm_cell(sheet_title):
+            if class_filter and not _class_query_matches(class_query, grouping, sheet_title):
                 row_has_class = any(
                     class_col >= 0
                     and class_col < len(row)
-                    and class_filter in _norm_cell(row[class_col])
+                    and _class_query_matches(class_query, row[class_col])
                     for row in rows[header_idx + 1:]
                 )
                 if not row_has_class:
@@ -563,9 +598,7 @@ def _score_sheet_matches(teacher_query: str, class_query: str) -> list[dict]:
             if class_filter:
                 students = [
                     student for student in students
-                    if class_filter in _norm_cell(grouping)
-                    or class_filter in _norm_cell(student.get("class", ""))
-                    or class_filter in _norm_cell(student.get("name", ""))
+                    if _class_query_matches(class_query, grouping, student.get("class", ""), student.get("name", ""))
                 ]
             matches.append({
                 "spreadsheet_id": spreadsheet_id,
@@ -588,22 +621,37 @@ def _score_column_label(rows: list[list[str]], header_idx: int, headers: list[st
     assessment = _assessment_label_for_column(rows, header_idx, col_idx)
     if assessment and header:
         return f"{assessment} {header}".strip()
+    if _is_pre_wa_label(header):
+        same_header_count = sum(1 for item in headers[:col_idx + 1] if _norm_cell(item) == _norm_cell(header))
+        if same_header_count > 1:
+            return f"{header} {same_header_count}".strip()
+    if header and sum(1 for item in headers if _norm_cell(item) == _norm_cell(header)) > 1:
+        same_header_count = sum(1 for item in headers[:col_idx + 1] if _norm_cell(item) == _norm_cell(header))
+        return f"{header} {same_header_count}".strip()
     return header or assessment or _column_letter(col_idx)
+
+
+def _is_pre_wa_label(value: str) -> bool:
+    return bool(re.search(r"\b(?:PRA|PRE|PRG)[-\s]*W\s*A\b|\b(?:PRA|PRE|PRG)[-\s]*WA\d+\b", str(value or ""), re.I))
 
 
 def _score_query_parts(column_query: str) -> dict:
     raw = str(column_query or "")
     norm = _norm_cell(raw)
     wants_percent = bool(re.search(r"%|\bpercent(?:age)?\b", raw, re.I))
+    wants_pre_wa = _is_pre_wa_label(raw) or bool(re.search(r"\bmock\s*(?:test|wa)?\b|\bpre\s*wa\b", raw, re.I))
     assessment_terms = re.findall(r"\b(?:FA|WA)\s*\d+\b|\bPRELIM\b|\bEOY\b", raw, re.I)
     assessment_norms = [_norm_cell(term) for term in assessment_terms]
     remainder = norm
     for term in assessment_norms:
         remainder = re.sub(rf"\b{re.escape(term)}\b", " ", remainder).strip()
     remainder = re.sub(r"\bPERCENT(?:AGE)?\b", " ", remainder).strip()
+    if wants_pre_wa:
+        remainder = re.sub(r"\b(?:PRA|PRE|PRG)\s*W\s*A\d?\b|\bMOCK\s*(?:TEST|WA)?\b", " ", remainder).strip()
     return {
         "norm": norm,
         "wants_percent": wants_percent,
+        "wants_pre_wa": wants_pre_wa,
         "assessment_norms": assessment_norms,
         "remainder": " ".join(remainder.split()),
     }
@@ -621,8 +669,13 @@ def _score_columns_for_sheet(sheet: dict, column_query: str = "", prefer_percent
         header_norm = _norm_cell(header)
         label_norm = _norm_cell(label)
         assessment_norm = _norm_cell(assessment)
-        is_percent = str(header).strip() == "%" or header_norm in {"PERCENT", "PERCENTAGE"}
+        is_percent = "%" in str(header) or header_norm in {"PERCENT", "PERCENTAGE"}
+        is_pre_wa = _is_pre_wa_label(label)
         if query["wants_percent"] and not is_percent:
+            continue
+        if not query["wants_pre_wa"] and is_pre_wa and query["assessment_norms"]:
+            continue
+        if query["wants_pre_wa"] and not is_pre_wa:
             continue
         if query["assessment_norms"] and not all(term in assessment_norm or term in label_norm for term in query["assessment_norms"]):
             continue
@@ -649,6 +702,7 @@ def _score_columns_for_sheet(sheet: dict, column_query: str = "", prefer_percent
             "label": label,
             "assessment": assessment,
             "is_percent": is_percent,
+            "is_pre_wa": is_pre_wa,
             "max_score": _number_from_header(header),
             "numeric_count": numeric_count,
             "status_count": status_count,
@@ -720,7 +774,8 @@ def analyze_mtl_scores(
     for sheet in sheets:
         query = assessment_query or compare_to or compare_from
         columns = _score_columns_for_sheet(sheet, query, prefer_percent=bool(query))
-        if not columns and query:
+        query_parts = _score_query_parts(query)
+        if not columns and query and not query_parts["assessment_norms"] and not query_parts["wants_percent"] and not query_parts["wants_pre_wa"]:
             columns = _score_columns_for_sheet(sheet, "")
         if not columns:
             continue
@@ -886,11 +941,11 @@ def update_mtl_class_score(
                 continue
             header_idx, name_col, class_col, no_col = header
             grouping = _first_after_label(rows, "GROUPING")
-            if class_filter and class_filter not in _norm_cell(grouping) and class_filter not in _norm_cell(sheet_title):
+            if class_filter and not _class_query_matches(class_query, grouping, sheet_title):
                 row_has_class = any(
                     class_col >= 0
                     and class_col < len(row)
-                    and class_filter in _norm_cell(row[class_col])
+                    and _class_query_matches(class_query, row[class_col])
                     for row in rows[header_idx + 1:]
                 )
                 if not row_has_class:
@@ -900,7 +955,7 @@ def update_mtl_class_score(
             candidate_cols = _matching_header_columns(headers, score_column, protected)
             students, _ = _extract_students_with_fields(rows)
             for student in students:
-                if class_filter and class_filter not in _norm_cell(grouping) and class_filter not in _norm_cell(student.get("class", "")):
+                if class_filter and not _class_query_matches(class_query, grouping, student.get("class", "")):
                     continue
                 if student_filter in _norm_cell(_student_identity_text(student)):
                     matches.append({
@@ -987,11 +1042,11 @@ def fill_mtl_percentage_scores(
                 continue
             header_idx, name_col, class_col, no_col = header
             grouping = _first_after_label(rows, "GROUPING")
-            if class_filter and class_filter not in _norm_cell(grouping) and class_filter not in _norm_cell(sheet_title):
+            if class_filter and not _class_query_matches(class_query, grouping, sheet_title):
                 row_has_class = any(
                     class_col >= 0
                     and class_col < len(row)
-                    and class_filter in _norm_cell(row[class_col])
+                    and _class_query_matches(class_query, row[class_col])
                     for row in rows[header_idx + 1:]
                 )
                 if not row_has_class:
@@ -1058,7 +1113,7 @@ def fill_mtl_percentage_scores(
                 class_name = row[class_col].strip() if class_col >= 0 and class_col < len(row) else ""
                 if not name and not class_name:
                     break
-                if class_filter and class_filter not in _norm_cell(item["grouping"]) and class_filter not in _norm_cell(class_name):
+                if class_filter and not _class_query_matches(class_query, item["grouping"], class_name):
                     skipped += 1
                     continue
                 current = row[col_info["percent_col"]].strip() if col_info["percent_col"] < len(row) else ""

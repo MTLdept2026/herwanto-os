@@ -6,7 +6,7 @@ const state = {
   currentView: "home",
   homeDays: 7,
   chatBusy: false,
-  chatAttachment: null,
+  chatAttachments: [],
   chatHistory: JSON.parse(localStorage.getItem("hira_pwa_chat") || "[]"),
   notifications: JSON.parse(localStorage.getItem("hira_pwa_notifications") || "[]"),
   chatNotificationIds: JSON.parse(localStorage.getItem("hira_pwa_chat_notification_ids") || "[]"),
@@ -1412,26 +1412,35 @@ async function uploadFile(event) {
   }
 }
 
-function setChatAttachment(file) {
-  state.chatAttachment = file || null;
+function chatAttachmentLabel(files = state.chatAttachments) {
+  if (!files.length) return "";
+  if (files.length === 1) return files[0].name;
+  const names = files.slice(0, 2).map((file) => file.name).join(", ");
+  const extra = files.length > 2 ? ` +${files.length - 2} more` : "";
+  return `${files.length} files: ${names}${extra}`;
+}
+
+function setChatAttachments(files) {
+  state.chatAttachments = Array.from(files || []).filter(Boolean);
   const chip = $("#chatAttachment");
   if (!chip) return;
-  chip.hidden = !state.chatAttachment;
-  $("#chatAttachmentName").textContent = state.chatAttachment ? state.chatAttachment.name : "";
+  chip.hidden = !state.chatAttachments.length;
+  $("#chatAttachmentName").textContent = chatAttachmentLabel();
   refreshIcons(chip);
 }
 
 function clearChatAttachment() {
-  setChatAttachment(null);
+  setChatAttachments([]);
   $("#chatFileInput").value = "";
 }
 
 async function uploadChatAttachment(note) {
-  if (state.chatBusy || !state.chatAttachment) return;
-  const file = state.chatAttachment;
+  if (state.chatBusy || !state.chatAttachments.length) return;
+  const files = [...state.chatAttachments];
+  const fileLabel = chatAttachmentLabel(files);
   const userText = note
-    ? `Attached ${file.name}\n\n${note}`
-    : `Attached ${file.name}`;
+    ? `Attached ${fileLabel}\n\n${note}`
+    : `Attached ${fileLabel}`;
   state.chatBusy = true;
   addMessage("user", userText);
   const pending = addMessage("hira", "", true);
@@ -1440,24 +1449,41 @@ async function uploadChatAttachment(note) {
   $("#sendBtn").disabled = true;
   $("#attachBtn").disabled = true;
   clearChatAttachment();
-  const form = new FormData();
-  form.append("file", file);
-  form.append("note", note || "Analyse this upload for reminders, follow-ups, deadlines, schedule items, and useful next actions.");
   try {
-    setStatus(file.type.startsWith("audio/") ? "Transcribing attachment..." : "Analysing attachment...", "muted");
-    const data = await submitUploadJob(form, (job) => {
-      updateMessage(pending, `Analysing ${file.name}... ${job.status}`);
-    });
-    const reply = data.reply || "Done.";
+    setStatus(files.some((file) => file.type.startsWith("audio/")) ? "Transcribing attachments..." : "Analysing attachments...", "muted");
+    const results = [];
+    for (const [index, file] of files.entries()) {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("note", note || "Analyse this upload for reminders, follow-ups, deadlines, schedule items, and useful next actions.");
+      const data = await submitUploadJob(form, (job) => {
+        updateMessage(pending, `Analysing ${index + 1}/${files.length}: ${file.name}... ${job.status}`);
+      });
+      results.push({ file: file.name, reply: data.reply || "Done.", index: data.index || "" });
+    }
+    let reply = results[0]?.reply || "Done.";
+    if (results.length > 1) {
+      updateMessage(pending, "Combining attachment findings...");
+      const combined = [
+        "I uploaded several files in chat. Combine the findings into one concise answer. Preserve any concrete actions, dates, reminders, schedule items, score/classlist details, and unresolved questions.",
+        note ? `User note: ${note}` : "",
+        ...results.map((item, index) => `File ${index + 1}: ${item.file}\n${item.index ? `Index: ${item.index}\n` : ""}Analysis:\n${item.reply}`),
+      ].filter(Boolean).join("\n\n");
+      reply = await streamChatResponse(combined, (event, streamedText = "") => {
+        if (event.type === "text" || event.type === "replace") {
+          updateMessage(pending, streamedText);
+        }
+      });
+    }
     pending.classList.remove("pending");
     setHiraSpeaking(pending, false);
     updateMessage(pending, reply);
     state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: reply };
     saveChatHistory();
     await loadHome();
-    setStatus(`${file.name} analysed.`, "ok");
+    setStatus(`${files.length} attachment${files.length === 1 ? "" : "s"} analysed.`, "ok");
   } catch (error) {
-    const friendly = `I could not analyse ${file.name}: ${error.message}`;
+    const friendly = `I could not analyse the attachment${files.length === 1 ? "" : "s"}: ${error.message}`;
     pending.classList.remove("pending");
     setHiraSpeaking(pending, false);
     updateMessage(pending, friendly);
@@ -1650,10 +1676,10 @@ $("#chatForm").addEventListener("submit", (event) => {
   event.preventDefault();
   const input = $("#messageInput");
   const message = input.value.trim();
-  if (!message && !state.chatAttachment) return;
+  if (!message && !state.chatAttachments.length) return;
   input.value = "";
   input.style.height = "auto";
-  if (state.chatAttachment) {
+  if (state.chatAttachments.length) {
     uploadChatAttachment(message);
     return;
   }
@@ -1665,10 +1691,10 @@ $("#attachBtn").addEventListener("click", () => {
 });
 
 $("#chatFileInput").addEventListener("change", (event) => {
-  const file = event.currentTarget.files[0];
-  if (!file) return;
-  setChatAttachment(file);
-  setStatus(`${file.name} ready for chat analysis.`, "ok");
+  const files = Array.from(event.currentTarget.files || []);
+  if (!files.length) return;
+  setChatAttachments(files);
+  setStatus(`${files.length} file${files.length === 1 ? "" : "s"} ready for chat analysis.`, "ok");
 });
 
 $("#clearAttachmentBtn").addEventListener("click", clearChatAttachment);

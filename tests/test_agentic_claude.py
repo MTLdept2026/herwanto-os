@@ -314,6 +314,103 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("VR (valid reason): 1", brief)
         self.assertIn("MC (medical certificate): 1", brief)
 
+    def test_sec1g2_alias_matches_ml_g2_and_wa1_percent_header(self):
+        book = {
+            "properties": {"title": "2026 S1 MTL CLASSLIST"},
+            "sheets": [{
+                "properties": {"title": "CG HERWANTO ML G2"},
+                "data": [{
+                    "rowData": [
+                        sheet_row("TEACHER NAME:", "CG HERWANTO"),
+                        sheet_row("GROUPING:", "ML G2"),
+                        sheet_row("VENUE:", "L4-11"),
+                        sheet_row(),
+                        sheet_row(),
+                        sheet_row("NO", "CLASS", "FULL NAME", "PSLE MTL GRADE", "TARGET", "WA1 (40)", "WA1 %", "PreWA2 (20)", "WA2", "WA3", "EOY"),
+                        sheet_row("1", "1 Anchor", "ZAARA", "6", "", "20", "50", "", "", "", ""),
+                        sheet_row("2", "1 Beacon", "AQASYA", "4", "", "26", "65", "", "", "", ""),
+                        sheet_row("3", "1 Compass", "XANDER", "6", "", "0", "0", "", "", "", ""),
+                        sheet_row("4", "1 Flagship", "FIQRI", "4", "", "AB", "AB", "", "", "", ""),
+                    ]
+                }]
+            }]
+        }
+        fake_service = FakeSheetsService(book)
+
+        with (
+            patch.object(bot.gs, "_sheets", return_value=fake_service),
+            patch.object(bot.gs, "_configured_classlist_sheet_ids", return_value=["sheet-1"]),
+        ):
+            brief = bot.gs.format_mtl_score_analysis("sec1G2", "WA1 %")
+
+        self.assertIn("ML G2", brief)
+        self.assertIn("WA1 %: mean 38.3", brief)
+        self.assertIn("pass 2/3", brief)
+        self.assertIn("AB (absent): 1", brief)
+
+    def test_sec2_prg_wa_columns_are_mock_not_actual_wa2(self):
+        book = {
+            "properties": {"title": "2026 S2 MTL CLASSLIST"},
+            "sheets": [{
+                "properties": {"title": "CG HERWANTO 2G3 ML"},
+                "data": [{
+                    "rowData": [
+                        sheet_row("TEACHER NAME:", "CG HERWANTO"),
+                        sheet_row("GROUPING:", "2G3 ML"),
+                        sheet_row(),
+                        sheet_row("NO", "CLASS", "FULL NAME", "WA1", "Prg-WA2", "Prg-WA2", "Prg-WA2", "WA2", "WA3", "EOY"),
+                        sheet_row("1", "S2-AN", "AMELIA", "85", "34", "20", "MC", "", "", ""),
+                        sheet_row("2", "S2-AN", "MYSHA", "65", "30", "19", "26", "", "", ""),
+                        sheet_row("3", "S2-BE", "AULIA", "60", "22", "14", "21", "", "", ""),
+                    ]
+                }]
+            }]
+        }
+        fake_service = FakeSheetsService(book)
+
+        with (
+            patch.object(bot.gs, "_sheets", return_value=fake_service),
+            patch.object(bot.gs, "_configured_classlist_sheet_ids", return_value=["sheet-1"]),
+        ):
+            with self.assertRaises(ValueError):
+                bot.gs.format_mtl_score_analysis("2G3", "WA2")
+            mock = bot.gs.format_mtl_score_analysis("2G3", "pre WA")
+
+        self.assertIn("Prg-WA2 1", mock)
+        self.assertIn("Prg-WA2 2", mock)
+
+    def test_sec3g3_layout_reads_actual_wa1_percent(self):
+        book = {
+            "properties": {"title": "2026 S3 MTL CLASSLIST"},
+            "sheets": [{
+                "properties": {"title": "CG HERWANTO 3G3 ML"},
+                "data": [{
+                    "rowData": [
+                        sheet_row("TEACHER NAME:", "CG HERWANTO"),
+                        sheet_row("GROUPING:", "3G3 ML"),
+                        sheet_row("VENUE:", "L3-10"),
+                        sheet_row(),
+                        sheet_row(),
+                        sheet_row("NO", "CLASS", "FULL NAME", "PSLE MTL GRADE", "S2 MTL RESULTS", "TARGET", "WA1 (20)", "WA1 %", "WA2", "WA3", "EOY"),
+                        sheet_row("1", "S3-AN", "UMAIRA", "3", "", "", "10", "50", "", "", ""),
+                        sheet_row("2", "S3-CO", "AYRA", "5", "", "", "12", "60", "", "", ""),
+                        sheet_row("3", "S3-DA", "NINA", "4", "", "", "7", "35", "", "", ""),
+                    ]
+                }]
+            }]
+        }
+        fake_service = FakeSheetsService(book)
+
+        with (
+            patch.object(bot.gs, "_sheets", return_value=fake_service),
+            patch.object(bot.gs, "_configured_classlist_sheet_ids", return_value=["sheet-1"]),
+        ):
+            brief = bot.gs.format_mtl_score_analysis("3G3", "WA1 %")
+
+        self.assertIn("3G3 ML", brief)
+        self.assertIn("WA1 %: mean 48.3", brief)
+        self.assertNotIn("WA1 (20): mean", brief)
+
     def test_reset_marking_request_forces_reset_tool(self):
         forced = bot._forced_tool_for_text(
             "reset marking load",
