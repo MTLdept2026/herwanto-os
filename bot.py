@@ -3888,7 +3888,7 @@ def pwa_tools_for_message(text: str) -> list[dict]:
 async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
     tools = tools or _core_tools()
     reply_text = ""
-    max_iterations = 5
+    max_iterations = 8
 
     for _ in range(max_iterations):
         forced_tool = _forced_tool_for_current_turn(messages, tools)
@@ -3906,9 +3906,18 @@ async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
         )
 
         if resp.stop_reason != "tool_use":
-            reply_text = await _run_forced_weather_fallback(forced_tool)
-            if not reply_text:
-                reply_text = next((b.text for b in resp.content if b.type == "text"), "Done.")
+            segment = await _run_forced_weather_fallback(forced_tool)
+            if not segment:
+                segment = next((b.text for b in resp.content if b.type == "text"), "")
+            reply_text = f"{reply_text}{segment}"
+            if resp.stop_reason == "max_tokens":
+                messages.append({"role": "assistant", "content": resp.content})
+                messages.append({
+                    "role": "user",
+                    "content": "Continue exactly where you stopped. Finish the response completely without restarting or summarising earlier text.",
+                })
+                logger.warning("Claude hit max_tokens in non-streaming chat; requesting continuation.")
+                continue
             break
 
         messages.append({"role": "assistant", "content": resp.content})
@@ -4003,7 +4012,7 @@ async def stream_quick_pwa_reply(messages: list[dict], message: str):
 async def stream_agentic_claude(messages, max_tokens=650, tools=None):
     tools = tools or _core_tools()
     reply_text = ""
-    max_iterations = 5
+    max_iterations = 8
 
     for _ in range(max_iterations):
         forced_tool = _forced_tool_for_current_turn(messages, tools)
@@ -4031,10 +4040,20 @@ async def stream_agentic_claude(messages, max_tokens=650, tools=None):
         if resp.stop_reason != "tool_use":
             fallback_text = await _run_forced_weather_fallback(forced_tool)
             if fallback_text:
-                reply_text = fallback_text
+                reply_text = f"{reply_text}{fallback_text}"
                 yield {"type": "replace", "text": reply_text}
             else:
-                reply_text = "".join(text_parts) or next((b.text for b in resp.content if b.type == "text"), "Done.")
+                segment = "".join(text_parts) or next((b.text for b in resp.content if b.type == "text"), "")
+                reply_text = f"{reply_text}{segment}"
+            if resp.stop_reason == "max_tokens":
+                messages.append({"role": "assistant", "content": resp.content})
+                messages.append({
+                    "role": "user",
+                    "content": "Continue exactly where you stopped. Finish the response completely without restarting or summarising earlier text.",
+                })
+                logger.warning("Claude hit max_tokens in streaming chat; requesting continuation.")
+                yield {"type": "continuation", "reason": "max_tokens"}
+                continue
             break
 
         messages.append({"role": "assistant", "content": resp.content})

@@ -63,6 +63,7 @@ _MAX_REQUEST_BYTES = max(_MAX_DOCUMENT_BYTES, _env_int("HIRA_WEB_MAX_REQUEST_MB"
 _MEMORY_GC_RATIO = _env_float("HIRA_WEB_MEMORY_GC_RATIO", 0.72)
 _MEMORY_REJECT_RATIO = _env_float("HIRA_WEB_MEMORY_REJECT_RATIO", 0.84)
 _MEMORY_WATCHDOG_SECONDS = _env_int("HIRA_WEB_MEMORY_WATCHDOG_SECONDS", 30, minimum=10)
+_CHAT_MAX_TOKENS = _env_int("HIRA_WEB_CHAT_MAX_TOKENS", 2200, minimum=650)
 _STATIC_PATHS = {"/", "/healthz", "/manifest.webmanifest", "/service-worker.js", "/app.js", "/styles.css"}
 
 
@@ -675,7 +676,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             stream = (
                 bot.stream_quick_pwa_reply(list(history[:-1]), message)
                 if quick
-                else bot.stream_agentic_claude(list(history), max_tokens=650, tools=tools)
+                else bot.stream_agentic_claude(list(history), max_tokens=_CHAT_MAX_TOKENS, tools=tools)
             )
             first_text = True
             async for event in stream:

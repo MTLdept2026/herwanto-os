@@ -319,6 +319,40 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertIsNone(bot._forced_tool_for_current_turn(messages, [{"name": "get_gmail_brief"}]))
 
+    def test_agentic_claude_continues_after_max_tokens(self):
+        class MaxTokenMessages:
+            def __init__(self):
+                self.calls = []
+
+            def create(self, **kwargs):
+                self.calls.append(kwargs)
+                if len(self.calls) == 1:
+                    return SimpleNamespace(
+                        stop_reason="max_tokens",
+                        content=[SimpleNamespace(type="text", text="Done. Here's what was written:")],
+                    )
+                return SimpleNamespace(
+                    stop_reason="end_turn",
+                    content=[SimpleNamespace(type="text", text="\n- Filled all FA2 percentages.")],
+                )
+
+        fake_messages = MaxTokenMessages()
+        fake_claude = SimpleNamespace(messages=fake_messages)
+
+        with (
+            patch.object(bot, "claude", fake_claude),
+            patch.object(bot, "SYSTEM_PROMPT", return_value="system"),
+        ):
+            reply = asyncio.run(bot._run_agentic_claude(
+                [{"role": "user", "content": "fill percentages"}],
+                tools=[],
+                max_tokens=10,
+            ))
+
+        self.assertIn("Here's what was written", reply)
+        self.assertIn("Filled all FA2 percentages", reply)
+        self.assertEqual(len(fake_messages.calls), 2)
+
     def test_email_followup_forces_gmail_before_action(self):
         messages = [{"role": "user", "content": "read my latest work email and note the meeting details for follow up"}]
         tools = [{"name": "get_gmail_brief"}, {"name": "create_followup"}]

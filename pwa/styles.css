@@ -1706,7 +1706,7 @@ html[data-theme="dark"] .load-badge.load-green {
 .messages {
   order: initial;
   min-height: 146px;
-  max-height: 320px;
+  max-height: min(58vh, 680px);
   padding: 18px 28px;
   background: var(--bg-dark);
   color: var(--text-dark);

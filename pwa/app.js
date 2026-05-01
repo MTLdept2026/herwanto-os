@@ -812,6 +812,12 @@ function saveChatNotificationIds() {
   localStorage.setItem("hira_pwa_chat_notification_ids", JSON.stringify(state.chatNotificationIds));
 }
 
+function scrollMessagesToBottom() {
+  const messages = $("#messages");
+  if (!messages) return;
+  messages.scrollTop = messages.scrollHeight;
+}
+
 function escapeHtml(text) {
   return (text || "")
     .replace(/&/g, "&amp;")
@@ -1023,7 +1029,7 @@ function addMessage(role, text, persist = true) {
   el.className = `message ${role}`;
   el.innerHTML = `<div class="message-body">${renderChatText(text)}</div>`;
   $("#messages").appendChild(el);
-  el.scrollIntoView({ block: "end" });
+  scrollMessagesToBottom();
   if (persist) {
     state.chatHistory.push({ role, text });
     state.chatHistory = state.chatHistory.slice(-30);
@@ -1043,7 +1049,7 @@ function setHiraSpeaking(el, speaking) {
 
 function updateMessage(el, text) {
   el.querySelector(".message-body").innerHTML = renderChatText(text || "");
-  el.scrollIntoView({ block: "end" });
+  scrollMessagesToBottom();
 }
 
 function appendToolStatus(el, name) {
@@ -1066,7 +1072,7 @@ function appendToolStatus(el, name) {
   status.innerHTML = `<span data-lucide="loader-2" aria-hidden="true"></span>${labels[name] || "Using a tool..."}`;
   el.appendChild(status);
   refreshIcons(status);
-  el.scrollIntoView({ block: "end" });
+  scrollMessagesToBottom();
 }
 
 function chatNeedsDeviceLocation(message = "") {
@@ -1509,6 +1515,9 @@ async function sendChat(message) {
       }
       if (event.type === "timing") {
         console.info(`H.I.R.A timing: ${event.phase}`, `${event.elapsed_ms}ms`, `phase ${event.phase_ms}ms`);
+      }
+      if (event.type === "continuation") {
+        setStatus("Continuing response to avoid cutoff...", "muted");
       }
       if (event.type === "tool") appendToolStatus(pending, event.name);
       if (event.type === "text" || event.type === "replace") {
