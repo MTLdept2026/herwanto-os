@@ -29,6 +29,13 @@ const dateFormatter = new Intl.DateTimeFormat("en-SG", {
   month: "long",
   timeZone: "Asia/Singapore",
 });
+const CONNECTIONS = [
+  { key: "calendar", label: "Calendar", icon: "calendar" },
+  { key: "google", label: "Google", icon: "sparkles" },
+  { key: "work_drive", label: "Work Google Drive", icon: "folder" },
+  { key: "work_gmail", label: "Work Gmail", icon: "briefcase" },
+  { key: "personal_gmail", label: "Personal Gmail", icon: "mail" },
+];
 
 function updateLiveClock() {
   const now = new Date();
@@ -622,24 +629,21 @@ function segmentMarkup(filled, total = 12, tone = "accent") {
 }
 
 function renderConnections(services) {
-  const labels = [
-    ["Calendar", "calendar"],
-    ["Google", "sparkles"],
-    ["Work Gmail", "briefcase"],
-    ["Personal Gmail", "mail"],
-  ];
-  $("#homeConnectionsList").innerHTML = labels
+  $("#homeConnectionsList").innerHTML = CONNECTIONS
     .map(
-      ([label, icon]) => `
-        <div class="connection-card is-on">
+      ({ key, label, icon }) => {
+        const connected = Boolean(services?.[key]);
+        return `
+        <div class="connection-card ${connected ? "is-on" : "is-off"}">
           <div class="connection-icon"><span data-lucide="${icon}" aria-hidden="true"></span></div>
           <div>
             <span>${label}</span>
-            <strong>On</strong>
+            <strong>${connected ? "On" : "Off"}</strong>
           </div>
           <span class="connection-switch" aria-hidden="true"><span></span></span>
         </div>
-      `
+      `;
+      }
     )
     .join("");
   refreshIcons($("#homeConnectionsList"));
@@ -1196,10 +1200,10 @@ async function loadHome() {
     $("#fileMemoryLabelHome").textContent = fileLines ? "MEMORY ITEMS INDEXED" : "MEMORY STANDBY";
     renderSegmentsAll(".file-memory-segments", fileMemorySegments(data.files), 12, fileLines > 8 ? "success" : "accent");
     const services = data.services || {};
-    const connectedCount = Object.values(services).filter(Boolean).length;
-    $("#homeServicesSummary").textContent = `${connectedCount}/4`;
+    const connectedCount = CONNECTIONS.filter(({ key }) => Boolean(services[key])).length;
+    $("#homeServicesSummary").textContent = `${connectedCount}/${CONNECTIONS.length}`;
     $("#homeServicesLabel").textContent = connectedCount ? "SERVICES CONNECTED" : "AWAITING CONNECTION";
-    renderSegmentsAll(".services-segments", connectedCount * 3, 12, connectedCount ? "accent" : "muted");
+    renderSegmentsAll(".services-segments", Math.round((connectedCount / CONNECTIONS.length) * 12), 12, connectedCount ? "accent" : "muted");
     renderConnections(services);
     renderDailyLoad(data.daily_load || {});
     const agendaCount = countMeaningfulLines(data.agenda);

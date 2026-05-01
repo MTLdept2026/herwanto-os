@@ -329,6 +329,7 @@ def _parallel_home_data(days: int) -> dict:
         "services": {
             "google": False,
             "calendar": False,
+            "work_drive": False,
             "personal_gmail": False,
             "work_gmail": False,
         },
@@ -359,6 +360,7 @@ def _service_status() -> dict:
     return {
         "google": bot.google_ok(),
         "calendar": bot.google_ok(),
+        "work_drive": bot.google_ok(),
         "personal_gmail": bot.gs.gmail_ok("personal"),
         "work_gmail": bot.gs.gmail_ok("work"),
     }
