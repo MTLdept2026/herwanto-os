@@ -16,11 +16,6 @@ from difflib import SequenceMatcher
 import pytz
 
 from anthropic import Anthropic, AsyncAnthropic
-from telegram import Update
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler,
-    filters, ContextTypes, CallbackContext,
-)
 
 import google_services as gs
 import timetable as tt
@@ -73,6 +68,7 @@ try:
 except ValueError:
     MAX_IN_MEMORY_HISTORIES = 50
 _BREAK_AWARE_SLOT_CACHE = {}
+_PRAYER_PROMPT_FALLBACK_KEYS = set()
 _LAST_MEMORY_LOG = None
 
 def _env_int(name: str, default: int, minimum: int = 1) -> int:
@@ -2069,6 +2065,7 @@ def _prayer_reminder_due(now: datetime) -> dict | None:
     now = now.astimezone(SGT)
     today_key = now.strftime("%Y-%m-%d")
     now_minute = now.hour * 60 + now.minute
+    window_minutes = _env_int("HIRA_PRAYER_REMINDER_WINDOW_MINUTES", 20, 3)
     try:
         plan = _prayer_plan_for_date(now.date())
     except Exception as exc:
@@ -2077,14 +2074,56 @@ def _prayer_reminder_due(now: datetime) -> dict | None:
 
     for item in plan:
         key = f"prayer_prompt:{today_key}:{item['key']}"
-        if gs.get_config(key):
+        try:
+            already_prompted = bool(gs.get_config(key))
+        except Exception as exc:
+            logger.warning("Prayer prompt config read unavailable: %s", exc)
+            already_prompted = key in _PRAYER_PROMPT_FALLBACK_KEYS
+        if already_prompted:
             continue
         prayer_minute = _hm_to_minutes(item["time"])
         due_minute = item.get("blocked_until") or prayer_minute
-        if 0 <= now_minute - due_minute <= 3:
-            gs.set_config(key, now.strftime("%H:%M"))
+        if 0 <= now_minute - due_minute <= window_minutes:
+            try:
+                gs.set_config(key, now.strftime("%H:%M"))
+            except Exception as exc:
+                logger.warning("Prayer prompt config write unavailable: %s", exc)
+                _PRAYER_PROMPT_FALLBACK_KEYS.add(key)
             return item
     return None
+
+
+def prayer_notification_status(now: datetime | None = None) -> dict:
+    now = (now or datetime.now(SGT)).astimezone(SGT)
+    try:
+        plan = _prayer_plan_for_date(now.date())
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "today": now.date().isoformat(), "prayers": []}
+    today_key = now.strftime("%Y-%m-%d")
+    prayers = []
+    for item in plan:
+        key = f"prayer_prompt:{today_key}:{item['key']}"
+        prompted_at = ""
+        try:
+            prompted_at = gs.get_config(key) or ""
+        except Exception:
+            prompted_at = ""
+        due_minute = item.get("blocked_until") or _hm_to_minutes(item["time"])
+        prayers.append({
+            "key": item["key"],
+            "label": item["label"],
+            "time": item["time"],
+            "due_time": _minutes_to_hm(due_minute),
+            "prompted_at": prompted_at,
+            "prompted": bool(prompted_at),
+        })
+    return {
+        "ok": True,
+        "today": today_key,
+        "now": now.strftime("%H:%M"),
+        "window_minutes": _env_int("HIRA_PRAYER_REMINDER_WINDOW_MINUTES", 20, 3),
+        "prayers": prayers,
+    }
 
 
 def _friday_khutbah_heads_up_due(now: datetime) -> str | None:
@@ -4700,6 +4739,8 @@ async def run_pwa_notification_worker():
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 
 def main():
+    from telegram.ext import Application, CommandHandler, MessageHandler, filters
+
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
         raise ValueError("TELEGRAM_BOT_TOKEN not set")

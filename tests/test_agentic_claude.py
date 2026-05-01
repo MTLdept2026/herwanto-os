@@ -617,5 +617,49 @@ class AgenticClaudeTests(unittest.TestCase):
             self.assertTrue(bot.gs.gmail_ok("work"))
             self.assertFalse(bot.gs.gmail_ok("personal"))
 
+    def test_prayer_reminder_has_catchup_window(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 1, 13, 18))
+        plan = [{
+            "key": "zohor",
+            "label": "Zohor",
+            "time": "13:03",
+            "blocked_until": None,
+            "note": "Pray as soon as it enters.",
+        }]
+        store = {}
+
+        with (
+            patch.object(bot, "_prayer_plan_for_date", return_value=plan),
+            patch.object(bot.gs, "get_config", side_effect=lambda key: store.get(key, "")),
+            patch.object(bot.gs, "set_config", side_effect=lambda key, value: store.__setitem__(key, value)),
+            patch.dict(os.environ, {"HIRA_PRAYER_REMINDER_WINDOW_MINUTES": "20"}),
+        ):
+            due = bot._prayer_reminder_due(now)
+
+        self.assertEqual(due["key"], "zohor")
+        self.assertEqual(store["prayer_prompt:2026-05-01:zohor"], "13:18")
+
+    def test_prayer_reminder_uses_fallback_when_config_unavailable(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 1, 13, 5))
+        plan = [{
+            "key": "zohor",
+            "label": "Zohor",
+            "time": "13:03",
+            "blocked_until": None,
+            "note": "Pray as soon as it enters.",
+        }]
+        bot._PRAYER_PROMPT_FALLBACK_KEYS.clear()
+
+        with (
+            patch.object(bot, "_prayer_plan_for_date", return_value=plan),
+            patch.object(bot.gs, "get_config", side_effect=RuntimeError("sheets down")),
+            patch.object(bot.gs, "set_config", side_effect=RuntimeError("sheets down")),
+        ):
+            first = bot._prayer_reminder_due(now)
+            second = bot._prayer_reminder_due(now)
+
+        self.assertEqual(first["key"], "zohor")
+        self.assertIsNone(second)
+
 if __name__ == "__main__":
     unittest.main()

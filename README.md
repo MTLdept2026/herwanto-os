@@ -375,6 +375,8 @@ The PWA backend includes Railway memory guardrails: one active chat/upload by de
 
 If Telegram is retired, keep proactive phone notifications by running a separate Railway worker with `HIRA_SERVICE_MODE=pwa_worker`. That worker runs morning/evening briefings, weekly planning, Friday khutbah/project checks, nudges, daily check-ins, prayer reminders, and follow-ups through PWA push/app notifications without Telegram polling. The `hira-pwa` web service can then set `HIRA_WEB_MORNING_BRIEFING=0`, `HIRA_WEB_EVENING_BRIEFING=0`, `HIRA_WEB_PRAYER_REMINDERS=0`, and `HIRA_WEB_FRIDAY_KHUTBAH=0`.
 
+Prayer reminders use a catch-up window, defaulting to `HIRA_PRAYER_REMINDER_WINDOW_MINUTES=20`, so a short deploy/restart does not silently miss the reminder. Use `/api/notifications/health` to confirm PWA push keys, subscription count, queued notifications, and today's prayer prompt status.
+
 **Personality:**
 
 H.I.R.A is designed to feel like a calm chief-of-staff in your pocket: concise, observant, Singapore-aware, wickedly witty when appropriate, and protective of your attention. It should prioritise next actions over long explanations, steady things when workload piles up, and adapt naturally across teaching, coding, business, normal conversation, and the latest news you care about.
