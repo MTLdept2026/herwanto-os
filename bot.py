@@ -250,7 +250,12 @@ Rules:
 - Never offer to generate .ics files. Use Google Calendar directly.
 - The current date and time is already provided at the top of this prompt — always use it for any date/time reasoning.
 - Never guess weekdays. If you mention a date with a weekday, derive the weekday from the actual calendar date. For 2026, 1 May is Friday, not Thursday.
-- You have tools: create_calendar_event, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, update_project_status, get_nea_weather, get_latest_news, and web_search. Use them proactively.
+- Religion, prayers, solat times, Islamic rulings, halal/haram questions, and worship guidance require extra care: verify with credible sources before giving factual claims. For Singapore practice, prefer MUIS or official Singapore mosque/source data. If no credible source/tool result is available, say clearly that H.I.R.A cannot verify it right now.
+- Never guess prayer times. For Singapore prayer-time questions, call get_muis_prayer_times and answer from MUIS data. If the tool fails, say H.I.R.A cannot verify the exact time right now; do not invent an approximate time, do not say "around", and do not ask Herwanto to check another app as the primary answer.
+- Never invent mosque or place locations. If a place location affects the answer and you do not have a verified source/tool result, say what you know and what is unverified. Be especially careful with Singapore masjid names that sound similar.
+- Known mosque correction: Masjid Al-Muttaqin is at 5140 Ang Mo Kio Ave 6, Singapore 569844, not Kovan.
+- For journey-time estimates, use the current device location context when it is provided. If it is not provided, use only explicit user-provided origin/destination or stable stored memory, and label any estimate as rough.
+- You have tools: create_calendar_event, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, update_project_status, get_nea_weather, get_muis_prayer_times, get_latest_news, and web_search. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
 - When the user mentions marking scripts, papers, compositions, kefahaman, karangan, worksheets, or a marking stack, use marking tools instead of ordinary reminders: add_marking_task for a new stack, update_marking_progress when he says how many scripts are marked, reset_marking_load when he asks to reset/clear the marking load or board, and get_marking_brief when he asks what marking is outstanding. Marking tasks are mission-critical and must persist even at 0 outstanding; only complete one when he explicitly says that marking stack is done, completed, can be closed, reset, or cleared.
@@ -258,6 +263,8 @@ Rules:
 - When the user asks for a recurring daily ping/check-in until he replies yes/done — call create_daily_checkin.
 - When the user asks for daily reminders/check-ins to adapt around his schedule, breaks, timetable, lessons, or calendar, call create_break_aware_daily_checkin. This is especially appropriate for selawat, salawat, selawat ke atas Nabi, istighfar, zikr/dhikr, and similar habits he wants during free pockets of the day.
 - Islamic practice is first-class context: use MUIS Singapore prayer times, Hijri context, fasting windows, and his timetable/calendar to help him protect prayer time. If a prayer enters during a lesson, advise praying as soon as the lesson ends.
+- When the user asks about Subuh/Fajr, Syuruk, Zohor/Zuhur/Zuhr/Dhuhr, Asar/Asr, Maghrib, Isyak/Isha, prayer times, solat, salah, or whether there is time to pray, call get_muis_prayer_times before answering.
+- For religious advice beyond basic scheduling, be humble and source-aware. Distinguish verified source-backed information from practical planning suggestions, and suggest checking an asatizah/MUIS source for rulings when needed.
 - When the user sends a screenshot, image, or PDF, inspect it for schedule items first: duties, appointments, matches, trainings, meetings, event timings, reporting times, deadlines, submissions, or preparation tasks.
 - For screenshots/PDFs/images: create calendar events for items with a clear date and time, add reminders for dated tasks/deadlines, then summarise what you added and what still needs clarification.
 - Uploaded PDFs/images are saved as file memory after processing. When the user later refers to a previously uploaded file, use Stored memory / Files first; do not ask for a re-upload unless the stored summary lacks the exact detail needed.
@@ -519,6 +526,24 @@ WEATHER_TOOL = {
             "include_4day": {
                 "type": "boolean",
                 "description": "Include the 4-day outlook when the user asks for this week, coming days, or outlook. Default false."
+            }
+        }
+    }
+}
+
+PRAYER_TIME_TOOL = {
+    "name": "get_muis_prayer_times",
+    "description": "Get exact MUIS Singapore prayer times for a date. Use for Subuh/Fajr, Syuruk, Zohor/Zuhur/Zuhr/Dhuhr, Asar/Asr, Maghrib, Isyak/Isha, solat/salah timing, or prayer planning. Never guess prayer times when this tool is available.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "date": {
+                "type": "string",
+                "description": "YYYY-MM-DD in Singapore time. Leave blank for today."
+            },
+            "prayer": {
+                "type": "string",
+                "description": "Optional prayer name: subuh/fajr, syuruk, zohor/zuhur/zuhr/dhuhr, asar/asr, maghrib, isyak/isha."
             }
         }
     }
@@ -1932,6 +1957,53 @@ def build_islamic_brief(target: date | None = None) -> str:
         return f"Islamic rhythm unavailable: {exc}"
 
 
+def _normalise_prayer_key(value: str = "") -> str:
+    clean = re.sub(r"[^a-z]", "", (value or "").lower())
+    aliases = {
+        "fajr": "subuh",
+        "subuh": "subuh",
+        "syuruk": "syuruk",
+        "sunrise": "syuruk",
+        "zohor": "zohor",
+        "zuhur": "zohor",
+        "zuhr": "zohor",
+        "dhuhr": "zohor",
+        "asar": "asar",
+        "asr": "asar",
+        "maghrib": "maghrib",
+        "isyak": "isyak",
+        "isha": "isyak",
+        "ishak": "isyak",
+    }
+    return aliases.get(clean, "")
+
+
+def build_muis_prayer_time_brief(target_text: str = "", prayer: str = "") -> str:
+    today = datetime.now(SGT).date()
+    target = today
+    clean_date = (target_text or "").strip().lower()
+    if clean_date:
+        if clean_date == "today":
+            target = today
+        elif clean_date == "tomorrow":
+            target = today + timedelta(days=1)
+        else:
+            target = date.fromisoformat(clean_date)
+
+    record = isl.get_prayer_times(target)
+    source = "MUIS Singapore prayer timetable"
+    day = record.get("day") or target.strftime("%a")
+    key = _normalise_prayer_key(prayer)
+    if key:
+        if not record.get(key):
+            raise ValueError(f"No MUIS time found for {prayer} on {target.isoformat()}")
+        label = isl.PRAYER_LABELS.get(key, key.title())
+        return f"{source}: {target.isoformat()} ({day}) - {label} {record[key]}"
+
+    parts = [f"{isl.PRAYER_LABELS[key]} {record[key]}" for key in isl.PRAYER_KEYS if record.get(key)]
+    return f"{source}: {target.isoformat()} ({day}) - " + " · ".join(parts)
+
+
 def _prayer_reminder_due(now: datetime) -> dict | None:
     now = now.astimezone(SGT)
     today_key = now.strftime("%Y-%m-%d")
@@ -2179,6 +2251,13 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
         "air quality", "nea", "mss"
     ]):
         return "get_nea_weather"
+
+    if "get_muis_prayer_times" in available and has_any([
+        "prayer", "prayers", "pray", "solat", "salah", "subuh", "fajr",
+        "syuruk", "zohor", "zuhur", "zuhr", "dhuhr", "asar", "asr",
+        "maghrib", "isyak", "isha", "muis"
+    ]):
+        return "get_muis_prayer_times"
 
     if (
         "update_project_status" in available
@@ -3432,6 +3511,7 @@ def _core_tools():
         WEEK_TYPE_TOOL,
         PROJECT_TOOL,
         WEATHER_TOOL,
+        PRAYER_TIME_TOOL,
         NEWS_TOOL,
     ]
     if ss.search_enabled():
@@ -3467,6 +3547,14 @@ def pwa_tools_for_message(text: str) -> list[dict]:
             add(SEARCH_TOOL)
     if re.search(r"\b(weather|forecast|temperature|temp|hot|cold|rain|raining|rainy|shower|showers|thunder|storm|umbrella|haze|psi|pm2\.5|air quality|nea|mss)\b", text):
         add(WEATHER_TOOL)
+    if re.search(r"\b(prayer|prayers|pray|solat|salah|subuh|fajr|syuruk|zohor|zuhur|zuhr|dhuhr|asar|asr|maghrib|isyak|isha|muis|religion|religious|islam|islamic|halal|haram|fatwa|zakat|puasa|fasting|ramadan|qibla|wudhu|wudu|ablution)\b", text):
+        add(PRAYER_TIME_TOOL, CONTEXT_TOOL)
+        if ss.search_enabled():
+            add(SEARCH_TOOL)
+    if re.search(r"\b(location|where|journey|travel|route|directions|commute|drive|driving|mrt|bus|walk|walking|masjid|mosque)\b", text):
+        add(CONTEXT_TOOL, WEATHER_TOOL)
+        if ss.search_enabled():
+            add(SEARCH_TOOL)
     if re.search(r"\b(document|docx|worksheet|letter|report|lesson plan|handout|memo|proposal|meeting notes)\b", text):
         add(DOCUMENT_ARTIFACT_TOOL, TEMPLATE_MEMORY_TOOL)
     if re.search(r"\b(slide|slides|deck|ppt|pptx|powerpoint|presentation|pitch)\b", text):
@@ -3525,6 +3613,8 @@ def _looks_tool_heavy(text: str) -> bool:
     return bool(re.search(
         r"\b(calendar|schedule|meeting|event|remind|nudge|task|due|marking|scripts?|"
         r"email|gmail|inbox|draft|reply|timetable|lesson|news|latest|search|remember|"
+        r"prayer|prayers|pray|solat|salah|subuh|fajr|syuruk|zohor|zuhur|zuhr|dhuhr|asar|asr|maghrib|isyak|isha|muis|religion|religious|islam|islamic|halal|haram|fatwa|zakat|puasa|fasting|ramadan|qibla|wudhu|wudu|ablution|"
+        r"location|where|journey|travel|route|directions|commute|drive|driving|mrt|bus|walk|walking|masjid|mosque|"
         r"weather|forecast|temperature|temp|hot|cold|rain|raining|rainy|shower|showers|thunder|storm|umbrella|"
         r"haze|psi|pm2\.5|air quality|nea|mss|project|projects|gameplan|ruh|rūḥ|apps?|app store|"
         r"milestone|launched|shipped|released|approved|rejected|submitted|blocked|"
@@ -3863,6 +3953,12 @@ async def _execute_tool(name: str, inp: dict) -> str:
             )
         except Exception as e:
             return f"Failed to fetch NEA weather: {e}"
+
+    elif name == "get_muis_prayer_times":
+        try:
+            return build_muis_prayer_time_brief(inp.get("date", ""), inp.get("prayer", ""))
+        except Exception as e:
+            return f"Failed to fetch MUIS prayer times: {e}"
 
     elif name == "create_calendar_event":
         try:

@@ -11,6 +11,7 @@ const state = {
   notifications: JSON.parse(localStorage.getItem("hira_pwa_notifications") || "[]"),
   chatNotificationIds: JSON.parse(localStorage.getItem("hira_pwa_chat_notification_ids") || "[]"),
   feedback: JSON.parse(localStorage.getItem("hira_pwa_feedback") || "{}"),
+  deviceLocation: JSON.parse(localStorage.getItem("hira_pwa_device_location") || "null"),
   notificationPoll: null,
 };
 
@@ -1014,6 +1015,7 @@ function appendToolStatus(el, name) {
     get_gmail_brief: "Checking Gmail...",
     create_gmail_draft: "Drafting email...",
     get_nea_weather: "Checking NEA weather...",
+    get_muis_prayer_times: "Checking MUIS prayer times...",
     get_latest_news: "Checking latest news...",
     web_search: "Searching...",
   };
@@ -1025,11 +1027,52 @@ function appendToolStatus(el, name) {
   el.scrollIntoView({ block: "end" });
 }
 
+function chatNeedsDeviceLocation(message = "") {
+  return /\b(location|where|journey|travel|route|directions|commute|drive|driving|mrt|bus|walk|walking|masjid|mosque|nearby|near me)\b/i.test(message);
+}
+
+function cachedDeviceLocation(maxAgeMs = 10 * 60 * 1000) {
+  const cached = state.deviceLocation;
+  if (!cached?.timestamp) return null;
+  const age = Date.now() - Date.parse(cached.timestamp);
+  return Number.isFinite(age) && age >= 0 && age <= maxAgeMs ? cached : null;
+}
+
+async function getDeviceLocationForChat(message = "") {
+  if (!chatNeedsDeviceLocation(message) || !navigator.geolocation) {
+    return cachedDeviceLocation();
+  }
+  const cached = cachedDeviceLocation(2 * 60 * 1000);
+  if (cached) return cached;
+  try {
+    const position = await new Promise((resolve, reject) => {
+      navigator.geolocation.getCurrentPosition(resolve, reject, {
+        enableHighAccuracy: true,
+        maximumAge: 60 * 1000,
+        timeout: 5000,
+      });
+    });
+    const location = {
+      lat: position.coords.latitude,
+      lon: position.coords.longitude,
+      accuracy: position.coords.accuracy,
+      timestamp: new Date(position.timestamp || Date.now()).toISOString(),
+    };
+    state.deviceLocation = location;
+    localStorage.setItem("hira_pwa_device_location", JSON.stringify(location));
+    return location;
+  } catch (error) {
+    console.info("Device location unavailable for chat", error?.message || error);
+    return cachedDeviceLocation();
+  }
+}
+
 async function streamChatResponse(message, onEvent) {
+  const location = await getDeviceLocationForChat(message);
   const response = await fetchWithToken("/api/chat", {
     method: "POST",
     headers: headers(),
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, location }),
   });
   const contentType = response.headers.get("content-type") || "";
   if (!contentType.includes("text/event-stream")) {

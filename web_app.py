@@ -107,8 +107,16 @@ async def stop_web_scheduler():
     _WEB_SCHEDULER_TASKS = []
 
 
+class DeviceLocation(BaseModel):
+    lat: float
+    lon: float
+    accuracy: Optional[float] = None
+    timestamp: Optional[str] = None
+
+
 class ChatRequest(BaseModel):
     message: str
+    location: Optional[DeviceLocation] = None
 
 
 class GmailRequest(BaseModel):
@@ -154,6 +162,21 @@ def _safe_text(builder, fallback: str) -> str:
         return builder()
     except Exception:
         return fallback
+
+
+def _device_location_context(location: DeviceLocation | None) -> str:
+    if not location:
+        return ""
+    accuracy = ""
+    if location.accuracy is not None:
+        accuracy = f" accuracy about {round(location.accuracy)}m"
+    timestamp = f" captured {location.timestamp}" if location.timestamp else ""
+    return (
+        "\n\n[Current device location context: "
+        f"lat {location.lat:.6f}, lon {location.lon:.6f}{accuracy}{timestamp}. "
+        "Use this as Herwanto's current origin for nearby-place and journey-time estimates. "
+        "Do not invent a street address from coordinates; if exact routing/place verification is unavailable, say the estimate is rough.]"
+    )
 
 
 def _parallel_home_data(days: int) -> dict:
@@ -346,6 +369,9 @@ async def chat(
     if bot.re.search(r"\b(?:work|moe|school|personal)\s+(?:gmail|email|emails|mail)\b", message, bot.re.I):
         account_hint, _ = bot._extract_gmail_account_from_text(message)
         user_content = f"{message}\n\n[Email account hint: use account=\"{account_hint}\" for Gmail tools.]"
+    location_context = _device_location_context(req.location)
+    if location_context:
+        user_content = f"{user_content}{location_context}"
     history.append({"role": "user", "content": user_content})
     history = history[-bot.MAX_TURNS:]
 

@@ -176,6 +176,29 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertIn("get_nea_weather", names)
 
+    def test_prayer_question_forces_muis_prayer_tool(self):
+        forced = bot._forced_tool_for_text(
+            "What time is zuhur today?",
+            [{"name": "get_muis_prayer_times"}, {"name": "get_assistant_context"}],
+        )
+
+        self.assertEqual(forced, "get_muis_prayer_times")
+
+    def test_pwa_prayer_message_gets_muis_prayer_tool(self):
+        tools = bot.pwa_tools_for_message("What time is zohor today?")
+        names = [tool["name"] for tool in tools]
+
+        self.assertIn("get_muis_prayer_times", names)
+
+    def test_execute_muis_prayer_tool_uses_bundled_muis_data(self):
+        async def run():
+            return await bot._execute_tool("get_muis_prayer_times", {
+                "date": "2026-05-01",
+                "prayer": "zuhur",
+            })
+
+        self.assertIn("Zohor 13:03", asyncio.run(run()))
+
     def test_execute_weather_tool_uses_weather_service(self):
         async def run():
             with patch.object(bot.ws, "build_weather_brief", return_value="NEA weather: Yishun"):
