@@ -37,6 +37,12 @@ GMAIL_SCOPES = [
 ]
 
 SHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "")
+DEFAULT_CLASSLIST_SHEET_IDS = [
+    "1wK1YTRzyjQ5a976D_Z4q886sZofTQnpXT4kMtf1LjKk",  # 2026 S1 MTL CLASSLIST
+    "1kHvPV58jdk9mNRuQSpS4bWy93UsSvYFT-CPw0rimkvs",  # 2026 S2 MTL CLASSLIST
+    "1yJHYp7VDDstnGIFITHOByLbV0oKy-ZEXy6ifmtPL1qg",  # 2026 S3 MTL CLASSLIST
+    "1sKTqAgllMFy0Fq4nLBpF2vxdGpzn3ByMGKCq-NuLSDI",  # 2026 S4 MTL CLASSLIST
+]
 _thread_local = threading.local()
 APP_NOTIFICATION_PUSH_BODY_LIMIT = 1800
 APP_NOTIFICATION_SHEET = "AppNotifications"
@@ -216,6 +222,166 @@ def format_events(events, show_date=False):
         prefix = f"{date_str} " if show_date else ""
         lines.append(f"• {prefix}{time_str} — {summary}")
 
+    return "\n".join(lines)
+
+
+# ─── SHEETS: MTL CLASSLISTS ─────────────────────────────────────────────────
+
+def _configured_classlist_sheet_ids() -> list[str]:
+    ids = _split_ids(os.environ.get("GOOGLE_CLASSLIST_SHEET_IDS", ""))
+    return ids or list(DEFAULT_CLASSLIST_SHEET_IDS)
+
+
+def _norm_cell(value: str) -> str:
+    return re.sub(r"[^A-Z0-9]+", " ", str(value or "").upper()).strip()
+
+
+def _cell_value(cell: dict) -> str:
+    if not isinstance(cell, dict):
+        return ""
+    value = cell.get("formattedValue")
+    if value is not None:
+        return str(value).strip()
+    effective = cell.get("effectiveValue") or {}
+    for key in ("stringValue", "numberValue", "boolValue"):
+        if key in effective:
+            return str(effective[key]).strip()
+    return ""
+
+
+def _row_values(row: dict) -> list[str]:
+    return [_cell_value(cell) for cell in row.get("values", [])]
+
+
+def _first_after_label(rows: list[list[str]], label: str, max_rows: int = 12) -> str:
+    needle = _norm_cell(label)
+    for row in rows[:max_rows]:
+        for idx, cell in enumerate(row):
+            if needle in _norm_cell(cell):
+                for candidate in row[idx + 1:]:
+                    if str(candidate).strip():
+                        return str(candidate).strip()
+    return ""
+
+
+def _teacher_matches(rows: list[list[str]], sheet_title: str, teacher_query: str) -> bool:
+    needles = [_norm_cell(part) for part in re.split(r"[,/|]+", teacher_query or "HERWANTO") if part.strip()]
+    if not needles:
+        needles = ["HERWANTO"]
+    haystacks = [_norm_cell(sheet_title)]
+    haystacks.extend(_norm_cell(" ".join(row)) for row in rows[:14])
+    return any(any(needle in hay for hay in haystacks) for needle in needles)
+
+
+def _find_classlist_header(rows: list[list[str]]) -> tuple[int, int, int, int | None] | None:
+    for row_idx, row in enumerate(rows[:30]):
+        norms = [_norm_cell(cell) for cell in row]
+        name_col = next(
+            (
+                idx for idx, cell in enumerate(norms)
+                if cell in {"FULL NAME", "NAMA", "NAME"} or cell.endswith(" FULL NAME")
+            ),
+            None,
+        )
+        class_col = next((idx for idx, cell in enumerate(norms) if cell == "CLASS"), None)
+        no_col = next((idx for idx, cell in enumerate(norms) if cell in {"NO", "NO."}), None)
+        if name_col is not None and (class_col is not None or no_col is not None):
+            return row_idx, name_col, class_col if class_col is not None else -1, no_col
+    return None
+
+
+def _extract_students(rows: list[list[str]]) -> list[dict]:
+    header = _find_classlist_header(rows)
+    if not header:
+        return []
+    header_idx, name_col, class_col, no_col = header
+    students = []
+    blank_run = 0
+    for row in rows[header_idx + 1:]:
+        name = row[name_col].strip() if name_col < len(row) else ""
+        class_name = row[class_col].strip() if class_col >= 0 and class_col < len(row) else ""
+        number = row[no_col].strip() if no_col is not None and no_col < len(row) else ""
+        if not name and not class_name:
+            blank_run += 1
+            if blank_run >= 6 and students:
+                break
+            continue
+        blank_run = 0
+        if not name or _norm_cell(name) in {"FULL NAME", "NAME", "NAMA"}:
+            continue
+        if _norm_cell(name).startswith("TEACHER NAME"):
+            continue
+        students.append({
+            "no": number,
+            "class": class_name,
+            "name": name.replace("*", "").strip(),
+        })
+    return students
+
+
+def get_mtl_classlists(teacher_query: str = "HERWANTO", class_query: str = "", include_students: bool = True) -> list[dict]:
+    service = _sheets()
+    class_filter = _norm_cell(class_query)
+    lists = []
+    fields = "properties(title),sheets(properties(title),data(rowData(values(formattedValue,effectiveValue))))"
+    for spreadsheet_id in _configured_classlist_sheet_ids():
+        book = service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            includeGridData=True,
+            fields=fields,
+        ).execute()
+        title = book.get("properties", {}).get("title", spreadsheet_id)
+        for sheet in book.get("sheets", []):
+            sheet_title = sheet.get("properties", {}).get("title", "")
+            row_data = []
+            for data in sheet.get("data", []):
+                row_data.extend(data.get("rowData", []))
+            rows = [_row_values(row) for row in row_data]
+            if not _teacher_matches(rows, sheet_title, teacher_query):
+                continue
+            grouping = _first_after_label(rows, "GROUPING")
+            venue = _first_after_label(rows, "VENUE")
+            teacher = _first_after_label(rows, "TEACHER NAME") or teacher_query
+            students = _extract_students(rows)
+            if class_filter:
+                students = [
+                    student for student in students
+                    if class_filter in _norm_cell(student.get("class", ""))
+                    or class_filter in _norm_cell(student.get("name", ""))
+                    or class_filter in _norm_cell(grouping)
+                ]
+                if not students and class_filter not in _norm_cell(grouping):
+                    continue
+            lists.append({
+                "spreadsheet_id": spreadsheet_id,
+                "spreadsheet_title": title,
+                "sheet_title": sheet_title,
+                "teacher": teacher,
+                "grouping": grouping,
+                "venue": venue,
+                "student_count": len(students),
+                "students": students if include_students else [],
+            })
+    return lists
+
+
+def format_mtl_classlists(teacher_query: str = "HERWANTO", class_query: str = "", include_students: bool = True) -> str:
+    lists = get_mtl_classlists(teacher_query, class_query, include_students)
+    if not lists:
+        return "No matching MTL classlist tabs found. Check that the classlist sheets are shared with H.I.R.A's Google service account."
+    lines = ["MTL classlists from 2026 MTL CLASSLIST BY TEACHERS:"]
+    for item in lists:
+        label = item["grouping"] or item["sheet_title"] or item["spreadsheet_title"]
+        teacher = item["teacher"]
+        venue = f", venue {item['venue']}" if item.get("venue") else ""
+        lines.append(f"\n{label} - {item['spreadsheet_title']} ({teacher}{venue})")
+        if not include_students:
+            lines.append(f"- {item['student_count']} students")
+            continue
+        for student in item["students"]:
+            prefix = f"{student['no']}. " if student.get("no") else "- "
+            cls = f" [{student['class']}]" if student.get("class") else ""
+            lines.append(f"{prefix}{student['name']}{cls}")
     return "\n".join(lines)
 
 

@@ -42,6 +42,34 @@ claude = Anthropic(api_key=ANTHROPIC_API_KEY or "missing-key")
 async_claude = AsyncAnthropic(api_key=ANTHROPIC_API_KEY or "missing-key")
 _SYSTEM_PROMPT_CACHE = {"key": None, "value": None}
 
+WORK_DRIVE_REFERENCES = [
+    (
+        "Work Google Drive: 2026 MTL folder "
+        "(https://drive.google.com/drive/folders/1VPlciwlR1_wVsUyr4_KovCfx6xVbLkJC) "
+        "is Herwanto's main 2026 Mother Tongue Languages work folder. "
+        "Top-level areas include Oral Exam 2026, 2025/2026 GCE/Internal Exam Result Analysis, "
+        "2026 MTL Intensive Programme, 2026 Work Review, Prize Presentation, "
+        "National Exam Deployment, MTL Classlist by Teachers, MTL Calendar, "
+        "Non-MTL/Exempted/Third Language Matters, MTL PD, MTL Meeting & PLT, "
+        "MTL Workplan, Hari Raya Celebration, MTF & Cultural Camp, Assessment Matters, "
+        "SOW & Resources, CNY Celebration, and Teachers Deployment."
+    ),
+    (
+        "Important MTL Drive folder: 2026 ASSESSMENT MATTERS "
+        "(https://drive.google.com/drive/folders/11sCM0e2FMwX159ru6dbFxM-Xt_S6hKTT). "
+        "Use this for assessment planning, exam/WA overview, rubrics, and assessment-related work. "
+        "Known contents include 2026 ASSESSMENT PLAN _MTL OVERVIEW.xlsx and "
+        "2026 ML&TL AA PROJECT SEC 3."
+    ),
+    (
+        "Important MTL Drive folder: 2026 MTL MEETING & PLT "
+        "(https://drive.google.com/drive/folders/1i7XO_ZVk4rEuHITs98tMt0cubjWO41qz). "
+        "Use this for department meetings, PLT decks, WA1 result discussions, and ML/TL PLT project work. "
+        "Known contents include 2026 ML&TL PLT Project, PLT decks #01-#10, "
+        "2026 MTL RESULTS - WA1, TAKE-AWAY FORM MTL SHARING, and the 2026/2025 MTL Dept Meeting deck."
+    )
+]
+
 # ─── REDIS MEMORY (falls back to in-memory if Redis not configured) ──────────
 
 _redis = None
@@ -177,6 +205,8 @@ def SYSTEM_PROMPT():
         "\n\nPersistent school calendar memory:\n" + tt.format_school_calendar_memory() +
         "\n\nPersistent timetable memory:\n" + tt.format_timetable_memory()
     )
+    if WORK_DRIVE_REFERENCES:
+        memory_ctx += "\n\nKnown work Drive references:\n" + "\n".join(f"- {item}" for item in WORK_DRIVE_REFERENCES)
     if google_ok():
         try:
             memory = gs.get_memory()
@@ -247,6 +277,7 @@ Rules:
 - After tool results, answer in natural language with a brief useful summary. Do not dump raw tool output unless the user asks for raw output.
 - For data lookups, use the user's words as intent: "last 5 emails" means latest 5 Gmail messages; "what's on today" means schedule/context; "anything due" means reminders/tasks; "who do I owe replies/follow-ups to" means Gmail/follow-up/task context as relevant.
 - For timetable or lesson lookups, use get_timetable. TIMETABLE in timetable.py is the source of truth for lessons; Google Calendar is only for events/appointments.
+- For MTL classlists, student names, or who is in Herwanto's classes, call get_mtl_classlists. His classlist tabs in the 2026 MTL classlist sheets include CG HERWANTO or CG HERWANTO/CG KADIR.
 - Infer his hat from context — never ask.
 - For code: fix first, explain if needed.
 - For BM: proper DBP spelling and grammar always.
@@ -263,7 +294,7 @@ Rules:
 - Never invent mosque or place locations. If a place location affects the answer and you do not have a verified source/tool result, say what you know and what is unverified. Be especially careful with Singapore masjid names that sound similar.
 - Known mosque correction: Masjid Al-Muttaqin is at 5140 Ang Mo Kio Ave 6, Singapore 569844, not Kovan.
 - For journey-time estimates, use the current device location context when it is provided. If it is not provided, use only explicit user-provided origin/destination or stable stored memory, and label any estimate as rough.
-- You have tools: create_calendar_event, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, update_project_status, get_nea_weather, get_muis_prayer_times, get_muis_friday_khutbah, get_latest_news, and web_search. Use them proactively.
+- You have tools: create_calendar_event, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_mtl_classlists, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, update_project_status, get_nea_weather, get_muis_prayer_times, get_muis_friday_khutbah, get_latest_news, and web_search. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
 - When the user mentions marking scripts, papers, compositions, kefahaman, karangan, worksheets, or a marking stack, use marking tools instead of ordinary reminders: add_marking_task for a new stack, update_marking_progress when he says how many scripts are marked, reset_marking_load when he asks to reset/clear the marking load or board, and get_marking_brief when he asks what marking is outstanding. Marking tasks are mission-critical and must persist even at 0 outstanding; only complete one when he explicitly says that marking stack is done, completed, can be closed, reset, or cleared.
@@ -278,6 +309,7 @@ Rules:
 - For screenshots/PDFs/images: create calendar events for items with a clear date and time, add reminders for dated tasks/deadlines, then summarise what you added and what still needs clarification.
 - Uploaded PDFs/images are saved as file memory after processing. When the user later refers to a previously uploaded file, use Stored memory / Files first; do not ask for a re-upload unless the stored summary lacks the exact detail needed.
 - When the user asks about his day, week, workload, priorities, deadlines, or project status — call get_assistant_context before answering.
+- When the user asks for his MTL classlists, class names, student names, students in a group, or whether a named student is in his class — call get_mtl_classlists before answering.
 - When the user asks about latest news, current events, headlines, football, F1, AI, Singapore education, apps, Apple, Nothing OS, or his shortlisted topics — call get_latest_news before answering.
 - When the user asks about weather, temperature, high/low temp, hot/cold conditions, rain, forecast, haze, PSI, air quality, umbrella, or whether it will rain in Singapore — call get_nea_weather before answering. If no area is specified, use Yishun. Weather answers must include available temperature, humidity, PSI/PM2.5 air quality, 2-hour nowcast, and 24-hour forecast details.
 - When the user says "remember", "note that", or gives stable preferences/facts about himself — call remember_user_info.
@@ -444,6 +476,24 @@ TIMETABLE_TOOL = {
             "week_type": {
                 "type": "string",
                 "description": "Optional week type: odd, even, O, E, or current. Leave blank/current to use the current school week."
+            }
+        }
+    }
+}
+
+CLASSLIST_TOOL = {
+    "name": "get_mtl_classlists",
+    "description": "Get Herwanto's live 2026 MTL classlists from Google Sheets. Use when he asks about his classes, classlists, student names, who is in a class, MTL groups, or students under CG Herwanto.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "class_query": {
+                "type": "string",
+                "description": "Optional class/group/name filter, such as S1, 1 Flagship, 2G3 ML, 4NT BML, or a student name."
+            },
+            "include_students": {
+                "type": "boolean",
+                "description": "Whether to include student names. Use true unless only a high-level count is requested."
             }
         }
     }
@@ -1874,17 +1924,20 @@ def _format_followup(followup: dict) -> str:
     return f"`[{followup['id']}]` {followup['due_date']} - {person}{followup['topic']}{channel}{notes}"
 
 def build_files_index() -> str:
+    lines = ["*File memory*\n"]
+    for item in WORK_DRIVE_REFERENCES:
+        lines.append(f"- {item}")
     if not google_ok():
-        return "Google is not connected."
+        return "\n".join(lines) if len(lines) > 1 else "Google is not connected."
     try:
         files = gs.get_memory().get("files", [])
-        if not files:
-            return "No files remembered yet."
-        lines = ["*File memory*\n"]
         for item in files[-25:]:
             lines.append(f"- {item}")
-        return "\n".join(lines)
+        return "\n".join(lines) if len(lines) > 1 else "No files remembered yet."
     except Exception as e:
+        if len(lines) > 1:
+            lines.append(f"- Live file memory unavailable: {e}")
+            return "\n".join(lines)
         return f"File memory unavailable: {e}"
 
 def _hm_to_minutes(value: str) -> int:
@@ -2362,6 +2415,12 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     if action_intent or completion_intent:
         return None
 
+    if "get_mtl_classlists" in available and has_any([
+        "classlist", "class list", "student", "students", "names", "name list",
+        "my classes", "mtl group", "grouping", "1 flagship", "2g3", "3g3", "4nt"
+    ]):
+        return "get_mtl_classlists"
+
     if "get_timetable" in available and has_any([
         "timetable", "lesson", "lessons", "periods", "classes"
     ]):
@@ -2767,7 +2826,7 @@ async def start(update, context):
         f"*Daily check-ins*\n/checkin /checkins /cancelcheckin\n"
         f"`/checkin Name | breaks | Question` for schedule-aware pings\n\n"
         f"*Artifacts*\n/doc /slides /template /templates /artifacts\n\n"
-        f"*Pro assistant*\n/tasks /taskmeta /donetask /followup /followups /files /evening /weekly\n\n"
+        f"*Pro assistant*\n/tasks /taskmeta /donetask /followup /followups /files /classlists /evening /weekly\n\n"
         f"*Gmail*\n/gmail /gmaildraft (optional setup)\n\n"
         f"*Assistant*\n/agenda [days] /remember /memory /forget all\n\n"
         f"*Projects*\n/projects /update\n\n"
@@ -3175,6 +3234,13 @@ async def artifacts_cmd(update, context):
 
 async def files_cmd(update, context):
     await reply(update, build_files_index(), parse_mode="Markdown")
+
+async def classlists_cmd(update, context):
+    query = " ".join(context.args).strip()
+    try:
+        await reply(update, gs.format_mtl_classlists(class_query=query), parse_mode=None)
+    except Exception as e:
+        await reply(update, f"Classlist lookup failed: {e}")
 
 async def tasks_cmd(update, context):
     days = 7
@@ -3643,6 +3709,7 @@ def _core_tools():
         MARKING_BRIEF_TOOL,
         TASK_BRIEF_TOOL,
         TIMETABLE_TOOL,
+        CLASSLIST_TOOL,
         GMAIL_BRIEF_TOOL,
         GMAIL_DRAFT_TOOL,
         MEMORY_TOOL,
@@ -3670,6 +3737,8 @@ def pwa_tools_for_message(text: str) -> list[dict]:
         add(GMAIL_BRIEF_TOOL, GMAIL_DRAFT_TOOL)
     if re.search(r"\b(timetable|lesson|period|odd week|even week|school week)\b", text):
         add(TIMETABLE_TOOL, WEEK_TYPE_TOOL)
+    if re.search(r"\b(classlist|class list|students?|names?|my classes|mtl group|grouping|1 flagship|2g3|3g3|4nt|4nt bml)\b", text):
+        add(CLASSLIST_TOOL, TIMETABLE_TOOL)
     if re.search(r"\b(calendar|schedule|agenda|today|tomorrow|week|meeting|event|appointment|duty|training|match|cca|what'?s on)\b", text):
         add(CONTEXT_TOOL, CALENDAR_TOOL, DELETE_CALENDAR_TOOL, REMINDER_TOOL, TIMETABLE_TOOL)
     if re.search(r"\b(task|tasks|due|deadline|remind|reminder|prepare|submit|complete|done|priority|prioritise|prioritize|focus)\b", text):
@@ -3754,6 +3823,7 @@ def _looks_tool_heavy(text: str) -> bool:
     return bool(re.search(
         r"\b(calendar|schedule|meeting|event|remind|nudge|task|due|marking|scripts?|"
         r"email|gmail|inbox|draft|reply|timetable|lesson|news|latest|search|remember|"
+        r"classlist|class list|students?|my classes|mtl group|grouping|"
         r"prayer|prayers|pray|solat|salah|subuh|fajr|syuruk|zohor|zuhur|zuhr|dhuhr|asar|asr|maghrib|isyak|isha|muis|religion|religious|islam|islamic|halal|haram|fatwa|zakat|puasa|fasting|ramadan|qibla|wudhu|wudu|ablution|"
         r"location|where|journey|travel|route|directions|commute|drive|driving|mrt|bus|walk|walking|masjid|mosque|"
         r"weather|forecast|temperature|temp|hot|cold|rain|raining|rainy|shower|showers|thunder|storm|umbrella|"
@@ -4058,6 +4128,16 @@ async def _execute_tool(name: str, inp: dict) -> str:
             return _timetable_for_lookup(inp.get("day", ""), inp.get("week_type", ""))
         except Exception as e:
             return f"Failed to get timetable: {e}"
+
+    elif name == "get_mtl_classlists":
+        try:
+            return gs.format_mtl_classlists(
+                teacher_query="HERWANTO",
+                class_query=inp.get("class_query", ""),
+                include_students=inp.get("include_students", True),
+            )
+        except Exception as e:
+            return f"Failed to get MTL classlists: {e}"
 
     elif name == "remember_user_info":
         try:
@@ -4797,6 +4877,7 @@ def main():
     app.add_handler(CommandHandler("templates", templates_cmd))
     app.add_handler(CommandHandler("artifacts", artifacts_cmd))
     app.add_handler(CommandHandler("files",    files_cmd))
+    app.add_handler(CommandHandler("classlists", classlists_cmd))
     app.add_handler(CommandHandler("tasks",    tasks_cmd))
     app.add_handler(CommandHandler("marking",  marking_cmd))
     app.add_handler(CommandHandler("marked",   marked_cmd))
