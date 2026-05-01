@@ -79,12 +79,34 @@ async def _web_prayer_reminder_loop():
             await asyncio.sleep(300)
 
 
+async def _web_friday_khutbah_loop():
+    while True:
+        try:
+            now = datetime.now(bot.SGT)
+            target = now.replace(hour=10, minute=30, second=0, microsecond=0)
+            if now >= target:
+                target = target + bot.timedelta(days=1)
+            sleep_for = max(60, min(1800, (target - now).total_seconds()))
+            await asyncio.sleep(sleep_for)
+            now = datetime.now(bot.SGT)
+            if now.weekday() == 4 and now.hour == 10 and now.minute == 30 and bot.google_ok():
+                text = bot._friday_khutbah_heads_up_due(now)
+                if text:
+                    bot._queue_app_notification("update", "Friday khutbah", text, source="web_friday_khutbah")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            bot.logger.warning(f"Web Friday khutbah scheduler error: {exc}")
+            await asyncio.sleep(300)
+
+
 @app.on_event("startup")
 async def start_web_scheduler():
     global _WEB_SCHEDULER_TASKS
     enabled = os.environ.get("HIRA_WEB_MORNING_BRIEFING", "1").strip().lower() not in {"0", "false", "no", "off"}
     evening_enabled = os.environ.get("HIRA_WEB_EVENING_BRIEFING", "1").strip().lower() not in {"0", "false", "no", "off"}
     prayer_enabled = os.environ.get("HIRA_WEB_PRAYER_REMINDERS", "1").strip().lower() not in {"0", "false", "no", "off"}
+    khutbah_enabled = os.environ.get("HIRA_WEB_FRIDAY_KHUTBAH", "1").strip().lower() not in {"0", "false", "no", "off"}
     if _WEB_SCHEDULER_TASKS:
         return
     if enabled:
@@ -97,6 +119,8 @@ async def start_web_scheduler():
         ))
     if prayer_enabled:
         _WEB_SCHEDULER_TASKS.append(asyncio.create_task(_web_prayer_reminder_loop()))
+    if khutbah_enabled:
+        _WEB_SCHEDULER_TASKS.append(asyncio.create_task(_web_friday_khutbah_loop()))
 
 
 @app.on_event("shutdown")

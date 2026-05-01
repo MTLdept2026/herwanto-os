@@ -8,6 +8,7 @@ from unittest.mock import patch
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
 import bot
+import islamic_service
 import pdf_service
 import weather_service
 import web_app
@@ -52,9 +53,9 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("8:00–9:05", result)
         self.assertIn("CCE", result)
         self.assertIn("9:40–10:50", result)
-        self.assertIn("1 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison", result)
+        self.assertIn("1 Flagship", result)
         self.assertIn("13:40–14:45", result)
-        self.assertIn("3 Anchor/Beacon/Compass/Danforth/Expedition/Flagship/Garrison", result)
+        self.assertIn("3G3", result)
         self.assertIn("L3-10", result)
 
     def test_master_timetable_key_periods(self):
@@ -190,6 +191,20 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertIn("get_muis_prayer_times", names)
 
+    def test_khutbah_question_forces_muis_khutbah_tool(self):
+        forced = bot._forced_tool_for_text(
+            "What is today's Friday khutbah about?",
+            [{"name": "get_muis_prayer_times"}, {"name": "get_muis_friday_khutbah"}],
+        )
+
+        self.assertEqual(forced, "get_muis_friday_khutbah")
+
+    def test_pwa_khutbah_message_gets_muis_khutbah_tool(self):
+        tools = bot.pwa_tools_for_message("khutbah summary before jumuah")
+        names = [tool["name"] for tool in tools]
+
+        self.assertIn("get_muis_friday_khutbah", names)
+
     def test_execute_muis_prayer_tool_uses_bundled_muis_data(self):
         async def run():
             return await bot._execute_tool("get_muis_prayer_times", {
@@ -198,6 +213,41 @@ class AgenticClaudeTests(unittest.TestCase):
             })
 
         self.assertIn("Zohor 13:03", asyncio.run(run()))
+
+    def test_execute_khutbah_tool_uses_muis_service(self):
+        khutbah = {
+            "date": "2026-05-01",
+            "title": "Youth and today's challenges",
+            "summary": "Youth challenges affect society tomorrow.",
+            "key_points": ["Evaluate ethics through Islam"],
+            "url": "https://www.muis.gov.sg/resources/khutbah-and-religious-advice/khutbah/youth-and-today-s-challenges-/",
+            "pdf_url": "https://example.com/khutbah.pdf",
+        }
+
+        async def run():
+            with patch.object(bot.isl, "latest_khutbah", return_value=khutbah):
+                return await bot._execute_tool("get_muis_friday_khutbah", {"date": "2026-05-01"})
+
+        result = asyncio.run(run())
+        self.assertIn("Friday khutbah heads-up", result)
+        self.assertIn("Youth and today's challenges", result)
+        self.assertIn("Evaluate ethics through Islam", result)
+
+    def test_muis_khutbah_listing_parser_reads_latest_english_card(self):
+        html = '''
+        <a href="/resources/khutbah-and-religious-advice/khutbah/youth-and-today-s-challenges-/">
+          <p>1 May 2026</p>
+          <span title="Youth and today’s challenges ">Youth and today’s challenges</span>
+          <p class="line-clamp-3">The challenges faced by youth today.</p>
+          <p>English</p>
+        </a>
+        '''
+
+        records = islamic_service._parse_khutbah_listing(html)
+
+        self.assertEqual(records[0]["date"], "2026-05-01")
+        self.assertEqual(records[0]["title"], "Youth and today’s challenges")
+        self.assertEqual(records[0]["language"], "English")
 
     def test_execute_weather_tool_uses_weather_service(self):
         async def run():
