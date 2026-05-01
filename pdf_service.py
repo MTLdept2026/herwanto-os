@@ -44,21 +44,37 @@ TIMETABLE_TERMS = [
 ]
 
 
-def extract_pdf_pages(file_bytes: bytes) -> tuple[int, list[PdfPageText]]:
-    """Extract text from a PDF, preserving page numbers."""
+def _fitz():
     try:
         import fitz
     except Exception as exc:
         raise RuntimeError("PyMuPDF is not installed. Add pymupdf to requirements.") from exc
+    return fitz
 
+
+def _extract_pages_from_pdf(pdf) -> tuple[int, list[PdfPageText]]:
+    pages: list[PdfPageText] = []
+    page_count = pdf.page_count
+    for idx, page in enumerate(pdf, start=1):
+        text = page.get_text("text") or ""
+        clean = "\n".join(line.rstrip() for line in text.splitlines() if line.strip())
+        pages.append(PdfPageText(page_number=idx, text=clean))
+    return page_count, pages
+
+
+def extract_pdf_pages(file_bytes: bytes) -> tuple[int, list[PdfPageText]]:
+    """Extract text from a PDF, preserving page numbers."""
+    fitz = _fitz()
     pages: list[PdfPageText] = []
     with fitz.open(stream=file_bytes, filetype="pdf") as pdf:
-        page_count = pdf.page_count
-        for idx, page in enumerate(pdf, start=1):
-            text = page.get_text("text") or ""
-            clean = "\n".join(line.rstrip() for line in text.splitlines() if line.strip())
-            pages.append(PdfPageText(page_number=idx, text=clean))
-    return page_count, pages
+        return _extract_pages_from_pdf(pdf)
+
+
+def extract_pdf_pages_from_path(path: str) -> tuple[int, list[PdfPageText]]:
+    """Extract text from a PDF file path without loading the whole file first."""
+    fitz = _fitz()
+    with fitz.open(path) as pdf:
+        return _extract_pages_from_pdf(pdf)
 
 
 def _normalise_words(value: str) -> list[str]:

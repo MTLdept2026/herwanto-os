@@ -66,10 +66,27 @@ def extract_pdf(file_bytes: bytes, caption: str = "") -> tuple[str, str]:
     return index, excerpt
 
 
+def extract_pdf_path(path: str, caption: str = "") -> tuple[str, str]:
+    page_count, pages = pdfs.extract_pdf_pages_from_path(path)
+    excerpt, selected_pages, text_pages = pdfs.build_pdf_excerpt(pages, caption=caption)
+    index = pdfs.format_pdf_index(page_count, text_pages, selected_pages)
+    return index, excerpt
+
+
 def extract_docx(file_bytes: bytes, caption: str = "") -> tuple[str, str]:
     from docx import Document
 
     document = Document(io.BytesIO(file_bytes))
+    return extract_docx_document(document, caption)
+
+
+def extract_docx_path(path: str, caption: str = "") -> tuple[str, str]:
+    from docx import Document
+
+    return extract_docx_document(Document(path), caption)
+
+
+def extract_docx_document(document, caption: str = "") -> tuple[str, str]:
     chunks: list[DocumentChunk] = []
     paragraphs = [_clean_text(p.text) for p in document.paragraphs if _clean_text(p.text)]
     if paragraphs:
@@ -100,7 +117,16 @@ def extract_docx(file_bytes: bytes, caption: str = "") -> tuple[str, str]:
 def extract_pptx(file_bytes: bytes, caption: str = "") -> tuple[str, str]:
     from pptx import Presentation
 
-    prs = Presentation(io.BytesIO(file_bytes))
+    return extract_pptx_presentation(Presentation(io.BytesIO(file_bytes)), caption)
+
+
+def extract_pptx_path(path: str, caption: str = "") -> tuple[str, str]:
+    from pptx import Presentation
+
+    return extract_pptx_presentation(Presentation(path), caption)
+
+
+def extract_pptx_presentation(prs, caption: str = "") -> tuple[str, str]:
     chunks: list[DocumentChunk] = []
     for idx, slide in enumerate(prs.slides, start=1):
         texts = []
@@ -147,5 +173,26 @@ def extract_supported_document(file_bytes: bytes, mime_type: str, filename: str 
         or name.endswith(".pptx")
     ):
         index, excerpt = extract_pptx(file_bytes, caption)
+        return "PPTX", index, excerpt
+    raise ValueError(f"Unsupported document type: {mime_type or filename}")
+
+
+def extract_supported_document_path(path: str, mime_type: str, filename: str = "", caption: str = "") -> tuple[str, str, str]:
+    mime = (mime_type or "").lower()
+    name = (filename or "").lower()
+    if mime == "application/pdf" or name.endswith(".pdf"):
+        index, excerpt = extract_pdf_path(path, caption)
+        return "PDF", index, excerpt
+    if (
+        mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        or name.endswith(".docx")
+    ):
+        index, excerpt = extract_docx_path(path, caption)
+        return "DOCX", index, excerpt
+    if (
+        mime == "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        or name.endswith(".pptx")
+    ):
+        index, excerpt = extract_pptx_path(path, caption)
         return "PPTX", index, excerpt
     raise ValueError(f"Unsupported document type: {mime_type or filename}")

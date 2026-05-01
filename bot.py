@@ -4509,6 +4509,8 @@ async def send_evening_briefing_once(context=None, force: bool = False, source: 
 
 async def _send_telegram_notification(context, text: str):
     try:
+        if context is None:
+            return False
         if _quiet_hours_active():
             return False
         chat_id = gs.get_config("chat_id")
@@ -4631,6 +4633,69 @@ async def followups_job(context):
         logger.error(f"Follow-up job error: {e}")
     finally:
         _finish_background_job("followups")
+
+
+async def _pwa_worker_daily_loop(name: str, hour: int, minute: int, job, days: tuple[int, ...] | None = None):
+    while True:
+        try:
+            now = datetime.now(SGT)
+            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if now >= target:
+                target = target + timedelta(days=1)
+            await asyncio.sleep(max(60, min(1800, (target - now).total_seconds())))
+            now = datetime.now(SGT)
+            if now.hour == hour and now.minute == minute and (days is None or now.weekday() in days):
+                await job(None)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"PWA worker daily job {name} error: {e}")
+            await asyncio.sleep(300)
+
+
+async def _pwa_worker_repeating_loop(name: str, interval: int, first: int, job):
+    await asyncio.sleep(first)
+    while True:
+        try:
+            await job(None)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"PWA worker repeating job {name} error: {e}")
+        await asyncio.sleep(interval)
+
+
+async def run_pwa_notification_worker():
+    logger.info("H.I.R.A PWA notification worker running.")
+    _log_memory("pwa_worker startup", force=True)
+    tasks = [
+        asyncio.create_task(_pwa_worker_daily_loop("morning_briefing", 7, 0, morning_briefing_job)),
+        asyncio.create_task(_pwa_worker_daily_loop("evening_briefing", 21, 0, evening_briefing_job)),
+        asyncio.create_task(_pwa_worker_daily_loop("weekly_planning", 19, 30, weekly_planning_job, days=(6,))),
+        asyncio.create_task(_pwa_worker_daily_loop("friday_khutbah", 10, 30, friday_khutbah_job, days=(4,))),
+        asyncio.create_task(_pwa_worker_daily_loop("friday_checkin", 17, 0, friday_checkin_job, days=(4,))),
+        asyncio.create_task(_pwa_worker_repeating_loop(
+            "proactive_nudges",
+            JOB_INTERVALS["proactive_nudges"],
+            10,
+            proactive_nudges_job,
+        )),
+        asyncio.create_task(_pwa_worker_repeating_loop(
+            "daily_checkins",
+            JOB_INTERVALS["daily_checkins"],
+            20,
+            daily_checkins_job,
+        )),
+        asyncio.create_task(_pwa_worker_repeating_loop("prayer_reminders", 60, 30, prayer_reminders_job)),
+        asyncio.create_task(_pwa_worker_repeating_loop(
+            "followups",
+            JOB_INTERVALS["followups"],
+            40,
+            followups_job,
+        )),
+    ]
+    await asyncio.gather(*tasks)
+
 
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 

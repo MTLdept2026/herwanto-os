@@ -25,6 +25,12 @@ def main() -> None:
                 os.environ.get("HIRA_UVICORN_KEEP_ALIVE", "5"),
             ],
         )
+    if mode in {"pwa_worker", "worker", "notifications"}:
+        import asyncio
+        import bot
+
+        asyncio.run(bot.run_pwa_notification_worker())
+        return
     os.execvp(sys.executable, [sys.executable, "bot.py"])
 
 

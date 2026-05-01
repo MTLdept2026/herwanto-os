@@ -56,7 +56,8 @@ _CHAT_SEMAPHORE = asyncio.Semaphore(_env_int("HIRA_WEB_CHAT_CONCURRENCY", 1))
 _UPLOAD_SEMAPHORE = asyncio.Semaphore(_env_int("HIRA_WEB_UPLOAD_CONCURRENCY", 1))
 _HOME_SEMAPHORE = asyncio.Semaphore(_env_int("HIRA_WEB_HOME_CONCURRENCY", 1))
 _MAX_UPLOAD_BYTES = max(256_000, _env_int("HIRA_WEB_MAX_UPLOAD_MB", 6) * 1024 * 1024)
-_MAX_REQUEST_BYTES = max(_MAX_UPLOAD_BYTES, _env_int("HIRA_WEB_MAX_REQUEST_MB", 8) * 1024 * 1024)
+_MAX_DOCUMENT_BYTES = max(_MAX_UPLOAD_BYTES, _env_int("HIRA_WEB_MAX_DOCUMENT_MB", 40) * 1024 * 1024)
+_MAX_REQUEST_BYTES = max(_MAX_DOCUMENT_BYTES, _env_int("HIRA_WEB_MAX_REQUEST_MB", 48) * 1024 * 1024)
 _MEMORY_GC_RATIO = _env_float("HIRA_WEB_MEMORY_GC_RATIO", 0.72)
 _MEMORY_REJECT_RATIO = _env_float("HIRA_WEB_MEMORY_REJECT_RATIO", 0.84)
 _MEMORY_WATCHDOG_SECONDS = _env_int("HIRA_WEB_MEMORY_WATCHDOG_SECONDS", 30, minimum=10)
@@ -73,6 +74,16 @@ def _memory_usage_ratio() -> float | None:
 def _memory_pressure_high() -> bool:
     ratio = _memory_usage_ratio()
     return ratio is not None and ratio >= _MEMORY_REJECT_RATIO
+
+
+def _is_supported_document(mime: str, filename: str) -> bool:
+    name = (filename or "").lower()
+    return (
+        mime == "application/pdf"
+        or mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        or mime == "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        or name.endswith((".pdf", ".docx", ".pptx"))
+    )
 
 
 async def _web_memory_watchdog():
@@ -790,9 +801,14 @@ async def upload_document(
     x_hira_token: Optional[str] = Header(default=None),
 ):
     _require_token(x_hira_token)
+    mime = (file.content_type or "").lower()
+    filename = file.filename or ""
+    is_document = _is_supported_document(mime, filename)
+    max_bytes = _MAX_DOCUMENT_BYTES if is_document else _MAX_UPLOAD_BYTES
     file_size = getattr(file, "size", None)
-    if file_size and file_size > _MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail=f"Upload is too large. Limit is {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")
+    if file_size and file_size > max_bytes:
+        label = "Document" if is_document else "Upload"
+        raise HTTPException(status_code=413, detail=f"{label} is too large. Limit is {max_bytes // (1024 * 1024)} MB.")
     async with _UPLOAD_SEMAPHORE:
         try:
             return await _process_upload_document(file, note)
@@ -802,14 +818,54 @@ async def upload_document(
 
 
 async def _process_upload_document(file: UploadFile, note: str = ""):
+    mime = (file.content_type or "").lower()
+    filename = file.filename or ""
+    is_document = _is_supported_document(mime, filename)
+    max_bytes = _MAX_DOCUMENT_BYTES if is_document else _MAX_UPLOAD_BYTES
+
+    if is_document:
+        suffix = Path(filename).suffix or ".upload"
+        tmp_path = ""
+        total = 0
+        try:
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp_path = tmp.name
+                while True:
+                    chunk = await file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"Document is too large. Limit is {max_bytes // (1024 * 1024)} MB.",
+                        )
+                    tmp.write(chunk)
+            if not total:
+                raise HTTPException(status_code=400, detail="Empty file")
+            kind, index_note, excerpt = docs.extract_supported_document_path(
+                tmp_path,
+                mime,
+                filename=filename,
+                caption=note,
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+        return await _analyse_document_excerpt(kind, index_note, excerpt, note)
+
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="Empty file")
-    if len(data) > _MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail=f"Upload is too large. Limit is {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")
-
-    mime = (file.content_type or "").lower()
-    filename = file.filename or ""
+    if len(data) > max_bytes:
+        raise HTTPException(status_code=413, detail=f"Upload is too large. Limit is {max_bytes // (1024 * 1024)} MB.")
 
     if mime.startswith("image/") or filename.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
         encoded = base64.b64encode(data).decode()
@@ -852,16 +908,10 @@ async def _process_upload_document(file: UploadFile, note: str = ""):
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Could not process voice note: {exc}") from exc
 
-    try:
-        kind, index_note, excerpt = docs.extract_supported_document(
-            data,
-            mime,
-            filename=filename,
-            caption=note,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    raise HTTPException(status_code=400, detail=f"Unsupported document type: {mime or filename}")
 
+
+async def _analyse_document_excerpt(kind: str, index_note: str, excerpt: str, note: str):
     if not excerpt.strip():
         return {
             "reply": (
