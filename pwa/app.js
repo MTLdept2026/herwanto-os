@@ -548,6 +548,44 @@ async function pollNotifications() {
   }
 }
 
+async function sendTestNotification() {
+  try {
+    const data = await api("/api/notifications/test", {
+      method: "POST",
+      headers: headers(false),
+    });
+    rememberNotification(data.notification);
+    setStatus(data.sent ? "Test push sent to this device." : "Test notification queued; push may need reconnecting.", data.sent ? "ok" : "warn");
+  } catch (error) {
+    setStatus(`Notification test failed: ${error.message}`, "error");
+  }
+}
+
+function renderHealth(data) {
+  const el = $("#healthOutput");
+  if (!el) return;
+  const prayerRows = (data.prayers?.prayers || [])
+    .map((item) => `${item.label} ${item.time}${item.prompted ? ` sent ${item.prompted_at}` : ""}`)
+    .join(" · ");
+  el.hidden = false;
+  el.innerHTML = `
+    <div class="status-row"><span>Push keys</span><strong>${data.push_public_key && data.push_private_key ? "Ready" : "Missing"}</strong></div>
+    <div class="status-row"><span>Subscriptions</span><strong>${data.subscription_count || 0}</strong></div>
+    <div class="status-row"><span>Queued</span><strong>${data.queued_notification_count || 0}</strong></div>
+    <p class="subtle">${markdownish(prayerRows || "Prayer status unavailable.")}</p>
+  `;
+}
+
+async function checkNotificationHealth() {
+  try {
+    const data = await api("/api/notifications/health", { headers: headers(false) });
+    renderHealth(data);
+    setStatus("Notification health checked.", "ok");
+  } catch (error) {
+    setStatus(`Health check failed: ${error.message}`, "error");
+  }
+}
+
 function startNotificationPolling() {
   if (state.notificationPoll) clearInterval(state.notificationPoll);
   pollNotifications();
@@ -1353,10 +1391,8 @@ async function uploadFile(event) {
   form.append("file", file);
   form.append("note", $("#fileNote").value.trim());
   try {
-    const data = await api("/api/upload", {
-      method: "POST",
-      headers: headers(false),
-      body: form,
+    const data = await submitUploadJob(form, (job) => {
+      $("#fileOutput").textContent = `Analysing ${file.name}... ${job.status}`;
     });
     $("#fileOutput").innerHTML = renderChatText(data.reply || "Done.");
     setStatus(`${file.name} analysed.`, "ok");
@@ -1399,10 +1435,8 @@ async function uploadChatAttachment(note) {
   form.append("note", note || "Analyse this upload for reminders, follow-ups, deadlines, schedule items, and useful next actions.");
   try {
     setStatus(file.type.startsWith("audio/") ? "Transcribing attachment..." : "Analysing attachment...", "muted");
-    const data = await api("/api/upload", {
-      method: "POST",
-      headers: headers(false),
-      body: form,
+    const data = await submitUploadJob(form, (job) => {
+      updateMessage(pending, `Analysing ${file.name}... ${job.status}`);
     });
     const reply = data.reply || "Done.";
     pending.classList.remove("pending");
@@ -1426,6 +1460,30 @@ async function uploadChatAttachment(note) {
     $("#sendBtn").disabled = false;
     $("#attachBtn").disabled = false;
   }
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function submitUploadJob(form, onProgress) {
+  const created = await api("/api/upload/jobs", {
+    method: "POST",
+    headers: headers(false),
+    body: form,
+  });
+  let job = created;
+  onProgress?.(job);
+  for (let attempt = 0; attempt < 180; attempt += 1) {
+    if (job.status === "done") return job;
+    if (job.status === "error" || job.status === "missing") {
+      throw new Error(job.error || "Upload analysis failed.");
+    }
+    await wait(attempt < 10 ? 1000 : 2000);
+    job = await api(`/api/upload/jobs/${encodeURIComponent(job.job_id)}`, { headers: headers(false) });
+    onProgress?.(job);
+  }
+  throw new Error("Upload analysis is still running. Check Files again in a moment.");
 }
 
 async function sendChat(message) {
@@ -1533,6 +1591,8 @@ $("#notificationsList").addEventListener("click", (event) => {
 });
 $("#enableNotificationsBtn").addEventListener("click", enableNotifications);
 $("#settingsEnableNotificationsBtn").addEventListener("click", enableNotifications);
+$("#testNotificationsBtn").addEventListener("click", sendTestNotification);
+$("#checkHealthBtn").addEventListener("click", checkNotificationHealth);
 document.querySelectorAll("[data-theme-choice], .theme-btn").forEach((button) => {
   button.dataset.theme = button.dataset.themeChoice || button.id.replace("theme", "").replace("Btn", "").toLowerCase();
   button.addEventListener("click", () => {

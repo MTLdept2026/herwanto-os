@@ -157,6 +157,17 @@ def _finish_background_job(name: str) -> None:
     gc.collect()
     _log_memory(f"after {name}")
 
+
+def _acquire_job_lock(name: str, ttl_seconds: int = 120) -> bool:
+    r = _get_redis()
+    if not r:
+        return True
+    try:
+        return bool(r.set(f"hira:job_lock:{name}", os.uname().nodename, nx=True, ex=ttl_seconds))
+    except Exception as exc:
+        logger.warning(f"Job lock unavailable for {name}: {exc}")
+        return True
+
 # ─── SYSTEM PROMPT ───────────────────────────────────────────────────────────
 
 def SYSTEM_PROMPT():
@@ -4509,6 +4520,8 @@ EVENING_BRIEFING_SENT_KEY = "last_evening_briefing_date"
 
 
 async def send_morning_briefing_once(context=None, force: bool = False, source: str = "morning_briefing") -> bool:
+    if not force and not _acquire_job_lock(source, 900):
+        return False
     if not google_ok():
         logger.warning("Morning briefing skipped: Google services are not connected")
         return False
@@ -4528,6 +4541,8 @@ async def send_morning_briefing_once(context=None, force: bool = False, source: 
 
 
 async def send_evening_briefing_once(context=None, force: bool = False, source: str = "evening_briefing") -> bool:
+    if not force and not _acquire_job_lock(source, 900):
+        return False
     if not google_ok():
         logger.warning("Evening briefing skipped: Google services are not connected")
         return False
@@ -4568,6 +4583,8 @@ async def morning_briefing_job(context):
 async def friday_checkin_job(context):
     if not google_ok():
         return
+    if not _acquire_job_lock("friday_checkin", 900):
+        return
     try:
         projs = gs.get_projects()
         lines = ["*Weekly project check-in*\n"]
@@ -4588,6 +4605,8 @@ async def evening_briefing_job(context):
 async def weekly_planning_job(context):
     if not google_ok():
         return
+    if not _acquire_job_lock("weekly_planning", 900):
+        return
     try:
         text = build_weekly_plan()
         await _send_telegram_notification(context, text)
@@ -4597,6 +4616,8 @@ async def weekly_planning_job(context):
 
 async def proactive_nudges_job(context):
     if not google_ok():
+        return
+    if not _acquire_job_lock("proactive_nudges", max(60, JOB_INTERVALS["proactive_nudges"] - 5)):
         return
     try:
         _log_memory("before proactive_nudges")
@@ -4613,6 +4634,8 @@ async def proactive_nudges_job(context):
 
 async def daily_checkins_job(context):
     if not google_ok():
+        return
+    if not _acquire_job_lock("daily_checkins", max(60, JOB_INTERVALS["daily_checkins"] - 5)):
         return
     try:
         _log_memory("before daily_checkins")
@@ -4632,6 +4655,8 @@ async def daily_checkins_job(context):
 async def prayer_reminders_job(context):
     if not google_ok():
         return
+    if not _acquire_job_lock("prayer_reminders", 55):
+        return
     try:
         due = _prayer_reminder_due(datetime.now(SGT))
         if not due:
@@ -4646,6 +4671,8 @@ async def prayer_reminders_job(context):
 async def friday_khutbah_job(context):
     if not google_ok():
         return
+    if not _acquire_job_lock("friday_khutbah", 900):
+        return
     try:
         text = _friday_khutbah_heads_up_due(datetime.now(SGT))
         if not text:
@@ -4659,6 +4686,8 @@ async def friday_khutbah_job(context):
 
 async def followups_job(context):
     if not google_ok():
+        return
+    if not _acquire_job_lock("followups", max(300, JOB_INTERVALS["followups"] - 5)):
         return
     try:
         _log_memory("before followups")

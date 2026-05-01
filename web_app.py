@@ -7,6 +7,8 @@ import json
 import os
 import tempfile
 import time
+import uuid
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path
@@ -262,6 +264,10 @@ class TasteProfileRequest(BaseModel):
     answers: dict
 
 
+_UPLOAD_JOBS: OrderedDict[str, dict] = OrderedDict()
+_MAX_LOCAL_UPLOAD_JOBS = 50
+
+
 def _history_key(client_id: str | None) -> str:
     clean = (client_id or "").strip()
     return f"pwa:{clean}" if clean else "pwa"
@@ -424,15 +430,100 @@ def _client_key(client_id: str | None) -> str:
     return clean or "pwa"
 
 
+def _upload_job_key(job_id: str) -> str:
+    return f"hira:upload_job:{job_id}"
+
+
+def _upload_job_public(job: dict) -> dict:
+    return {
+        "job_id": job.get("job_id", ""),
+        "status": job.get("status", "queued"),
+        "filename": job.get("filename", ""),
+        "created": job.get("created", ""),
+        "updated": job.get("updated", ""),
+        "reply": job.get("reply", ""),
+        "index": job.get("index", ""),
+        "error": job.get("error", ""),
+    }
+
+
+def _set_upload_job(job_id: str, update: dict) -> dict:
+    now = datetime.now(bot.SGT).isoformat()
+    existing = _get_upload_job(job_id, include_missing=True) or {"job_id": job_id, "created": now}
+    job = {**existing, **update, "job_id": job_id, "updated": now}
+    r = bot._get_redis()
+    if r:
+        r.setex(_upload_job_key(job_id), 86400, json.dumps(job, ensure_ascii=False))
+    _UPLOAD_JOBS[job_id] = job
+    _UPLOAD_JOBS.move_to_end(job_id)
+    while len(_UPLOAD_JOBS) > _MAX_LOCAL_UPLOAD_JOBS:
+        _UPLOAD_JOBS.popitem(last=False)
+    return job
+
+
+def _get_upload_job(job_id: str, include_missing: bool = False) -> dict | None:
+    job_id = str(job_id or "").strip()
+    if not job_id:
+        return None
+    r = bot._get_redis()
+    if r:
+        try:
+            raw = r.get(_upload_job_key(job_id))
+            if raw:
+                return json.loads(raw)
+        except Exception as exc:
+            bot.logger.warning(f"Upload job Redis read failed: {exc}")
+    job = _UPLOAD_JOBS.get(job_id)
+    if job:
+        _UPLOAD_JOBS.move_to_end(job_id)
+        return job
+    return None if include_missing else {"job_id": job_id, "status": "missing", "error": "Upload job not found or expired."}
+
+
+async def _spool_upload_to_temp(file: UploadFile, max_bytes: int) -> tuple[str, int]:
+    suffix = Path(file.filename or "").suffix or ".upload"
+    total = 0
+    tmp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp_path = tmp.name
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Upload is too large. Limit is {max_bytes // (1024 * 1024)} MB.",
+                    )
+                tmp.write(chunk)
+        if not total:
+            raise HTTPException(status_code=400, detail="Empty file")
+        return tmp_path, total
+    except Exception:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+        raise
+
+
 @app.get("/healthz")
 def healthz():
     limit = bot._memory_limit_mb()
     rss = bot._rss_mb()
+    redis_connected = bot._get_redis() is not None
     return {
         "ok": not _memory_pressure_high(),
         "rss_mb": round(rss, 1),
         "memory_limit_mb": round(limit, 1) if limit else None,
         "memory_ratio": round(rss / limit, 3) if limit else None,
+        "redis_connected": redis_connected,
+        "upload_jobs_tracked": len(_UPLOAD_JOBS),
+        "chat_slots_available": getattr(_CHAT_SEMAPHORE, "_value", None),
+        "upload_slots_available": getattr(_UPLOAD_SEMAPHORE, "_value", None),
     }
 
 
@@ -692,6 +783,29 @@ def notifications_config(x_hira_token: Optional[str] = Header(default=None)):
     return {"vapid_public_key": os.environ.get("HIRA_WEB_PUSH_PUBLIC_KEY", "").strip()}
 
 
+@app.post("/api/notifications/test")
+def notifications_test(
+    x_hira_token: Optional[str] = Header(default=None),
+    x_hira_client: Optional[str] = Header(default=None),
+):
+    _require_token(x_hira_token)
+    try:
+        item = bot.gs.enqueue_app_notification(
+            "test",
+            "H.I.R.A notification test",
+            "If this reached your phone, PWA push is wired correctly.",
+            source=f"test:{_client_key(x_hira_client)}",
+        )
+        sent = bot.gs.send_web_push_notification(
+            item["title"],
+            item["body"],
+            data={"id": item.get("id", ""), "kind": item.get("kind", "test"), "source": item.get("source", "test")},
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not send test notification: {exc}") from exc
+    return {"ok": True, "sent": sent, "notification": item}
+
+
 @app.get("/api/notifications/health")
 def notifications_health(x_hira_token: Optional[str] = Header(default=None)):
     _require_token(x_hira_token)
@@ -846,6 +960,57 @@ async def upload_document(
             bot._log_memory("after pwa upload")
 
 
+@app.post("/api/upload/jobs")
+async def create_upload_job(
+    file: UploadFile = File(...),
+    note: str = "",
+    x_hira_token: Optional[str] = Header(default=None),
+):
+    _require_token(x_hira_token)
+    mime = (file.content_type or "").lower()
+    filename = file.filename or ""
+    is_document = _is_supported_document(mime, filename)
+    max_bytes = _MAX_DOCUMENT_BYTES if is_document else _MAX_UPLOAD_BYTES
+    file_size = getattr(file, "size", None)
+    if file_size and file_size > max_bytes:
+        label = "Document" if is_document else "Upload"
+        raise HTTPException(status_code=413, detail=f"{label} is too large. Limit is {max_bytes // (1024 * 1024)} MB.")
+    job_id = uuid.uuid4().hex
+    tmp_path, total = await _spool_upload_to_temp(file, max_bytes)
+    _set_upload_job(job_id, {
+        "status": "queued",
+        "filename": filename,
+        "mime": mime,
+        "note": note,
+        "size": total,
+    })
+    asyncio.create_task(_run_upload_job(job_id, tmp_path, mime, filename, note))
+    return _upload_job_public(_get_upload_job(job_id) or {"job_id": job_id, "status": "queued"})
+
+
+@app.get("/api/upload/jobs/{job_id}")
+def get_upload_job(job_id: str, x_hira_token: Optional[str] = Header(default=None)):
+    _require_token(x_hira_token)
+    return _upload_job_public(_get_upload_job(job_id) or {"job_id": job_id, "status": "missing"})
+
+
+async def _run_upload_job(job_id: str, tmp_path: str, mime: str, filename: str, note: str):
+    _set_upload_job(job_id, {"status": "running"})
+    try:
+        result = await _process_upload_path(tmp_path, mime, filename, note)
+        _set_upload_job(job_id, {"status": "done", **result})
+    except Exception as exc:
+        bot.logger.exception(f"Upload job {job_id} failed: {exc}")
+        _set_upload_job(job_id, {"status": "error", "error": str(exc)})
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+        gc.collect()
+        bot._log_memory(f"after upload job {job_id}")
+
+
 async def _process_upload_document(file: UploadFile, note: str = ""):
     mime = (file.content_type or "").lower()
     filename = file.filename or ""
@@ -924,6 +1089,62 @@ async def _process_upload_document(file: UploadFile, note: str = ""):
                         model=os.environ.get("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe"),
                         file=audio,
                     )
+            text = getattr(transcript, "text", str(transcript)).strip()
+            if not text:
+                raise HTTPException(status_code=400, detail="I could not transcribe that voice note")
+            reply_text = await bot._run_agentic_claude(
+                [{"role": "user", "content": text}],
+                max_tokens=1600,
+            )
+            return {"reply": reply_text, "index": f"Voice note transcribed: {text}"}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Could not process voice note: {exc}") from exc
+
+    raise HTTPException(status_code=400, detail=f"Unsupported document type: {mime or filename}")
+
+
+async def _process_upload_path(tmp_path: str, mime: str, filename: str, note: str):
+    is_document = _is_supported_document(mime, filename)
+    if is_document:
+        try:
+            kind, index_note, excerpt = docs.extract_supported_document_path(
+                tmp_path,
+                mime,
+                filename=filename,
+                caption=note,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return await _analyse_document_excerpt(kind, index_note, excerpt, note)
+
+    name = (filename or "").lower()
+    if mime.startswith("image/") or name.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
+        with open(tmp_path, "rb") as fh:
+            encoded = base64.b64encode(fh.read()).decode()
+        reply_text = await bot._run_agentic_claude(
+            [{"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": mime or "image/png", "data": encoded}},
+                {"type": "text", "text": f"{bot.MEDIA_SCHEDULE_INSTRUCTION}\n\nUser note: {note or 'Extract useful schedule items, actions, dates, and reminders from this image.'}"}
+            ]}],
+            max_tokens=2200,
+            tools=[bot.CONTEXT_TOOL, bot.CALENDAR_TOOL, bot.REMINDER_TOOL, bot.MEMORY_TOOL],
+        )
+        return {"reply": reply_text, "index": f"Image analysed: {filename or 'uploaded image'}"}
+
+    if mime.startswith("audio/") or name.endswith((".ogg", ".m4a", ".mp3", ".wav")):
+        if not os.environ.get("OPENAI_API_KEY", "").strip():
+            raise HTTPException(status_code=400, detail="Voice notes need OPENAI_API_KEY configured first")
+        try:
+            from openai import OpenAI
+
+            client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+            with open(tmp_path, "rb") as audio:
+                transcript = client.audio.transcriptions.create(
+                    model=os.environ.get("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe"),
+                    file=audio,
+                )
             text = getattr(transcript, "text", str(transcript)).strip()
             if not text:
                 raise HTTPException(status_code=400, detail="I could not transcribe that voice note")

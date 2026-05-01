@@ -343,6 +343,14 @@ h3 {
   animation: panel-slide 200ms ease both;
 }
 
+.health-output {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border-visible);
+  background: var(--surface-muted);
+}
+
 .notification-btn {
   position: relative;
   grid-template-columns: 22px 32px;

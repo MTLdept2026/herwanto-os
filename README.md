@@ -377,6 +377,8 @@ If Telegram is retired, keep proactive phone notifications by running a separate
 
 Prayer reminders use a catch-up window, defaulting to `HIRA_PRAYER_REMINDER_WINDOW_MINUTES=20`, so a short deploy/restart does not silently miss the reminder. Use `/api/notifications/health` to confirm PWA push keys, subscription count, queued notifications, and today's prayer prompt status.
 
+The PWA Files and chat attachment flows submit uploads as background jobs through `/api/upload/jobs`, then poll for completion. Redis stores job state when `REDIS_URL` is configured; local memory is used as a fallback for development. Scheduler jobs also use Redis locks when available so a web service and worker service do not double-send the same prompt.
+
 **Personality:**
 
 H.I.R.A is designed to feel like a calm chief-of-staff in your pocket: concise, observant, Singapore-aware, wickedly witty when appropriate, and protective of your attention. It should prioritise next actions over long explanations, steady things when workload piles up, and adapt naturally across teaching, coding, business, normal conversation, and the latest news you care about.

@@ -13,7 +13,7 @@
     />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260501-3" />
+    <link rel="stylesheet" href="./styles.css?v=20260501-4" />
   </head>
   <body>
     <main class="shell">
@@ -71,8 +71,11 @@
         </div>
         <div class="inline-actions">
           <button id="settingsEnableNotificationsBtn" type="button" class="notification-toggle">Notifications off</button>
+          <button id="testNotificationsBtn" type="button" class="ghost-btn">Test push</button>
+          <button id="checkHealthBtn" type="button" class="ghost-btn">Health</button>
         </div>
         <p id="notificationStateText" class="subtle notification-state">Checking notifications...</p>
+        <div id="healthOutput" class="health-output" hidden></div>
       </aside>
 
       <section class="status-bar status-clockbar">
@@ -496,6 +499,6 @@
       </section>
     </main>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-    <script src="./app.js?v=20260501-3" type="module"></script>
+    <script src="./app.js?v=20260501-4" type="module"></script>
   </body>
 </html>
