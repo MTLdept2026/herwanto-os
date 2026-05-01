@@ -245,7 +245,40 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("AIRA", brief)
         self.assertIn("Most improved", brief)
         self.assertIn("YUSSOFF", brief)
+        self.assertIn("Progress: FA1 % -> FA2 %", brief)
+        self.assertNotIn("Progress: FA1 45 -> FA2 35", brief)
         self.assertIn("Drastic drops", brief)
+
+    def test_fa_percentage_analysis_uses_percent_columns_not_components(self):
+        book = {
+            "properties": {"title": "2026 S4 MTL CLASSLIST"},
+            "sheets": [{
+                "properties": {"title": "CG HERWANTO S4-AN"},
+                "data": [{
+                    "rowData": [
+                        sheet_row("", "", "", "", "", "FA1", "", "", "", "FA2", "", "", ""),
+                        sheet_row("NO", "CLASS", "FULL NAME", "LC 1 (20)", "LC 2 (20)", "15", "30", "45", "%", "10", "25", "35", "%"),
+                        sheet_row("1", "S4-AN", "AIRA", "14", "18", "13", "19", "32", "71", "7", "10", "17", "49"),
+                        sheet_row("2", "S4-AN", "NAURA", "", "", "", "", "AB", "AB", "5", "14", "19", "54"),
+                        sheet_row("3", "S4-AN", "AUNI", "14", "16", "11", "18", "29", "64", "AB", "AB", "AB", "AB"),
+                        sheet_row("4", "S4-AN", "COLLAR", "0", "4", "5", "2", "11", "24", "0", "6", "6", "17"),
+                    ]
+                }]
+            }]
+        }
+        fake_service = FakeSheetsService(book)
+
+        with (
+            patch.object(bot.gs, "_sheets", return_value=fake_service),
+            patch.object(bot.gs, "_configured_classlist_sheet_ids", return_value=["sheet-1"]),
+        ):
+            brief = bot.gs.format_mtl_score_analysis("S4-AN", "FA1 %", "FA1 %", "FA2 %")
+
+        self.assertIn("FA1 %: mean", brief)
+        self.assertIn("This is the percentage column", brief)
+        self.assertIn("Progress: FA1 % -> FA2 %", brief)
+        self.assertNotIn("FA1 15: mean", brief)
+        self.assertNotIn("FA1 45: mean", brief)
 
     def test_score_analysis_treats_zero_as_score_and_statuses_as_non_scoring(self):
         book = {

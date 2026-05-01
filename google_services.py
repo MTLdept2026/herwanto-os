@@ -591,14 +591,43 @@ def _score_column_label(rows: list[list[str]], header_idx: int, headers: list[st
     return header or assessment or _column_letter(col_idx)
 
 
-def _score_columns_for_sheet(sheet: dict, column_query: str = "") -> list[dict]:
-    query = _norm_cell(column_query)
+def _score_query_parts(column_query: str) -> dict:
+    raw = str(column_query or "")
+    norm = _norm_cell(raw)
+    wants_percent = bool(re.search(r"%|\bpercent(?:age)?\b", raw, re.I))
+    assessment_terms = re.findall(r"\b(?:FA|WA)\s*\d+\b|\bPRELIM\b|\bEOY\b", raw, re.I)
+    assessment_norms = [_norm_cell(term) for term in assessment_terms]
+    remainder = norm
+    for term in assessment_norms:
+        remainder = re.sub(rf"\b{re.escape(term)}\b", " ", remainder).strip()
+    remainder = re.sub(r"\bPERCENT(?:AGE)?\b", " ", remainder).strip()
+    return {
+        "norm": norm,
+        "wants_percent": wants_percent,
+        "assessment_norms": assessment_norms,
+        "remainder": " ".join(remainder.split()),
+    }
+
+
+def _score_columns_for_sheet(sheet: dict, column_query: str = "", prefer_percent: bool = False) -> list[dict]:
+    query = _score_query_parts(column_query)
     protected = {sheet["name_col"], sheet["class_col"], sheet["no_col"]}
     columns = []
     for idx, header in enumerate(sheet["headers"]):
         if idx in protected or not str(header or "").strip():
             continue
         label = _score_column_label(sheet["rows"], sheet["header_idx"], sheet["headers"], idx)
+        assessment = _assessment_label_for_column(sheet["rows"], sheet["header_idx"], idx)
+        header_norm = _norm_cell(header)
+        label_norm = _norm_cell(label)
+        assessment_norm = _norm_cell(assessment)
+        is_percent = str(header).strip() == "%" or header_norm in {"PERCENT", "PERCENTAGE"}
+        if query["wants_percent"] and not is_percent:
+            continue
+        if query["assessment_norms"] and not all(term in assessment_norm or term in label_norm for term in query["assessment_norms"]):
+            continue
+        if query["remainder"] and query["remainder"] not in label_norm and query["remainder"] not in header_norm:
+            continue
         sample_values = []
         numeric_count = 0
         status_count = 0
@@ -614,15 +643,18 @@ def _score_columns_for_sheet(sheet: dict, column_query: str = "") -> list[dict]:
                 status_count += 1
         if not numeric_count and not status_count:
             continue
-        if query and query not in _norm_cell(label) and query not in _norm_cell(header):
-            continue
         columns.append({
             "index": idx,
             "header": header,
             "label": label,
+            "assessment": assessment,
+            "is_percent": is_percent,
+            "max_score": _number_from_header(header),
             "numeric_count": numeric_count,
             "status_count": status_count,
         })
+    if prefer_percent and any(column["is_percent"] for column in columns):
+        return [column for column in columns if column["is_percent"]]
     return columns
 
 
@@ -687,7 +719,7 @@ def analyze_mtl_scores(
     analyses = []
     for sheet in sheets:
         query = assessment_query or compare_to or compare_from
-        columns = _score_columns_for_sheet(sheet, query)
+        columns = _score_columns_for_sheet(sheet, query, prefer_percent=bool(query))
         if not columns and query:
             columns = _score_columns_for_sheet(sheet, "")
         if not columns:
@@ -729,8 +761,8 @@ def analyze_mtl_scores(
             })
 
         progress_pairs = []
-        from_cols = _score_columns_for_sheet(sheet, compare_from) if compare_from else []
-        to_cols = _score_columns_for_sheet(sheet, compare_to) if compare_to else []
+        from_cols = _score_columns_for_sheet(sheet, compare_from, prefer_percent=True) if compare_from else []
+        to_cols = _score_columns_for_sheet(sheet, compare_to, prefer_percent=True) if compare_to else []
         if from_cols and to_cols:
             progress_pairs = [(from_cols[0], to_cols[0])]
         elif len(columns) >= 2:
@@ -787,6 +819,8 @@ def format_mtl_score_analysis(
                 f"pass {stats['pass_count']}/{stats['count']} ({pass_rate}%), "
                 f"distinction {stats['distinction_count']}/{stats['count']} ({distinction_rate}%)."
             )
+            if column["label"].endswith(" %"):
+                lines.append("  This is the percentage column for that assessment, not the raw component columns.")
             if column["statuses"]:
                 status_text = ", ".join(
                     f"{key} ({SCORE_STATUS_LABELS.get(key, 'non-scoring status')}): {value}"
