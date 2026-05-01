@@ -371,6 +371,8 @@ The PWA chat uses the same H.I.R.A tool brain as Telegram. With the same product
 
 For OS-level PWA notifications while the app is closed, generate VAPID keys with `vapid --gen`, set `HIRA_WEB_PUSH_PUBLIC_KEY` to `vapid --applicationServerKey`, set `HIRA_WEB_PUSH_PRIVATE_KEY` to a base64-encoded `private_key.pem`, and set `HIRA_WEB_PUSH_SUBJECT` to `mailto:you@example.com` on both Railway services. Then tap **Enable app notifications** in H.I.R.A. Without VAPID keys, H.I.R.A still shows queued app notifications the next time the PWA is open.
 
+The PWA backend includes Railway memory guardrails: one active chat/upload by default, capped request/upload sizes, a `/healthz` memory readout, and load shedding before the container reaches the OOM killer. Tune with `HIRA_WEB_CHAT_CONCURRENCY`, `HIRA_WEB_UPLOAD_CONCURRENCY`, `HIRA_WEB_MAX_UPLOAD_MB`, and `HIRA_WEB_MEMORY_REJECT_RATIO` only after watching Railway memory for a while.
+
 **Personality:**
 
 H.I.R.A is designed to feel like a calm chief-of-staff in your pocket: concise, observant, Singapore-aware, wickedly witty when appropriate, and protective of your attention. It should prioritise next actions over long explanations, steady things when workload piles up, and adapt naturally across teaching, coding, business, normal conversation, and the latest news you care about.

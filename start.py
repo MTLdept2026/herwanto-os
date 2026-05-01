@@ -10,7 +10,20 @@ def main() -> None:
         port = os.environ.get("PORT", "8000")
         os.execvp(
             "uvicorn",
-            ["uvicorn", "web_app:app", "--host", "0.0.0.0", "--port", port],
+            [
+                "uvicorn",
+                "web_app:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                port,
+                "--workers",
+                "1",
+                "--limit-concurrency",
+                os.environ.get("HIRA_UVICORN_LIMIT_CONCURRENCY", "20"),
+                "--timeout-keep-alive",
+                os.environ.get("HIRA_UVICORN_KEEP_ALIVE", "5"),
+            ],
         )
     os.execvp(sys.executable, [sys.executable, "bot.py"])
 

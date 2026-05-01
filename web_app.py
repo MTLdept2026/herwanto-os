@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import asyncio
+import gc
 import json
 import os
 import tempfile
@@ -15,6 +16,7 @@ from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.responses import JSONResponse
 
 import bot
 import document_service as docs
@@ -33,10 +35,77 @@ except ValueError:
 _HOME_EXECUTOR_WORKERS = max(1, min(2, _HOME_EXECUTOR_WORKERS))
 _HOME_EXECUTOR = ThreadPoolExecutor(max_workers=_HOME_EXECUTOR_WORKERS)
 _WEB_SCHEDULER_TASKS: list[asyncio.Task] = []
+_WEB_MEMORY_WATCHDOG_TASK: asyncio.Task | None = None
+
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(os.environ.get(name, str(default)) or default))
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)) or default)
+    except ValueError:
+        return default
+
+
+_CHAT_SEMAPHORE = asyncio.Semaphore(_env_int("HIRA_WEB_CHAT_CONCURRENCY", 1))
+_UPLOAD_SEMAPHORE = asyncio.Semaphore(_env_int("HIRA_WEB_UPLOAD_CONCURRENCY", 1))
+_HOME_SEMAPHORE = asyncio.Semaphore(_env_int("HIRA_WEB_HOME_CONCURRENCY", 1))
+_MAX_UPLOAD_BYTES = max(256_000, _env_int("HIRA_WEB_MAX_UPLOAD_MB", 6) * 1024 * 1024)
+_MAX_REQUEST_BYTES = max(_MAX_UPLOAD_BYTES, _env_int("HIRA_WEB_MAX_REQUEST_MB", 8) * 1024 * 1024)
+_MEMORY_GC_RATIO = _env_float("HIRA_WEB_MEMORY_GC_RATIO", 0.72)
+_MEMORY_REJECT_RATIO = _env_float("HIRA_WEB_MEMORY_REJECT_RATIO", 0.84)
+_MEMORY_WATCHDOG_SECONDS = _env_int("HIRA_WEB_MEMORY_WATCHDOG_SECONDS", 30, minimum=10)
+_STATIC_PATHS = {"/", "/healthz", "/manifest.webmanifest", "/service-worker.js", "/app.js", "/styles.css"}
+
+
+def _memory_usage_ratio() -> float | None:
+    limit = bot._memory_limit_mb()
+    if not limit:
+        return None
+    return bot._rss_mb() / limit
+
+
+def _memory_pressure_high() -> bool:
+    ratio = _memory_usage_ratio()
+    return ratio is not None and ratio >= _MEMORY_REJECT_RATIO
+
+
+async def _web_memory_watchdog():
+    while True:
+        try:
+            ratio = _memory_usage_ratio()
+            if ratio is not None and ratio >= _MEMORY_GC_RATIO:
+                gc.collect()
+                bot._log_memory(f"web watchdog pressure {ratio:.0%}", force=True)
+            await asyncio.sleep(_MEMORY_WATCHDOG_SECONDS)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            bot.logger.warning(f"Web memory watchdog error: {exc}")
+            await asyncio.sleep(_MEMORY_WATCHDOG_SECONDS)
 
 
 @app.middleware("http")
 async def add_static_cache_headers(request: Request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length and content_length.isdigit() and int(content_length) > _MAX_REQUEST_BYTES:
+        return JSONResponse(
+            {"detail": f"Request is too large. Limit is {_MAX_REQUEST_BYTES // (1024 * 1024)} MB."},
+            status_code=413,
+        )
+    is_static_path = request.url.path in _STATIC_PATHS or request.url.path.startswith("/static/")
+    if _memory_pressure_high() and not is_static_path:
+        gc.collect()
+        return JSONResponse(
+            {"detail": "H.I.R.A is under memory pressure. Try again in a moment."},
+            status_code=503,
+            headers={"Retry-After": "20"},
+        )
     response = await call_next(request)
     if request.url.path in {"/", "/service-worker.js", "/app.js", "/styles.css", "/static/app.js", "/static/styles.css"}:
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
@@ -102,7 +171,10 @@ async def _web_friday_khutbah_loop():
 
 @app.on_event("startup")
 async def start_web_scheduler():
-    global _WEB_SCHEDULER_TASKS
+    global _WEB_SCHEDULER_TASKS, _WEB_MEMORY_WATCHDOG_TASK
+    bot._log_memory("web startup", force=True)
+    if _WEB_MEMORY_WATCHDOG_TASK is None:
+        _WEB_MEMORY_WATCHDOG_TASK = asyncio.create_task(_web_memory_watchdog())
     enabled = os.environ.get("HIRA_WEB_MORNING_BRIEFING", "1").strip().lower() not in {"0", "false", "no", "off"}
     evening_enabled = os.environ.get("HIRA_WEB_EVENING_BRIEFING", "1").strip().lower() not in {"0", "false", "no", "off"}
     prayer_enabled = os.environ.get("HIRA_WEB_PRAYER_REMINDERS", "1").strip().lower() not in {"0", "false", "no", "off"}
@@ -125,10 +197,13 @@ async def start_web_scheduler():
 
 @app.on_event("shutdown")
 async def stop_web_scheduler():
-    global _WEB_SCHEDULER_TASKS
+    global _WEB_SCHEDULER_TASKS, _WEB_MEMORY_WATCHDOG_TASK
     for task in _WEB_SCHEDULER_TASKS:
         task.cancel()
     _WEB_SCHEDULER_TASKS = []
+    if _WEB_MEMORY_WATCHDOG_TASK is not None:
+        _WEB_MEMORY_WATCHDOG_TASK.cancel()
+        _WEB_MEMORY_WATCHDOG_TASK = None
 
 
 class DeviceLocation(BaseModel):
@@ -338,6 +413,18 @@ def _client_key(client_id: str | None) -> str:
     return clean or "pwa"
 
 
+@app.get("/healthz")
+def healthz():
+    limit = bot._memory_limit_mb()
+    rss = bot._rss_mb()
+    return {
+        "ok": not _memory_pressure_high(),
+        "rss_mb": round(rss, 1),
+        "memory_limit_mb": round(limit, 1) if limit else None,
+        "memory_ratio": round(rss / limit, 3) if limit else None,
+    }
+
+
 @app.get("/")
 def index():
     return FileResponse(PWA_DIR / "index.html")
@@ -364,10 +451,12 @@ def root_app_js():
 
 
 @app.get("/api/home")
-def home(days: int = 7, x_hira_token: Optional[str] = Header(default=None)):
+async def home(days: int = 7, x_hira_token: Optional[str] = Header(default=None)):
     _require_token(x_hira_token)
+    days = max(1, min(14, days))
     now = datetime.now(bot.SGT)
-    data = _parallel_home_data(days)
+    async with _HOME_SEMAPHORE:
+        data = await asyncio.to_thread(_parallel_home_data, days)
     return {
         "greeting": now.strftime("%A, %-d %B"),
         "time_label": now.strftime("%H:%M SGT"),
@@ -385,7 +474,18 @@ async def chat(
     message = (req.message or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="Message is required")
+    if len(message) > 12_000:
+        raise HTTPException(status_code=413, detail="Message is too long. Keep it under 12,000 characters.")
 
+    await _CHAT_SEMAPHORE.acquire()
+    try:
+        return await _chat_stream_response(message, req.location, x_hira_client)
+    except Exception:
+        _CHAT_SEMAPHORE.release()
+        raise
+
+
+async def _chat_stream_response(message: str, location: DeviceLocation | None, x_hira_client: str | None):
     history_key = _history_key(x_hira_client)
     history = bot.get_history(history_key)
     bot.absorb_taste_hint(message)
@@ -393,7 +493,7 @@ async def chat(
     if bot.re.search(r"\b(?:work|moe|school|personal)\s+(?:gmail|email|emails|mail)\b", message, bot.re.I):
         account_hint, _ = bot._extract_gmail_account_from_text(message)
         user_content = f"{message}\n\n[Email account hint: use account=\"{account_hint}\" for Gmail tools.]"
-    location_context = _device_location_context(req.location)
+    location_context = _device_location_context(location)
     if location_context:
         user_content = f"{user_content}{location_context}"
     history.append({"role": "user", "content": user_content})
@@ -422,10 +522,15 @@ async def chat(
             def sse(payload: dict) -> str:
                 return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
-            yield sse({"type": "route", "name": "quick"})
-            yield sse({"type": "text", "text": quick_checkin_reply})
-            yield sse({"type": "done", "text": quick_checkin_reply})
-            yield sse({"type": "saved"})
+            try:
+                yield sse({"type": "route", "name": "quick"})
+                yield sse({"type": "text", "text": quick_checkin_reply})
+                yield sse({"type": "done", "text": quick_checkin_reply})
+                yield sse({"type": "saved"})
+            finally:
+                _CHAT_SEMAPHORE.release()
+                gc.collect()
+                bot._log_memory("after pwa quick checkin")
 
         return StreamingResponse(quick_checkin_events(), media_type="text/event-stream")
 
@@ -492,6 +597,10 @@ async def chat(
                 "type": "error",
                 "message": "H.I.R.A hit a backend snag. Try again in a moment.",
             })
+        finally:
+            _CHAT_SEMAPHORE.release()
+            gc.collect()
+            bot._log_memory("after pwa chat")
 
     return StreamingResponse(events(), media_type="text/event-stream")
 
@@ -656,6 +765,7 @@ def files(x_hira_token: Optional[str] = Header(default=None)):
 @app.post("/api/gmail")
 def gmail(req: GmailRequest, x_hira_token: Optional[str] = Header(default=None)):
     _require_token(x_hira_token)
+    req.max_items = max(1, min(20, req.max_items))
     account = bot._normalise_gmail_account(req.account)
     if not bot.gs.gmail_ok(account):
         raise HTTPException(status_code=400, detail=f"{bot.gs.gmail_label(account).title()} is not connected")
@@ -680,9 +790,23 @@ async def upload_document(
     x_hira_token: Optional[str] = Header(default=None),
 ):
     _require_token(x_hira_token)
+    file_size = getattr(file, "size", None)
+    if file_size and file_size > _MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"Upload is too large. Limit is {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")
+    async with _UPLOAD_SEMAPHORE:
+        try:
+            return await _process_upload_document(file, note)
+        finally:
+            gc.collect()
+            bot._log_memory("after pwa upload")
+
+
+async def _process_upload_document(file: UploadFile, note: str = ""):
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="Empty file")
+    if len(data) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"Upload is too large. Limit is {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")
 
     mime = (file.content_type or "").lower()
     filename = file.filename or ""
