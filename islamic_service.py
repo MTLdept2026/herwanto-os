@@ -5,6 +5,7 @@ import json
 import logging
 import os
 from datetime import date, datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
 
 import pytz
@@ -125,6 +126,7 @@ def _normalise_record(row: dict) -> dict | None:
     }
 
 
+@lru_cache(maxsize=1)
 def _load_cache() -> dict:
     bundled = {}
     try:
@@ -151,6 +153,7 @@ def _load_cache() -> dict:
 def _save_cache(cache: dict):
     DATA_DIR.mkdir(exist_ok=True)
     PRAYER_CACHE_PATH.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+    _load_cache.cache_clear()
 
 
 def _fetch_from_data_gov(resource_id: str) -> dict:

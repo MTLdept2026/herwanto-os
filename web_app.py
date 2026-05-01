@@ -27,10 +27,10 @@ app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
 try:
-    _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "2"))
+    _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "1"))
 except ValueError:
-    _HOME_EXECUTOR_WORKERS = 2
-_HOME_EXECUTOR_WORKERS = max(1, min(3, _HOME_EXECUTOR_WORKERS))
+    _HOME_EXECUTOR_WORKERS = 1
+_HOME_EXECUTOR_WORKERS = max(1, min(2, _HOME_EXECUTOR_WORKERS))
 _HOME_EXECUTOR = ThreadPoolExecutor(max_workers=_HOME_EXECUTOR_WORKERS)
 _WEB_SCHEDULER_TASKS: list[asyncio.Task] = []
 
@@ -51,10 +51,12 @@ async def _web_daily_briefing_loop(hour: int, minute: int, sender, source: str):
             now = datetime.now(bot.SGT)
             target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
             if now >= target:
-                await sender(context=None, source=source)
                 target = target + bot.timedelta(days=1)
             sleep_for = max(60, min(1800, (target - now).total_seconds()))
             await asyncio.sleep(sleep_for)
+            now = datetime.now(bot.SGT)
+            if now.hour == hour and now.minute == minute:
+                await sender(context=None, source=source)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
