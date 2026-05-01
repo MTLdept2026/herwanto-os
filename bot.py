@@ -40,8 +40,11 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("apscheduler.executors.default").setLevel(logging.WARNING)
 logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
 
-claude = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-async_claude = AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+if not ANTHROPIC_API_KEY:
+    logger.warning("ANTHROPIC_API_KEY is not set; Claude calls will fail until it is configured.")
+claude = Anthropic(api_key=ANTHROPIC_API_KEY or "missing-key")
+async_claude = AsyncAnthropic(api_key=ANTHROPIC_API_KEY or "missing-key")
 _SYSTEM_PROMPT_CACHE = {"key": None, "value": None}
 
 # ─── REDIS MEMORY (falls back to in-memory if Redis not configured) ──────────
@@ -807,7 +810,9 @@ def _lessons_for_date(target):
     official_week = tt.get_school_week_info(target)
     if official_week:
         day_name = tt.DAY_MAP.get(target.weekday())
-        lessons = [] if official_week["is_school_holiday"] else tt.TIMETABLE.get((day_name, official_week["week_type"]), []) if day_name else []
+        if not day_name or official_week["is_school_holiday"]:
+            return [], ""
+        lessons = tt.TIMETABLE.get((day_name, official_week["week_type"]), [])
         return lessons, tt.week_type_label(official_week["week_type"])
 
     ref_date, ref_type = _get_week_config()
@@ -833,6 +838,17 @@ def _school_week_label(target: date) -> str:
 def _week_display(wt_label: str, target: date) -> str:
     school_week = _school_week_label(target)
     return f"{wt_label} week, {school_week}" if school_week else f"{wt_label} week"
+
+def _agenda_week_display(target: date) -> str:
+    official_week = tt.get_school_week_info(target)
+    if not official_week:
+        return ""
+    base = f"{official_week['term']} Week {official_week['week_number']}"
+    if target.weekday() > 4:
+        return f"Weekend, {base}"
+    if official_week["is_school_holiday"]:
+        return f"School holiday, {base}"
+    return f"{tt.week_type_label(official_week['week_type'])} week, {base}"
 
 def _format_memory(memory: dict) -> str:
     lines = [
@@ -989,7 +1005,7 @@ def build_agenda(days: int = 7) -> str:
     lines = [f"*Agenda*\n_{now.strftime('%A, %-d %B %Y, %H:%M SGT')}_\n"]
 
     lessons, wt_label = _lessons_for_date(today)
-    if wt_label:
+    if wt_label and today.weekday() < 5:
         lines.append(f"*Today at school ({_week_display(wt_label, today)})*")
         lines.append(tt.format_lessons(lessons))
         lines.append("")
@@ -1061,7 +1077,7 @@ def build_agenda_structured(days: int = 7) -> dict:
         day_map[target.isoformat()] = {
             "date": target.isoformat(),
             "label": target.strftime("%A, %-d %B"),
-            "week": _week_display(wt_label, target) if wt_label else "",
+            "week": _agenda_week_display(target),
             "lessons": [
                 {
                     "time": f"{lesson['start']}-{lesson['end']}",
@@ -2349,14 +2365,6 @@ def build_briefing():
         except Exception:
             pass
 
-    try:
-        signals = build_anticipatory_insights(days=2, limit=4)
-        if "No anticipatory" not in signals:
-            lines.append("")
-            lines.append(signals)
-    except Exception:
-        pass
-
     # Morning news digest
     try:
         digest = ss.get_morning_digest(_news_topics())
@@ -2432,14 +2440,6 @@ def build_evening_briefing():
                 lines.append(marking)
         except Exception:
             pass
-
-    try:
-        signals = build_anticipatory_insights(days=3, limit=5)
-        if "No anticipatory" not in signals:
-            lines.append("")
-            lines.append(signals)
-    except Exception:
-        pass
 
     lines.append("\nTake note of anything that needs packing, charging, printing, replying, or mentally parking before sleep.")
     return "\n".join(lines).strip()

@@ -16,6 +16,7 @@ SGT = pytz.timezone("Asia/Singapore")
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 PRAYER_CACHE_PATH = DATA_DIR / "muis_prayer_times.json"
+BUNDLED_PRAYER_PATH = DATA_DIR / "muis_prayer_times_2026.json"
 MUIS_CONSOLIDATED_RESOURCE_ID = "d_a6a206cba471fe04b62dd886ef5eaf22"
 MUIS_2026_RESOURCE_ID = "d_d441e7242e78efc566024dd5b0d9829c"
 DATA_GOV_DATASTORE_URL = "https://data.gov.sg/api/action/datastore_search"
@@ -125,11 +126,26 @@ def _normalise_record(row: dict) -> dict | None:
 
 
 def _load_cache() -> dict:
+    bundled = {}
+    try:
+        bundled_data = json.loads(BUNDLED_PRAYER_PATH.read_text(encoding="utf-8"))
+        bundled = bundled_data if isinstance(bundled_data, dict) else {}
+    except Exception:
+        bundled = {}
     try:
         data = json.loads(PRAYER_CACHE_PATH.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
+        runtime = data if isinstance(data, dict) else {}
     except Exception:
-        return {}
+        runtime = {}
+    if not bundled:
+        return runtime
+    merged = dict(bundled)
+    bundled_records = bundled.get("records", {}) if isinstance(bundled.get("records"), dict) else {}
+    runtime_records = runtime.get("records", {}) if isinstance(runtime.get("records"), dict) else {}
+    merged["records"] = {**bundled_records, **runtime_records}
+    if runtime.get("source"):
+        merged["source"] = runtime.get("source")
+    return merged
 
 
 def _save_cache(cache: dict):
@@ -145,6 +161,7 @@ def _fetch_from_data_gov(resource_id: str) -> dict:
         response = requests.get(
             DATA_GOV_DATASTORE_URL,
             params={"resource_id": resource_id, "limit": limit, "offset": offset},
+            headers={"User-Agent": "HIRA/1.0 prayer-time-cache"},
             timeout=12,
         )
         response.raise_for_status()

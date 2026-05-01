@@ -167,7 +167,7 @@ def get_digest_for_topics(topics, max_items=2):
             continue
         lines.append(f"{label}:")
         for item in items:
-            lines.append(f"- {item['title'][:110]}")
+            lines.append(f"- {item['title']}")
             if item.get("url"):
                 lines.append(f"  {item['url']}")
     return "\n".join(lines)
@@ -182,5 +182,5 @@ def get_morning_digest(topics=None):
     for label, query in (topics or DIGEST_TOPICS):
         items = google_news(query, max_items=1)
         if items:
-            lines.append(f"{label}: {items[0]['title'][:85]}")
+            lines.append(f"{label}: {items[0]['title']}")
     return "\n".join(lines)

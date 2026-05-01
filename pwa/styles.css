@@ -588,45 +588,6 @@ h3 {
   white-space: pre-line;
 }
 
-.insight-card-list {
-  display: grid;
-  gap: var(--space-sm);
-}
-
-.insight-card {
-  display: grid;
-  gap: 8px;
-  padding: 12px;
-  border: 1px solid var(--border-visible);
-  background: var(--surface-raised);
-}
-
-.insight-card-head {
-  display: flex;
-  align-items: start;
-  justify-content: space-between;
-  gap: var(--space-md);
-}
-
-.insight-card-head span {
-  flex: 0 0 auto;
-  color: var(--interactive);
-  font-family: var(--font-ui);
-  font-size: var(--label);
-  font-weight: 700;
-}
-
-.insight-card p {
-  color: var(--text-primary);
-  line-height: 1.45;
-}
-
-.insight-card small {
-  color: var(--text-secondary);
-  font-family: var(--font-readable);
-  line-height: 1.35;
-}
-
 .status-bar {
   display: flex;
   align-items: start;
@@ -795,6 +756,11 @@ h3 {
 
 .ghost-btn:hover {
   color: var(--interactive);
+}
+
+.ghost-btn.is-selected {
+  color: var(--interactive);
+  font-weight: 700;
 }
 
 .chip-row {
@@ -1925,9 +1891,9 @@ html[data-theme="dark"] .segment {
 
 .focus-value {
   color: var(--text-display);
-  font-family: var(--font-readable);
-  font-size: 22px;
-  line-height: 1.28;
+  font-family: var(--font-ui);
+  font-size: 18px;
+  line-height: 1.35;
 }
 
 .agenda-list {
@@ -2361,6 +2327,7 @@ html[data-theme="dark"] .segment {
 .list {
   padding: var(--space-md);
   line-height: 1.55;
+  overflow-wrap: anywhere;
 }
 
 .rich-output strong,

@@ -10,6 +10,7 @@ const state = {
   chatHistory: JSON.parse(localStorage.getItem("hira_pwa_chat") || "[]"),
   notifications: JSON.parse(localStorage.getItem("hira_pwa_notifications") || "[]"),
   chatNotificationIds: JSON.parse(localStorage.getItem("hira_pwa_chat_notification_ids") || "[]"),
+  feedback: JSON.parse(localStorage.getItem("hira_pwa_feedback") || "{}"),
   notificationPoll: null,
 };
 
@@ -183,8 +184,8 @@ function renderNotifications() {
             Dismiss
           </button>
           <div class="notification-feedback">
-            <button type="button" class="ghost-btn" data-feedback-rating="useful" data-feedback-target="${id}">Useful</button>
-            <button type="button" class="ghost-btn" data-feedback-rating="not_now" data-feedback-target="${id}">Not now</button>
+            <button type="button" class="ghost-btn ${state.feedback[id] === "useful" ? "is-selected" : ""}" data-feedback-rating="useful" data-feedback-target="${id}">Useful</button>
+            <button type="button" class="ghost-btn ${state.feedback[id] === "not_now" ? "is-selected" : ""}" data-feedback-rating="not_now" data-feedback-target="${id}">Not now</button>
           </div>
         </article>
       `;
@@ -508,12 +509,18 @@ async function dismissNotification(id) {
 }
 
 async function sendInsightFeedback(target, rating, kind = "notification") {
+  const key = String(target || "");
   try {
     await api("/api/insights/feedback", {
       method: "POST",
       headers: headers(),
-      body: JSON.stringify({ kind, target: String(target || ""), rating }),
+      body: JSON.stringify({ kind, target: key, rating }),
     });
+    if (key) {
+      state.feedback[key] = rating;
+      localStorage.setItem("hira_pwa_feedback", JSON.stringify(state.feedback));
+      renderNotifications();
+    }
     setStatus(rating === "useful" ? "Noted. More like this." : "Noted. I will quieten signals like that.", "ok");
   } catch (error) {
     setStatus(`Could not save feedback: ${error.message}`, "warn");
@@ -1090,29 +1097,6 @@ function renderTasteQuestions(taste = {}) {
   }).join("");
 }
 
-function renderInsightCards(items = []) {
-  if (!items.length) return renderTextBlock("No anticipatory signals yet.");
-  return `
-    <div class="insight-card-list">
-      ${items.map((item) => `
-        <article class="insight-card" data-insight-key="${escapeHtml(item.key || item.title || "")}">
-          <div class="insight-card-head">
-            <strong>${escapeHtml(item.title || "Signal")}</strong>
-            <span>${escapeHtml(String(item.score ?? "--"))}/100</span>
-          </div>
-          <p>${escapeHtml(item.body || "")}</p>
-          <small>${escapeHtml(item.reason || "")}</small>
-          ${(item.actions || []).length ? `<div class="chip-row">${item.actions.map((action) => `<span class="pill">${escapeHtml(action)}</span>`).join("")}</div>` : ""}
-          <div class="notification-feedback">
-            <button type="button" class="ghost-btn" data-insight-rating="useful" data-insight-target="${escapeHtml(item.key || "")}">Useful</button>
-            <button type="button" class="ghost-btn" data-insight-rating="not_now" data-insight-target="${escapeHtml(item.key || "")}">Not now</button>
-          </div>
-        </article>
-      `).join("")}
-    </div>
-  `;
-}
-
 async function saveTasteProfile() {
   const answers = {};
   document.querySelectorAll("[data-taste-answer]").forEach((field) => {
@@ -1156,14 +1140,12 @@ async function loadHome() {
   }
   $("#homeAgenda").innerHTML = "<div>Loading...</div>";
   $("#homeTasks").innerHTML = "<div>Loading...</div>";
-  $("#homeAnticipatory").innerHTML = "<div>Loading...</div>";
   $("#homeIslamic").innerHTML = "<div>Loading...</div>";
   try {
     const data = await api(`/api/home?days=${state.homeDays}`, { headers: headers(false) });
     updateLiveClock();
     $("#homeAgenda").innerHTML = renderAgendaCards(data.agenda);
     $("#homeTasks").innerHTML = renderTaskBriefFromText(data.tasks);
-    $("#homeAnticipatory").innerHTML = renderInsightCards(data.insights || []);
     renderTasteQuestions(data.taste || {});
     $("#homeIslamic").innerHTML = renderTextBlock(data.islamic || "Islamic rhythm unavailable right now.");
     const fileLines = countMeaningfulLines(data.files);
@@ -1212,7 +1194,6 @@ async function loadHome() {
   } catch (error) {
     $("#homeAgenda").textContent = `Error: ${error.message}`;
     $("#homeTasks").textContent = `Error: ${error.message}`;
-    $("#homeAnticipatory").textContent = `Error: ${error.message}`;
     $("#homeIslamic").textContent = `Error: ${error.message}`;
     $("#fileMemoryValue").textContent = "--";
     $("#fileMemoryLabel").textContent = "MEMORY CHECK FAILED";
@@ -1546,11 +1527,6 @@ $("#notificationsList").addEventListener("click", (event) => {
   const dismiss = event.target.closest("[data-notification-dismiss]");
   if (!dismiss) return;
   dismissNotification(dismiss.dataset.notificationDismiss);
-});
-$("#homeAnticipatory").addEventListener("click", (event) => {
-  const feedback = event.target.closest("[data-insight-rating]");
-  if (!feedback) return;
-  sendInsightFeedback(feedback.dataset.insightTarget, feedback.dataset.insightRating, "insight");
 });
 $("#enableNotificationsBtn").addEventListener("click", enableNotifications);
 $("#settingsEnableNotificationsBtn").addEventListener("click", enableNotifications);
