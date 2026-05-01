@@ -277,7 +277,7 @@ Rules:
 - After tool results, answer in natural language with a brief useful summary. Do not dump raw tool output unless the user asks for raw output.
 - For data lookups, use the user's words as intent: "last 5 emails" means latest 5 Gmail messages; "what's on today" means schedule/context; "anything due" means reminders/tasks; "who do I owe replies/follow-ups to" means Gmail/follow-up/task context as relevant.
 - For timetable or lesson lookups, use get_timetable. TIMETABLE in timetable.py is the source of truth for lessons; Google Calendar is only for events/appointments.
-- For MTL classlists, student names, or who is in Herwanto's classes, call get_mtl_classlists. His classlist tabs in the 2026 MTL classlist sheets include CG HERWANTO or CG HERWANTO/CG KADIR.
+- For MTL classlists, student names, scores, marks, WA/weighted assessment, FA/formative assessment, prelim, EOY, assessment columns, progress analysis, or who is in Herwanto's classes, call get_mtl_classlists or analyze_mtl_scores as appropriate. His classlist tabs in the 2026 MTL classlist sheets include CG HERWANTO or CG HERWANTO/CG KADIR.
 - Infer his hat from context — never ask.
 - For code: fix first, explain if needed.
 - For BM: proper DBP spelling and grammar always.
@@ -294,7 +294,7 @@ Rules:
 - Never invent mosque or place locations. If a place location affects the answer and you do not have a verified source/tool result, say what you know and what is unverified. Be especially careful with Singapore masjid names that sound similar.
 - Known mosque correction: Masjid Al-Muttaqin is at 5140 Ang Mo Kio Ave 6, Singapore 569844, not Kovan.
 - For journey-time estimates, use the current device location context when it is provided. If it is not provided, use only explicit user-provided origin/destination or stable stored memory, and label any estimate as rough.
-- You have tools: create_calendar_event, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_mtl_classlists, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, update_project_status, get_nea_weather, get_muis_prayer_times, get_muis_friday_khutbah, get_latest_news, and web_search. Use them proactively.
+- You have tools: create_calendar_event, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_mtl_classlists, analyze_mtl_scores, update_mtl_class_score, fill_mtl_percentage_scores, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, update_project_status, get_nea_weather, get_muis_prayer_times, get_muis_friday_khutbah, get_latest_news, and web_search. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
 - When the user mentions marking scripts, papers, compositions, kefahaman, karangan, worksheets, or a marking stack, use marking tools instead of ordinary reminders: add_marking_task for a new stack, update_marking_progress when he says how many scripts are marked, reset_marking_load when he asks to reset/clear the marking load or board, and get_marking_brief when he asks what marking is outstanding. Marking tasks are mission-critical and must persist even at 0 outstanding; only complete one when he explicitly says that marking stack is done, completed, can be closed, reset, or cleared.
@@ -309,7 +309,10 @@ Rules:
 - For screenshots/PDFs/images: create calendar events for items with a clear date and time, add reminders for dated tasks/deadlines, then summarise what you added and what still needs clarification.
 - Uploaded PDFs/images are saved as file memory after processing. When the user later refers to a previously uploaded file, use Stored memory / Files first; do not ask for a re-upload unless the stored summary lacks the exact detail needed.
 - When the user asks about his day, week, workload, priorities, deadlines, or project status — call get_assistant_context before answering.
-- When the user asks for his MTL classlists, class names, student names, students in a group, or whether a named student is in his class — call get_mtl_classlists before answering.
+- When the user asks for his MTL classlists, class names, student names, students in a group, scores, marks, assessment results, or whether a named student is in his class — call get_mtl_classlists before answering. Set include_scores=true for score/mark/result questions.
+- When the user asks for score analysis, progress, mean, median, pass rate, underperforming students, strongest students, most improved, or drastic drops — call analyze_mtl_scores. Treat 0 as an attempted paper with zero marks. Treat AB as absent, VR as valid reason, and MC as medical certificate; these status codes are non-scoring and should be excluded from mean/median/pass-rate calculations but counted separately.
+- When the user asks to calculate and enter a score/mark/result into an MTL classlist sheet, calculate only from the numbers he gives or sheet values retrieved with include_scores=true, then call update_mtl_class_score. Do not guess a student or column; if the tool reports ambiguity, ask for the missing class/student/column detail.
+- When the user asks to fill percentage columns in an MTL classlist, call fill_mtl_percentage_scores. Use class_query and assessment_query if the user provides them; otherwise the tool will ask for specificity when multiple % columns match.
 - When the user asks about latest news, current events, headlines, football, F1, AI, Singapore education, apps, Apple, Nothing OS, or his shortlisted topics — call get_latest_news before answering.
 - When the user asks about weather, temperature, high/low temp, hot/cold conditions, rain, forecast, haze, PSI, air quality, umbrella, or whether it will rain in Singapore — call get_nea_weather before answering. If no area is specified, use Yishun. Weather answers must include available temperature, humidity, PSI/PM2.5 air quality, 2-hour nowcast, and 24-hour forecast details.
 - When the user says "remember", "note that", or gives stable preferences/facts about himself — call remember_user_info.
@@ -483,7 +486,7 @@ TIMETABLE_TOOL = {
 
 CLASSLIST_TOOL = {
     "name": "get_mtl_classlists",
-    "description": "Get Herwanto's live 2026 MTL classlists from Google Sheets. Use when he asks about his classes, classlists, student names, who is in a class, MTL groups, or students under CG Herwanto.",
+    "description": "Get Herwanto's live 2026 MTL classlists from Google Sheets. Use when he asks about his classes, classlists, student names, score columns, marks, results, who is in a class, MTL groups, or students under CG Herwanto.",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -494,6 +497,85 @@ CLASSLIST_TOOL = {
             "include_students": {
                 "type": "boolean",
                 "description": "Whether to include student names. Use true unless only a high-level count is requested."
+            },
+            "include_scores": {
+                "type": "boolean",
+                "description": "Whether to include non-roster columns such as marks, assessment results, remarks, or score fields. Use true for scores/marks/results questions."
+            }
+        }
+    }
+}
+
+UPDATE_CLASS_SCORE_TOOL = {
+    "name": "update_mtl_class_score",
+    "description": "Write a calculated or provided score/mark/result into Herwanto's live MTL classlist Google Sheet for one clearly matched student and one clearly matched column. Use after reading scores when needed. Do not use if the student or column is ambiguous.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "class_query": {
+                "type": "string",
+                "description": "Class/group filter, e.g. 2G3, 3G3, S1, 4NT BML. Include it whenever known."
+            },
+            "student_query": {
+                "type": "string",
+                "description": "Student name or register number to match exactly enough."
+            },
+            "score_column": {
+                "type": "string",
+                "description": "Target sheet column/header to update, e.g. WA1, Oral, Karangan, Total, Overall."
+            },
+            "score_value": {
+                "type": "string",
+                "description": "Value to write. Can be a number, percentage, text, or Sheets formula. Calculate first if the user gives a formula/instructions."
+            }
+        },
+        "required": ["student_query", "score_column", "score_value"]
+    }
+}
+
+FILL_PERCENTAGE_SCORES_TOOL = {
+    "name": "fill_mtl_percentage_scores",
+    "description": "Bulk-fill percentage columns in Herwanto's MTL classlist sheet. Use for WA, FA, prelim, and EOY tables where a raw total column is immediately followed by a % column, e.g. FA2 35 then %. It converts numeric scores including 0 to rounded percentages and copies non-scoring status codes: AB absent, VR valid reason, MC medical certificate.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "class_query": {
+                "type": "string",
+                "description": "Class/group filter, e.g. S4-AN, 4NT BML, 2G3. Strongly recommended."
+            },
+            "assessment_query": {
+                "type": "string",
+                "description": "Assessment group above the percentage column, e.g. FA1 or FA2. Strongly recommended when multiple % columns exist."
+            },
+            "only_blank": {
+                "type": "boolean",
+                "description": "If true, fill only empty percentage cells and leave existing values unchanged. Default true."
+            }
+        }
+    }
+}
+
+ANALYZE_MTL_SCORES_TOOL = {
+    "name": "analyze_mtl_scores",
+    "description": "Analyse Herwanto's MTL classlist scores from Google Sheets for WA, FA, prelim, and EOY results. Computes mean, median, range, standard deviation, pass/distinction counts, watchlist/underperforming students, strongest students, most improved, and drastic drops across score columns. Treat 0 as a real attempted score; treat AB absent, VR valid reason, and MC medical certificate as non-scoring statuses counted separately.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "class_query": {
+                "type": "string",
+                "description": "Optional class/group filter, e.g. S4-AN, 2G3, 4NT BML."
+            },
+            "assessment_query": {
+                "type": "string",
+                "description": "Optional assessment or column filter, e.g. FA1, FA2, %, WA1, WA2, Oral, Prelim, EOY, Overall."
+            },
+            "compare_from": {
+                "type": "string",
+                "description": "Optional starting assessment/column for progress comparison, e.g. FA1 %."
+            },
+            "compare_to": {
+                "type": "string",
+                "description": "Optional ending assessment/column for progress comparison, e.g. FA2 %."
             }
         }
     }
@@ -2412,12 +2494,36 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
         and has_any(["reset", "clear", "clear all", "wipe"])
     ):
         return "reset_marking_load"
+    if "fill_mtl_percentage_scores" in available and has_any([
+        "converted score", "converted scores",
+        "fill percentage", "input percentage", "under the percentage", "under %",
+        "calculate percentage", "convert to percentage"
+    ]):
+        return "fill_mtl_percentage_scores"
+
+    if "analyze_mtl_scores" in available and has_any([
+        "analyse", "analyze", "analysis", "mean", "median", "average", "pass rate",
+        "distinction", "underperforming", "under-performing", "weak", "watchlist",
+        "most improved", "improved", "improvement", "drop", "dropped", "drastic drop",
+        "progress", "standard deviation", "std dev"
+    ]):
+        return "analyze_mtl_scores"
+
     if action_intent or completion_intent:
         return None
 
+    if "update_mtl_class_score" in available and has_any([
+        "enter score", "input score", "update score", "key in", "key-in", "record score",
+        "write score", "put score", "set score", "enter mark", "input mark", "update mark",
+        "record mark", "write mark", "set mark"
+    ]):
+        return "update_mtl_class_score"
+
     if "get_mtl_classlists" in available and has_any([
         "classlist", "class list", "student", "students", "names", "name list",
-        "my classes", "mtl group", "grouping", "1 flagship", "2g3", "3g3", "4nt"
+        "my classes", "mtl group", "grouping", "1 flagship", "2g3", "3g3", "4nt",
+        "score", "scores", "mark", "marks", "results", "result", "wa1", "wa2", "exam", "assessment",
+        "fa1", "fa2", "weighted assessment", "formative assessment", "prelim", "eoy"
     ]):
         return "get_mtl_classlists"
 
@@ -3710,6 +3816,9 @@ def _core_tools():
         TASK_BRIEF_TOOL,
         TIMETABLE_TOOL,
         CLASSLIST_TOOL,
+        ANALYZE_MTL_SCORES_TOOL,
+        UPDATE_CLASS_SCORE_TOOL,
+        FILL_PERCENTAGE_SCORES_TOOL,
         GMAIL_BRIEF_TOOL,
         GMAIL_DRAFT_TOOL,
         MEMORY_TOOL,
@@ -3737,8 +3846,8 @@ def pwa_tools_for_message(text: str) -> list[dict]:
         add(GMAIL_BRIEF_TOOL, GMAIL_DRAFT_TOOL)
     if re.search(r"\b(timetable|lesson|period|odd week|even week|school week)\b", text):
         add(TIMETABLE_TOOL, WEEK_TYPE_TOOL)
-    if re.search(r"\b(classlist|class list|students?|names?|my classes|mtl group|grouping|1 flagship|2g3|3g3|4nt|4nt bml)\b", text):
-        add(CLASSLIST_TOOL, TIMETABLE_TOOL)
+    if re.search(r"\b(classlist|class list|students?|names?|my classes|mtl group|grouping|1 flagship|2g3|3g3|4nt|4nt bml|scores?|marks?|results?|wa1|wa2|fa1|fa2|prelim|eoy|weighted assessment|formative assessment|exam|assessment|percentage|percent|%|analyse|analyze|analysis|mean|median|average|pass rate|underperforming|watchlist|most improved|progress|drop|dropped)\b", text):
+        add(CLASSLIST_TOOL, ANALYZE_MTL_SCORES_TOOL, UPDATE_CLASS_SCORE_TOOL, FILL_PERCENTAGE_SCORES_TOOL, TIMETABLE_TOOL)
     if re.search(r"\b(calendar|schedule|agenda|today|tomorrow|week|meeting|event|appointment|duty|training|match|cca|what'?s on)\b", text):
         add(CONTEXT_TOOL, CALENDAR_TOOL, DELETE_CALENDAR_TOOL, REMINDER_TOOL, TIMETABLE_TOOL)
     if re.search(r"\b(task|tasks|due|deadline|remind|reminder|prepare|submit|complete|done|priority|prioritise|prioritize|focus)\b", text):
@@ -4135,9 +4244,57 @@ async def _execute_tool(name: str, inp: dict) -> str:
                 teacher_query="HERWANTO",
                 class_query=inp.get("class_query", ""),
                 include_students=inp.get("include_students", True),
+                include_scores=inp.get("include_scores", False),
             )
         except Exception as e:
             return f"Failed to get MTL classlists: {e}"
+
+    elif name == "analyze_mtl_scores":
+        try:
+            return gs.format_mtl_score_analysis(
+                teacher_query="HERWANTO",
+                class_query=inp.get("class_query", ""),
+                assessment_query=inp.get("assessment_query", ""),
+                compare_from=inp.get("compare_from", ""),
+                compare_to=inp.get("compare_to", ""),
+            )
+        except Exception as e:
+            return f"Failed to analyse MTL scores: {e}"
+
+    elif name == "update_mtl_class_score":
+        try:
+            result = gs.update_mtl_class_score(
+                teacher_query="HERWANTO",
+                class_query=inp.get("class_query", ""),
+                student_query=inp.get("student_query", ""),
+                score_column=inp.get("score_column", ""),
+                score_value=inp.get("score_value", ""),
+            )
+            cls = f" [{result['class']}]" if result.get("class") else ""
+            return (
+                "Updated MTL classlist score: "
+                f"{result['student']}{cls} - {result['column']} = {result['value']} "
+                f"in {result['spreadsheet_title']} / {result['sheet_title']} ({result['range']})."
+            )
+        except Exception as e:
+            return f"Failed to update MTL classlist score: {e}"
+
+    elif name == "fill_mtl_percentage_scores":
+        try:
+            result = gs.fill_mtl_percentage_scores(
+                teacher_query="HERWANTO",
+                class_query=inp.get("class_query", ""),
+                assessment_query=inp.get("assessment_query", ""),
+                only_blank=inp.get("only_blank", True),
+            )
+            targets = ", ".join(result.get("targets") or []) or "matched percentage columns"
+            return (
+                f"Filled {result['updated_cells']} percentage cells for {targets}. "
+                f"Converted {result['filled_numbers']} numeric scores and copied "
+                f"{result['copied_codes']} status codes. Skipped {result['skipped']} cells."
+            )
+        except Exception as e:
+            return f"Failed to fill MTL percentage scores: {e}"
 
     elif name == "remember_user_info":
         try:

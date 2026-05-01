@@ -43,6 +43,55 @@ class FakeMessages:
         )
 
 
+def sheet_row(*values):
+    return {"values": [{"formattedValue": str(value)} for value in values]}
+
+
+class FakeSheetsRequest:
+    def __init__(self, payload=None, callback=None):
+        self.payload = payload or {}
+        self.callback = callback
+
+    def execute(self):
+        if self.callback:
+            self.callback()
+        return self.payload
+
+
+class FakeSheetsValues:
+    def __init__(self):
+        self.batch_updates = []
+        self.updates = []
+
+    def batchUpdate(self, spreadsheetId, body):
+        self.batch_updates.append((spreadsheetId, body))
+        return FakeSheetsRequest()
+
+    def update(self, spreadsheetId, range, valueInputOption, body):
+        self.updates.append((spreadsheetId, range, valueInputOption, body))
+        return FakeSheetsRequest()
+
+
+class FakeSheetsSpreadsheets:
+    def __init__(self, book):
+        self.book = book
+        self.values_api = FakeSheetsValues()
+
+    def get(self, spreadsheetId, includeGridData, fields):
+        return FakeSheetsRequest(self.book)
+
+    def values(self):
+        return self.values_api
+
+
+class FakeSheetsService:
+    def __init__(self, book):
+        self.spreadsheets_api = FakeSheetsSpreadsheets(book)
+
+    def spreadsheets(self):
+        return self.spreadsheets_api
+
+
 class AgenticClaudeTests(unittest.TestCase):
     def test_tuesday_even_timetable_uses_hardcoded_source(self):
         result = bot._timetable_for_lookup("Tuesday", "Even")
@@ -104,6 +153,133 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertIsNone(calendar_forced)
         self.assertIsNone(task_forced)
+
+    def test_score_question_forces_classlist_tool(self):
+        forced = bot._forced_tool_for_text(
+            "show me the FA2 scores for S4-AN",
+            [{"name": "get_mtl_classlists"}, {"name": "get_timetable"}],
+        )
+
+        self.assertEqual(forced, "get_mtl_classlists")
+
+    def test_percentage_fill_request_forces_percentage_tool(self):
+        forced = bot._forced_tool_for_text(
+            "input the converted scores under the percentage sign for FA2",
+            [{"name": "fill_mtl_percentage_scores"}, {"name": "get_mtl_classlists"}],
+        )
+
+        self.assertEqual(forced, "fill_mtl_percentage_scores")
+
+    def test_score_analysis_request_forces_analysis_tool(self):
+        forced = bot._forced_tool_for_text(
+            "analyse S4-AN scores and show mean median underperforming most improved drastic drops",
+            [{"name": "analyze_mtl_scores"}, {"name": "get_mtl_classlists"}],
+        )
+
+        self.assertEqual(forced, "analyze_mtl_scores")
+
+    def test_fill_mtl_percentage_scores_updates_blank_fa2_percentages(self):
+        book = {
+            "properties": {"title": "2026 S4 MTL CLASSLIST"},
+            "sheets": [{
+                "properties": {"title": "CG HERWANTO S4-AN"},
+                "data": [{
+                    "rowData": [
+                        sheet_row("", "", "", "FA1", "", "", "", "FA2", "", "", ""),
+                        sheet_row("NO", "CLASS", "FULL NAME", "15", "30", "45", "%", "10", "25", "35", "%"),
+                        sheet_row("1", "S4-AN", "AIRA", "13", "19", "32", "71", "7", "10", "17", ""),
+                        sheet_row("2", "S4-AN", "NAURA", "", "", "AB", "AB", "5", "14", "19", ""),
+                        sheet_row("3", "S4-AN", "AUNI", "11", "18", "29", "64", "AB", "AB", "AB", ""),
+                    ]
+                }]
+            }]
+        }
+        fake_service = FakeSheetsService(book)
+
+        with (
+            patch.object(bot.gs, "_sheets", return_value=fake_service),
+            patch.object(bot.gs, "_configured_classlist_sheet_ids", return_value=["sheet-1"]),
+        ):
+            result = bot.gs.fill_mtl_percentage_scores("S4-AN", "FA2")
+
+        self.assertEqual(result["updated_cells"], 3)
+        self.assertEqual(result["filled_numbers"], 2)
+        self.assertEqual(result["copied_codes"], 1)
+        data = fake_service.spreadsheets_api.values_api.batch_updates[0][1]["data"]
+        self.assertEqual(
+            [(item["range"], item["values"][0][0]) for item in data],
+            [("'CG HERWANTO S4-AN'!K3", "49"), ("'CG HERWANTO S4-AN'!K4", "54"), ("'CG HERWANTO S4-AN'!K5", "AB")],
+        )
+
+    def test_analyze_mtl_scores_reports_stats_and_progress(self):
+        book = {
+            "properties": {"title": "2026 S4 MTL CLASSLIST"},
+            "sheets": [{
+                "properties": {"title": "CG HERWANTO S4-AN"},
+                "data": [{
+                    "rowData": [
+                        sheet_row("", "", "", "FA1", "", "FA2", ""),
+                        sheet_row("NO", "CLASS", "FULL NAME", "45", "%", "35", "%"),
+                        sheet_row("1", "S4-AN", "AIRA", "32", "71", "17", "49"),
+                        sheet_row("2", "S4-AN", "NAURA", "AB", "AB", "19", "54"),
+                        sheet_row("3", "S4-AN", "AUNI", "29", "64", "AB", "AB"),
+                        sheet_row("4", "S4-AN", "HASLIANI", "29", "64", "19", "54"),
+                        sheet_row("5", "S4-AN", "DANISH", "29", "64", "21", "60"),
+                        sheet_row("6", "S4-AN", "YUSSOFF", "35", "77", "33", "94"),
+                    ]
+                }]
+            }]
+        }
+        fake_service = FakeSheetsService(book)
+
+        with (
+            patch.object(bot.gs, "_sheets", return_value=fake_service),
+            patch.object(bot.gs, "_configured_classlist_sheet_ids", return_value=["sheet-1"]),
+        ):
+            brief = bot.gs.format_mtl_score_analysis("S4-AN", "%", "FA1 %", "FA2 %")
+
+        self.assertIn("mean 68", brief)
+        self.assertIn("median 64", brief)
+        self.assertIn("pass 5/5", brief)
+        self.assertIn("Underperforming / watchlist", brief)
+        self.assertIn("AIRA", brief)
+        self.assertIn("Most improved", brief)
+        self.assertIn("YUSSOFF", brief)
+        self.assertIn("Drastic drops", brief)
+
+    def test_score_analysis_treats_zero_as_score_and_statuses_as_non_scoring(self):
+        book = {
+            "properties": {"title": "2026 S4 MTL CLASSLIST"},
+            "sheets": [{
+                "properties": {"title": "CG HERWANTO S4-AN"},
+                "data": [{
+                    "rowData": [
+                        sheet_row("", "", "", "WA1"),
+                        sheet_row("NO", "CLASS", "FULL NAME", "%"),
+                        sheet_row("1", "S4-AN", "AIRA", "0"),
+                        sheet_row("2", "S4-AN", "NAURA", "AB"),
+                        sheet_row("3", "S4-AN", "AUNI", "VR"),
+                        sheet_row("4", "S4-AN", "HASLIANI", "MC"),
+                        sheet_row("5", "S4-AN", "DANISH", "50"),
+                    ]
+                }]
+            }]
+        }
+        fake_service = FakeSheetsService(book)
+
+        with (
+            patch.object(bot.gs, "_sheets", return_value=fake_service),
+            patch.object(bot.gs, "_configured_classlist_sheet_ids", return_value=["sheet-1"]),
+        ):
+            brief = bot.gs.format_mtl_score_analysis("S4-AN", "WA1")
+
+        self.assertIn("mean 25", brief)
+        self.assertIn("pass 1/2", brief)
+        self.assertIn("AIRA", brief)
+        self.assertIn("0.0 (below 50)", brief)
+        self.assertIn("AB (absent): 1", brief)
+        self.assertIn("VR (valid reason): 1", brief)
+        self.assertIn("MC (medical certificate): 1", brief)
 
     def test_reset_marking_request_forces_reset_tool(self):
         forced = bot._forced_tool_for_text(

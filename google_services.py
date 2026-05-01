@@ -12,6 +12,7 @@ import re
 import tempfile
 import pytz
 import threading
+import statistics
 from functools import lru_cache
 from datetime import datetime, timedelta
 from email.message import EmailMessage
@@ -47,6 +48,11 @@ _thread_local = threading.local()
 APP_NOTIFICATION_PUSH_BODY_LIMIT = 1800
 APP_NOTIFICATION_SHEET = "AppNotifications"
 APP_NOTIFICATION_HEADERS = ["id", "kind", "title", "body", "created", "source", "seen_by", "archived"]
+SCORE_STATUS_LABELS = {
+    "AB": "absent",
+    "VR": "valid reason",
+    "MC": "medical certificate",
+}
 
 
 @lru_cache(maxsize=4)
@@ -253,6 +259,19 @@ def _row_values(row: dict) -> list[str]:
     return [_cell_value(cell) for cell in row.get("values", [])]
 
 
+def _column_letter(index: int) -> str:
+    value = index + 1
+    letters = []
+    while value:
+        value, remainder = divmod(value - 1, 26)
+        letters.append(chr(65 + remainder))
+    return "".join(reversed(letters))
+
+
+def _quote_sheet_name(title: str) -> str:
+    return "'" + str(title or "").replace("'", "''") + "'"
+
+
 def _first_after_label(rows: list[list[str]], label: str, max_rows: int = 12) -> str:
     needle = _norm_cell(label)
     for row in rows[:max_rows]:
@@ -319,7 +338,52 @@ def _extract_students(rows: list[list[str]]) -> list[dict]:
     return students
 
 
-def get_mtl_classlists(teacher_query: str = "HERWANTO", class_query: str = "", include_students: bool = True) -> list[dict]:
+def _extract_students_with_fields(rows: list[list[str]]) -> tuple[list[dict], list[str]]:
+    header = _find_classlist_header(rows)
+    if not header:
+        return [], []
+    header_idx, name_col, class_col, no_col = header
+    headers = [str(cell or "").strip() for cell in rows[header_idx]]
+    protected = {name_col, class_col, no_col}
+    students = []
+    blank_run = 0
+    for row_offset, row in enumerate(rows[header_idx + 1:], start=header_idx + 1):
+        name = row[name_col].strip() if name_col < len(row) else ""
+        class_name = row[class_col].strip() if class_col >= 0 and class_col < len(row) else ""
+        number = row[no_col].strip() if no_col is not None and no_col < len(row) else ""
+        if not name and not class_name:
+            blank_run += 1
+            if blank_run >= 6 and students:
+                break
+            continue
+        blank_run = 0
+        if not name or _norm_cell(name) in {"FULL NAME", "NAME", "NAMA"}:
+            continue
+        if _norm_cell(name).startswith("TEACHER NAME"):
+            continue
+        fields = {}
+        for idx, header_label in enumerate(headers):
+            if idx in protected or not header_label.strip():
+                continue
+            value = row[idx].strip() if idx < len(row) else ""
+            if value:
+                fields[header_label.strip()] = value
+        students.append({
+            "row_index": row_offset,
+            "no": number,
+            "class": class_name,
+            "name": name.replace("*", "").strip(),
+            "fields": fields,
+        })
+    return students, headers
+
+
+def get_mtl_classlists(
+    teacher_query: str = "HERWANTO",
+    class_query: str = "",
+    include_students: bool = True,
+    include_scores: bool = False,
+) -> list[dict]:
     service = _sheets()
     class_filter = _norm_cell(class_query)
     lists = []
@@ -342,7 +406,11 @@ def get_mtl_classlists(teacher_query: str = "HERWANTO", class_query: str = "", i
             grouping = _first_after_label(rows, "GROUPING")
             venue = _first_after_label(rows, "VENUE")
             teacher = _first_after_label(rows, "TEACHER NAME") or teacher_query
-            students = _extract_students(rows)
+            if include_scores:
+                students, headers = _extract_students_with_fields(rows)
+            else:
+                students = _extract_students(rows)
+                headers = []
             if class_filter:
                 students = [
                     student for student in students
@@ -360,13 +428,19 @@ def get_mtl_classlists(teacher_query: str = "HERWANTO", class_query: str = "", i
                 "grouping": grouping,
                 "venue": venue,
                 "student_count": len(students),
+                "columns": headers if include_scores else [],
                 "students": students if include_students else [],
             })
     return lists
 
 
-def format_mtl_classlists(teacher_query: str = "HERWANTO", class_query: str = "", include_students: bool = True) -> str:
-    lists = get_mtl_classlists(teacher_query, class_query, include_students)
+def format_mtl_classlists(
+    teacher_query: str = "HERWANTO",
+    class_query: str = "",
+    include_students: bool = True,
+    include_scores: bool = False,
+) -> str:
+    lists = get_mtl_classlists(teacher_query, class_query, include_students, include_scores)
     if not lists:
         return "No matching MTL classlist tabs found. Check that the classlist sheets are shared with H.I.R.A's Google service account."
     lines = ["MTL classlists from 2026 MTL CLASSLIST BY TEACHERS:"]
@@ -381,8 +455,624 @@ def format_mtl_classlists(teacher_query: str = "HERWANTO", class_query: str = ""
         for student in item["students"]:
             prefix = f"{student['no']}. " if student.get("no") else "- "
             cls = f" [{student['class']}]" if student.get("class") else ""
-            lines.append(f"{prefix}{student['name']}{cls}")
+            fields = student.get("fields") or {}
+            score_text = ""
+            if include_scores and fields:
+                score_text = " | " + "; ".join(f"{key}: {value}" for key, value in fields.items())
+            lines.append(f"{prefix}{student['name']}{cls}{score_text}")
     return "\n".join(lines)
+
+
+def _matching_header_columns(headers: list[str], query: str, protected_cols: set[int]) -> list[int]:
+    needle = _norm_cell(query)
+    if not needle:
+        return []
+    exact = [
+        idx for idx, header in enumerate(headers)
+        if idx not in protected_cols and _norm_cell(header) == needle
+    ]
+    if exact:
+        return exact
+    return [
+        idx for idx, header in enumerate(headers)
+        if idx not in protected_cols
+        and header.strip()
+        and (needle in _norm_cell(header) or _norm_cell(header) in needle)
+    ]
+
+
+def _number_from_header(value: str) -> float | None:
+    match = re.search(r"\d+(?:\.\d+)?", str(value or ""))
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None
+
+
+def _number_from_cell(value: str) -> float | None:
+    text = str(value or "").strip()
+    if not re.fullmatch(r"-?\d+(?:\.\d+)?", text):
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _format_percentage(value: float) -> str:
+    rounded = round(value)
+    return str(int(rounded))
+
+
+def _assessment_label_for_column(rows: list[list[str]], header_idx: int, col_idx: int) -> str:
+    if header_idx <= 0:
+        return ""
+    upper = rows[header_idx - 1] if header_idx - 1 < len(rows) else []
+    for idx in range(min(col_idx, len(upper) - 1), -1, -1):
+        label = str(upper[idx] or "").strip()
+        if label:
+            return label
+    return ""
+
+
+def _student_identity_text(student: dict) -> str:
+    return " ".join(
+        str(part or "")
+        for part in (student.get("no"), student.get("class"), student.get("name"))
+    )
+
+
+def _score_sheet_matches(teacher_query: str, class_query: str) -> list[dict]:
+    service = _sheets()
+    class_filter = _norm_cell(class_query)
+    matches = []
+    fields = "properties(title),sheets(properties(title),data(rowData(values(formattedValue,effectiveValue))))"
+    for spreadsheet_id in _configured_classlist_sheet_ids():
+        book = service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            includeGridData=True,
+            fields=fields,
+        ).execute()
+        spreadsheet_title = book.get("properties", {}).get("title", spreadsheet_id)
+        for sheet in book.get("sheets", []):
+            sheet_title = sheet.get("properties", {}).get("title", "")
+            row_data = []
+            for data in sheet.get("data", []):
+                row_data.extend(data.get("rowData", []))
+            rows = [_row_values(row) for row in row_data]
+            if not _teacher_matches(rows, sheet_title, teacher_query):
+                continue
+            header = _find_classlist_header(rows)
+            if not header:
+                continue
+            header_idx, name_col, class_col, no_col = header
+            grouping = _first_after_label(rows, "GROUPING")
+            if class_filter and class_filter not in _norm_cell(grouping) and class_filter not in _norm_cell(sheet_title):
+                row_has_class = any(
+                    class_col >= 0
+                    and class_col < len(row)
+                    and class_filter in _norm_cell(row[class_col])
+                    for row in rows[header_idx + 1:]
+                )
+                if not row_has_class:
+                    continue
+            headers = [str(cell or "").strip() for cell in rows[header_idx]]
+            students, _ = _extract_students_with_fields(rows)
+            if class_filter:
+                students = [
+                    student for student in students
+                    if class_filter in _norm_cell(grouping)
+                    or class_filter in _norm_cell(student.get("class", ""))
+                    or class_filter in _norm_cell(student.get("name", ""))
+                ]
+            matches.append({
+                "spreadsheet_id": spreadsheet_id,
+                "spreadsheet_title": spreadsheet_title,
+                "sheet_title": sheet_title,
+                "grouping": grouping,
+                "headers": headers,
+                "header_idx": header_idx,
+                "name_col": name_col,
+                "class_col": class_col,
+                "no_col": no_col,
+                "students": students,
+                "rows": rows,
+            })
+    return matches
+
+
+def _score_column_label(rows: list[list[str]], header_idx: int, headers: list[str], col_idx: int) -> str:
+    header = headers[col_idx] if col_idx < len(headers) else ""
+    assessment = _assessment_label_for_column(rows, header_idx, col_idx)
+    if assessment and header:
+        return f"{assessment} {header}".strip()
+    return header or assessment or _column_letter(col_idx)
+
+
+def _score_columns_for_sheet(sheet: dict, column_query: str = "") -> list[dict]:
+    query = _norm_cell(column_query)
+    protected = {sheet["name_col"], sheet["class_col"], sheet["no_col"]}
+    columns = []
+    for idx, header in enumerate(sheet["headers"]):
+        if idx in protected or not str(header or "").strip():
+            continue
+        label = _score_column_label(sheet["rows"], sheet["header_idx"], sheet["headers"], idx)
+        sample_values = []
+        numeric_count = 0
+        status_count = 0
+        for student in sheet["students"]:
+            row = sheet["rows"][student["row_index"]] if student["row_index"] < len(sheet["rows"]) else []
+            value = row[idx].strip() if idx < len(row) else ""
+            if not value:
+                continue
+            sample_values.append(value)
+            if _number_from_cell(value) is not None:
+                numeric_count += 1
+            elif _norm_cell(value) in SCORE_STATUS_LABELS:
+                status_count += 1
+        if not numeric_count and not status_count:
+            continue
+        if query and query not in _norm_cell(label) and query not in _norm_cell(header):
+            continue
+        columns.append({
+            "index": idx,
+            "header": header,
+            "label": label,
+            "numeric_count": numeric_count,
+            "status_count": status_count,
+        })
+    return columns
+
+
+def _stats_for_values(values: list[dict]) -> dict:
+    scores = [item["score"] for item in values]
+    if not scores:
+        return {}
+    ordered = sorted(scores)
+    mean = statistics.fmean(scores)
+    return {
+        "count": len(scores),
+        "mean": round(mean, 1),
+        "median": round(statistics.median(scores), 1),
+        "min": round(min(scores), 1),
+        "max": round(max(scores), 1),
+        "q1": round(ordered[len(ordered) // 4], 1),
+        "q3": round(ordered[(len(ordered) * 3) // 4], 1),
+        "std_dev": round(statistics.pstdev(scores), 1) if len(scores) > 1 else 0,
+        "pass_count": sum(1 for score in scores if score >= 50),
+        "distinction_count": sum(1 for score in scores if score >= 75),
+        "below_50_count": sum(1 for score in scores if score < 50),
+    }
+
+
+def _student_score_values(sheet: dict, col_idx: int) -> tuple[list[dict], dict]:
+    values = []
+    statuses = {}
+    for student in sheet["students"]:
+        row = sheet["rows"][student["row_index"]] if student["row_index"] < len(sheet["rows"]) else []
+        raw = row[col_idx].strip() if col_idx < len(row) else ""
+        score = _number_from_cell(raw)
+        if score is not None:
+            values.append({
+                "student": student,
+                "score": score,
+                "raw": raw,
+            })
+            continue
+        norm = _norm_cell(raw)
+        if norm:
+            statuses[norm] = statuses.get(norm, 0) + 1
+    return values, statuses
+
+
+def _student_label(student: dict) -> str:
+    number = f"{student.get('no')}. " if student.get("no") else ""
+    class_name = f" [{student.get('class')}]" if student.get("class") else ""
+    return f"{number}{student.get('name', '')}{class_name}".strip()
+
+
+def analyze_mtl_scores(
+    class_query: str = "",
+    assessment_query: str = "",
+    compare_from: str = "",
+    compare_to: str = "",
+    teacher_query: str = "HERWANTO",
+) -> dict:
+    sheets = _score_sheet_matches(teacher_query, class_query)
+    if not sheets:
+        raise ValueError("No matching MTL score sheets found.")
+
+    analyses = []
+    for sheet in sheets:
+        query = assessment_query or compare_to or compare_from
+        columns = _score_columns_for_sheet(sheet, query)
+        if not columns and query:
+            columns = _score_columns_for_sheet(sheet, "")
+        if not columns:
+            continue
+        sheet_analysis = {
+            "spreadsheet_title": sheet["spreadsheet_title"],
+            "sheet_title": sheet["sheet_title"],
+            "grouping": sheet["grouping"],
+            "student_count": len(sheet["students"]),
+            "columns": [],
+            "progress": [],
+        }
+        for column in columns[:12]:
+            values, statuses = _student_score_values(sheet, column["index"])
+            stats = _stats_for_values(values)
+            if not stats:
+                continue
+            sorted_values = sorted(values, key=lambda item: item["score"])
+            mean = stats["mean"]
+            underperforming = [
+                {
+                    "student": _student_label(item["student"]),
+                    "score": item["score"],
+                    "reason": "below 50" if item["score"] < 50 else "10+ points below mean",
+                }
+                for item in sorted_values
+                if item["score"] < 50 or item["score"] <= mean - 10
+            ][:8]
+            top = [
+                {"student": _student_label(item["student"]), "score": item["score"]}
+                for item in sorted(values, key=lambda item: item["score"], reverse=True)[:5]
+            ]
+            sheet_analysis["columns"].append({
+                "label": column["label"],
+                "stats": stats,
+                "statuses": statuses,
+                "underperforming": underperforming,
+                "top": top,
+            })
+
+        progress_pairs = []
+        from_cols = _score_columns_for_sheet(sheet, compare_from) if compare_from else []
+        to_cols = _score_columns_for_sheet(sheet, compare_to) if compare_to else []
+        if from_cols and to_cols:
+            progress_pairs = [(from_cols[0], to_cols[0])]
+        elif len(columns) >= 2:
+            numeric_columns = [col for col in columns if col["numeric_count"]]
+            if len(numeric_columns) >= 2:
+                progress_pairs = [(numeric_columns[-2], numeric_columns[-1])]
+        for start_col, end_col in progress_pairs[:1]:
+            changes = []
+            for student in sheet["students"]:
+                row = sheet["rows"][student["row_index"]] if student["row_index"] < len(sheet["rows"]) else []
+                start = _number_from_cell(row[start_col["index"]].strip() if start_col["index"] < len(row) else "")
+                end = _number_from_cell(row[end_col["index"]].strip() if end_col["index"] < len(row) else "")
+                if start is None or end is None:
+                    continue
+                changes.append({
+                    "student": _student_label(student),
+                    "from": start,
+                    "to": end,
+                    "change": round(end - start, 1),
+                })
+            if changes:
+                sheet_analysis["progress"].append({
+                    "from_label": start_col["label"],
+                    "to_label": end_col["label"],
+                    "most_improved": sorted(changes, key=lambda item: item["change"], reverse=True)[:5],
+                    "drastic_drops": sorted(changes, key=lambda item: item["change"])[:5],
+                })
+        analyses.append(sheet_analysis)
+
+    if not analyses:
+        raise ValueError("No numeric score columns matched that request.")
+    return {"analyses": analyses}
+
+
+def format_mtl_score_analysis(
+    class_query: str = "",
+    assessment_query: str = "",
+    compare_from: str = "",
+    compare_to: str = "",
+    teacher_query: str = "HERWANTO",
+) -> str:
+    result = analyze_mtl_scores(class_query, assessment_query, compare_from, compare_to, teacher_query)
+    lines = ["MTL score analysis:"]
+    for analysis in result["analyses"]:
+        label = analysis["grouping"] or analysis["sheet_title"]
+        lines.append(f"\n{label} - {analysis['spreadsheet_title']} ({analysis['student_count']} students)")
+        for column in analysis["columns"][:6]:
+            stats = column["stats"]
+            pass_rate = round((stats["pass_count"] / stats["count"]) * 100) if stats["count"] else 0
+            distinction_rate = round((stats["distinction_count"] / stats["count"]) * 100) if stats["count"] else 0
+            lines.append(
+                f"- {column['label']}: mean {stats['mean']}, median {stats['median']}, "
+                f"range {stats['min']}-{stats['max']}, SD {stats['std_dev']}, "
+                f"pass {stats['pass_count']}/{stats['count']} ({pass_rate}%), "
+                f"distinction {stats['distinction_count']}/{stats['count']} ({distinction_rate}%)."
+            )
+            if column["statuses"]:
+                status_text = ", ".join(
+                    f"{key} ({SCORE_STATUS_LABELS.get(key, 'non-scoring status')}): {value}"
+                    for key, value in sorted(column["statuses"].items())
+                )
+                lines.append(f"  Status/non-numeric, excluded from score statistics: {status_text}.")
+            if column["underperforming"]:
+                lines.append("  Underperforming / watchlist:")
+                for item in column["underperforming"][:6]:
+                    lines.append(f"  - {item['student']}: {item['score']} ({item['reason']})")
+            if column["top"]:
+                top_text = "; ".join(f"{item['student']} {item['score']}" for item in column["top"][:3])
+                lines.append(f"  Strongest: {top_text}.")
+        for progress in analysis["progress"]:
+            lines.append(f"  Progress: {progress['from_label']} -> {progress['to_label']}")
+            improved = "; ".join(
+                f"{item['student']} {item['change']:+g}" for item in progress["most_improved"][:5]
+            )
+            drops = "; ".join(
+                f"{item['student']} {item['change']:+g}" for item in progress["drastic_drops"][:5]
+            )
+            if improved:
+                lines.append(f"  Most improved: {improved}.")
+            if drops:
+                lines.append(f"  Drastic drops: {drops}.")
+    return "\n".join(lines)
+
+
+def update_mtl_class_score(
+    class_query: str,
+    student_query: str,
+    score_column: str,
+    score_value: str,
+    teacher_query: str = "HERWANTO",
+) -> dict:
+    if not str(student_query or "").strip():
+        raise ValueError("student_query is required.")
+    if not str(score_column or "").strip():
+        raise ValueError("score_column is required.")
+
+    service = _sheets()
+    class_filter = _norm_cell(class_query)
+    student_filter = _norm_cell(student_query)
+    matches = []
+    fields = "properties(title),sheets(properties(title),data(rowData(values(formattedValue,effectiveValue))))"
+    for spreadsheet_id in _configured_classlist_sheet_ids():
+        book = service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            includeGridData=True,
+            fields=fields,
+        ).execute()
+        spreadsheet_title = book.get("properties", {}).get("title", spreadsheet_id)
+        for sheet in book.get("sheets", []):
+            sheet_title = sheet.get("properties", {}).get("title", "")
+            row_data = []
+            for data in sheet.get("data", []):
+                row_data.extend(data.get("rowData", []))
+            rows = [_row_values(row) for row in row_data]
+            if not _teacher_matches(rows, sheet_title, teacher_query):
+                continue
+            header = _find_classlist_header(rows)
+            if not header:
+                continue
+            header_idx, name_col, class_col, no_col = header
+            grouping = _first_after_label(rows, "GROUPING")
+            if class_filter and class_filter not in _norm_cell(grouping) and class_filter not in _norm_cell(sheet_title):
+                row_has_class = any(
+                    class_col >= 0
+                    and class_col < len(row)
+                    and class_filter in _norm_cell(row[class_col])
+                    for row in rows[header_idx + 1:]
+                )
+                if not row_has_class:
+                    continue
+            headers = [str(cell or "").strip() for cell in rows[header_idx]]
+            protected = {name_col, class_col, no_col}
+            candidate_cols = _matching_header_columns(headers, score_column, protected)
+            students, _ = _extract_students_with_fields(rows)
+            for student in students:
+                if class_filter and class_filter not in _norm_cell(grouping) and class_filter not in _norm_cell(student.get("class", "")):
+                    continue
+                if student_filter in _norm_cell(_student_identity_text(student)):
+                    matches.append({
+                        "spreadsheet_id": spreadsheet_id,
+                        "spreadsheet_title": spreadsheet_title,
+                        "sheet_title": sheet_title,
+                        "grouping": grouping,
+                        "student": student,
+                        "candidate_cols": candidate_cols,
+                        "headers": headers,
+                        "protected_cols": protected,
+                    })
+
+    if not matches:
+        raise ValueError("No matching student found in Herwanto's MTL classlist sheets.")
+    if len(matches) > 1:
+        options = [
+            f"{item['student'].get('no')}. {item['student'].get('name')} [{item['student'].get('class') or item['grouping']}]"
+            for item in matches[:8]
+        ]
+        raise ValueError("More than one matching student found. Be more specific: " + "; ".join(options))
+
+    target = matches[0]
+    candidate_cols = target["candidate_cols"]
+    if not candidate_cols:
+        available = [
+            header for idx, header in enumerate(target["headers"])
+            if header.strip() and idx not in target["protected_cols"]
+        ]
+        raise ValueError("No matching score column found. Available columns include: " + ", ".join(available[:18]))
+    if len(candidate_cols) > 1:
+        options = [target["headers"][idx] for idx in candidate_cols]
+        raise ValueError("More than one matching score column found. Be more specific: " + ", ".join(options))
+
+    col_idx = candidate_cols[0]
+    row_number = int(target["student"]["row_index"]) + 1
+    cell_range = f"{_quote_sheet_name(target['sheet_title'])}!{_column_letter(col_idx)}{row_number}"
+    service.spreadsheets().values().update(
+        spreadsheetId=target["spreadsheet_id"],
+        range=cell_range,
+        valueInputOption="USER_ENTERED",
+        body={"values": [[str(score_value)]]},
+    ).execute()
+    return {
+        "spreadsheet_title": target["spreadsheet_title"],
+        "sheet_title": target["sheet_title"],
+        "grouping": target["grouping"],
+        "student": target["student"]["name"],
+        "class": target["student"].get("class", ""),
+        "column": target["headers"][col_idx],
+        "value": str(score_value),
+        "range": cell_range,
+    }
+
+
+def fill_mtl_percentage_scores(
+    class_query: str,
+    assessment_query: str = "",
+    teacher_query: str = "HERWANTO",
+    only_blank: bool = True,
+) -> dict:
+    service = _sheets()
+    class_filter = _norm_cell(class_query)
+    assessment_filter = _norm_cell(assessment_query)
+    sheet_matches = []
+    fields = "properties(title),sheets(properties(title),data(rowData(values(formattedValue,effectiveValue))))"
+    for spreadsheet_id in _configured_classlist_sheet_ids():
+        book = service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            includeGridData=True,
+            fields=fields,
+        ).execute()
+        spreadsheet_title = book.get("properties", {}).get("title", spreadsheet_id)
+        for sheet in book.get("sheets", []):
+            sheet_title = sheet.get("properties", {}).get("title", "")
+            row_data = []
+            for data in sheet.get("data", []):
+                row_data.extend(data.get("rowData", []))
+            rows = [_row_values(row) for row in row_data]
+            if not _teacher_matches(rows, sheet_title, teacher_query):
+                continue
+            header = _find_classlist_header(rows)
+            if not header:
+                continue
+            header_idx, name_col, class_col, no_col = header
+            grouping = _first_after_label(rows, "GROUPING")
+            if class_filter and class_filter not in _norm_cell(grouping) and class_filter not in _norm_cell(sheet_title):
+                row_has_class = any(
+                    class_col >= 0
+                    and class_col < len(row)
+                    and class_filter in _norm_cell(row[class_col])
+                    for row in rows[header_idx + 1:]
+                )
+                if not row_has_class:
+                    continue
+            headers = [str(cell or "").strip() for cell in rows[header_idx]]
+            percent_cols = []
+            for idx, header_label in enumerate(headers):
+                if _norm_cell(header_label) not in {"", "PERCENT", "PERCENTAGE"} and str(header_label).strip() != "%":
+                    continue
+                if str(header_label).strip() != "%" and _norm_cell(header_label) not in {"PERCENT", "PERCENTAGE"}:
+                    continue
+                source_col = idx - 1
+                if source_col < 0:
+                    continue
+                max_score = _number_from_header(headers[source_col])
+                if not max_score:
+                    continue
+                assessment_label = _assessment_label_for_column(rows, header_idx, idx)
+                if assessment_filter and assessment_filter not in _norm_cell(assessment_label):
+                    continue
+                percent_cols.append({
+                    "percent_col": idx,
+                    "source_col": source_col,
+                    "max_score": max_score,
+                    "assessment": assessment_label,
+                })
+            if percent_cols:
+                sheet_matches.append({
+                    "spreadsheet_id": spreadsheet_id,
+                    "spreadsheet_title": spreadsheet_title,
+                    "sheet_title": sheet_title,
+                    "rows": rows,
+                    "header_idx": header_idx,
+                    "name_col": name_col,
+                    "class_col": class_col,
+                    "grouping": grouping,
+                    "percent_cols": percent_cols,
+                })
+
+    if not sheet_matches:
+        raise ValueError("No matching percentage columns found in Herwanto's MTL classlist sheets.")
+    if len(sheet_matches) > 1 and not class_filter:
+        options = [f"{item['grouping'] or item['sheet_title']} / {item['spreadsheet_title']}" for item in sheet_matches[:8]]
+        raise ValueError("More than one classlist sheet matched. Specify the class/group: " + "; ".join(options))
+    if sum(len(item["percent_cols"]) for item in sheet_matches) > 1 and not assessment_filter:
+        options = []
+        for item in sheet_matches:
+            for col in item["percent_cols"]:
+                options.append(f"{item['grouping'] or item['sheet_title']} {col['assessment'] or '%'}")
+        raise ValueError("More than one percentage column matched. Specify the assessment, e.g. FA1 or FA2: " + "; ".join(options[:8]))
+
+    updates = []
+    changed = 0
+    skipped = 0
+    copied_codes = 0
+    filled_numbers = 0
+    target_descriptions = []
+    for item in sheet_matches:
+        rows = item["rows"]
+        class_col = item["class_col"]
+        for col_info in item["percent_cols"]:
+            for row_idx, row in enumerate(rows[item["header_idx"] + 1:], start=item["header_idx"] + 1):
+                name = row[item["name_col"]].strip() if item["name_col"] < len(row) else ""
+                class_name = row[class_col].strip() if class_col >= 0 and class_col < len(row) else ""
+                if not name and not class_name:
+                    break
+                if class_filter and class_filter not in _norm_cell(item["grouping"]) and class_filter not in _norm_cell(class_name):
+                    skipped += 1
+                    continue
+                current = row[col_info["percent_col"]].strip() if col_info["percent_col"] < len(row) else ""
+                source = row[col_info["source_col"]].strip() if col_info["source_col"] < len(row) else ""
+                if only_blank and current:
+                    skipped += 1
+                    continue
+                number = _number_from_cell(source)
+                if number is not None:
+                    next_value = _format_percentage((number / col_info["max_score"]) * 100)
+                    filled_numbers += 1
+                elif _norm_cell(source) in SCORE_STATUS_LABELS:
+                    next_value = source.upper()
+                    copied_codes += 1
+                else:
+                    skipped += 1
+                    continue
+                cell_range = (
+                    f"{_quote_sheet_name(item['sheet_title'])}!"
+                    f"{_column_letter(col_info['percent_col'])}{row_idx + 1}"
+                )
+                updates.append({
+                    "range": cell_range,
+                    "values": [[next_value]],
+                    "spreadsheet_id": item["spreadsheet_id"],
+                })
+                changed += 1
+            target_descriptions.append(f"{item['grouping'] or item['sheet_title']} {col_info['assessment']}")
+
+    updates_by_sheet = {}
+    for update in updates:
+        updates_by_sheet.setdefault(update["spreadsheet_id"], []).append({
+            "range": update["range"],
+            "values": update["values"],
+        })
+    for spreadsheet_id, data in updates_by_sheet.items():
+        service.spreadsheets().values().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"valueInputOption": "USER_ENTERED", "data": data},
+        ).execute()
+
+    return {
+        "updated_cells": changed,
+        "filled_numbers": filled_numbers,
+        "copied_codes": copied_codes,
+        "skipped": skipped,
+        "targets": target_descriptions,
+    }
 
 
 # ─── CALENDAR WRITE ──────────────────────────────────────────────────────────
