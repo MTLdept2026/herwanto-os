@@ -347,7 +347,7 @@ Open:
 http://127.0.0.1:8000
 ```
 
-For Railway, create a second service from this repo and use:
+For Railway, create a PWA web service from this repo and use:
 ```bash
 HIRA_SERVICE_MODE=pwa
 ```
@@ -371,9 +371,11 @@ The PWA chat uses the same H.I.R.A tool brain as Telegram. With the same product
 
 For OS-level PWA notifications while the app is closed, generate VAPID keys with `vapid --gen`, set `HIRA_WEB_PUSH_PUBLIC_KEY` to `vapid --applicationServerKey`, set `HIRA_WEB_PUSH_PRIVATE_KEY` to a base64-encoded `private_key.pem`, and set `HIRA_WEB_PUSH_SUBJECT` to `mailto:you@example.com` on both Railway services. Then tap **Enable app notifications** in H.I.R.A. Without VAPID keys, H.I.R.A still shows queued app notifications the next time the PWA is open.
 
-The PWA backend includes Railway Hobby guardrails: two active chats/uploads by default, larger capped request/upload sizes, disk-spooled PDF/DOCX/PPTX extraction for heavier education files, a `/healthz` memory readout, and load shedding only under high memory pressure. Keep `uvicorn` at one worker unless the scheduler is fully moved to a separate worker service; multiple web workers can duplicate in-process scheduler jobs. Tune with `HIRA_WEB_CHAT_CONCURRENCY`, `HIRA_WEB_UPLOAD_CONCURRENCY`, `HIRA_WEB_MAX_UPLOAD_MB`, `HIRA_WEB_MAX_DOCUMENT_MB`, `HIRA_WEB_CHAT_MAX_TOKENS`, and `HIRA_WEB_MEMORY_REJECT_RATIO` after watching Railway memory and CPU metrics.
+The PWA backend includes Railway Hobby guardrails: two active chats/uploads by default, a bounded upload queue, larger capped request/upload sizes, disk-spooled PDF/DOCX/PPTX extraction for heavier education files, a `/healthz` memory readout, and load shedding only under high memory pressure. Keep `uvicorn` at one worker unless all scheduler work stays in the separate worker service; multiple web workers can duplicate in-process jobs. Tune with `HIRA_WEB_CHAT_CONCURRENCY`, `HIRA_WEB_UPLOAD_CONCURRENCY`, `HIRA_WEB_UPLOAD_QUEUE_WORKERS`, `HIRA_WEB_MAX_UPLOAD_MB`, `HIRA_WEB_MAX_DOCUMENT_MB`, `HIRA_WEB_CHAT_MAX_TOKENS`, and `HIRA_WEB_MEMORY_REJECT_RATIO` after watching Railway memory and CPU metrics.
 
-If Telegram is retired, keep proactive phone notifications by running a separate Railway worker with `HIRA_SERVICE_MODE=pwa_worker`. That worker runs morning/evening briefings, weekly planning, Friday khutbah/project checks, nudges, daily check-ins, prayer reminders, and follow-ups through PWA push/app notifications without Telegram polling. The `hira-pwa` web service can then set `HIRA_WEB_MORNING_BRIEFING=0`, `HIRA_WEB_EVENING_BRIEFING=0`, `HIRA_WEB_PRAYER_REMINDERS=0`, and `HIRA_WEB_FRIDAY_KHUTBAH=0`.
+For production, add Redis and set `HIRA_REQUIRE_REDIS=1` once `REDIS_URL` is working. This makes chat history, upload job state, locks, and queues fail loudly instead of silently falling back to one-process memory after a restart.
+
+Keep proactive phone notifications by running a separate Railway worker with `HIRA_SERVICE_MODE=pwa_worker`. That worker runs morning/evening briefings, weekly planning, Friday khutbah/project checks, nudges, daily check-ins, prayer reminders, and follow-ups through PWA push/app notifications without Telegram polling. The PWA web service defaults to `HIRA_WEB_INLINE_SCHEDULER=0`; set it to `1` only for a single-service fallback deployment.
 
 Prayer reminders use a catch-up window, defaulting to `HIRA_PRAYER_REMINDER_WINDOW_MINUTES=20`, so a short deploy/restart does not silently miss the reminder. Use `/api/notifications/health` to confirm PWA push keys, subscription count, queued notifications, and today's prayer prompt status.
 

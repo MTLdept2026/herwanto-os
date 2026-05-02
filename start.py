@@ -7,6 +7,10 @@ import sys
 def main() -> None:
     mode = os.environ.get("HIRA_SERVICE_MODE", "bot").strip().lower()
     if mode in {"pwa", "web", "web_app"}:
+        import bot
+
+        if not bot.require_redis_for_service("H.I.R.A PWA web service"):
+            raise SystemExit(1)
         port = os.environ.get("PORT", "8000")
         os.execvp(
             "uvicorn",
@@ -29,6 +33,8 @@ def main() -> None:
         import asyncio
         import bot
 
+        if not bot.require_redis_for_service("H.I.R.A PWA worker"):
+            raise SystemExit(1)
         asyncio.run(bot.run_pwa_notification_worker())
         return
     os.execvp(sys.executable, [sys.executable, "bot.py"])

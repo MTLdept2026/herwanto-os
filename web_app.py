@@ -54,9 +54,18 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 _CHAT_SEMAPHORE = asyncio.Semaphore(_env_int("HIRA_WEB_CHAT_CONCURRENCY", 2))
 _UPLOAD_SEMAPHORE = asyncio.Semaphore(_env_int("HIRA_WEB_UPLOAD_CONCURRENCY", 2))
 _HOME_SEMAPHORE = asyncio.Semaphore(_env_int("HIRA_WEB_HOME_CONCURRENCY", 2))
+_UPLOAD_QUEUE_WORKER_COUNT = _env_int("HIRA_WEB_UPLOAD_QUEUE_WORKERS", 2)
+_UPLOAD_QUEUE_MAX = _env_int("HIRA_WEB_UPLOAD_QUEUE_MAX", 12)
 _MAX_UPLOAD_BYTES = max(256_000, _env_int("HIRA_WEB_MAX_UPLOAD_MB", 16) * 1024 * 1024)
 _MAX_DOCUMENT_BYTES = max(_MAX_UPLOAD_BYTES, _env_int("HIRA_WEB_MAX_DOCUMENT_MB", 96) * 1024 * 1024)
 _MAX_REQUEST_BYTES = max(_MAX_DOCUMENT_BYTES, _env_int("HIRA_WEB_MAX_REQUEST_MB", 112) * 1024 * 1024)
@@ -64,7 +73,10 @@ _MEMORY_GC_RATIO = _env_float("HIRA_WEB_MEMORY_GC_RATIO", 0.80)
 _MEMORY_REJECT_RATIO = _env_float("HIRA_WEB_MEMORY_REJECT_RATIO", 0.92)
 _MEMORY_WATCHDOG_SECONDS = _env_int("HIRA_WEB_MEMORY_WATCHDOG_SECONDS", 45, minimum=10)
 _CHAT_MAX_TOKENS = _env_int("HIRA_WEB_CHAT_MAX_TOKENS", 3200, minimum=650)
+_WEB_INLINE_SCHEDULER = _env_bool("HIRA_WEB_INLINE_SCHEDULER", False)
 _STATIC_PATHS = {"/", "/healthz", "/manifest.webmanifest", "/service-worker.js", "/app.js", "/styles.css"}
+_UPLOAD_QUEUE: asyncio.Queue[dict] | None = None
+_UPLOAD_QUEUE_TASKS: list[asyncio.Task] = []
 
 
 def _memory_usage_ratio() -> float | None:
@@ -185,10 +197,20 @@ async def _web_friday_khutbah_loop():
 
 @app.on_event("startup")
 async def start_web_scheduler():
-    global _WEB_SCHEDULER_TASKS, _WEB_MEMORY_WATCHDOG_TASK
+    global _WEB_SCHEDULER_TASKS, _WEB_MEMORY_WATCHDOG_TASK, _UPLOAD_QUEUE, _UPLOAD_QUEUE_TASKS
+    if not bot.require_redis_for_service("H.I.R.A PWA web service"):
+        raise RuntimeError("Redis required but unavailable")
     bot._log_memory("web startup", force=True)
     if _WEB_MEMORY_WATCHDOG_TASK is None:
         _WEB_MEMORY_WATCHDOG_TASK = asyncio.create_task(_web_memory_watchdog())
+    if _UPLOAD_QUEUE is None:
+        _UPLOAD_QUEUE = asyncio.Queue(maxsize=_UPLOAD_QUEUE_MAX)
+    if not _UPLOAD_QUEUE_TASKS:
+        for index in range(_UPLOAD_QUEUE_WORKER_COUNT):
+            _UPLOAD_QUEUE_TASKS.append(asyncio.create_task(_upload_queue_worker(index + 1)))
+    if not _WEB_INLINE_SCHEDULER:
+        bot.logger.info("Web inline scheduler disabled; use HIRA_SERVICE_MODE=pwa_worker for proactive jobs.")
+        return
     enabled = os.environ.get("HIRA_WEB_MORNING_BRIEFING", "1").strip().lower() not in {"0", "false", "no", "off"}
     evening_enabled = os.environ.get("HIRA_WEB_EVENING_BRIEFING", "1").strip().lower() not in {"0", "false", "no", "off"}
     prayer_enabled = os.environ.get("HIRA_WEB_PRAYER_REMINDERS", "1").strip().lower() not in {"0", "false", "no", "off"}
@@ -211,10 +233,13 @@ async def start_web_scheduler():
 
 @app.on_event("shutdown")
 async def stop_web_scheduler():
-    global _WEB_SCHEDULER_TASKS, _WEB_MEMORY_WATCHDOG_TASK
+    global _WEB_SCHEDULER_TASKS, _WEB_MEMORY_WATCHDOG_TASK, _UPLOAD_QUEUE_TASKS
     for task in _WEB_SCHEDULER_TASKS:
         task.cancel()
     _WEB_SCHEDULER_TASKS = []
+    for task in _UPLOAD_QUEUE_TASKS:
+        task.cancel()
+    _UPLOAD_QUEUE_TASKS = []
     if _WEB_MEMORY_WATCHDOG_TASK is not None:
         _WEB_MEMORY_WATCHDOG_TASK.cancel()
         _WEB_MEMORY_WATCHDOG_TASK = None
@@ -450,6 +475,48 @@ def _upload_job_public(job: dict) -> dict:
     }
 
 
+async def _upload_queue_worker(worker_id: int):
+    bot.logger.info("Upload queue worker %s started.", worker_id)
+    while True:
+        try:
+            if _UPLOAD_QUEUE is None:
+                await asyncio.sleep(1)
+                continue
+            job = await _UPLOAD_QUEUE.get()
+            try:
+                await _run_upload_job(
+                    job["job_id"],
+                    job["tmp_path"],
+                    job["mime"],
+                    job["filename"],
+                    job["note"],
+                )
+            finally:
+                _UPLOAD_QUEUE.task_done()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            bot.logger.exception(f"Upload queue worker {worker_id} failed: {exc}")
+            await asyncio.sleep(2)
+
+
+def _upload_queue_depth() -> int | None:
+    return _UPLOAD_QUEUE.qsize() if _UPLOAD_QUEUE is not None else None
+
+
+async def _enqueue_upload_job(job: dict):
+    if _UPLOAD_QUEUE is None:
+        raise HTTPException(status_code=503, detail="Upload queue is not ready yet. Try again in a moment.")
+    try:
+        _UPLOAD_QUEUE.put_nowait(job)
+    except asyncio.QueueFull as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Upload queue is full. Try again after the current files finish processing.",
+            headers={"Retry-After": "30"},
+        ) from exc
+
+
 def _set_upload_job(job_id: str, update: dict) -> dict:
     now = datetime.now(bot.SGT).isoformat()
     existing = _get_upload_job(job_id, include_missing=True) or {"job_id": job_id, "created": now}
@@ -524,6 +591,11 @@ def healthz():
         "memory_limit_mb": round(limit, 1) if limit else None,
         "memory_ratio": round(rss / limit, 3) if limit else None,
         "redis_connected": redis_connected,
+        "redis_required": bot.redis_required(),
+        "web_inline_scheduler": _WEB_INLINE_SCHEDULER,
+        "upload_queue_depth": _upload_queue_depth(),
+        "upload_queue_max": _UPLOAD_QUEUE_MAX,
+        "upload_queue_workers": len(_UPLOAD_QUEUE_TASKS),
         "upload_jobs_tracked": len(_UPLOAD_JOBS),
         "chat_slots_available": getattr(_CHAT_SEMAPHORE, "_value", None),
         "upload_slots_available": getattr(_UPLOAD_SEMAPHORE, "_value", None),
@@ -987,7 +1059,20 @@ async def create_upload_job(
         "note": note,
         "size": total,
     })
-    asyncio.create_task(_run_upload_job(job_id, tmp_path, mime, filename, note))
+    try:
+        await _enqueue_upload_job({
+            "job_id": job_id,
+            "tmp_path": tmp_path,
+            "mime": mime,
+            "filename": filename,
+            "note": note,
+        })
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+        raise
     return _upload_job_public(_get_upload_job(job_id) or {"job_id": job_id, "status": "queued"})
 
 
@@ -1000,7 +1085,8 @@ def get_upload_job(job_id: str, x_hira_token: Optional[str] = Header(default=Non
 async def _run_upload_job(job_id: str, tmp_path: str, mime: str, filename: str, note: str):
     _set_upload_job(job_id, {"status": "running"})
     try:
-        result = await _process_upload_path(tmp_path, mime, filename, note)
+        async with _UPLOAD_SEMAPHORE:
+            result = await _process_upload_path(tmp_path, mime, filename, note)
         _set_upload_job(job_id, {"status": "done", **result})
     except Exception as exc:
         bot.logger.exception(f"Upload job {job_id} failed: {exc}")

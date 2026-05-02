@@ -89,6 +89,18 @@ def _get_redis():
                 _redis = False
     return _redis if _redis else None
 
+def redis_required() -> bool:
+    return os.environ.get("HIRA_REQUIRE_REDIS", "").strip().lower() in {"1", "true", "yes", "on"}
+
+def require_redis_for_service(service: str) -> bool:
+    if not redis_required():
+        return True
+    if _get_redis() is not None:
+        return True
+    message = f"Redis is required for {service}; set REDIS_URL or disable HIRA_REQUIRE_REDIS."
+    logger.error(message)
+    return False
+
 _mem_histories = OrderedDict()
 MAX_TURNS = 20
 try:
