@@ -154,6 +154,22 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIsNone(calendar_forced)
         self.assertIsNone(task_forced)
 
+    def test_availability_planning_forces_checked_slot_tool(self):
+        forced = bot._forced_tool_for_text(
+            "find the best slots to schedule Sahibba training after school not during my CCA day",
+            [{"name": "find_available_training_slots"}, {"name": "get_assistant_context"}, {"name": "create_calendar_event"}],
+        )
+
+        self.assertEqual(forced, "find_available_training_slots")
+
+    def test_hdb_date_question_forces_calendar_context(self):
+        forced = bot._forced_tool_for_text(
+            "what date is my HDB appointment?",
+            [{"name": "get_assistant_context"}, {"name": "get_timetable"}],
+        )
+
+        self.assertEqual(forced, "get_assistant_context")
+
     def test_score_question_forces_classlist_tool(self):
         forced = bot._forced_tool_for_text(
             "show me the FA2 scores for S4-AN",
@@ -465,6 +481,53 @@ class AgenticClaudeTests(unittest.TestCase):
             patch.object(bot.gs, "get_config", return_value=json.dumps({insight["id"]: now.isoformat()})),
         ):
             self.assertEqual(bot.due_proactive_intelligence(now), [])
+
+    def test_find_available_training_slots_avoids_cca_day_and_calendar_conflicts(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 4, 9, 0))
+
+        def fake_lessons(target):
+            return ([{"start": "08:00", "end": "14:30", "subject": "ML", "description": "Lesson"}], "Odd")
+
+        def fake_events(target):
+            if target.isoformat() == "2026-05-05":
+                return [{
+                    "summary": "Football CCA",
+                    "description": "",
+                    "location": "",
+                    "start": {"dateTime": "2026-05-05T15:00:00+08:00"},
+                    "end": {"dateTime": "2026-05-05T18:00:00+08:00"},
+                }]
+            if target.isoformat() == "2026-05-06":
+                return [{
+                    "summary": "HDB appointment",
+                    "description": "",
+                    "location": "",
+                    "start": {"dateTime": "2026-05-06T15:00:00+08:00"},
+                    "end": {"dateTime": "2026-05-06T16:00:00+08:00"},
+                }]
+            return []
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot, "datetime", wraps=bot.datetime) as fake_datetime,
+            patch.object(bot, "_lessons_for_date", side_effect=fake_lessons),
+            patch.object(bot, "_calendar_events_for_date", side_effect=fake_events),
+        ):
+            fake_datetime.now.return_value = now
+            result = bot.find_available_training_slots(
+                days=4,
+                duration_minutes=60,
+                window_start="14:00",
+                window_end="18:00",
+                avoid_keywords=["cca", "football"],
+                purpose="Sahibba training",
+            )
+
+        self.assertIn("Checked timetable + Google Calendar", result)
+        self.assertIn("Wed 6 May", result)
+        self.assertIn("16:00-18:00", result)
+        self.assertIn("Tue 5 May: avoided", result)
+        self.assertNotIn("Tue 5 May, Odd week: 14:30", result)
 
     def test_runtime_status_contains_observability_sections(self):
         fake_memory = {category: [] for category in bot.MEMORY_DISPLAY_CATEGORIES}

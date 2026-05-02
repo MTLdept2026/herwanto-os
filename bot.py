@@ -699,6 +699,7 @@ Rules:
 - After tool results, answer in natural language with a brief useful summary. Do not dump raw tool output unless the user asks for raw output.
 - For data lookups, use the user's words as intent: "last 5 emails" means latest 5 Gmail messages; "what's on today" means schedule/context; "anything due" means reminders/tasks; "who do I owe replies/follow-ups to" means Gmail/follow-up/task context as relevant.
 - For timetable or lesson lookups, use get_timetable. TIMETABLE in timetable.py is the source of truth for lessons; Google Calendar is only for events/appointments.
+- For availability planning ("best slots", "free slots", "when can I schedule", "after school", "not during CCA day"), call find_available_training_slots before suggesting times. Do not suggest a slot until timetable lessons and Google Calendar conflicts have been checked.
 - For MTL classlists, student names, scores, marks, WA/weighted assessment, FA/formative assessment, prelim, EOY, assessment columns, progress analysis, or who is in Herwanto's classes, call get_mtl_classlists or analyze_mtl_scores as appropriate. His classlist tabs in the 2026 MTL classlist sheets include CG HERWANTO or CG HERWANTO/CG KADIR.
 - Score-sheet layouts: Sec 1 uses WA1 (40) and WA1 %, plus PreWA2 (20), WA2, WA3, EOY. Sec 2 uses WA1, Pra/Prg-WA2 mock/pre-WA columns, then actual WA2, WA3, EOY; Pra/Prg-WA means pre-WA/mock tests, not the actual WA2 result. Sec 3 uses WA1 (20), WA1 %, then WA2, WA3, EOY. Sec 4 FA layout uses component columns and a total followed by %, e.g. FA1 15/30/45/% and FA2 10/25/35/%; compare the % columns for progress unless the user asks for raw marks.
 - Infer his hat from context — never ask.
@@ -711,13 +712,14 @@ Rules:
 - Never offer to generate .ics files. Use Google Calendar directly.
 - The current date and time is already provided at the top of this prompt — always use it for any date/time reasoning.
 - Never guess weekdays. If you mention a date with a weekday, derive the weekday from the actual calendar date. For 2026, 1 May is Friday, not Thursday.
+- For appointments and dated commitments, treat Google Calendar/tool output as authoritative. Copy exact dates from tool results; never shift an appointment by memory, assumption, or weekday inference. Known correction: the HDB appointment is on 6 May, not 7 May, unless a newer calendar result says otherwise.
 - Religion, prayers, solat times, Islamic rulings, halal/haram questions, and worship guidance require extra care: verify with credible sources before giving factual claims. For Singapore practice, prefer MUIS or official Singapore mosque/source data. If no credible source/tool result is available, say clearly that H.I.R.A cannot verify it right now.
 - Never guess prayer times. For Singapore prayer-time questions, call get_muis_prayer_times and answer from MUIS data. If the tool fails, say H.I.R.A cannot verify the exact time right now; do not invent an approximate time, do not say "around", and do not ask Herwanto to check another app as the primary answer.
 - For Friday khutbah/sermon questions, call get_muis_friday_khutbah and answer from MUIS data. Keep it to a practical heads-up: title, date, key message, and what to carry into Jumu'ah.
 - Never invent mosque or place locations. If a place location affects the answer and you do not have a verified source/tool result, say what you know and what is unverified. Be especially careful with Singapore masjid names that sound similar.
 - Known mosque correction: Masjid Al-Muttaqin is at 5140 Ang Mo Kio Ave 6, Singapore 569844, not Kovan.
 - For journey-time estimates, use the current device location context when it is provided. If it is not provided, use only explicit user-provided origin/destination or stable stored memory, and label any estimate as rough.
-- You have tools: create_calendar_event, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_mtl_classlists, analyze_mtl_scores, update_mtl_class_score, fill_mtl_percentage_scores, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, create_topic_profile, remember_source_insight, update_project_status, get_nea_weather, get_muis_prayer_times, get_muis_friday_khutbah, get_latest_news, get_liverpool_brief, get_f1_brief, web_search, and fetch_url. Use them proactively.
+- You have tools: create_calendar_event, delete_calendar_event_by_text, find_available_training_slots, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_mtl_classlists, analyze_mtl_scores, update_mtl_class_score, fill_mtl_percentage_scores, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, create_topic_profile, remember_source_insight, update_project_status, get_nea_weather, get_muis_prayer_times, get_muis_friday_khutbah, get_latest_news, get_liverpool_brief, get_f1_brief, web_search, and fetch_url. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
 - When the user mentions marking scripts, papers, compositions, kefahaman, karangan, worksheets, or a marking stack, use marking tools instead of ordinary reminders: add_marking_task for a new stack, update_marking_progress when he says how many scripts are marked, reset_marking_load when he asks to reset/clear the marking load or board, and get_marking_brief when he asks what marking is outstanding. Marking tasks are mission-critical and must persist even at 0 outstanding; only complete one when he explicitly says that marking stack is done, completed, can be closed, reset, or cleared.
@@ -839,6 +841,26 @@ DELETE_CALENDAR_TOOL = {
             "days_ahead": {"type": "integer", "description": "Days ahead to search, default 30"}
         },
         "required": ["query"]
+    }
+}
+
+AVAILABILITY_SLOT_TOOL = {
+    "name": "find_available_training_slots",
+    "description": "Find checked after-school availability slots by combining timetable lessons and Google Calendar events. Use before suggesting best slots for trainings, meetings, Sahibba, CCA-adjacent activities, or any request that asks when something can fit.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "days": {"type": "integer", "description": "Days to scan ahead, default 7, max 14"},
+            "duration_minutes": {"type": "integer", "description": "Required slot duration in minutes, default 60"},
+            "window_start": {"type": "string", "description": "Earliest time in HH:MM, default 14:00"},
+            "window_end": {"type": "string", "description": "Latest time in HH:MM, default 18:30"},
+            "avoid_keywords": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Calendar keywords to avoid entirely on that day, e.g. CCA, football"
+            },
+            "purpose": {"type": "string", "description": "Short reason for the slot search, e.g. Sahibba training"}
+        }
     }
 }
 
@@ -2903,6 +2925,118 @@ def _event_busy_intervals_for_date(target: date) -> list[tuple[int, int]]:
     return intervals
 
 
+def _calendar_events_for_date(target: date) -> list[dict]:
+    start_of_day = SGT.localize(datetime.combine(target, dt_time.min))
+    end_of_day = start_of_day + timedelta(days=1)
+    try:
+        return gs._fetch_events(start_of_day, end_of_day)
+    except Exception as exc:
+        logger.warning(f"Calendar availability read failed: {exc}")
+        return []
+
+
+def _event_minutes(event: dict) -> tuple[int, int] | None:
+    start_raw = event.get("start", {}).get("dateTime")
+    end_raw = event.get("end", {}).get("dateTime")
+    if not start_raw or not end_raw:
+        return None
+    try:
+        start_dt = datetime.fromisoformat(start_raw).astimezone(SGT)
+        end_dt = datetime.fromisoformat(end_raw).astimezone(SGT)
+    except Exception:
+        return None
+    return max(0, start_dt.hour * 60 + start_dt.minute), min(24 * 60, end_dt.hour * 60 + end_dt.minute)
+
+
+def find_available_training_slots(
+    days: int = 7,
+    duration_minutes: int = 60,
+    window_start: str = "14:00",
+    window_end: str = "18:30",
+    avoid_keywords: list[str] | None = None,
+    purpose: str = "training",
+) -> str:
+    if not google_ok():
+        return "Google Calendar is not connected, so I cannot safely suggest availability slots."
+    today = datetime.now(SGT).date()
+    scan_days = max(1, min(int(days or 7), 14))
+    duration = max(30, min(int(duration_minutes or 60), 180))
+    start_min = _hm_to_minutes(window_start or "14:00")
+    end_min = _hm_to_minutes(window_end or "18:30")
+    if end_min <= start_min:
+        end_min = start_min + duration
+    avoid = [str(item).strip().lower() for item in (avoid_keywords or ["cca", "football"]) if str(item).strip()]
+
+    slots = []
+    skipped = []
+    for offset in range(scan_days):
+        target = today + timedelta(days=offset)
+        if target.weekday() >= 5:
+            continue
+        lessons, wt_label = _lessons_for_date(target)
+        events = _calendar_events_for_date(target)
+        event_text = " ".join(_event_text(event) for event in events).lower()
+        if avoid and any(keyword in event_text for keyword in avoid):
+            skipped.append(f"{target.strftime('%a %-d %b')}: avoided due to {', '.join(k for k in avoid if k in event_text) or 'blocked keyword'}")
+            continue
+
+        busy = []
+        reasons = []
+        for lesson in lessons:
+            try:
+                lesson_start = _hm_to_minutes(lesson["start"])
+                lesson_end = _hm_to_minutes(lesson["end"])
+            except Exception:
+                continue
+            busy.append((lesson_start, lesson_end))
+            if lesson_end > start_min:
+                reasons.append(f"lesson until {lesson['end']}")
+        for event in events:
+            minutes = _event_minutes(event)
+            if not minutes:
+                continue
+            busy.append(minutes)
+            if minutes[1] > start_min and minutes[0] < end_min:
+                reasons.append(f"{event.get('summary', 'calendar event')} {_minutes_to_hm(minutes[0])}-{_minutes_to_hm(minutes[1])}")
+
+        busy = _merge_busy_intervals([
+            (max(start_min, start), min(end_min, end))
+            for start, end in busy
+            if end > start_min and start < end_min
+        ])
+        cursor = start_min
+        for busy_start, busy_end in busy:
+            if busy_start - cursor >= duration:
+                slots.append((target, cursor, busy_start, wt_label, reasons))
+            cursor = max(cursor, busy_end)
+        if end_min - cursor >= duration:
+            slots.append((target, cursor, end_min, wt_label, reasons))
+
+    if not slots:
+        skip_note = "\n".join(f"- {item}" for item in skipped[:5])
+        return (
+            f"No clear after-school {purpose or 'training'} slots found in the next {scan_days} days "
+            f"between {_minutes_to_hm(start_min)} and {_minutes_to_hm(end_min)} after checking timetable and calendar."
+            + (f"\nAvoided days:\n{skip_note}" if skip_note else "")
+        )
+
+    ranked = sorted(slots, key=lambda item: (item[0], item[2] - item[1], -item[1]))[:5]
+    lines = [
+        f"Checked timetable + Google Calendar for after-school {purpose or 'training'} slots.",
+        f"Constraints: {duration} minutes, {_minutes_to_hm(start_min)}-{_minutes_to_hm(end_min)}, avoid days with {', '.join(avoid) or 'no extra keywords'}.",
+        "",
+        "Best options:",
+    ]
+    for target, slot_start, slot_end, wt_label, reasons in ranked:
+        reason = "; ".join(dict.fromkeys(reasons[-3:])) if reasons else "no lesson/calendar conflict in this window"
+        week = f", {wt_label} week" if wt_label else ""
+        lines.append(f"- {target.strftime('%a %-d %b')}{week}: {_minutes_to_hm(slot_start)}-{_minutes_to_hm(slot_end)} ({reason})")
+    if skipped:
+        lines.append("\nAvoided:")
+        lines.extend(f"- {item}" for item in skipped[:5])
+    return "\n".join(lines)
+
+
 def _lesson_busy_intervals_for_date(target: date) -> list[tuple[int, int, str]]:
     intervals = []
     lessons, _ = _lessons_for_date(target)
@@ -3326,6 +3460,22 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
         and not has_any(["draft", "write", "compose", "reply", "send "])
     ):
         return "get_gmail_brief"
+    if (
+        "find_available_training_slots" in available
+        and has_any([
+            "best slot", "best slots", "free slot", "free slots", "available slot", "available slots",
+            "availability", "when can", "when should", "fit in", "slot to", "slots to",
+            "after school", "not during", "avoid cca", "sahibba training", "training after school"
+        ])
+    ):
+        return "find_available_training_slots"
+    if (
+        "get_assistant_context" in available
+        and has_any(["appointment", "hdb", "calendar"])
+        and has_any(["when", "date", "what day", "which day", "schedule", "confirm"])
+        and not action_intent
+    ):
+        return "get_assistant_context"
     if (
         "reset_marking_load" in available
         and has_any(["marking", "scripts", "script", "papers", "paper", "unmarked", "marked"])
@@ -4693,6 +4843,7 @@ def _core_tools():
         CONTEXT_TOOL,
         CALENDAR_TOOL,
         DELETE_CALENDAR_TOOL,
+        AVAILABILITY_SLOT_TOOL,
         REMINDER_TOOL,
         NUDGE_TOOL,
         DAILY_CHECKIN_TOOL,
@@ -4748,7 +4899,7 @@ def pwa_tools_for_message(text: str) -> list[dict]:
     if re.search(r"\b(classlist|class list|students?|names?|my classes|mtl group|grouping|1 flagship|2g3|3g3|4nt|4nt bml|scores?|marks?|results?|wa1|wa2|fa1|fa2|prelim|eoy|weighted assessment|formative assessment|exam|assessment|percentage|percent|%|analyse|analyze|analysis|mean|median|average|pass rate|underperforming|watchlist|most improved|progress|drop|dropped)\b", text):
         add(CLASSLIST_TOOL, ANALYZE_MTL_SCORES_TOOL, UPDATE_CLASS_SCORE_TOOL, FILL_PERCENTAGE_SCORES_TOOL, TIMETABLE_TOOL)
     if re.search(r"\b(calendar|schedule|agenda|today|tomorrow|week|meeting|event|appointment|duty|training|match|cca|what'?s on)\b", text):
-        add(CONTEXT_TOOL, CALENDAR_TOOL, DELETE_CALENDAR_TOOL, REMINDER_TOOL, TIMETABLE_TOOL)
+        add(CONTEXT_TOOL, CALENDAR_TOOL, DELETE_CALENDAR_TOOL, AVAILABILITY_SLOT_TOOL, REMINDER_TOOL, TIMETABLE_TOOL)
     if re.search(r"\b(task|tasks|due|deadline|remind|reminder|prepare|submit|complete|done|priority|prioritise|prioritize|focus)\b", text):
         add(CONTEXT_TOOL, TASK_BRIEF_TOOL, REMINDER_TOOL, COMPLETE_TASK_TOOL)
     if re.search(r"\b(marking|scripts?|papers?|compositions?|kefahaman|karangan|worksheets?|marked|unmarked)\b", text):
@@ -5185,6 +5336,19 @@ async def _execute_tool(name: str, inp: dict) -> str:
             return _timetable_for_lookup(inp.get("day", ""), inp.get("week_type", ""))
         except Exception as e:
             return f"Failed to get timetable: {e}"
+
+    elif name == "find_available_training_slots":
+        try:
+            return find_available_training_slots(
+                days=inp.get("days", 7),
+                duration_minutes=inp.get("duration_minutes", 60),
+                window_start=inp.get("window_start", "14:00"),
+                window_end=inp.get("window_end", "18:30"),
+                avoid_keywords=inp.get("avoid_keywords") or ["cca", "football"],
+                purpose=inp.get("purpose", "training"),
+            )
+        except Exception as e:
+            return f"Failed to find available slots: {e}"
 
     elif name == "get_mtl_classlists":
         try:

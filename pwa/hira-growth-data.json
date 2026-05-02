@@ -5,9 +5,9 @@
   "summary": {
     "start": "2026-04-28",
     "current": "2026-05-02",
-    "commitsTracked": 96,
-    "majorPhases": 15,
-    "currentStage": "Proactive context intelligence"
+    "commitsTracked": 97,
+    "majorPhases": 16,
+    "currentStage": "Calendar-trust scheduling"
   },
   "metrics": [
     {
@@ -17,7 +17,7 @@
     },
     {
       "label": "Tracked upgrade commits",
-      "value": "96",
+      "value": "97",
       "note": "Grouped from git history through the growth-log minisite."
     },
     {
@@ -44,8 +44,8 @@
     },
     {
       "name": "Context",
-      "score": 91,
-      "description": "Timetable, Google Calendar, MTL classlists, Drive references, file memory, topic profiles, conversation summaries, relevant-memory retrieval, and intent lensing."
+      "score": 92,
+      "description": "Timetable, Google Calendar, MTL classlists, checked availability slots, Drive references, file memory, topic profiles, conversation summaries, relevant-memory retrieval, and intent lensing."
     },
     {
       "name": "Live Knowledge",
@@ -282,6 +282,22 @@
         "Deduplicated proactive insights run in the PWA worker and Telegram job queue, with configurable interval and active hours."
       ],
       "impact": "H.I.R.A can now connect past lessons to present requests and surface early heads-ups like packed-day task pressure or marking pile collisions without waiting for Herwanto to ask."
+    },
+    {
+      "date": "2026-05-02",
+      "era": "Calendar-Trust Scheduling",
+      "title": "Hira stops guessing availability",
+      "commit": "calendar-trust-slots",
+      "tag": "Scheduling",
+      "summary": "A scheduling correction tightened H.I.R.A's handling of appointments and after-school slot recommendations.",
+      "details": [
+        "New find_available_training_slots tool checks timetable lessons and Google Calendar before suggesting after-school slots.",
+        "Slot planning now supports duration, time window, purpose, and avoid-keywords such as CCA or football.",
+        "Requests like best slots, free slots, after school, not during CCA day, and Sahibba training now force the checked availability tool.",
+        "Appointment/date questions such as HDB appointment dates now force calendar context instead of relying on memory or inference.",
+        "System rules now explicitly say to copy exact appointment dates from tool results and never shift dates by assumption."
+      ],
+      "impact": "H.I.R.A is less likely to suggest a training slot on a CCA day or move an appointment by a day; calendar/timetable truth is now mandatory for availability answers."
     }
   ],
   "currentCapabilities": [
@@ -292,6 +308,7 @@
     "Long-term memory buckets, topic profiles for new interests, correction ledger, self-reflection notes, source-backed research notes, and conversation summaries.",
     "Intent lens with relevant-memory retrieval before answers, including quick PWA replies.",
     "Proactive intelligence scanner for workload pinch points, marking pressure, follow-ups, quiet windows, and upcoming packed days.",
+    "Checked availability planner for after-school training slots that combines timetable lessons, calendar conflicts, and CCA-day avoidance.",
     "Priority-weighted memory prompt: corrections and constraints always visible; low-signal buckets trimmed.",
     "Closed learning loop: implicit + explicit correction capture → weekly consolidation job → promoted to preferences/constraints.",
     "Security: Telegram fail-closed allowlist, web API fail-closed auth, invalid-token throttling, safer notification rendering, /forget confirmation gate, and file upload size guards.",
