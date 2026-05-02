@@ -373,6 +373,10 @@ For OS-level PWA notifications while the app is closed, generate VAPID keys with
 
 The PWA backend includes Railway Hobby guardrails: two active chats/uploads by default, a bounded upload queue, larger capped request/upload sizes, disk-spooled PDF/DOCX/PPTX extraction for heavier education files, a `/healthz` memory readout, and load shedding only under high memory pressure. Keep `uvicorn` at one worker unless all scheduler work stays in the separate worker service; multiple web workers can duplicate in-process jobs. Tune with `HIRA_WEB_CHAT_CONCURRENCY`, `HIRA_WEB_UPLOAD_CONCURRENCY`, `HIRA_WEB_UPLOAD_QUEUE_WORKERS`, `HIRA_WEB_MAX_UPLOAD_MB`, `HIRA_WEB_MAX_DOCUMENT_MB`, `HIRA_WEB_CHAT_MAX_TOKENS`, and `HIRA_WEB_MEMORY_REJECT_RATIO` after watching Railway memory and CPU metrics.
 
+Model routing is configurable with `HIRA_QUICK_MODEL`, `HIRA_ROUTER_MODEL`, `HIRA_STRUCTURED_MODEL`, `HIRA_AGENTIC_MODEL`, and `HIRA_DEEP_MODEL`. Keep quick/router/structured on cheaper fast models, and point `HIRA_DEEP_MODEL` at a stronger model when you want coding, architecture, documents, research, business strategy, or high-stakes reasoning to use the bigger brain.
+
+Liverpool and F1 prompts use dedicated structured sports adapters before generic web search. `get_liverpool_brief` gathers table/form, fixtures/results/line-ups, competition progress, injuries, and transfers/rumours; `get_f1_brief` gathers standings, race results, Mercedes/Russell/Antonelli, Hamilton, and team news/upgrades.
+
 For production, add Redis and set `HIRA_REQUIRE_REDIS=1` once `REDIS_URL` is working. This makes chat history, upload job state, locks, and queues fail loudly instead of silently falling back to one-process memory after a restart.
 
 Keep proactive phone notifications by running a separate Railway worker with `HIRA_SERVICE_MODE=pwa_worker`. That worker runs morning/evening briefings, weekly planning, Friday khutbah/project checks, nudges, daily check-ins, prayer reminders, and follow-ups through PWA push/app notifications without Telegram polling. The PWA web service defaults to `HIRA_WEB_INLINE_SCHEDULER=0`; set it to `1` only for a single-service fallback deployment.

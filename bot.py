@@ -20,6 +20,7 @@ from anthropic import Anthropic, AsyncAnthropic
 import google_services as gs
 import timetable as tt
 import search_service as ss
+import sports_service as sports
 import weather_service as ws
 import artifact_service as artifacts
 import pdf_service as pdfs
@@ -41,6 +42,11 @@ if not ANTHROPIC_API_KEY:
 claude = Anthropic(api_key=ANTHROPIC_API_KEY or "missing-key")
 async_claude = AsyncAnthropic(api_key=ANTHROPIC_API_KEY or "missing-key")
 _SYSTEM_PROMPT_CACHE = {"key": None, "value": None}
+AGENTIC_MODEL = os.environ.get("HIRA_AGENTIC_MODEL", "claude-sonnet-4-6").strip() or "claude-sonnet-4-6"
+DEEP_MODEL = os.environ.get("HIRA_DEEP_MODEL", AGENTIC_MODEL).strip() or AGENTIC_MODEL
+QUICK_MODEL = os.environ.get("HIRA_QUICK_MODEL", "claude-haiku-4-5-20251001").strip() or "claude-haiku-4-5-20251001"
+ROUTER_MODEL = os.environ.get("HIRA_ROUTER_MODEL", QUICK_MODEL).strip() or QUICK_MODEL
+STRUCTURED_MODEL = os.environ.get("HIRA_STRUCTURED_MODEL", QUICK_MODEL).strip() or QUICK_MODEL
 
 WORK_DRIVE_REFERENCES = [
     (
@@ -100,6 +106,34 @@ def require_redis_for_service(service: str) -> bool:
     message = f"Redis is required for {service}; set REDIS_URL or disable HIRA_REQUIRE_REDIS."
     logger.error(message)
     return False
+
+
+def _message_text_for_routing(messages: list[dict]) -> str:
+    if not messages:
+        return ""
+    content = messages[-1].get("content", "") if isinstance(messages[-1], dict) else ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                parts.append(str(item.get("text", "")))
+        return " ".join(parts)
+    return ""
+
+
+def _agentic_model_for_messages(messages: list[dict]) -> str:
+    text = _message_text_for_routing(messages).lower()
+    if DEEP_MODEL != AGENTIC_MODEL and re.search(
+        r"\b(code|debug|architecture|refactor|proposal|strategy|analyse|analyze|"
+        r"document|pdf|slides?|deck|lesson plan|rubric|business|contract|legal|"
+        r"medical|religious ruling|fatwa|research|compare|decision)\b",
+        text,
+    ):
+        return DEEP_MODEL
+    return AGENTIC_MODEL
+
 
 _mem_histories = OrderedDict()
 MAX_TURNS = 20
@@ -308,7 +342,7 @@ Rules:
 - Never invent mosque or place locations. If a place location affects the answer and you do not have a verified source/tool result, say what you know and what is unverified. Be especially careful with Singapore masjid names that sound similar.
 - Known mosque correction: Masjid Al-Muttaqin is at 5140 Ang Mo Kio Ave 6, Singapore 569844, not Kovan.
 - For journey-time estimates, use the current device location context when it is provided. If it is not provided, use only explicit user-provided origin/destination or stable stored memory, and label any estimate as rough.
-- You have tools: create_calendar_event, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_mtl_classlists, analyze_mtl_scores, update_mtl_class_score, fill_mtl_percentage_scores, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, update_project_status, get_nea_weather, get_muis_prayer_times, get_muis_friday_khutbah, get_latest_news, web_search, and fetch_url. Use them proactively.
+- You have tools: create_calendar_event, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_mtl_classlists, analyze_mtl_scores, update_mtl_class_score, fill_mtl_percentage_scores, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, update_project_status, get_nea_weather, get_muis_prayer_times, get_muis_friday_khutbah, get_latest_news, get_liverpool_brief, get_f1_brief, web_search, and fetch_url. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
 - When the user mentions marking scripts, papers, compositions, kefahaman, karangan, worksheets, or a marking stack, use marking tools instead of ordinary reminders: add_marking_task for a new stack, update_marking_progress when he says how many scripts are marked, reset_marking_load when he asks to reset/clear the marking load or board, and get_marking_brief when he asks what marking is outstanding. Marking tasks are mission-critical and must persist even at 0 outstanding; only complete one when he explicitly says that marking stack is done, completed, can be closed, reset, or cleared.
@@ -327,7 +361,7 @@ Rules:
 - When the user asks for score analysis, progress, mean, median, pass rate, underperforming students, strongest students, most improved, or drastic drops — call analyze_mtl_scores. Treat 0 as an attempted paper with zero marks. Treat AB as absent, VR as valid reason, and MC as medical certificate; these status codes are non-scoring and should be excluded from mean/median/pass-rate calculations but counted separately. For Sec 1G2, 2G3, and 3G3 aliases, resolve them to ML G2, 2G3 ML, and 3G3 ML if needed.
 - When the user asks to calculate and enter a score/mark/result into an MTL classlist sheet, calculate only from the numbers he gives or sheet values retrieved with include_scores=true, then call update_mtl_class_score. Do not guess a student or column; if the tool reports ambiguity, ask for the missing class/student/column detail.
 - When the user asks to fill percentage columns in an MTL classlist, call fill_mtl_percentage_scores. Use class_query and assessment_query if the user provides them; otherwise the tool will ask for specificity when multiple % columns match.
-- When the user asks about latest news, current events, headlines, football, Liverpool/LFC, F1, AI, Singapore education, apps, Apple, Nothing OS, or his shortlisted topics — call get_latest_news before answering.
+- When the user asks about latest news, current events, headlines, football, Liverpool/LFC, F1, AI, Singapore education, apps, Apple, Nothing OS, or his shortlisted topics — call get_latest_news before answering. Prefer get_liverpool_brief for Liverpool/LFC questions and get_f1_brief for Formula 1 questions because they gather structured source slices.
 - Liverpool FC is a first-class interest. Herwanto supports Liverpool. Track the current squad/line-ups, Premier League standing, progress in every competition Liverpool are still in, injuries/suspensions, fixtures/results, and transfer news/rumours. As of the 2025-26 squad context, Liverpool are managed by Arne Slot and the first-team group includes Alisson, Giorgi Mamardashvili, Freddie Woodman, Virgil van Dijk, Ibrahima Konate, Joe Gomez, Milos Kerkez, Conor Bradley, Andy Robertson, Jeremie Frimpong, Giovanni Leoni, Wataru Endo, Florian Wirtz, Dominik Szoboszlai, Alexis Mac Allister, Curtis Jones, Ryan Gravenberch, Trey Nyoni, Alexander Isak, Mohamed Salah, Federico Chiesa, Cody Gakpo, Hugo Ekitike, and Rio Ngumoha. If Herwanto mentions Wirtz, Isak, or "lfc big match", assume Liverpool context and do not correct him back to old clubs without first checking current sources. For current starting XIs, matchday line-ups, EPL table position, points, goal difference, form, Champions League/FA Cup/Carabao Cup progress, injuries, contract situations, departures, signings, or rumours, always use get_latest_news/web_search/fetch_url and cite the source. Clearly label transfer items as confirmed, reported, or rumour/speculation.
 - F1 is a first-class interest. Herwanto supports Mercedes, especially Kimi Antonelli and George Russell; Lewis Hamilton is still one of his favourites even at Ferrari. As of the 2026 season, the official F1 line-up is: Mercedes — George Russell, Kimi Antonelli; Ferrari — Charles Leclerc, Lewis Hamilton; McLaren — Lando Norris, Oscar Piastri; Red Bull Racing — Max Verstappen, Isack Hadjar; Racing Bulls — Liam Lawson, Arvid Lindblad; Williams — Carlos Sainz, Alexander Albon; Aston Martin — Fernando Alonso, Lance Stroll; Haas — Esteban Ocon, Oliver Bearman; Alpine — Pierre Gasly, Franco Colapinto; Audi — Nico Hulkenberg, Gabriel Bortoleto; Cadillac — Sergio Perez, Valtteri Bottas. For live F1 results, championship standings, race-weekend timings, current team stats, driver stats, rumours, penalties, or upgrades, use get_latest_news/web_search/fetch_url and cite what you found instead of relying on memory.
 - When the user pastes a web link or asks you to read/check a URL, call fetch_url. If fetch_url fails or the page is paywalled/dynamic, say what failed and use web_search/get_latest_news for corroborating public sources where available.
@@ -675,6 +709,42 @@ NEWS_TOOL = {
             "max_items": {
                 "type": "integer",
                 "description": "Number of headlines per topic, usually 2 to 5."
+            }
+        }
+    }
+}
+
+LIVERPOOL_BRIEF_TOOL = {
+    "name": "get_liverpool_brief",
+    "description": "Fetch a structured current Liverpool FC brief: Premier League standing/form, fixtures/results/line-ups, competition progress, injuries/suspensions, and transfer news/rumours. Use for Liverpool, LFC, Anfield, EPL/Premier League table, Wirtz, Isak, Salah, team news, and transfer questions.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "focus": {
+                "type": "string",
+                "description": "Optional focus, e.g. upcoming match, transfer rumours, injuries, EPL table, or a player name."
+            },
+            "max_items": {
+                "type": "integer",
+                "description": "Number of source items per section, usually 2 or 3."
+            }
+        }
+    }
+}
+
+F1_BRIEF_TOOL = {
+    "name": "get_f1_brief",
+    "description": "Fetch a structured current Formula 1 brief: standings, latest race results, Mercedes/Russell/Antonelli focus, Hamilton watch, and team news/upgrades. Use for F1, Formula 1, Grand Prix, Mercedes, Kimi Antonelli, George Russell, Lewis Hamilton, qualifying, race results, and championship questions.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "focus": {
+                "type": "string",
+                "description": "Optional focus, e.g. latest race, standings, Mercedes, Hamilton, or a Grand Prix name."
+            },
+            "max_items": {
+                "type": "integer",
+                "description": "Number of source items per section, usually 2 or 3."
             }
         }
     }
@@ -2431,7 +2501,7 @@ Rules:
 - Keep section body text concise but complete.
 - Return ONLY JSON."""
     resp = claude.messages.create(
-        model="claude-sonnet-4-6",
+        model=DEEP_MODEL,
         max_tokens=3000,
         messages=[{"role": "user", "content": prompt}]
     )
@@ -2467,7 +2537,7 @@ Rules:
 - Include a strong opening and useful closing/action slide.
 - Return ONLY JSON."""
     resp = claude.messages.create(
-        model="claude-sonnet-4-6",
+        model=DEEP_MODEL,
         max_tokens=3000,
         messages=[{"role": "user", "content": prompt}]
     )
@@ -2591,15 +2661,15 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     if "fetch_url" in available and re.search(r"https?://\S+", text or "", re.I):
         return "fetch_url"
 
-    if "web_search" in available and has_any([
+    if "get_f1_brief" in available and has_any([
         "f1", "formula 1", "grand prix", "qualifying", "race result",
         "standings", "driver standings", "constructor standings", "lineup",
         "line-up", "teams", "drivers", "mercedes", "ferrari", "mclaren",
         "red bull", "kimi", "antonelli", "russell", "hamilton"
     ]):
-        return "web_search"
+        return "get_f1_brief"
 
-    if "web_search" in available and has_any([
+    if "get_liverpool_brief" in available and has_any([
         "liverpool", "lfc", "anfield", "ynwa", "premier league", "epl",
         "arne slot", "salah", "van dijk", "alisson", "isak", "wirtz",
         "mac allister", "szoboszlai", "gakpo", "chiesa", "ekitike",
@@ -2608,7 +2678,7 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
         "champions league", "fa cup", "carabao", "transfer", "rumour",
         "rumor", "signing"
     ]):
-        return "web_search"
+        return "get_liverpool_brief"
 
     if (
         "update_project_status" in available
@@ -3151,7 +3221,7 @@ Return exactly:
 
 Rules: Use Asia/Singapore time. If no year is mentioned, use 2026. If the time/date is unclear, return {{"error":"missing date/time"}}. Return ONLY JSON."""
             parse_resp = claude.messages.create(
-                model="claude-haiku-4-5-20251001",
+                model=STRUCTURED_MODEL,
                 max_tokens=200,
                 messages=[{"role": "user", "content": parse_prompt}]
             )
@@ -3807,7 +3877,7 @@ Return exactly:
 Rules: the current year is 2026 — ALWAYS use 2026 if no year is mentioned, 24hr time, add 1hr if no end time specified. Return ONLY the JSON."""
     try:
         parse_resp = claude.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=STRUCTURED_MODEL,
             max_tokens=200,
             messages=[{"role": "user", "content": parse_prompt}]
         )
@@ -3880,6 +3950,8 @@ def _core_tools():
         PRAYER_TIME_TOOL,
         KHUTBAH_TOOL,
         NEWS_TOOL,
+        LIVERPOOL_BRIEF_TOOL,
+        F1_BRIEF_TOOL,
         FETCH_URL_TOOL,
     ]
     if ss.search_enabled():
@@ -3913,6 +3985,10 @@ def pwa_tools_for_message(text: str) -> list[dict]:
         add(FOLLOWUP_TOOL, COMPLETE_FOLLOWUP_TOOL, GMAIL_BRIEF_TOOL, TASK_BRIEF_TOOL)
     if re.search(r"\b(news|latest|current|headline|headlines|search|web|football|f1|liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|apple|ai|singapore education|nothing os)\b", text):
         add(NEWS_TOOL)
+        if re.search(r"\b(liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike)\b", text):
+            add(LIVERPOOL_BRIEF_TOOL)
+        if re.search(r"\b(f1|formula 1|grand prix|qualifying|driver standings|constructor standings|mercedes|ferrari|mclaren|red bull|kimi|antonelli|russell|hamilton)\b", text):
+            add(F1_BRIEF_TOOL)
         if ss.search_enabled():
             add(SEARCH_TOOL)
     if re.search(r"https?://\S+|\b(link|url|website|webpage|article|page)\b", text):
@@ -3954,7 +4030,7 @@ async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
         if tool_choice:
             kwargs["tool_choice"] = tool_choice
         resp = claude.messages.create(
-            model="claude-sonnet-4-6",
+            model=_agentic_model_for_messages(messages),
             max_tokens=max_tokens,
             system=CACHED_SYSTEM_PROMPT(),
             tools=tools,
@@ -4038,7 +4114,7 @@ async def should_route_quick_pwa_chat(messages: list[dict], message: str) -> boo
             f"Message: {text}"
         )
         resp = await async_claude.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=ROUTER_MODEL,
             max_tokens=10,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -4053,7 +4129,7 @@ async def stream_quick_pwa_reply(messages: list[dict], message: str):
     prompt_messages = context + [{"role": "user", "content": message}]
     try:
         async with async_claude.messages.stream(
-            model="claude-haiku-4-5-20251001",
+            model=QUICK_MODEL,
             max_tokens=220,
             system=(
                 "You are H.I.R.A, Herwanto's concise personal assistant. "
@@ -4083,7 +4159,7 @@ async def stream_agentic_claude(messages, max_tokens=650, tools=None):
         resp = None
         text_parts = []
         async with async_claude.messages.stream(
-            model="claude-sonnet-4-6",
+            model=_agentic_model_for_messages(messages),
             max_tokens=max_tokens,
             system=CACHED_SYSTEM_PROMPT(),
             tools=tools,
@@ -4404,6 +4480,18 @@ async def _execute_tool(name: str, inp: dict) -> str:
             return build_news_digest(inp.get("query", ""), inp.get("max_items", 2))
         except Exception as e:
             return f"Failed to fetch news: {e}"
+
+    elif name == "get_liverpool_brief":
+        try:
+            return sports.build_liverpool_brief(inp.get("focus", ""), inp.get("max_items", 3))
+        except Exception as e:
+            return f"Failed to fetch Liverpool brief: {e}"
+
+    elif name == "get_f1_brief":
+        try:
+            return sports.build_f1_brief(inp.get("focus", ""), inp.get("max_items", 3))
+        except Exception as e:
+            return f"Failed to fetch F1 brief: {e}"
 
     elif name == "get_nea_weather":
         try:

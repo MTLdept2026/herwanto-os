@@ -1065,6 +1065,8 @@ function appendToolStatus(el, name) {
     get_nea_weather: "Checking NEA weather...",
     get_muis_prayer_times: "Checking MUIS prayer times...",
     get_latest_news: "Checking latest news...",
+    get_liverpool_brief: "Checking Liverpool...",
+    get_f1_brief: "Checking F1...",
     web_search: "Searching...",
     fetch_url: "Reading link...",
   };

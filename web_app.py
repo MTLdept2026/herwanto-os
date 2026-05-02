@@ -599,6 +599,13 @@ def healthz():
         "upload_jobs_tracked": len(_UPLOAD_JOBS),
         "chat_slots_available": getattr(_CHAT_SEMAPHORE, "_value", None),
         "upload_slots_available": getattr(_UPLOAD_SEMAPHORE, "_value", None),
+        "models": {
+            "agentic": bot.AGENTIC_MODEL,
+            "deep": bot.DEEP_MODEL,
+            "quick": bot.QUICK_MODEL,
+            "router": bot.ROUTER_MODEL,
+            "structured": bot.STRUCTURED_MODEL,
+        },
     }
 
 

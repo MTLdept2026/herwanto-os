@@ -186,27 +186,28 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(forced, "fetch_url")
 
-    def test_f1_current_question_forces_web_search_when_available(self):
+    def test_f1_current_question_forces_structured_sports_tool(self):
         forced = bot._forced_tool_for_text(
             "current F1 driver standings after the latest grand prix",
-            [{"name": "web_search"}, {"name": "get_latest_news"}],
+            [{"name": "get_f1_brief"}, {"name": "web_search"}, {"name": "get_latest_news"}],
         )
 
-        self.assertEqual(forced, "web_search")
+        self.assertEqual(forced, "get_f1_brief")
 
-    def test_liverpool_current_question_forces_web_search_when_available(self):
+    def test_liverpool_current_question_forces_structured_sports_tool(self):
         forced = bot._forced_tool_for_text(
             "where are Liverpool in the current EPL table and what competitions are they still in?",
-            [{"name": "web_search"}, {"name": "get_latest_news"}],
+            [{"name": "get_liverpool_brief"}, {"name": "web_search"}, {"name": "get_latest_news"}],
         )
 
-        self.assertEqual(forced, "web_search")
+        self.assertEqual(forced, "get_liverpool_brief")
 
     def test_pwa_lfc_prompt_includes_news_search_tools(self):
         tools = bot.pwa_tools_for_message("latest LFC transfer rumours and injuries")
         names = {tool["name"] for tool in tools}
 
         self.assertIn("get_latest_news", names)
+        self.assertIn("get_liverpool_brief", names)
 
     def test_lfc_player_chat_is_not_quick_routed(self):
         text = "Still anxious about this weekend lfc big match. Hope wirtz and isak have a banger."
@@ -218,6 +219,29 @@ class AgenticClaudeTests(unittest.TestCase):
         names = {tool["name"] for tool in tools}
 
         self.assertIn("get_latest_news", names)
+        self.assertIn("get_liverpool_brief", names)
+
+    def test_pwa_f1_prompt_includes_structured_sports_tool(self):
+        tools = bot.pwa_tools_for_message("latest F1 standings and Mercedes qualifying result")
+        names = {tool["name"] for tool in tools}
+
+        self.assertIn("get_f1_brief", names)
+
+    def test_deep_model_selected_for_architecture_work_when_configured(self):
+        with patch.object(bot, "DEEP_MODEL", "deep-model"), patch.object(bot, "AGENTIC_MODEL", "agentic-model"):
+            selected = bot._agentic_model_for_messages([
+                {"role": "user", "content": "review this architecture and refactor the backend"}
+            ])
+
+        self.assertEqual(selected, "deep-model")
+
+    def test_agentic_model_selected_for_ordinary_chat(self):
+        with patch.object(bot, "DEEP_MODEL", "deep-model"), patch.object(bot, "AGENTIC_MODEL", "agentic-model"):
+            selected = bot._agentic_model_for_messages([
+                {"role": "user", "content": "how are we doing today?"}
+            ])
+
+        self.assertEqual(selected, "agentic-model")
 
     def test_pwa_link_prompt_includes_fetch_url_tool(self):
         tools = bot.pwa_tools_for_message("check this link https://www.formula1.com/en/teams")
