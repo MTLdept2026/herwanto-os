@@ -2037,6 +2037,7 @@ DEFAULT_MEMORY = {
     "topic_profiles": [],
     "correction_ledger": [],
     "self_reflections": [],
+    "source_notes": [],
 }
 
 
@@ -2104,6 +2105,11 @@ def add_memory(category: str, text: str) -> dict:
         "reflection": "self_reflections",
         "reflections": "self_reflections",
         "learning": "self_reflections",
+        "source": "source_notes",
+        "sources": "source_notes",
+        "source_note": "source_notes",
+        "source_notes": "source_notes",
+        "knowledge": "source_notes",
     }
     category = aliases.get(category, category)
     if category not in DEFAULT_MEMORY:
@@ -2151,6 +2157,21 @@ def add_self_reflection(entry: dict) -> dict:
     if not clean["learned"]:
         raise ValueError("Self-reflection entry needs learned text")
     return _append_memory_json("self_reflections", clean, limit=120)
+
+
+def add_source_note(entry: dict) -> dict:
+    clean = {
+        "date": str(entry.get("date", "")).strip(),
+        "topic": str(entry.get("topic", "")).strip(),
+        "source": str(entry.get("source", "")).strip(),
+        "source_url": str(entry.get("source_url", "")).strip(),
+        "insight": str(entry.get("insight", "")).strip(),
+        "durability": str(entry.get("durability", "") or "stable").strip(),
+        "confidence": str(entry.get("confidence", "") or "source-backed").strip(),
+    }
+    if not clean["topic"] or not clean["insight"]:
+        raise ValueError("Source note needs topic and insight")
+    return _append_memory_json("source_notes", clean, limit=120)
 
 
 def add_topic_profile(profile: dict) -> dict:

@@ -252,6 +252,7 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("topic_profiles", bot.gs.DEFAULT_MEMORY)
         self.assertIn("correction_ledger", bot.gs.DEFAULT_MEMORY)
         self.assertIn("self_reflections", bot.gs.DEFAULT_MEMORY)
+        self.assertIn("source_notes", bot.gs.DEFAULT_MEMORY)
 
         with (
             patch.object(bot.gs, "get_config", return_value=""),
@@ -269,6 +270,15 @@ class AgenticClaudeTests(unittest.TestCase):
             memory = bot.gs.add_memory("mistake", "Do not repeat this correction")
 
         self.assertIn("Do not repeat this correction", memory["correction_ledger"])
+        self.assertTrue(set_config.called)
+
+        with (
+            patch.object(bot.gs, "get_config", return_value=""),
+            patch.object(bot.gs, "set_config") as set_config,
+        ):
+            memory = bot.gs.add_memory("knowledge", "Source-backed Liverpool note")
+
+        self.assertIn("Source-backed Liverpool note", memory["source_notes"])
         self.assertTrue(set_config.called)
 
     def test_topic_profile_storage_replaces_by_topic(self):
@@ -346,6 +356,23 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(len(memory["self_reflections"]), 1)
         self.assertIn("Wirtz and Isak", memory["correction_ledger"][0])
 
+    def test_execute_source_note_tool(self):
+        with patch.object(bot.gs, "add_source_note", return_value={
+            "topic": "Liverpool",
+            "source": "Official site",
+            "durability": "live_check",
+        }):
+            result = asyncio.run(bot._execute_tool("remember_source_insight", {
+                "topic": "Liverpool",
+                "source": "Official site",
+                "source_url": "https://www.liverpoolfc.com/",
+                "insight": "Match line-ups are live facts.",
+                "durability": "live_check",
+                "confidence": "official",
+            }))
+
+        self.assertIn("Stored source note for Liverpool", result)
+
     def test_runtime_status_contains_observability_sections(self):
         fake_memory = {category: [] for category in bot.MEMORY_DISPLAY_CATEGORIES}
         fake_memory["sports"] = ["Liverpool"]
@@ -373,6 +400,7 @@ class AgenticClaudeTests(unittest.TestCase):
         names = {tool["name"] for tool in tools}
 
         self.assertIn("fetch_url", names)
+        self.assertIn("remember_source_insight", names)
 
     def test_fill_mtl_percentage_scores_updates_blank_fa2_percentages(self):
         book = {

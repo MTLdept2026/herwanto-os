@@ -5,25 +5,25 @@
   "summary": {
     "start": "2026-04-28",
     "current": "2026-05-02",
-    "commitsTracked": 77,
-    "majorPhases": 10,
-    "currentStage": "Reflective learning core"
+    "commitsTracked": 78,
+    "majorPhases": 11,
+    "currentStage": "Source-aware learning core"
   },
   "metrics": [
     {
       "label": "Days of build acceleration",
       "value": "5",
-      "note": "From first installable PWA commit to reflection-aware memory."
+      "note": "From first installable PWA commit to source-aware learning."
     },
     {
       "label": "Tracked upgrade commits",
-      "value": "77",
+      "value": "78",
       "note": "Grouped from git history through the growth-log minisite."
     },
     {
       "label": "Memory buckets",
-      "value": "15",
-      "note": "Profile, preferences, teaching, business, sports, topic profiles, corrections, reflections, and more."
+      "value": "16",
+      "note": "Profile, preferences, teaching, business, sports, topic profiles, corrections, reflections, source notes, and more."
     },
     {
       "label": "Specialist live domains",
@@ -49,8 +49,8 @@
     },
     {
       "name": "Live Knowledge",
-      "score": 82,
-      "description": "Weather, MUIS, Google News, Tavily search, fetch URL, structured Liverpool and F1 briefers."
+      "score": 86,
+      "description": "Weather, MUIS, Google News, Tavily search, fetch URL, source notes, structured Liverpool and F1 briefers."
     },
     {
       "name": "Personalisation",
@@ -204,6 +204,20 @@
         "The system prompt now treats corrections and reflections as durable behaviour guidance."
       ],
       "impact": "When Herwanto corrects H.I.R.A or introduces an important direction, that lesson can persist and shape future answers."
+    },
+    {
+      "date": "2026-05-02",
+      "era": "Knowledge Intake",
+      "title": "Browsing starts compounding into memory",
+      "commit": "source-intake",
+      "tag": "Source Notes",
+      "summary": "H.I.R.A gained a source-backed intake tool so useful research can become durable context instead of one-off answers.",
+      "details": [
+        "New source_notes memory bucket added.",
+        "remember_source_insight stores topic, source, URL, insight, durability, and confidence.",
+        "Web, link, news, Liverpool, and F1 prompts now expose the source-note tool."
+      ],
+      "impact": "When H.I.R.A researches a new topic, it can keep stable knowledge while marking volatile facts for future live checks."
     }
   ],
   "currentCapabilities": [
@@ -211,7 +225,7 @@
     "Telegram-compatible tool brain with calendar, reminders, marking, MTL classlists, Gmail, artifacts, weather, MUIS prayer/khutbah, news, web search, and URL reading.",
     "Structured sports intelligence for Liverpool and F1.",
     "Railway Hobby runtime profile with upload queue, memory guardrails, worker split, Redis production option, and admin status.",
-    "Long-term memory buckets, topic profiles for new interests, correction ledger, and self-reflection notes.",
+    "Long-term memory buckets, topic profiles for new interests, correction ledger, self-reflection notes, and source-backed research notes.",
     "Configurable model routing for quick replies, structured parsing, agentic work, and deep work."
   ],
   "updateProtocol": [
