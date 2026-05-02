@@ -977,6 +977,10 @@ function renderTaskList(data, heading = "Task Brief · Now to 7 May") {
           const meta = [item.category, item.priority, item.effort].filter(Boolean).join(" / ");
           return `
             <article class="task-item ${item.overdue ? "overdue" : ""}" data-task-id="${markdownish(item.id)}">
+              <label class="task-check" title="Mark done">
+                <input type="checkbox" data-task-done="${markdownish(item.id)}" />
+                <span></span>
+              </label>
               <div class="task-num">${markdownish(item.id)}</div>
               <div class="task-copy">
                 <div class="task-date">${markdownish(due)}</div>
@@ -1011,12 +1015,20 @@ function renderTaskBriefFromText(text) {
 
 async function completeTask(taskId, checkbox) {
   checkbox.disabled = true;
+  const taskItem = checkbox.closest(".task-item");
+  const desc = taskItem?.querySelector(".task-copy p")?.textContent?.trim() || "";
   try {
     await api(`/api/tasks/${encodeURIComponent(taskId)}/done`, { method: "POST", headers: headers(false) });
-    checkbox.closest(".task-item")?.classList.add("completed");
-    setStatus(`Task #${taskId} completed.`, "ok");
-    await loadHome();
-    await loadTasks(Number($("#tasksDays").value || 7));
+    taskItem?.classList.add("completed");
+    const shortDesc = desc ? `"${desc.slice(0, 52)}${desc.length > 52 ? "…" : ""}"` : `#${taskId}`;
+    setStatus(`Done ✓ ${shortDesc}`, "ok");
+    // Give the fade animation a moment before refreshing
+    setTimeout(async () => {
+      await loadHome();
+      if ($("#tasksView")?.classList.contains("active") || state.currentView === "tasks") {
+        await loadTasks(Number($("#tasksDays")?.value || 7));
+      }
+    }, 500);
   } catch (error) {
     checkbox.checked = false;
     checkbox.disabled = false;
@@ -1729,7 +1741,8 @@ $("#agendaDays").addEventListener("change", () => loadAgenda(Number($("#agendaDa
 $("#refreshTasksBtn").addEventListener("click", () => loadTasks(Number($("#tasksDays").value || 7)));
 $("#tasksDays").addEventListener("change", () => loadTasks(Number($("#tasksDays").value || 7)));
 $("#refreshFilesBtn").addEventListener("click", () => setStatus("File upload is ready.", "ok"));
-$("#tasksOutput").addEventListener("change", (event) => {
+// Covers both #tasksOutput (Tasks tab) and #homeTasks (Home panel)
+document.addEventListener("change", (event) => {
   const checkbox = event.target.closest("[data-task-done]");
   if (!checkbox || !checkbox.checked) return;
   completeTask(checkbox.dataset.taskDone, checkbox);

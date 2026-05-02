@@ -2061,8 +2061,8 @@ html[data-theme="dark"] .load-badge.load-green {
 
 .task-item {
   display: grid;
-  grid-template-columns: 44px minmax(0, 1fr);
-  gap: 18px;
+  grid-template-columns: 36px 44px minmax(0, 1fr);
+  gap: 14px;
   padding: 18px 0;
   border: 0;
   border-bottom: 1px solid var(--border);
@@ -2930,4 +2930,128 @@ html[data-theme="dark"] .load-badge.load-green {
   .hero-display {
     font-size: 52px;
   }
+}
+
+/* ─── Nothing OS Topbar ───────────────────────────────────────────────────────
+   Always dark, regardless of light/dark mode preference.
+   Precision grid · dot-matrix type · red accent only on interaction.         */
+
+.topbar {
+  background: #060606;
+  border-bottom: 1px solid #1e1e1e;
+  padding: 12px clamp(16px, 3vw, 28px);
+}
+
+.topbar .eyebrow {
+  font-size: 8px;
+  letter-spacing: 0.22em;
+  color: #2e2e2e;
+  margin-bottom: 3px;
+}
+
+.topbar h1 {
+  font-family: var(--font-dot);
+  font-weight: 900;
+  font-size: clamp(30px, 5.5vw, 50px);
+  line-height: 0.88;
+  letter-spacing: 0.06em;
+  color: #dcdcdc;
+}
+
+.topbar .brand-subtitle {
+  margin-top: 7px;
+  font-family: var(--font-ui);
+  font-size: 8px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #282828;
+  font-weight: 400;
+}
+
+/* Action cluster */
+.topbar-actions {
+  gap: 4px;
+  padding-left: 16px;
+  border-left: 1px solid #1e1e1e;
+}
+
+.topbar-actions .icon-btn {
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
+  border: 1px solid #1e1e1e;
+  border-radius: 0;
+  color: #404040;
+  background: transparent;
+  padding: 0;
+}
+
+.topbar-actions .icon-btn:hover {
+  border-color: #ff2d2d;
+  color: #ff2d2d;
+  background: transparent;
+  box-shadow: none;
+}
+
+.topbar-actions .icon-btn:active,
+.topbar-actions .icon-btn:focus-visible,
+.topbar-actions .icon-btn.is-open {
+  border-color: #ff2d2d;
+  color: #ff2d2d;
+  background: rgba(255, 45, 45, 0.06);
+  box-shadow: none;
+}
+
+/* Notification badge on dark topbar */
+.notification-top-toggle {
+  position: absolute;
+  bottom: 7px;
+  right: 7px;
+  width: 7px;
+  height: 7px;
+  background: #ff2d2d;
+  border-radius: 0;
+}
+
+/* Theme toggle — compact, monochrome */
+.quick-theme-toggle {
+  border: 1px solid #1e1e1e;
+  border-radius: 0;
+  overflow: hidden;
+}
+
+.topbar .quick-theme-toggle .theme-btn {
+  height: 36px;
+  min-height: 36px;
+  padding: 0 10px;
+  font-size: 8px;
+  letter-spacing: 0.16em;
+  color: #2e2e2e;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.topbar .quick-theme-toggle .theme-btn + .theme-btn {
+  border-left: 1px solid #1e1e1e;
+}
+
+.topbar .quick-theme-toggle .theme-btn.active {
+  background: #1e1e1e;
+  color: #dcdcdc;
+  border-color: transparent;
+}
+
+.topbar .quick-theme-toggle .theme-btn:hover:not(.active) {
+  color: #ff2d2d;
+}
+
+/* Task item completion animation */
+.task-item {
+  transition: opacity 0.4s ease;
+}
+
+.task-item.completed {
+  opacity: 0.25;
+  pointer-events: none;
 }
