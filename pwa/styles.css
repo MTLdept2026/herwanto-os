@@ -2932,126 +2932,155 @@ html[data-theme="dark"] .load-badge.load-green {
   }
 }
 
-/* ─── Nothing OS Topbar ───────────────────────────────────────────────────────
-   Always dark, regardless of light/dark mode preference.
-   Precision grid · dot-matrix type · red accent only on interaction.         */
+/* ═══════════════════════════════════════════════════════════════════════════
+   NOTHING OS TOPBAR — RADICAL EDITION
+   Built from scratch. Not patched. Nothing would bin the old one entirely.
+   ═══════════════════════════════════════════════════════════════════════════ */
 
+/* ── Base shell ─────────────────────────────────────────────────────────── */
 .topbar {
-  background: #060606;
-  border-bottom: 1px solid #1e1e1e;
-  padding: 12px clamp(16px, 3vw, 28px);
+  background: #000000;
+  border-bottom: 1px solid #141414;
+  padding: 20px clamp(16px, 4vw, 28px) 20px;
+  min-height: 100px;
+  align-items: flex-end;
+  gap: 0;
 }
 
+/* ── System label ───────────────────────────────────────────────────────── */
 .topbar .eyebrow {
   font-size: 8px;
-  letter-spacing: 0.22em;
-  color: #2e2e2e;
-  margin-bottom: 3px;
+  letter-spacing: 0.26em;
+  color: #262626;
+  margin-bottom: 8px;
+  font-family: var(--font-ui);
 }
 
+/* ── H.I.R.A wordmark ───────────────────────────────────────────────────── */
 .topbar h1 {
   font-family: var(--font-dot);
   font-weight: 900;
-  font-size: clamp(30px, 5.5vw, 50px);
-  line-height: 0.88;
-  letter-spacing: 0.06em;
-  color: #dcdcdc;
+  font-size: clamp(40px, 7vw, 62px);
+  line-height: 0.85;
+  letter-spacing: 0.08em;
+  color: #e8e8e8;
+  text-shadow: none;
 }
 
+/* ── Descriptor line — visible, but subordinate ─────────────────────────── */
 .topbar .brand-subtitle {
-  margin-top: 7px;
+  display: block;
+  margin-top: 10px;
   font-family: var(--font-ui);
-  font-size: 8px;
-  letter-spacing: 0.18em;
+  font-size: 9px;
+  letter-spacing: 0.2em;
   text-transform: uppercase;
-  color: #282828;
+  color: #3a3a3a;
   font-weight: 400;
+  line-height: 1.4;
 }
 
-/* Action cluster */
+/* ── Action cluster ─────────────────────────────────────────────────────── */
+
+/* Hide the theme toggle — that belongs in settings, not the header */
+.topbar .quick-theme-toggle {
+  display: none;
+}
+
 .topbar-actions {
-  gap: 4px;
-  padding-left: 16px;
-  border-left: 1px solid #1e1e1e;
+  gap: 0;
+  padding-left: 0;
+  border-left: none;
+  align-items: flex-end;
 }
 
+/* Glyph-style column separator */
+.topbar-actions::before {
+  content: "";
+  display: block;
+  width: 1px;
+  height: 52px;
+  background: linear-gradient(to bottom, transparent, #1e1e1e 30%, #1e1e1e 70%, transparent);
+  margin-right: 16px;
+  flex-shrink: 0;
+}
+
+/* ── Icon buttons: invisible borders by default ─────────────────────────── */
 .topbar-actions .icon-btn {
-  width: 40px;
-  height: 40px;
-  min-height: 40px;
-  border: 1px solid #1e1e1e;
+  width: 44px;
+  height: 52px;
+  min-height: 52px;
+  border: 1px solid transparent;
   border-radius: 0;
-  color: #404040;
+  color: #303030;
   background: transparent;
   padding: 0;
+  position: relative;
+  display: inline-grid;
+  place-items: center;
 }
 
+.topbar-actions .icon-btn svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* Hover: icon brightens, no border box */
 .topbar-actions .icon-btn:hover {
-  border-color: #ff2d2d;
-  color: #ff2d2d;
+  border-color: transparent;
+  color: #c8c8c8;
   background: transparent;
   box-shadow: none;
 }
 
+/* Active / open: white icon, subtle underline — NO red border box */
 .topbar-actions .icon-btn:active,
 .topbar-actions .icon-btn:focus-visible,
 .topbar-actions .icon-btn.is-open {
-  border-color: #ff2d2d;
-  color: #ff2d2d;
-  background: rgba(255, 45, 45, 0.06);
+  border-color: transparent;
+  border-bottom-color: #e8e8e8;
+  color: #e8e8e8;
+  background: transparent;
   box-shadow: none;
 }
 
-/* Notification badge on dark topbar */
-.notification-top-toggle {
+/* ── Notification button: bell only, no toggle switch ───────────────────── */
+
+/* Override the wide grid layout so it's just the bell icon */
+.topbar-actions .notification-btn {
+  width: 44px;
+  height: 52px;
+  grid-template-columns: 1fr;
+  gap: 0;
+}
+
+/* Hide the on/off toggle switch from the topbar — it lives in the panel */
+.topbar-actions .notification-btn .notification-top-toggle {
+  display: none;
+}
+
+/* Tiny red dot for unread notifications — top-right of bell */
+#notificationBadge {
   position: absolute;
-  bottom: 7px;
-  right: 7px;
-  width: 7px;
-  height: 7px;
-  background: #ff2d2d;
-  border-radius: 0;
-}
-
-/* Theme toggle — compact, monochrome */
-.quick-theme-toggle {
-  border: 1px solid #1e1e1e;
-  border-radius: 0;
-  overflow: hidden;
-}
-
-.topbar .quick-theme-toggle .theme-btn {
-  height: 36px;
-  min-height: 36px;
-  padding: 0 10px;
-  font-size: 8px;
-  letter-spacing: 0.16em;
-  color: #2e2e2e;
+  top: 10px;
+  right: 8px;
+  min-width: 6px;
+  width: 6px;
+  height: 6px;
+  padding: 0;
   border: 0;
   border-radius: 0;
-  background: transparent;
+  background: #ff2d2d;
+  font-size: 0;
 }
 
-.topbar .quick-theme-toggle .theme-btn + .theme-btn {
-  border-left: 1px solid #1e1e1e;
-}
-
-.topbar .quick-theme-toggle .theme-btn.active {
-  background: #1e1e1e;
-  color: #dcdcdc;
-  border-color: transparent;
-}
-
-.topbar .quick-theme-toggle .theme-btn:hover:not(.active) {
-  color: #ff2d2d;
-}
-
-/* Task item completion animation */
+/* ── Task completion fade ───────────────────────────────────────────────── */
 .task-item {
   transition: opacity 0.4s ease;
 }
 
 .task-item.completed {
-  opacity: 0.25;
+  opacity: 0.2;
   pointer-events: none;
 }
+
