@@ -208,6 +208,17 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertIn("get_latest_news", names)
 
+    def test_lfc_player_chat_is_not_quick_routed(self):
+        text = "Still anxious about this weekend lfc big match. Hope wirtz and isak have a banger."
+
+        self.assertTrue(bot._looks_tool_heavy(text))
+
+    def test_lfc_player_names_include_news_tools(self):
+        tools = bot.pwa_tools_for_message("Hope Wirtz and Isak have a banger this weekend")
+        names = {tool["name"] for tool in tools}
+
+        self.assertIn("get_latest_news", names)
+
     def test_pwa_link_prompt_includes_fetch_url_tool(self):
         tools = bot.pwa_tools_for_message("check this link https://www.formula1.com/en/teams")
         names = {tool["name"] for tool in tools}
