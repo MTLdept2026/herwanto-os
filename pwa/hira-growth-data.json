@@ -5,19 +5,19 @@
   "summary": {
     "start": "2026-04-28",
     "current": "2026-05-02",
-    "commitsTracked": 78,
-    "majorPhases": 11,
-    "currentStage": "Source-aware learning core"
+    "commitsTracked": 80,
+    "majorPhases": 12,
+    "currentStage": "Governed learning core"
   },
   "metrics": [
     {
       "label": "Days of build acceleration",
       "value": "5",
-      "note": "From first installable PWA commit to source-aware learning."
+      "note": "From first installable PWA commit to governed learning."
     },
     {
       "label": "Tracked upgrade commits",
-      "value": "78",
+      "value": "80",
       "note": "Grouped from git history through the growth-log minisite."
     },
     {
@@ -39,8 +39,8 @@
     },
     {
       "name": "Reliability",
-      "score": 86,
-      "description": "Railway guardrails, worker split, Redis requirement option, upload queue, memory pressure checks."
+      "score": 88,
+      "description": "Railway guardrails, worker split, Redis requirement option, upload queue, memory pressure checks, admin memory review."
     },
     {
       "name": "Context",
@@ -49,13 +49,13 @@
     },
     {
       "name": "Live Knowledge",
-      "score": 86,
-      "description": "Weather, MUIS, Google News, Tavily search, fetch URL, source notes, structured Liverpool and F1 briefers."
+      "score": 88,
+      "description": "Weather, MUIS, Google News, Tavily search, fetch URL, source notes, live-check hints, structured Liverpool and F1 briefers."
     },
     {
       "name": "Personalisation",
-      "score": 92,
-      "description": "Taste profile, stable memory buckets, project radar, sports preferences, new-interest profiles, corrections, and reflections."
+      "score": 93,
+      "description": "Taste profile, stable memory buckets, project radar, sports preferences, new-interest profiles, corrections, reflections, and review rules."
     }
   ],
   "chapters": [
@@ -218,6 +218,20 @@
         "Web, link, news, Liverpool, and F1 prompts now expose the source-note tool."
       ],
       "impact": "When H.I.R.A researches a new topic, it can keep stable knowledge while marking volatile facts for future live checks."
+    },
+    {
+      "date": "2026-05-02",
+      "era": "Governed Learning",
+      "title": "Hira learns when not to trust memory alone",
+      "commit": "governed-learning",
+      "tag": "Confidence",
+      "summary": "The assistant gained source-discipline hints and a memory review endpoint.",
+      "details": [
+        "Volatile questions now get an internal live-source requirement before the model answers.",
+        "Recommended tools are attached for sports, F1, Liverpool, weather, prayer, news, and pasted links.",
+        "Admin memory review exposes bucket counts, recent entries, and pruning rules at /api/admin/memory."
+      ],
+      "impact": "H.I.R.A is now less likely to treat stale memory as truth, and its growing memory can be inspected before it gets messy."
     }
   ],
   "currentCapabilities": [
@@ -226,6 +240,7 @@
     "Structured sports intelligence for Liverpool and F1.",
     "Railway Hobby runtime profile with upload queue, memory guardrails, worker split, Redis production option, and admin status.",
     "Long-term memory buckets, topic profiles for new interests, correction ledger, self-reflection notes, and source-backed research notes.",
+    "Deterministic source-discipline hints for volatile questions and an admin memory review surface.",
     "Configurable model routing for quick replies, structured parsing, agentic work, and deep work."
   ],
   "updateProtocol": [

@@ -272,6 +272,92 @@ def build_runtime_status() -> dict:
         },
     }
 
+
+VOLATILE_FACT_PATTERN = re.compile(
+    r"\b("
+    r"latest|current|today|tomorrow|now|live|result|results|score|scores|standings|table|"
+    r"lineup|line-up|starting xi|fixture|fixtures|schedule|injury|injuries|transfer|rumou?r|"
+    r"price|prices|cost|weather|forecast|prayer|khutbah|news|headline|headlines|"
+    r"f1|formula 1|liverpool|lfc|epl|premier league"
+    r")\b",
+    re.I,
+)
+
+def source_discipline_for_text(text: str) -> dict:
+    clean = " ".join((text or "").split())
+    lowered = clean.lower()
+    if not clean:
+        return {"confidence": "unknown", "needs_live_check": False, "reason": "empty input", "recommended_tools": []}
+
+    tools: list[str] = []
+    if re.search(r"https?://\S+", clean):
+        tools.append("fetch_url")
+    if re.search(r"\b(liverpool|lfc|epl|premier league|anfield|salah|wirtz|isak|transfer|rumou?r|lineup|starting xi)\b", lowered):
+        tools.append("get_liverpool_brief")
+    if re.search(r"\b(f1|formula 1|grand prix|mercedes|russell|antonelli|hamilton|qualifying|driver standings|constructor standings)\b", lowered):
+        tools.append("get_f1_brief")
+    if re.search(r"\b(weather|forecast|rain|temperature|haze|psi|pm2\.5)\b", lowered):
+        tools.append("get_nea_weather")
+    if re.search(r"\b(prayer|solat|salah|subuh|fajr|zohor|asar|maghrib|isyak|khutbah|sermon)\b", lowered):
+        tools.extend(["get_muis_prayer_times", "get_muis_friday_khutbah"])
+    if VOLATILE_FACT_PATTERN.search(clean):
+        tools.append("get_latest_news")
+    if re.search(r"\b(search|web|website|article|page|latest|current|news|headline|rumou?r)\b", lowered):
+        tools.append("web_search")
+
+    deduped_tools = list(dict.fromkeys(tools))
+    needs_live = bool(deduped_tools) or bool(VOLATILE_FACT_PATTERN.search(clean))
+    confidence = "needs_live_source" if needs_live else "memory_ok"
+    reason = (
+        "Question appears time-sensitive, source-sensitive, or about a volatile fact."
+        if needs_live else
+        "Question appears stable enough for memory or general reasoning."
+    )
+    return {
+        "confidence": confidence,
+        "needs_live_check": needs_live,
+        "reason": reason,
+        "recommended_tools": deduped_tools,
+    }
+
+def source_discipline_hint(text: str) -> str:
+    discipline = source_discipline_for_text(text)
+    if not discipline["needs_live_check"]:
+        return ""
+    tools = ", ".join(discipline["recommended_tools"]) or "available source tools"
+    return (
+        "\n\n[Source discipline: confidence=needs_live_source. "
+        f"Reason: {discipline['reason']} Recommended tools: {tools}. "
+        "Do not rely only on memory; cite or summarise source-backed findings and label rumours/live facts clearly.]"
+    )
+
+def build_memory_review(limit: int = 5) -> dict:
+    limit = max(1, min(int(limit or 5), 20))
+    if not google_ok():
+        return {"ok": False, "error": "Google memory is not connected.", "buckets": {}}
+    memory = gs.get_memory()
+    buckets = {}
+    total = 0
+    for category in MEMORY_DISPLAY_CATEGORIES:
+        items = list(memory.get(category, []))
+        total += len(items)
+        buckets[category] = {
+            "count": len(items),
+            "recent": items[-limit:],
+            "needs_review": len(items) > 80 or category in {"correction_ledger", "self_reflections", "source_notes"} and len(items) > 40,
+        }
+    return {
+        "ok": True,
+        "total_items": total,
+        "bucket_count": len(buckets),
+        "buckets": buckets,
+        "review_rules": [
+            "Promote repeated corrections into stable preferences or constraints.",
+            "Keep source_notes marked live_check as research leads, not permanent truth.",
+            "Prune duplicate file/source notes when a newer summary supersedes them.",
+        ],
+    }
+
 def _rss_mb() -> float:
     try:
         with open("/proc/self/status", "r", encoding="utf-8") as fh:
@@ -5112,6 +5198,7 @@ async def _process_user_text(update, context, text: str):
     if re.search(r"\b(?:work|moe|school|personal)\s+(?:gmail|email|emails|mail)\b", text, re.I):
         account_hint, _ = _extract_gmail_account_from_text(text)
         user_content = f"{text}\n\n[Email account hint: use account=\"{account_hint}\" for Gmail tools.]"
+    user_content = f"{user_content}{source_discipline_hint(text)}"
     history.append({"role": "user", "content": user_content})
     if len(history) > MAX_TURNS:
         history = history[-MAX_TURNS:]

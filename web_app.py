@@ -725,6 +725,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
     if bot.re.search(r"\b(?:work|moe|school|personal)\s+(?:gmail|email|emails|mail)\b", message, bot.re.I):
         account_hint, _ = bot._extract_gmail_account_from_text(message)
         user_content = f"{message}\n\n[Email account hint: use account=\"{account_hint}\" for Gmail tools.]"
+    user_content = f"{user_content}{bot.source_discipline_hint(message)}"
     location_context = _device_location_context(location)
     if location_context:
         user_content = f"{user_content}{location_context}"
@@ -1007,6 +1008,15 @@ def admin_status(x_hira_token: Optional[str] = Header(default=None)):
             "prayers": bot.prayer_notification_status(),
         },
     }
+
+
+@app.get("/api/admin/memory")
+def admin_memory(limit: int = 5, x_hira_token: Optional[str] = Header(default=None)):
+    _require_token(x_hira_token)
+    try:
+        return bot.build_memory_review(limit=limit)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Memory review unavailable: {exc}") from exc
 
 
 @app.post("/api/notifications/subscribe")

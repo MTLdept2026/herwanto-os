@@ -373,6 +373,29 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertIn("Stored source note for Liverpool", result)
 
+    def test_source_discipline_flags_volatile_sports_questions(self):
+        discipline = bot.source_discipline_for_text("latest LFC lineup and transfer rumours")
+
+        self.assertTrue(discipline["needs_live_check"])
+        self.assertEqual(discipline["confidence"], "needs_live_source")
+        self.assertIn("get_liverpool_brief", discipline["recommended_tools"])
+
+    def test_memory_review_summarises_buckets(self):
+        fake_memory = {category: [] for category in bot.MEMORY_DISPLAY_CATEGORIES}
+        fake_memory["correction_ledger"] = ["Correction A"]
+        fake_memory["source_notes"] = ["Source note A", "Source note B"]
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "get_memory", return_value=fake_memory),
+        ):
+            review = bot.build_memory_review(limit=1)
+
+        self.assertTrue(review["ok"])
+        self.assertEqual(review["total_items"], 3)
+        self.assertEqual(review["buckets"]["source_notes"]["count"], 2)
+        self.assertEqual(review["buckets"]["source_notes"]["recent"], ["Source note B"])
+
     def test_runtime_status_contains_observability_sections(self):
         fake_memory = {category: [] for category in bot.MEMORY_DISPLAY_CATEGORIES}
         fake_memory["sports"] = ["Liverpool"]
