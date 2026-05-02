@@ -20,7 +20,7 @@ def main() -> None:
                 "--workers",
                 "1",
                 "--limit-concurrency",
-                os.environ.get("HIRA_UVICORN_LIMIT_CONCURRENCY", "20"),
+                os.environ.get("HIRA_UVICORN_LIMIT_CONCURRENCY", "40"),
                 "--timeout-keep-alive",
                 os.environ.get("HIRA_UVICORN_KEEP_ALIVE", "5"),
             ],

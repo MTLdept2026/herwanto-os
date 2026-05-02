@@ -92,9 +92,9 @@ def _get_redis():
 _mem_histories = OrderedDict()
 MAX_TURNS = 20
 try:
-    MAX_IN_MEMORY_HISTORIES = int(os.environ.get("HIRA_MAX_IN_MEMORY_HISTORIES", "50"))
+    MAX_IN_MEMORY_HISTORIES = int(os.environ.get("HIRA_MAX_IN_MEMORY_HISTORIES", "100"))
 except ValueError:
-    MAX_IN_MEMORY_HISTORIES = 50
+    MAX_IN_MEMORY_HISTORIES = 100
 _BREAK_AWARE_SLOT_CACHE = {}
 _PRAYER_PROMPT_FALLBACK_KEYS = set()
 _LAST_MEMORY_LOG = None

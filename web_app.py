@@ -31,10 +31,10 @@ app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
 try:
-    _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "1"))
+    _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "2"))
 except ValueError:
-    _HOME_EXECUTOR_WORKERS = 1
-_HOME_EXECUTOR_WORKERS = max(1, min(2, _HOME_EXECUTOR_WORKERS))
+    _HOME_EXECUTOR_WORKERS = 2
+_HOME_EXECUTOR_WORKERS = max(1, min(4, _HOME_EXECUTOR_WORKERS))
 _HOME_EXECUTOR = ThreadPoolExecutor(max_workers=_HOME_EXECUTOR_WORKERS)
 _WEB_SCHEDULER_TASKS: list[asyncio.Task] = []
 _WEB_MEMORY_WATCHDOG_TASK: asyncio.Task | None = None
@@ -54,16 +54,16 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-_CHAT_SEMAPHORE = asyncio.Semaphore(_env_int("HIRA_WEB_CHAT_CONCURRENCY", 1))
-_UPLOAD_SEMAPHORE = asyncio.Semaphore(_env_int("HIRA_WEB_UPLOAD_CONCURRENCY", 1))
-_HOME_SEMAPHORE = asyncio.Semaphore(_env_int("HIRA_WEB_HOME_CONCURRENCY", 1))
-_MAX_UPLOAD_BYTES = max(256_000, _env_int("HIRA_WEB_MAX_UPLOAD_MB", 6) * 1024 * 1024)
-_MAX_DOCUMENT_BYTES = max(_MAX_UPLOAD_BYTES, _env_int("HIRA_WEB_MAX_DOCUMENT_MB", 40) * 1024 * 1024)
-_MAX_REQUEST_BYTES = max(_MAX_DOCUMENT_BYTES, _env_int("HIRA_WEB_MAX_REQUEST_MB", 48) * 1024 * 1024)
-_MEMORY_GC_RATIO = _env_float("HIRA_WEB_MEMORY_GC_RATIO", 0.72)
-_MEMORY_REJECT_RATIO = _env_float("HIRA_WEB_MEMORY_REJECT_RATIO", 0.84)
-_MEMORY_WATCHDOG_SECONDS = _env_int("HIRA_WEB_MEMORY_WATCHDOG_SECONDS", 30, minimum=10)
-_CHAT_MAX_TOKENS = _env_int("HIRA_WEB_CHAT_MAX_TOKENS", 2200, minimum=650)
+_CHAT_SEMAPHORE = asyncio.Semaphore(_env_int("HIRA_WEB_CHAT_CONCURRENCY", 2))
+_UPLOAD_SEMAPHORE = asyncio.Semaphore(_env_int("HIRA_WEB_UPLOAD_CONCURRENCY", 2))
+_HOME_SEMAPHORE = asyncio.Semaphore(_env_int("HIRA_WEB_HOME_CONCURRENCY", 2))
+_MAX_UPLOAD_BYTES = max(256_000, _env_int("HIRA_WEB_MAX_UPLOAD_MB", 16) * 1024 * 1024)
+_MAX_DOCUMENT_BYTES = max(_MAX_UPLOAD_BYTES, _env_int("HIRA_WEB_MAX_DOCUMENT_MB", 96) * 1024 * 1024)
+_MAX_REQUEST_BYTES = max(_MAX_DOCUMENT_BYTES, _env_int("HIRA_WEB_MAX_REQUEST_MB", 112) * 1024 * 1024)
+_MEMORY_GC_RATIO = _env_float("HIRA_WEB_MEMORY_GC_RATIO", 0.80)
+_MEMORY_REJECT_RATIO = _env_float("HIRA_WEB_MEMORY_REJECT_RATIO", 0.92)
+_MEMORY_WATCHDOG_SECONDS = _env_int("HIRA_WEB_MEMORY_WATCHDOG_SECONDS", 45, minimum=10)
+_CHAT_MAX_TOKENS = _env_int("HIRA_WEB_CHAT_MAX_TOKENS", 3200, minimum=650)
 _STATIC_PATHS = {"/", "/healthz", "/manifest.webmanifest", "/service-worker.js", "/app.js", "/styles.css"}
 
 
@@ -266,7 +266,7 @@ class TasteProfileRequest(BaseModel):
 
 
 _UPLOAD_JOBS: OrderedDict[str, dict] = OrderedDict()
-_MAX_LOCAL_UPLOAD_JOBS = 50
+_MAX_LOCAL_UPLOAD_JOBS = _env_int("HIRA_WEB_MAX_LOCAL_UPLOAD_JOBS", 100)
 
 
 def _history_key(client_id: str | None) -> str:
