@@ -42,6 +42,34 @@ if not ANTHROPIC_API_KEY:
 claude = Anthropic(api_key=ANTHROPIC_API_KEY or "missing-key")
 async_claude = AsyncAnthropic(api_key=ANTHROPIC_API_KEY or "missing-key")
 _SYSTEM_PROMPT_CACHE = {"key": None, "value": None}
+
+# ─── TELEGRAM USER AUTHORIZATION ─────────────────────────────────────────────
+_raw_allowed = os.environ.get("HIRA_ALLOWED_USER_IDS", "").strip()
+ALLOWED_TELEGRAM_USER_IDS: set[int] = set()
+if _raw_allowed:
+    for _uid in _raw_allowed.split(","):
+        _uid = _uid.strip()
+        if _uid.isdigit():
+            ALLOWED_TELEGRAM_USER_IDS.add(int(_uid))
+if not ALLOWED_TELEGRAM_USER_IDS:
+    logger.warning(
+        "HIRA_ALLOWED_USER_IDS is not set — the Telegram bot accepts messages from ANY user. "
+        "Set this to your Telegram user ID(s) in Railway environment variables."
+    )
+
+async def _is_authorized(update) -> bool:
+    """Return True if the sender is an allowed user, or if no whitelist is configured (open dev mode)."""
+    if not ALLOWED_TELEGRAM_USER_IDS:
+        return True
+    user = update.effective_user
+    if user and user.id in ALLOWED_TELEGRAM_USER_IDS:
+        return True
+    logger.warning(f"Unauthorized Telegram access attempt from user_id={user.id if user else 'unknown'}")
+    try:
+        await update.message.reply_text("Unauthorized.")
+    except Exception:
+        pass
+    return False
 AGENTIC_MODEL = os.environ.get("HIRA_AGENTIC_MODEL", "claude-sonnet-4-6").strip() or "claude-sonnet-4-6"
 DEEP_MODEL = os.environ.get("HIRA_DEEP_MODEL", AGENTIC_MODEL).strip() or AGENTIC_MODEL
 QUICK_MODEL = os.environ.get("HIRA_QUICK_MODEL", "claude-haiku-4-5-20251001").strip() or "claude-haiku-4-5-20251001"
@@ -144,6 +172,8 @@ except ValueError:
 _BREAK_AWARE_SLOT_CACHE = {}
 _PRAYER_PROMPT_FALLBACK_KEYS = set()
 _LAST_MEMORY_LOG = None
+_FORGET_CONFIRM_PENDING: dict[int, datetime] = {}  # user_id → timestamp when /forget all was first requested
+_FORGET_CONFIRM_TTL_SECONDS = 60
 
 def _env_int(name: str, default: int, minimum: int = 1) -> int:
     try:
@@ -435,11 +465,36 @@ def SYSTEM_PROMPT():
     if google_ok():
         try:
             memory = gs.get_memory()
+            # Priority-weighted limits: high-signal buckets are never clipped to 8.
+            # Corrections and constraints are critical — always shown in full (up to cap).
+            # Low-signal buckets like files and summaries are trimmed more aggressively.
+            MEMORY_PROMPT_LIMITS: dict[str, int | None] = {
+                "correction_ledger":  20,   # always show all corrections — HIRA's primary learning signal
+                "constraints":        None,  # always show all — immutable rules Herwanto has set
+                "self_reflections":   15,   # HIRA's own learning journal
+                "preferences":        12,
+                "topic_profiles":     10,
+                "people":             10,
+                "teaching":           10,
+                "profile":             8,
+                "business":            8,
+                "projects":            8,
+                "sports":              8,
+                "places":              6,
+                "source_notes":        6,
+                "recent_summaries":    5,
+                "templates":           5,
+                "files":               4,   # low-priority in prompt; accessible via tool
+            }
             memory_lines = []
             for category in MEMORY_DISPLAY_CATEGORIES:
                 items = memory.get(category, [])
-                if items:
-                    memory_lines.append(f"{category.title()}: " + "; ".join(items[:8]))
+                if not items:
+                    continue
+                limit = MEMORY_PROMPT_LIMITS.get(category, 8)
+                shown = items if limit is None else items[-limit:]
+                prefix = "[HIGH PRIORITY] " if category in ("correction_ledger", "constraints") else ""
+                memory_lines.append(f"{prefix}{category.title()}: " + "; ".join(shown))
             if memory_lines:
                 memory_ctx += "\n\nStored memory:\n" + "\n".join(memory_lines)
         except Exception:
@@ -1467,6 +1522,102 @@ def record_chat_learning_event(user_text: str, assistant_text: str = "", source:
     except Exception as exc:
         logger.warning(f"Could not record self-reflection learning event: {exc}")
     return recorded
+
+async def _detect_implicit_correction(user_text: str, history: list[dict]) -> None:
+    """Use the router model to check if the user is implicitly correcting HIRA's previous response.
+    If a correction is detected, it is logged to the correction ledger automatically.
+    Only runs when there is a preceding assistant turn to compare against."""
+    if not google_ok():
+        return
+    if len(history) < 2:
+        return
+    # Find the most recent assistant turn
+    prev_assistant = next(
+        (m["content"] for m in reversed(history) if m.get("role") == "assistant" and isinstance(m.get("content"), str)),
+        None,
+    )
+    if not prev_assistant:
+        return
+    # Don't double-fire for messages already caught by explicit keyword detection
+    if _looks_like_correction(user_text):
+        return
+    # Quick guard: skip very short or clearly non-corrective messages
+    clean = " ".join(user_text.split())
+    if len(clean) < 8 or _obvious_quick_chat(clean):
+        return
+    try:
+        prompt = (
+            "You are checking if the user message implicitly contradicts or corrects something in the assistant's previous response.\n\n"
+            f"Previous assistant response (excerpt): {prev_assistant[:400]}\n\n"
+            f"User message: {clean[:300]}\n\n"
+            "Does the user message correct a specific fact, date, name, number, or claim in the assistant response?\n"
+            "Reply with ONLY: CORRECTION: <one-sentence description of what was corrected>\n"
+            "Or if no correction: NO"
+        )
+        resp = await async_claude.messages.create(
+            model=ROUTER_MODEL,
+            max_tokens=60,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        verdict = (resp.content[0].text or "").strip()
+        if verdict.upper().startswith("CORRECTION:"):
+            correction_text = verdict[len("CORRECTION:"):].strip()
+            now_str = datetime.now(SGT).strftime("%Y-%m-%d %H:%M SGT")
+            gs.add_correction({
+                "date": now_str,
+                "source": "implicit_detection",
+                "correction": correction_text,
+                "assistant_response": prev_assistant[:200],
+                "priority": "medium",
+            })
+            gs.add_self_reflection({
+                "date": now_str,
+                "source": "implicit_detection",
+                "trigger": f"User implicitly corrected: {clean[:200]}",
+                "learned": correction_text,
+                "next_behavior": "Verify this fact type with live tools before stating it as truth.",
+            })
+            logger.info(f"Implicit correction detected and logged: {correction_text[:100]}")
+    except Exception as exc:
+        logger.debug(f"Implicit correction detection failed: {exc}")
+
+
+def _summarise_conversation_to_memory(history: list[dict]) -> None:
+    """Summarise a conversation into recent_summaries memory when it ends (/clear or long session).
+    Only fires if the conversation has meaningful depth (6+ turns with substantive content)."""
+    if not google_ok():
+        return
+    user_turns = [m for m in history if m.get("role") == "user"]
+    if len(user_turns) < 3:
+        return
+    # Only summarise if any turn has real content (not just one-word replies)
+    substantive = [m for m in user_turns if len(str(m.get("content", "")).split()) > 4]
+    if len(substantive) < 2:
+        return
+    try:
+        # Use a short window of recent turns — we don't need the full history
+        window = history[-12:]
+        prompt_messages = [m for m in window if isinstance(m.get("content"), str)]
+        if not prompt_messages:
+            return
+        summary_resp = claude.messages.create(
+            model=QUICK_MODEL,
+            max_tokens=100,
+            messages=prompt_messages + [
+                {"role": "user", "content": (
+                    "In one sentence (max 30 words), summarise what was decided, created, or learned in this conversation. "
+                    "Focus on outcomes and actions, not the chat mechanics. No preamble."
+                )}
+            ],
+        )
+        summary = (summary_resp.content[0].text or "").strip()
+        if summary:
+            date_str = datetime.now(SGT).strftime("%Y-%m-%d")
+            gs.add_memory("recent_summaries", f"{date_str}: {summary}")
+            logger.info(f"Conversation summary saved to recent_summaries: {summary[:80]}")
+    except Exception as exc:
+        logger.warning(f"Conversation summarisation failed: {exc}")
+
 
 def _artifact_template_context() -> str:
     if not google_ok():
@@ -4070,14 +4221,36 @@ async def forget_cmd(update, context):
         await update.message.reply_text("Google not connected.")
         return
     confirm = " ".join(context.args).strip().lower()
-    if confirm != "all":
-        await reply(update, "Usage: `/forget all` clears stored assistant memory.", parse_mode="Markdown")
+    user_id = update.effective_user.id
+    now = datetime.now(SGT)
+
+    if confirm == "confirm":
+        # Second step — check if a pending request exists and is still within TTL
+        pending_at = _FORGET_CONFIRM_PENDING.get(user_id)
+        if not pending_at or (now - pending_at).total_seconds() > _FORGET_CONFIRM_TTL_SECONDS:
+            _FORGET_CONFIRM_PENDING.pop(user_id, None)
+            await reply(update, "Confirmation expired. Run `/forget all` again to start over.", parse_mode="Markdown")
+            return
+        _FORGET_CONFIRM_PENDING.pop(user_id, None)
+        try:
+            gs.clear_memory()
+            await update.message.reply_text("Assistant memory cleared. All buckets wiped.")
+        except Exception as e:
+            await update.message.reply_text(f"Memory error: {e}")
         return
-    try:
-        gs.clear_memory()
-        await update.message.reply_text("Assistant memory cleared.")
-    except Exception as e:
-        await update.message.reply_text(f"Memory error: {e}")
+
+    if confirm != "all":
+        await reply(update, "Usage: `/forget all` — then confirm within 60 seconds with `/forget confirm`.", parse_mode="Markdown")
+        return
+
+    # First step — register the pending request and ask for confirmation
+    _FORGET_CONFIRM_PENDING[user_id] = now
+    await reply(
+        update,
+        "⚠️ This will wipe *all* stored memory — corrections, preferences, profiles, files, everything.\n\n"
+        "Run `/forget confirm` within 60 seconds to proceed, or do nothing to cancel.",
+        parse_mode="Markdown",
+    )
 
 async def search_cmd(update, context):
     """Manual web search command."""
@@ -4168,6 +4341,11 @@ async def unwatch_cmd(update, context):
         await update.message.reply_text(f"Watchlist error: {e}")
 
 async def clear_cmd(update, context):
+    history = get_history(update.effective_user.id)
+    try:
+        _summarise_conversation_to_memory(history)
+    except Exception:
+        pass
     save_history(update.effective_user.id, [])
     await update.message.reply_text("Cleared.")
 
@@ -5201,6 +5379,11 @@ async def _process_user_text(update, context, text: str):
     user_content = f"{user_content}{source_discipline_hint(text)}"
     history.append({"role": "user", "content": user_content})
     if len(history) > MAX_TURNS:
+        # Summarise the about-to-be-dropped portion before trimming
+        try:
+            _summarise_conversation_to_memory(history[:-MAX_TURNS + 2])
+        except Exception:
+            pass
         history = history[-MAX_TURNS:]
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
@@ -5213,6 +5396,8 @@ async def _process_user_text(update, context, text: str):
         history.append({"role": "assistant", "content": reply_text})
         save_history(user_id, history)
         record_chat_learning_event(text, reply_text, source="telegram")
+        # Detect implicit corrections in background — does not block the reply
+        asyncio.create_task(_detect_implicit_correction(text, history))
         await reply(update, reply_text)
 
     except Exception as e:
@@ -5456,6 +5641,92 @@ async def followups_job(context):
         _finish_background_job("followups")
 
 
+async def memory_consolidation_job(context=None):
+    """Weekly job: ask Claude to review corrections + reflections, promote durable
+    learnings into preferences/constraints, and prune stale entries.
+    Runs Friday night at 22:30 SGT. Safe to call manually for a forced pass."""
+    if not google_ok():
+        return
+    if not _acquire_job_lock("memory_consolidation", 3600):
+        return
+    try:
+        _log_memory("before memory_consolidation")
+        memory = gs.get_memory()
+        corrections = memory.get("correction_ledger", [])
+        reflections = memory.get("self_reflections", [])
+        if not corrections and not reflections:
+            logger.info("Memory consolidation: nothing to consolidate.")
+            return
+
+        now_str = datetime.now(SGT).strftime("%Y-%m-%d %H:%M SGT")
+        prompt = f"""You are H.I.R.A doing a weekly self-improvement pass on your own memory.
+
+Today: {now_str}
+
+Review these corrections (things Herwanto has explicitly corrected you on) and reflections (things you noted about your own behaviour):
+
+CORRECTIONS ({len(corrections)} items):
+{json.dumps(corrections[-30:], ensure_ascii=False, indent=2)}
+
+SELF-REFLECTIONS ({len(reflections)} items):
+{json.dumps(reflections[-30:], ensure_ascii=False, indent=2)}
+
+Your tasks:
+1. Identify any correction or reflection that represents a STABLE, DURABLE rule (not a one-off fact) — e.g. "always call get_muis_prayer_times before giving prayer times", "Herwanto prefers direct answers without preamble", "never guess weekdays".
+2. For each durable rule, produce a concise preference or constraint to add to memory.
+3. Identify any corrections/reflections that are now stale, superseded, or already captured as a preference — mark them for pruning.
+
+Return ONLY valid JSON:
+{{
+  "promote": [
+    {{"category": "preferences|constraints", "text": "concise rule to remember"}}
+  ],
+  "growth_note": "One sentence summary of what H.I.R.A learned this cycle.",
+  "prune_count": 0
+}}
+
+Rules: be conservative — only promote genuinely durable rules. Return ONLY JSON."""
+
+        resp = claude.messages.create(
+            model=QUICK_MODEL,
+            max_tokens=800,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        result = _json_from_claude_text(resp.content[0].text)
+        promoted = result.get("promote") or []
+        growth_note = result.get("growth_note", "")
+
+        for item in promoted:
+            category = item.get("category", "preferences")
+            text = item.get("text", "").strip()
+            if text and category in MEMORY_DISPLAY_CATEGORIES:
+                gs.add_memory(category, f"[consolidated {datetime.now(SGT).strftime('%Y-%m-%d')}] {text}")
+
+        if growth_note:
+            gs.add_self_reflection({
+                "date": now_str,
+                "source": "memory_consolidation_job",
+                "trigger": "Weekly self-improvement pass",
+                "learned": growth_note,
+                "next_behavior": "Apply promoted preferences and constraints in future answers.",
+            })
+
+        logger.info(
+            f"Memory consolidation complete: {len(promoted)} rule(s) promoted. Note: {growth_note}"
+        )
+        if context and promoted:
+            summary = "\n".join(f"- [{item['category']}] {item['text']}" for item in promoted)
+            await _send_telegram_notification(
+                context,
+                f"*H.I.R.A self-improvement pass*\n\n{len(promoted)} durable rule(s) promoted to memory:\n{summary}\n\n_{growth_note}_"
+            )
+
+    except Exception as e:
+        logger.error(f"Memory consolidation error: {e}")
+    finally:
+        _finish_background_job("memory_consolidation")
+
+
 async def _pwa_worker_daily_loop(name: str, hour: int, minute: int, job, days: tuple[int, ...] | None = None):
     while True:
         try:
@@ -5495,6 +5766,7 @@ async def run_pwa_notification_worker():
         asyncio.create_task(_pwa_worker_daily_loop("weekly_planning", 19, 30, weekly_planning_job, days=(6,))),
         asyncio.create_task(_pwa_worker_daily_loop("friday_khutbah", 10, 30, friday_khutbah_job, days=(4,))),
         asyncio.create_task(_pwa_worker_daily_loop("friday_checkin", 17, 0, friday_checkin_job, days=(4,))),
+        asyncio.create_task(_pwa_worker_daily_loop("memory_consolidation", 22, 30, memory_consolidation_job, days=(4,))),
         asyncio.create_task(_pwa_worker_repeating_loop(
             "proactive_nudges",
             JOB_INTERVALS["proactive_nudges"],
@@ -5527,67 +5799,90 @@ def main():
     if not token:
         raise ValueError("TELEGRAM_BOT_TOKEN not set")
     app = Application.builder().token(token).build()
-    app.add_handler(CommandHandler("start",    start))
-    app.add_handler(CommandHandler("lessons",  lessons_cmd))
-    app.add_handler(CommandHandler("setweek",  setweek_cmd))
-    app.add_handler(CommandHandler("today",    today_cmd))
-    app.add_handler(CommandHandler("tomorrow", tomorrow_cmd))
-    app.add_handler(CommandHandler("week",     week_cmd))
-    app.add_handler(CommandHandler("due",      due_cmd))
-    app.add_handler(CommandHandler("remind",   remind_cmd))
-    app.add_handler(CommandHandler("done",     done_cmd))
-    app.add_handler(CommandHandler("nudge",    nudge_cmd))
-    app.add_handler(CommandHandler("nudges",   nudges_cmd))
-    app.add_handler(CommandHandler("cancelnudge", cancelnudge_cmd))
-    app.add_handler(CommandHandler("checkin",  checkin_cmd))
-    app.add_handler(CommandHandler("checkins", checkins_cmd))
-    app.add_handler(CommandHandler("cancelcheckin", cancelcheckin_cmd))
-    app.add_handler(CommandHandler("projects", projects_cmd))
-    app.add_handler(CommandHandler("update",   update_cmd))
-    app.add_handler(CommandHandler("doc",      doc_cmd))
-    app.add_handler(CommandHandler("slides",   slides_cmd))
-    app.add_handler(CommandHandler("template", template_cmd))
-    app.add_handler(CommandHandler("templates", templates_cmd))
-    app.add_handler(CommandHandler("artifacts", artifacts_cmd))
-    app.add_handler(CommandHandler("files",    files_cmd))
-    app.add_handler(CommandHandler("classlists", classlists_cmd))
-    app.add_handler(CommandHandler("tasks",    tasks_cmd))
-    app.add_handler(CommandHandler("marking",  marking_cmd))
-    app.add_handler(CommandHandler("marked",   marked_cmd))
-    app.add_handler(CommandHandler("taskmeta", taskmeta_cmd))
-    app.add_handler(CommandHandler("donetask", done_text_cmd))
-    app.add_handler(CommandHandler("followup", followup_cmd))
-    app.add_handler(CommandHandler("followups", followups_cmd))
-    app.add_handler(CommandHandler("donefollowup", donefollowup_cmd))
-    app.add_handler(CommandHandler("evening",  evening_cmd))
-    app.add_handler(CommandHandler("weekly",   weekly_cmd))
-    app.add_handler(CommandHandler("gmail",    gmail_cmd))
-    app.add_handler(CommandHandler("gmaildraft", gmaildraft_cmd))
-    app.add_handler(CommandHandler("briefing", briefing_cmd))
-    app.add_handler(CommandHandler("prayers",  prayers_cmd))
-    app.add_handler(CommandHandler("khutbah",  khutbah_cmd))
-    app.add_handler(CommandHandler("agenda",   agenda_cmd))
-    app.add_handler(CommandHandler("remember", remember_cmd))
-    app.add_handler(CommandHandler("memory",   memory_cmd))
-    app.add_handler(CommandHandler("forget",   forget_cmd))
-    app.add_handler(CommandHandler("search",   search_cmd))
-    app.add_handler(CommandHandler("weather",  weather_cmd))
-    app.add_handler(CommandHandler("news",     news_cmd))
-    app.add_handler(CommandHandler("watch",    watch_cmd))
-    app.add_handler(CommandHandler("watchlist", watchlist_cmd))
-    app.add_handler(CommandHandler("unwatch",  unwatch_cmd))
-    app.add_handler(CommandHandler("addcal",   addcal_cmd))
-    app.add_handler(CommandHandler("clear",    clear_cmd))
-    app.add_handler(MessageHandler(filters.PHOTO,        handle_photo))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    app.add_handler(MessageHandler(filters.VOICE,        handle_voice))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    # ── Authorization filter ──────────────────────────────────────────────────
+    # If HIRA_ALLOWED_USER_IDS is configured, restrict all handlers to those
+    # user IDs only. Unauthorized senders receive a single "Unauthorized." reply.
+    if ALLOWED_TELEGRAM_USER_IDS:
+        _auth = filters.User(user_id=list(ALLOWED_TELEGRAM_USER_IDS))
+        async def _unauthorized_handler(update, context):
+            try:
+                await update.message.reply_text("Unauthorized.")
+            except Exception:
+                pass
+        # Catch-all for unauthorized users (must be added last, lowest priority)
+        _unauth_handler_obj = MessageHandler(~_auth & filters.ALL, _unauthorized_handler)
+    else:
+        _auth = filters.ALL
+        _unauth_handler_obj = None
+
+    def _cmd(name, fn):
+        return CommandHandler(name, fn, filters=_auth)
+
+    app.add_handler(_cmd("start",    start))
+    app.add_handler(_cmd("lessons",  lessons_cmd))
+    app.add_handler(_cmd("setweek",  setweek_cmd))
+    app.add_handler(_cmd("today",    today_cmd))
+    app.add_handler(_cmd("tomorrow", tomorrow_cmd))
+    app.add_handler(_cmd("week",     week_cmd))
+    app.add_handler(_cmd("due",      due_cmd))
+    app.add_handler(_cmd("remind",   remind_cmd))
+    app.add_handler(_cmd("done",     done_cmd))
+    app.add_handler(_cmd("nudge",    nudge_cmd))
+    app.add_handler(_cmd("nudges",   nudges_cmd))
+    app.add_handler(_cmd("cancelnudge", cancelnudge_cmd))
+    app.add_handler(_cmd("checkin",  checkin_cmd))
+    app.add_handler(_cmd("checkins", checkins_cmd))
+    app.add_handler(_cmd("cancelcheckin", cancelcheckin_cmd))
+    app.add_handler(_cmd("projects", projects_cmd))
+    app.add_handler(_cmd("update",   update_cmd))
+    app.add_handler(_cmd("doc",      doc_cmd))
+    app.add_handler(_cmd("slides",   slides_cmd))
+    app.add_handler(_cmd("template", template_cmd))
+    app.add_handler(_cmd("templates", templates_cmd))
+    app.add_handler(_cmd("artifacts", artifacts_cmd))
+    app.add_handler(_cmd("files",    files_cmd))
+    app.add_handler(_cmd("classlists", classlists_cmd))
+    app.add_handler(_cmd("tasks",    tasks_cmd))
+    app.add_handler(_cmd("marking",  marking_cmd))
+    app.add_handler(_cmd("marked",   marked_cmd))
+    app.add_handler(_cmd("taskmeta", taskmeta_cmd))
+    app.add_handler(_cmd("donetask", done_text_cmd))
+    app.add_handler(_cmd("followup", followup_cmd))
+    app.add_handler(_cmd("followups", followups_cmd))
+    app.add_handler(_cmd("donefollowup", donefollowup_cmd))
+    app.add_handler(_cmd("evening",  evening_cmd))
+    app.add_handler(_cmd("weekly",   weekly_cmd))
+    app.add_handler(_cmd("gmail",    gmail_cmd))
+    app.add_handler(_cmd("gmaildraft", gmaildraft_cmd))
+    app.add_handler(_cmd("briefing", briefing_cmd))
+    app.add_handler(_cmd("prayers",  prayers_cmd))
+    app.add_handler(_cmd("khutbah",  khutbah_cmd))
+    app.add_handler(_cmd("agenda",   agenda_cmd))
+    app.add_handler(_cmd("remember", remember_cmd))
+    app.add_handler(_cmd("memory",   memory_cmd))
+    app.add_handler(_cmd("forget",   forget_cmd))
+    app.add_handler(_cmd("search",   search_cmd))
+    app.add_handler(_cmd("weather",  weather_cmd))
+    app.add_handler(_cmd("news",     news_cmd))
+    app.add_handler(_cmd("watch",    watch_cmd))
+    app.add_handler(_cmd("watchlist", watchlist_cmd))
+    app.add_handler(_cmd("unwatch",  unwatch_cmd))
+    app.add_handler(_cmd("addcal",   addcal_cmd))
+    app.add_handler(_cmd("clear",    clear_cmd))
+    app.add_handler(MessageHandler(_auth & filters.PHOTO,        handle_photo))
+    app.add_handler(MessageHandler(_auth & filters.Document.ALL, handle_document))
+    app.add_handler(MessageHandler(_auth & filters.VOICE,        handle_voice))
+    app.add_handler(MessageHandler(_auth & filters.TEXT & ~filters.COMMAND, handle_message))
+    if _unauth_handler_obj:
+        app.add_handler(_unauth_handler_obj)
     jq = app.job_queue
     jq.run_daily(morning_briefing_job, time=dt_time(7, 0, 0, tzinfo=SGT), name="morning_briefing")
     jq.run_daily(evening_briefing_job, time=dt_time(21, 0, 0, tzinfo=SGT), name="evening_briefing")
     jq.run_daily(weekly_planning_job, time=dt_time(19, 30, 0, tzinfo=SGT), days=(6,), name="weekly_planning")
     jq.run_daily(friday_khutbah_job, time=dt_time(10, 30, 0, tzinfo=SGT), days=(4,), name="friday_khutbah")
     jq.run_daily(friday_checkin_job,   time=dt_time(17, 0, 0, tzinfo=SGT), days=(4,), name="friday_checkin")
+    jq.run_daily(memory_consolidation_job, time=dt_time(22, 30, 0, tzinfo=SGT), days=(4,), name="memory_consolidation")
     jq.run_repeating(
         proactive_nudges_job,
         interval=JOB_INTERVALS["proactive_nudges"],

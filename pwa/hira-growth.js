@@ -1,9 +1,6 @@
-const $ = (selector) => document.querySelector(selector);
+/* H.I.R.A Growth Log — renderer (Nothing OS edition) */
 
-function setText(selector, value) {
-  const el = $(selector);
-  if (el) el.textContent = value;
-}
+const $ = (s) => document.querySelector(s);
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -21,17 +18,28 @@ function metricCard(metric) {
 }
 
 function heroStat(label, value) {
-  const card = el("div", "hero-stat");
-  card.append(el("span", "", label));
-  card.append(el("strong", "", value));
-  return card;
+  const div = el("div", "hero-stat");
+  div.append(el("span", "", label));
+  div.append(el("strong", "", value));
+  return div;
 }
 
+/* Nothing-style score: pixel number + dot-segment bar */
 function ringCard(item) {
   const card = el("article", "ring-card");
-  const score = el("div", "ring-score", `${item.score}`);
-  score.style.setProperty("--score", item.score);
-  card.append(score);
+
+  const wrap = el("div", "ring-score-wrap");
+  wrap.append(el("div", "ring-score-value", `${item.score}`));
+
+  const dots = el("div", "ring-dots");
+  const total = 20;
+  const filled = Math.round((item.score / 100) * total);
+  for (let i = 0; i < total; i++) {
+    dots.append(el("span", i < filled ? "dot dot--on" : "dot dot--off"));
+  }
+  wrap.append(dots);
+  card.append(wrap);
+
   card.append(el("h3", "", item.name));
   card.append(el("p", "", item.description));
   return card;
@@ -39,57 +47,77 @@ function ringCard(item) {
 
 function timelineCard(chapter, index) {
   const card = el("article", "timeline-card");
+
+  /* ── meta column */
   const meta = el("div", "timeline-meta");
   meta.append(el("div", "timeline-date", chapter.date.slice(5).replace("-", ".")));
   meta.append(el("p", "eyebrow", chapter.era));
   meta.append(el("span", "timeline-tag", chapter.tag));
+  card.append(meta);
 
+  /* ── story column */
   const story = el("div", "timeline-story");
   story.append(el("h3", "", chapter.title));
   story.append(el("p", "", chapter.summary));
   const list = el("ul");
-  (chapter.details || []).forEach((detail) => list.append(el("li", "", detail)));
+  (chapter.details || []).forEach((d) => list.append(el("li", "", d)));
   story.append(list);
+  card.append(story);
 
+  /* ── impact column */
   const impact = el("aside", "impact-box");
-  impact.append(el("strong", "", `Build ${String(index + 1).padStart(2, "0")} / ${chapter.commit}`));
+  impact.append(
+    el("strong", "", `BUILD ${String(index + 1).padStart(2, "0")} · ${chapter.commit}`)
+  );
   impact.append(el("p", "", chapter.impact));
+  card.append(impact);
 
-  card.append(meta, story, impact);
   return card;
 }
 
 function render(data) {
   document.title = data.name || "H.I.R.A Growth Log";
-  setText("#growthSubtitle", data.subtitle);
-  setText("#currentStage", data.summary?.currentStage || "Current core");
 
-  const heroStats = $("#heroStats");
-  heroStats.replaceChildren(
-    heroStat("Started", data.summary?.start || "--"),
-    heroStat("Current", data.summary?.current || "--"),
-    heroStat("Commits", String(data.summary?.commitsTracked || "--")),
-    heroStat("Phases", String(data.summary?.majorPhases || "--"))
-  );
+  const subtitle = $("#growthSubtitle");
+  if (subtitle) subtitle.textContent = data.subtitle;
 
-  $("#growthMetrics").replaceChildren(...(data.metrics || []).map(metricCard));
-  $("#capabilityRings").replaceChildren(...(data.capabilityRings || []).map(ringCard));
-  $("#timelineList").replaceChildren(...(data.chapters || []).map(timelineCard));
+  const stage = $("#currentStage");
+  if (stage) stage.textContent = data.summary?.currentStage || "—";
 
-  const capabilities = $("#currentCapabilities");
-  capabilities.replaceChildren(...(data.currentCapabilities || []).map((item) => el("li", "", item)));
+  const stats = $("#heroStats");
+  if (stats) {
+    stats.replaceChildren(
+      heroStat("STARTED",  data.summary?.start           || "—"),
+      heroStat("UPDATED",  data.summary?.current         || "—"),
+      heroStat("COMMITS",  String(data.summary?.commitsTracked || "—")),
+      heroStat("PHASES",   String(data.summary?.majorPhases   || "—"))
+    );
+  }
+
+  const metrics = $("#growthMetrics");
+  if (metrics) metrics.replaceChildren(...(data.metrics || []).map(metricCard));
+
+  const rings = $("#capabilityRings");
+  if (rings) rings.replaceChildren(...(data.capabilityRings || []).map(ringCard));
+
+  const timeline = $("#timelineList");
+  if (timeline) timeline.replaceChildren(...(data.chapters || []).map(timelineCard));
+
+  const caps = $("#currentCapabilities");
+  if (caps) caps.replaceChildren(...(data.currentCapabilities || []).map((t) => el("li", "", t)));
 
   const protocol = $("#updateProtocol");
-  protocol.replaceChildren(...(data.updateProtocol || []).map((item) => el("li", "", item)));
+  if (protocol) protocol.replaceChildren(...(data.updateProtocol || []).map((t) => el("li", "", t)));
 }
 
 async function loadGrowth() {
   try {
-    const response = await fetch("/static/hira-growth-data.json", { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    render(await response.json());
-  } catch (error) {
-    setText("#growthSubtitle", `Could not load growth log: ${error.message}`);
+    const r = await fetch("/static/hira-growth-data.json", { cache: "no-store" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    render(await r.json());
+  } catch (err) {
+    const sub = $("#growthSubtitle");
+    if (sub) sub.textContent = `LOAD ERROR: ${err.message}`;
   }
 }
 

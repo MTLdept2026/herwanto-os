@@ -114,12 +114,18 @@ def _is_supported_document(mime: str, filename: str) -> bool:
 
 
 async def _web_memory_watchdog():
+    _prune_tick = 0
     while True:
         try:
             ratio = _memory_usage_ratio()
             if ratio is not None and ratio >= _MEMORY_GC_RATIO:
                 gc.collect()
                 bot._log_memory(f"web watchdog pressure {ratio:.0%}", force=True)
+            # Prune rate limiter buckets every ~5 minutes
+            _prune_tick += 1
+            if _prune_tick % max(1, (300 // _MEMORY_WATCHDOG_SECONDS)) == 0:
+                await _CHAT_RATE_LIMITER.prune()
+                await _UPLOAD_RATE_LIMITER.prune()
             await asyncio.sleep(_MEMORY_WATCHDOG_SECONDS)
         except asyncio.CancelledError:
             raise
@@ -476,8 +482,58 @@ def _marking_summary() -> dict:
 
 def _require_token(x_hira_token: Optional[str] = Header(default=None)):
     expected = os.environ.get("HIRA_WEB_TOKEN", "").strip()
-    if expected and x_hira_token != expected:
+    if not expected:
+        raise HTTPException(status_code=503, detail="HIRA_WEB_TOKEN is not configured. Set it in Railway environment variables.")
+    if x_hira_token != expected:
         raise HTTPException(status_code=401, detail="Invalid H.I.R.A web token")
+
+
+# ─── Rate limiting ────────────────────────────────────────────────────────────
+import time as _time
+from collections import defaultdict as _defaultdict
+
+
+class _SlidingWindowRateLimiter:
+    """In-memory sliding window rate limiter keyed by IP address."""
+
+    def __init__(self, max_requests: int, window_seconds: int = 60):
+        self._max = max_requests
+        self._window = window_seconds
+        self._buckets: dict[str, list[float]] = _defaultdict(list)
+        self._lock = asyncio.Lock()
+
+    async def is_allowed(self, key: str) -> bool:
+        async with self._lock:
+            now = _time.monotonic()
+            cutoff = now - self._window
+            bucket = self._buckets[key]
+            # Drop timestamps outside the window
+            while bucket and bucket[0] < cutoff:
+                bucket.pop(0)
+            if len(bucket) >= self._max:
+                return False
+            bucket.append(now)
+            return True
+
+    async def prune(self):
+        """Remove stale buckets — call periodically to avoid memory growth."""
+        async with self._lock:
+            cutoff = _time.monotonic() - self._window
+            stale = [k for k, v in self._buckets.items() if not v or v[-1] < cutoff]
+            for k in stale:
+                del self._buckets[k]
+
+
+_CHAT_RATE_LIMITER   = _SlidingWindowRateLimiter(max_requests=_env_int("HIRA_CHAT_RATE_LIMIT", 20), window_seconds=60)
+_UPLOAD_RATE_LIMITER = _SlidingWindowRateLimiter(max_requests=_env_int("HIRA_UPLOAD_RATE_LIMIT", 10), window_seconds=60)
+
+
+def _request_ip(request: Request) -> str:
+    """Extract the real client IP, respecting Railway's X-Forwarded-For header."""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
 
 
 def _client_key(client_id: str | None) -> str:
@@ -698,11 +754,14 @@ async def home(days: int = 7, x_hira_token: Optional[str] = Header(default=None)
 
 @app.post("/api/chat")
 async def chat(
+    request: Request,
     req: ChatRequest,
     x_hira_token: Optional[str] = Header(default=None),
     x_hira_client: Optional[str] = Header(default=None),
 ):
     _require_token(x_hira_token)
+    if not await _CHAT_RATE_LIMITER.is_allowed(_request_ip(request)):
+        raise HTTPException(status_code=429, detail="Too many requests. Slow down a little.")
     message = (req.message or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="Message is required")
@@ -1123,11 +1182,14 @@ def gmail_draft(req: DraftRequest, x_hira_token: Optional[str] = Header(default=
 
 @app.post("/api/upload")
 async def upload_document(
+    request: Request,
     file: UploadFile = File(...),
     note: str = "",
     x_hira_token: Optional[str] = Header(default=None),
 ):
     _require_token(x_hira_token)
+    if not await _UPLOAD_RATE_LIMITER.is_allowed(_request_ip(request)):
+        raise HTTPException(status_code=429, detail="Too many uploads. Wait a minute and try again.")
     mime = (file.content_type or "").lower()
     filename = file.filename or ""
     is_document = _is_supported_document(mime, filename)
@@ -1146,11 +1208,14 @@ async def upload_document(
 
 @app.post("/api/upload/jobs")
 async def create_upload_job(
+    request: Request,
     file: UploadFile = File(...),
     note: str = "",
     x_hira_token: Optional[str] = Header(default=None),
 ):
     _require_token(x_hira_token)
+    if not await _UPLOAD_RATE_LIMITER.is_allowed(_request_ip(request)):
+        raise HTTPException(status_code=429, detail="Too many uploads. Wait a minute and try again.")
     mime = (file.content_type or "").lower()
     filename = file.filename or ""
     is_document = _is_supported_document(mime, filename)

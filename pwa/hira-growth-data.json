@@ -5,25 +5,25 @@
   "summary": {
     "start": "2026-04-28",
     "current": "2026-05-02",
-    "commitsTracked": 80,
-    "majorPhases": 12,
-    "currentStage": "Governed learning core"
+    "commitsTracked": 94,
+    "majorPhases": 13,
+    "currentStage": "Secure self-improving core"
   },
   "metrics": [
     {
       "label": "Days of build acceleration",
       "value": "5",
-      "note": "From first installable PWA commit to governed learning."
+      "note": "From first installable PWA commit to governed, self-improving core."
     },
     {
       "label": "Tracked upgrade commits",
-      "value": "80",
+      "value": "94",
       "note": "Grouped from git history through the growth-log minisite."
     },
     {
       "label": "Memory buckets",
       "value": "16",
-      "note": "Profile, preferences, teaching, business, sports, topic profiles, corrections, reflections, source notes, and more."
+      "note": "Profile, preferences, teaching, business, sports, topic profiles, corrections, reflections, source notes, and more — now with priority-weighted prompt injection."
     },
     {
       "label": "Specialist live domains",
@@ -38,14 +38,14 @@
       "description": "Installable PWA, mobile cockpit, chat, files, dashboard, notifications, health surfaces."
     },
     {
-      "name": "Reliability",
-      "score": 88,
-      "description": "Railway guardrails, worker split, Redis requirement option, upload queue, memory pressure checks, admin memory review."
+      "name": "Security",
+      "score": 91,
+      "description": "Telegram user whitelist, web API fail-closed auth, /forget confirmation, file size guards, and Redis job locks."
     },
     {
       "name": "Context",
       "score": 88,
-      "description": "Timetable, Google Calendar, MTL classlists, Drive references, file memory, topic profiles."
+      "description": "Timetable, Google Calendar, MTL classlists, Drive references, file memory, topic profiles, and conversation summaries."
     },
     {
       "name": "Live Knowledge",
@@ -53,9 +53,9 @@
       "description": "Weather, MUIS, Google News, Tavily search, fetch URL, source notes, live-check hints, structured Liverpool and F1 briefers."
     },
     {
-      "name": "Personalisation",
-      "score": 93,
-      "description": "Taste profile, stable memory buckets, project radar, sports preferences, new-interest profiles, corrections, reflections, and review rules."
+      "name": "Self-Improvement",
+      "score": 87,
+      "description": "Priority-weighted memory prompt, implicit correction detection, weekly consolidation job, conversation summarisation into recent_summaries, and /forget confirmation gate."
     }
   ],
   "chapters": [
@@ -232,6 +232,24 @@
         "Admin memory review exposes bucket counts, recent entries, and pruning rules at /api/admin/memory."
       ],
       "impact": "H.I.R.A is now less likely to treat stale memory as truth, and its growing memory can be inspected before it gets messy."
+    },
+    {
+      "date": "2026-05-02",
+      "era": "Secure Self-Improving Core",
+      "title": "Security hardened. Learning loop closed.",
+      "commit": "security-intelligence-upgrade",
+      "tag": "Security + Intelligence",
+      "summary": "A full code audit closed two critical security gaps and activated four intelligence upgrades that were structurally broken by design.",
+      "details": [
+        "Telegram bot now enforces a user whitelist via HIRA_ALLOWED_USER_IDS — unauthorized users are rejected silently.",
+        "Web API now fails closed: if HIRA_WEB_TOKEN is not set, all endpoints return 503 instead of being publicly accessible.",
+        "/forget all now requires a second confirmation within 60 seconds to prevent accidental memory wipes.",
+        "Memory priority weighting fixed: correction_ledger now shows up to 20 items in the system prompt (was 8), constraints show all, low-signal buckets trimmed.",
+        "Weekly memory consolidation job added (Friday 22:30 SGT): Claude reviews corrections and reflections, promotes durable rules into preferences/constraints, and logs a growth note.",
+        "Conversation summarisation added: each session is summarised into recent_summaries on /clear or when the history window rolls over — giving H.I.R.A cross-session continuity.",
+        "Implicit correction detection added: after each reply, the router model checks if the user is contradicting a specific fact from the previous response, even without explicit correction keywords."
+      ],
+      "impact": "H.I.R.A's learning loop is now fully closed: corrections are captured implicitly and explicitly, consolidated weekly into durable rules, and injected back into context with appropriate priority. The bot can no longer be accessed by strangers."
     }
   ],
   "currentCapabilities": [
@@ -239,8 +257,10 @@
     "Telegram-compatible tool brain with calendar, reminders, marking, MTL classlists, Gmail, artifacts, weather, MUIS prayer/khutbah, news, web search, and URL reading.",
     "Structured sports intelligence for Liverpool and F1.",
     "Railway Hobby runtime profile with upload queue, memory guardrails, worker split, Redis production option, and admin status.",
-    "Long-term memory buckets, topic profiles for new interests, correction ledger, self-reflection notes, and source-backed research notes.",
-    "Deterministic source-discipline hints for volatile questions and an admin memory review surface.",
+    "Long-term memory buckets, topic profiles for new interests, correction ledger, self-reflection notes, source-backed research notes, and conversation summaries.",
+    "Priority-weighted memory prompt: corrections and constraints always visible; low-signal buckets trimmed.",
+    "Closed learning loop: implicit + explicit correction capture → weekly consolidation job → promoted to preferences/constraints.",
+    "Security: Telegram user whitelist, web API fail-closed auth, /forget confirmation gate, and file upload size guards.",
     "Configurable model routing for quick replies, structured parsing, agentic work, and deep work."
   ],
   "updateProtocol": [
