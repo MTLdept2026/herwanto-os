@@ -296,7 +296,7 @@ Rules:
 - Never invent mosque or place locations. If a place location affects the answer and you do not have a verified source/tool result, say what you know and what is unverified. Be especially careful with Singapore masjid names that sound similar.
 - Known mosque correction: Masjid Al-Muttaqin is at 5140 Ang Mo Kio Ave 6, Singapore 569844, not Kovan.
 - For journey-time estimates, use the current device location context when it is provided. If it is not provided, use only explicit user-provided origin/destination or stable stored memory, and label any estimate as rough.
-- You have tools: create_calendar_event, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_mtl_classlists, analyze_mtl_scores, update_mtl_class_score, fill_mtl_percentage_scores, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, update_project_status, get_nea_weather, get_muis_prayer_times, get_muis_friday_khutbah, get_latest_news, and web_search. Use them proactively.
+- You have tools: create_calendar_event, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_mtl_classlists, analyze_mtl_scores, update_mtl_class_score, fill_mtl_percentage_scores, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, update_project_status, get_nea_weather, get_muis_prayer_times, get_muis_friday_khutbah, get_latest_news, web_search, and fetch_url. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
 - When the user mentions marking scripts, papers, compositions, kefahaman, karangan, worksheets, or a marking stack, use marking tools instead of ordinary reminders: add_marking_task for a new stack, update_marking_progress when he says how many scripts are marked, reset_marking_load when he asks to reset/clear the marking load or board, and get_marking_brief when he asks what marking is outstanding. Marking tasks are mission-critical and must persist even at 0 outstanding; only complete one when he explicitly says that marking stack is done, completed, can be closed, reset, or cleared.
@@ -315,7 +315,10 @@ Rules:
 - When the user asks for score analysis, progress, mean, median, pass rate, underperforming students, strongest students, most improved, or drastic drops — call analyze_mtl_scores. Treat 0 as an attempted paper with zero marks. Treat AB as absent, VR as valid reason, and MC as medical certificate; these status codes are non-scoring and should be excluded from mean/median/pass-rate calculations but counted separately. For Sec 1G2, 2G3, and 3G3 aliases, resolve them to ML G2, 2G3 ML, and 3G3 ML if needed.
 - When the user asks to calculate and enter a score/mark/result into an MTL classlist sheet, calculate only from the numbers he gives or sheet values retrieved with include_scores=true, then call update_mtl_class_score. Do not guess a student or column; if the tool reports ambiguity, ask for the missing class/student/column detail.
 - When the user asks to fill percentage columns in an MTL classlist, call fill_mtl_percentage_scores. Use class_query and assessment_query if the user provides them; otherwise the tool will ask for specificity when multiple % columns match.
-- When the user asks about latest news, current events, headlines, football, F1, AI, Singapore education, apps, Apple, Nothing OS, or his shortlisted topics — call get_latest_news before answering.
+- When the user asks about latest news, current events, headlines, football, Liverpool/LFC, F1, AI, Singapore education, apps, Apple, Nothing OS, or his shortlisted topics — call get_latest_news before answering.
+- Liverpool FC is a first-class interest. Herwanto supports Liverpool. Track the current squad/line-ups, Premier League standing, progress in every competition Liverpool are still in, injuries/suspensions, fixtures/results, and transfer news/rumours. As of the 2025-26 squad context, Liverpool are managed by Arne Slot and the first-team group includes Alisson, Giorgi Mamardashvili, Freddie Woodman, Virgil van Dijk, Ibrahima Konate, Joe Gomez, Milos Kerkez, Conor Bradley, Andy Robertson, Jeremie Frimpong, Giovanni Leoni, Wataru Endo, Florian Wirtz, Dominik Szoboszlai, Alexis Mac Allister, Curtis Jones, Ryan Gravenberch, Trey Nyoni, Alexander Isak, Mohamed Salah, Federico Chiesa, Cody Gakpo, Hugo Ekitike, and Rio Ngumoha. For current starting XIs, matchday line-ups, EPL table position, points, goal difference, form, Champions League/FA Cup/Carabao Cup progress, injuries, contract situations, departures, signings, or rumours, always use get_latest_news/web_search/fetch_url and cite the source. Clearly label transfer items as confirmed, reported, or rumour/speculation.
+- F1 is a first-class interest. Herwanto supports Mercedes, especially Kimi Antonelli and George Russell; Lewis Hamilton is still one of his favourites even at Ferrari. As of the 2026 season, the official F1 line-up is: Mercedes — George Russell, Kimi Antonelli; Ferrari — Charles Leclerc, Lewis Hamilton; McLaren — Lando Norris, Oscar Piastri; Red Bull Racing — Max Verstappen, Isack Hadjar; Racing Bulls — Liam Lawson, Arvid Lindblad; Williams — Carlos Sainz, Alexander Albon; Aston Martin — Fernando Alonso, Lance Stroll; Haas — Esteban Ocon, Oliver Bearman; Alpine — Pierre Gasly, Franco Colapinto; Audi — Nico Hulkenberg, Gabriel Bortoleto; Cadillac — Sergio Perez, Valtteri Bottas. For live F1 results, championship standings, race-weekend timings, current team stats, driver stats, rumours, penalties, or upgrades, use get_latest_news/web_search/fetch_url and cite what you found instead of relying on memory.
+- When the user pastes a web link or asks you to read/check a URL, call fetch_url. If fetch_url fails or the page is paywalled/dynamic, say what failed and use web_search/get_latest_news for corroborating public sources where available.
 - When the user asks about weather, temperature, high/low temp, hot/cold conditions, rain, forecast, haze, PSI, air quality, umbrella, or whether it will rain in Singapore — call get_nea_weather before answering. If no area is specified, use Yishun. Weather answers must include available temperature, humidity, PSI/PM2.5 air quality, 2-hour nowcast, and 24-hour forecast details.
 - When the user says "remember", "note that", or gives stable preferences/facts about himself — call remember_user_info.
 - When the user gives a project progress update — call update_project_status.
@@ -349,6 +352,19 @@ SEARCH_TOOL = {
             "query": {"type": "string", "description": "The search query"}
         },
         "required": ["query"]
+    }
+}
+
+FETCH_URL_TOOL = {
+    "name": "fetch_url",
+    "description": "Fetch and read a pasted http(s) URL. Use when the user gives a link, asks to read/check a website, or needs page-specific browsing rather than general search.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "The full http(s) URL to fetch and read."},
+            "max_chars": {"type": "integer", "description": "Maximum readable characters to return, usually 6000."},
+        },
+        "required": ["url"]
     }
 }
 
@@ -2560,6 +2576,28 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     ]):
         return "get_muis_prayer_times"
 
+    if "fetch_url" in available and re.search(r"https?://\S+", text or "", re.I):
+        return "fetch_url"
+
+    if "web_search" in available and has_any([
+        "f1", "formula 1", "grand prix", "qualifying", "race result",
+        "standings", "driver standings", "constructor standings", "lineup",
+        "line-up", "teams", "drivers", "mercedes", "ferrari", "mclaren",
+        "red bull", "kimi", "antonelli", "russell", "hamilton"
+    ]):
+        return "web_search"
+
+    if "web_search" in available and has_any([
+        "liverpool", "lfc", "anfield", "ynwa", "premier league", "epl",
+        "arne slot", "salah", "van dijk", "alisson", "isak", "wirtz",
+        "mac allister", "szoboszlai", "gakpo", "chiesa", "ekitike",
+        "lineup", "line-up", "starting xi", "team news", "injury",
+        "injuries", "standings", "table", "fixtures", "results",
+        "champions league", "fa cup", "carabao", "transfer", "rumour",
+        "rumor", "signing"
+    ]):
+        return "web_search"
+
     if (
         "update_project_status" in available
         and has_any(["gameplan", "ruh", "rūḥ", "app", "apps", "project", "client", "demo"])
@@ -3830,6 +3868,7 @@ def _core_tools():
         PRAYER_TIME_TOOL,
         KHUTBAH_TOOL,
         NEWS_TOOL,
+        FETCH_URL_TOOL,
     ]
     if ss.search_enabled():
         tools.append(SEARCH_TOOL)
@@ -3860,8 +3899,12 @@ def pwa_tools_for_message(text: str) -> list[dict]:
         add(NUDGE_TOOL, DAILY_CHECKIN_TOOL, BREAK_AWARE_CHECKIN_TOOL)
     if re.search(r"\b(follow[- ]?up|follow up|owe replies|chase)\b", text):
         add(FOLLOWUP_TOOL, COMPLETE_FOLLOWUP_TOOL, GMAIL_BRIEF_TOOL, TASK_BRIEF_TOOL)
-    if re.search(r"\b(news|latest|current|headline|headlines|search|web|football|f1|apple|ai|singapore education|nothing os)\b", text):
+    if re.search(r"\b(news|latest|current|headline|headlines|search|web|football|f1|liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|apple|ai|singapore education|nothing os)\b", text):
         add(NEWS_TOOL)
+        if ss.search_enabled():
+            add(SEARCH_TOOL)
+    if re.search(r"https?://\S+|\b(link|url|website|webpage|article|page)\b", text):
+        add(FETCH_URL_TOOL)
         if ss.search_enabled():
             add(SEARCH_TOOL)
     if re.search(r"\b(weather|forecast|temperature|temp|hot|cold|rain|raining|rainy|shower|showers|thunder|storm|umbrella|haze|psi|pm2\.5|air quality|nea|mss)\b", text):
@@ -4246,6 +4289,10 @@ async def _execute_tool(name: str, inp: dict) -> str:
     if name == "web_search":
         results = ss.web_search(inp.get("query", ""), max_results=5)
         return ss.format_results(results)
+
+    elif name == "fetch_url":
+        result = ss.fetch_url(inp.get("url", ""), max_chars=inp.get("max_chars", 6000))
+        return ss.format_url_fetch(result)
 
     elif name == "get_assistant_context":
         try:

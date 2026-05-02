@@ -178,6 +178,42 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(forced, "analyze_mtl_scores")
 
+    def test_url_question_forces_fetch_url_tool(self):
+        forced = bot._forced_tool_for_text(
+            "read this for me https://www.formula1.com/en/teams",
+            [{"name": "fetch_url"}, {"name": "web_search"}],
+        )
+
+        self.assertEqual(forced, "fetch_url")
+
+    def test_f1_current_question_forces_web_search_when_available(self):
+        forced = bot._forced_tool_for_text(
+            "current F1 driver standings after the latest grand prix",
+            [{"name": "web_search"}, {"name": "get_latest_news"}],
+        )
+
+        self.assertEqual(forced, "web_search")
+
+    def test_liverpool_current_question_forces_web_search_when_available(self):
+        forced = bot._forced_tool_for_text(
+            "where are Liverpool in the current EPL table and what competitions are they still in?",
+            [{"name": "web_search"}, {"name": "get_latest_news"}],
+        )
+
+        self.assertEqual(forced, "web_search")
+
+    def test_pwa_lfc_prompt_includes_news_search_tools(self):
+        tools = bot.pwa_tools_for_message("latest LFC transfer rumours and injuries")
+        names = {tool["name"] for tool in tools}
+
+        self.assertIn("get_latest_news", names)
+
+    def test_pwa_link_prompt_includes_fetch_url_tool(self):
+        tools = bot.pwa_tools_for_message("check this link https://www.formula1.com/en/teams")
+        names = {tool["name"] for tool in tools}
+
+        self.assertIn("fetch_url", names)
+
     def test_fill_mtl_percentage_scores_updates_blank_fa2_percentages(self):
         book = {
             "properties": {"title": "2026 S4 MTL CLASSLIST"},

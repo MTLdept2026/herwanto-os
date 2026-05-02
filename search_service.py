@@ -7,9 +7,11 @@ Web search tool (AI chat): Tavily API — free tier 1000/month.
 
 import os
 import logging
+import re
 import requests
 import feedparser
-from urllib.parse import quote
+from html.parser import HTMLParser
+from urllib.parse import quote, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +20,7 @@ TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 # Google News RSS — one per digest topic, no API key needed
 # Format: news.google.com/rss/search?q=QUERY&hl=en-SG&gl=SG&ceid=SG:en
 DIGEST_TOPICS = [
-    ("⚽ Liverpool / EPL",  "Liverpool FC Premier League"),
+    ("⚽ Liverpool / EPL",  "Liverpool FC Premier League standings fixtures transfers"),
     ("🏎️ F1",               "Formula 1"),
     ("🤖 AI",               "Claude Gemini Codex AI"),
     ("🤖 Android",          "Android OS Google Pixel app ecosystem"),
@@ -37,6 +39,128 @@ DIGEST_TOPICS = [
 
 def search_enabled():
     return bool(TAVILY_API_KEY)
+
+
+class _ReadableHTMLParser(HTMLParser):
+    """Small dependency-free extractor for ordinary article/webpage text."""
+
+    SKIP_TAGS = {"script", "style", "noscript", "svg", "canvas", "iframe"}
+    BLOCK_TAGS = {
+        "article", "section", "main", "div", "p", "br", "li", "tr",
+        "h1", "h2", "h3", "h4", "h5", "h6", "blockquote",
+    }
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.title = ""
+        self._in_title = False
+        self._skip_depth = 0
+        self._parts = []
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        if tag in self.SKIP_TAGS:
+            self._skip_depth += 1
+            return
+        if tag == "title":
+            self._in_title = True
+        if tag in self.BLOCK_TAGS:
+            self._parts.append("\n")
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag in self.SKIP_TAGS and self._skip_depth:
+            self._skip_depth -= 1
+            return
+        if tag == "title":
+            self._in_title = False
+        if tag in self.BLOCK_TAGS:
+            self._parts.append("\n")
+
+    def handle_data(self, data):
+        if self._skip_depth:
+            return
+        text = " ".join((data or "").split())
+        if not text:
+            return
+        if self._in_title:
+            self.title = f"{self.title} {text}".strip()
+        else:
+            self._parts.append(text)
+
+    def readable_text(self):
+        text = " ".join("\n".join(self._parts).split())
+        return re.sub(r"\s*\n\s*", "\n", text).strip()
+
+
+def _looks_like_url(value: str) -> bool:
+    parsed = urlparse((value or "").strip())
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def fetch_url(url: str, max_chars: int = 6000) -> dict:
+    """Fetch and extract readable text from a URL. Does not require Tavily."""
+    url = (url or "").strip()
+    if not _looks_like_url(url):
+        return {"ok": False, "error": "Invalid URL. Use a full http(s) link.", "url": url}
+
+    try:
+        resp = requests.get(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (compatible; HIRA/1.0; +https://example.com/hira)"
+                )
+            },
+            timeout=10,
+            allow_redirects=True,
+        )
+        resp.raise_for_status()
+    except Exception as e:
+        logger.warning(f"URL fetch error for '{url}': {e}")
+        return {"ok": False, "error": f"Could not fetch URL: {e}", "url": url}
+
+    content_type = resp.headers.get("content-type", "")
+    text = resp.text or ""
+    title = ""
+    if "html" in content_type.lower() or "<html" in text[:500].lower():
+        parser = _ReadableHTMLParser()
+        try:
+            parser.feed(text)
+            title = parser.title
+            text = parser.readable_text()
+        except Exception as e:
+            logger.warning(f"HTML parse error for '{url}': {e}")
+            text = re.sub(r"<[^>]+>", " ", text)
+
+    text = " ".join(text.split())
+    limit = max(1000, min(int(max_chars or 6000), 12000))
+    truncated = len(text) > limit
+    if truncated:
+        text = text[:limit].rsplit(" ", 1)[0]
+    return {
+        "ok": True,
+        "url": resp.url,
+        "title": title,
+        "content_type": content_type,
+        "text": text,
+        "truncated": truncated,
+    }
+
+
+def format_url_fetch(result: dict) -> str:
+    if not result.get("ok"):
+        return result.get("error") or "Could not fetch URL."
+    lines = [f"URL: {result.get('url', '')}"]
+    if result.get("title"):
+        lines.append(f"Title: {result['title']}")
+    if result.get("content_type"):
+        lines.append(f"Content-Type: {result['content_type']}")
+    if result.get("truncated"):
+        lines.append("Note: Content was truncated to the first readable portion.")
+    lines.append("")
+    lines.append(result.get("text") or "No readable text found.")
+    return "\n".join(lines).strip()
 
 
 # ─── WEB SEARCH (Tavily — optional) ─────────────────────────────────────────

@@ -1066,6 +1066,7 @@ function appendToolStatus(el, name) {
     get_muis_prayer_times: "Checking MUIS prayer times...",
     get_latest_news: "Checking latest news...",
     web_search: "Searching...",
+    fetch_url: "Reading link...",
   };
   const status = document.createElement("div");
   status.className = "tool-status";
