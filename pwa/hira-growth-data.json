@@ -5,9 +5,9 @@
   "summary": {
     "start": "2026-04-28",
     "current": "2026-05-02",
-    "commitsTracked": 94,
-    "majorPhases": 13,
-    "currentStage": "Secure self-improving core"
+    "commitsTracked": 95,
+    "majorPhases": 14,
+    "currentStage": "Hardened private core"
   },
   "metrics": [
     {
@@ -17,7 +17,7 @@
     },
     {
       "label": "Tracked upgrade commits",
-      "value": "94",
+      "value": "95",
       "note": "Grouped from git history through the growth-log minisite."
     },
     {
@@ -39,8 +39,8 @@
     },
     {
       "name": "Security",
-      "score": 91,
-      "description": "Telegram user whitelist, web API fail-closed auth, /forget confirmation, file size guards, and Redis job locks."
+      "score": 94,
+      "description": "Telegram fail-closed allowlist, web API token throttling, constant-time auth checks, safer rate-limit keys, /forget confirmation, file size guards, and Redis job locks."
     },
     {
       "name": "Context",
@@ -250,6 +250,22 @@
         "Implicit correction detection added: after each reply, the router model checks if the user is contradicting a specific fact from the previous response, even without explicit correction keywords."
       ],
       "impact": "H.I.R.A's learning loop is now fully closed: corrections are captured implicitly and explicitly, consolidated weekly into durable rules, and injected back into context with appropriate priority. The bot can no longer be accessed by strangers."
+    },
+    {
+      "date": "2026-05-02",
+      "era": "Hardened Private Core",
+      "title": "Security boundaries fail closed by default",
+      "commit": "4ca2ac0",
+      "tag": "Security",
+      "summary": "A follow-up review closed the remaining soft edges around Telegram access, web-token guessing, rate-limit identity, notification rendering, and public diagnostics.",
+      "details": [
+        "Telegram startup now fails closed unless HIRA_ALLOWED_USER_IDS is set, with HIRA_TELEGRAM_OPEN_DEV_MODE reserved for explicit local development.",
+        "PWA API requests now reject invalid web tokens in middleware with a dedicated auth-failure limiter and constant-time comparison.",
+        "Rate limits no longer trust X-Forwarded-For by default; proxy headers require explicit HIRA_TRUST_PROXY_HEADERS opt-in.",
+        "Notification rendering now escapes quote characters and whitelists notification kind classes to close attribute-injection risk.",
+        "Public /healthz now exposes only minimal status while detailed runtime diagnostics remain behind /api/admin/status."
+      ],
+      "impact": "H.I.R.A now behaves more like a private operating system: missing security config stops access instead of opening it, abuse attempts are slowed earlier, and diagnostic detail stays behind the token."
     }
   ],
   "currentCapabilities": [
@@ -260,7 +276,7 @@
     "Long-term memory buckets, topic profiles for new interests, correction ledger, self-reflection notes, source-backed research notes, and conversation summaries.",
     "Priority-weighted memory prompt: corrections and constraints always visible; low-signal buckets trimmed.",
     "Closed learning loop: implicit + explicit correction capture → weekly consolidation job → promoted to preferences/constraints.",
-    "Security: Telegram user whitelist, web API fail-closed auth, /forget confirmation gate, and file upload size guards.",
+    "Security: Telegram fail-closed allowlist, web API fail-closed auth, invalid-token throttling, safer notification rendering, /forget confirmation gate, and file upload size guards.",
     "Configurable model routing for quick replies, structured parsing, agentic work, and deep work."
   ],
   "updateProtocol": [
