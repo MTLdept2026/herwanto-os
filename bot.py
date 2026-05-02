@@ -156,6 +156,20 @@ JOB_INTERVALS = {
     "daily_checkins": _env_int("HIRA_DAILY_CHECKIN_INTERVAL", 300, 60),
     "followups": _env_int("HIRA_FOLLOWUP_INTERVAL", 3600, 300),
 }
+MEMORY_DISPLAY_CATEGORIES = (
+    "profile",
+    "preferences",
+    "people",
+    "places",
+    "teaching",
+    "business",
+    "projects",
+    "sports",
+    "files",
+    "templates",
+    "constraints",
+    "recent_summaries",
+)
 
 def get_history(user_id):
     r = _get_redis()
@@ -178,6 +192,81 @@ def save_history(user_id, history):
         _mem_histories.move_to_end(key)
         while len(_mem_histories) > MAX_IN_MEMORY_HISTORIES:
             _mem_histories.popitem(last=False)
+
+
+def build_runtime_status() -> dict:
+    limit = _memory_limit_mb()
+    rss = _rss_mb()
+    redis = _get_redis()
+    memory_counts = {}
+    project_count = None
+    notification_count = None
+    subscription_count = None
+    memory_error = ""
+    google_connected = google_ok()
+    def safe_config(key: str) -> str:
+        if not google_connected:
+            return ""
+        try:
+            return gs.get_config(key) or ""
+        except Exception:
+            return ""
+
+    if google_connected:
+        try:
+            memory = gs.get_memory()
+            memory_counts = {category: len(memory.get(category, [])) for category in MEMORY_DISPLAY_CATEGORIES}
+        except Exception as exc:
+            memory_error = str(exc)
+        try:
+            project_count = len(gs.get_projects())
+        except Exception:
+            project_count = None
+        try:
+            notification_count = len(gs.get_app_notifications(include_archived=False))
+        except Exception:
+            notification_count = None
+        try:
+            subscription_count = len(gs.get_web_push_subscriptions())
+        except Exception:
+            subscription_count = None
+    return {
+        "memory": {
+            "rss_mb": round(rss, 1),
+            "limit_mb": round(limit, 1) if limit else None,
+            "ratio": round(rss / limit, 3) if limit else None,
+            "in_memory_histories": len(_mem_histories),
+            "max_in_memory_histories": MAX_IN_MEMORY_HISTORIES,
+            "break_slot_cache": len(_BREAK_AWARE_SLOT_CACHE),
+        },
+        "integrations": {
+            "redis_connected": redis is not None,
+            "redis_required": redis_required(),
+            "google_connected": google_connected,
+            "personal_gmail": gs.gmail_ok("personal"),
+            "work_gmail": gs.gmail_ok("work"),
+            "search_enabled": ss.search_enabled(),
+        },
+        "models": {
+            "agentic": AGENTIC_MODEL,
+            "deep": DEEP_MODEL,
+            "quick": QUICK_MODEL,
+            "router": ROUTER_MODEL,
+            "structured": STRUCTURED_MODEL,
+        },
+        "memory_buckets": memory_counts,
+        "memory_error": memory_error,
+        "projects": {"count": project_count},
+        "notifications": {
+            "queued_count": notification_count,
+            "subscription_count": subscription_count,
+        },
+        "jobs": {
+            "intervals_seconds": dict(JOB_INTERVALS),
+            "last_morning_briefing": safe_config(MORNING_BRIEFING_SENT_KEY),
+            "last_evening_briefing": safe_config(EVENING_BRIEFING_SENT_KEY),
+        },
+    }
 
 def _rss_mb() -> float:
     try:
@@ -257,7 +346,8 @@ def SYSTEM_PROMPT():
         try:
             memory = gs.get_memory()
             memory_lines = []
-            for category, items in memory.items():
+            for category in MEMORY_DISPLAY_CATEGORIES:
+                items = memory.get(category, [])
                 if items:
                     memory_lines.append(f"{category.title()}: " + "; ".join(items[:8]))
             if memory_lines:
@@ -653,7 +743,7 @@ MEMORY_TOOL = {
         "properties": {
             "category": {
                 "type": "string",
-                "description": "One of: profile, preferences, people, places, projects, files, templates"
+                "description": "One of: profile, preferences, people, places, teaching, business, projects, sports, files, templates, constraints, recent_summaries"
             },
             "text": {"type": "string", "description": "Concise memory to store"}
         },
@@ -1143,7 +1233,7 @@ def _format_memory(memory: dict) -> str:
         f"- {tt.format_timetable_memory()}",
         "",
     ]
-    for category in ("profile", "preferences", "people", "places", "projects", "files", "templates"):
+    for category in MEMORY_DISPLAY_CATEGORIES:
         items = memory.get(category, [])
         if not items:
             continue
@@ -3717,7 +3807,7 @@ async def remember_cmd(update, context):
     if not text:
         await reply(update,
             "Usage: `/remember preferences | Keep replies very concise`\n"
-            "Categories: profile, preferences, people, places, projects, files, templates",
+            "Categories: profile, preferences, people, places, teaching, business, projects, sports, files, templates, constraints, recent_summaries",
             parse_mode="Markdown")
         return
     if "|" in text:

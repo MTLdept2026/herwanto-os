@@ -917,6 +917,44 @@ def notifications_health(x_hira_token: Optional[str] = Header(default=None)):
     }
 
 
+@app.get("/api/admin/status")
+def admin_status(x_hira_token: Optional[str] = Header(default=None)):
+    _require_token(x_hira_token)
+    base = healthz()
+    try:
+        runtime = bot.build_runtime_status()
+    except Exception as exc:
+        runtime = {"error": str(exc)}
+    try:
+        subscriptions = bot.gs.get_web_push_subscriptions()
+    except Exception as exc:
+        subscriptions = []
+        subscription_error = str(exc)
+    else:
+        subscription_error = ""
+    try:
+        queued = bot.gs.get_app_notifications(include_archived=False)
+    except Exception as exc:
+        queued = []
+        queue_error = str(exc)
+    else:
+        queue_error = ""
+    return {
+        "health": base,
+        "runtime": runtime,
+        "notifications": {
+            "push_public_key": bool(os.environ.get("HIRA_WEB_PUSH_PUBLIC_KEY", "").strip()),
+            "push_private_key": bool(os.environ.get("HIRA_WEB_PUSH_PRIVATE_KEY", "").strip()),
+            "push_subject": bool(os.environ.get("HIRA_WEB_PUSH_SUBJECT", "").strip()),
+            "subscription_count": len(subscriptions),
+            "subscription_error": subscription_error,
+            "queued_notification_count": len(queued),
+            "queue_error": queue_error,
+            "prayers": bot.prayer_notification_status(),
+        },
+    }
+
+
 @app.post("/api/notifications/subscribe")
 def notifications_subscribe(
     req: PushSubscribeRequest,

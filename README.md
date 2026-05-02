@@ -377,6 +377,10 @@ Model routing is configurable with `HIRA_QUICK_MODEL`, `HIRA_ROUTER_MODEL`, `HIR
 
 Liverpool and F1 prompts use dedicated structured sports adapters before generic web search. `get_liverpool_brief` gathers table/form, fixtures/results/line-ups, competition progress, injuries, and transfers/rumours; `get_f1_brief` gathers standings, race results, Mercedes/Russell/Antonelli, Hamilton, and team news/upgrades.
 
+Long-term memory is bucketed into `profile`, `preferences`, `people`, `places`, `teaching`, `business`, `projects`, `sports`, `files`, `templates`, `constraints`, and `recent_summaries`. Use `/remember category | note` or the `remember_user_info` tool to store stable context in the right bucket.
+
+Use `/api/admin/status` with the same `X-Hira-Token` as the PWA to inspect H.I.R.A health in one response: runtime memory, Redis/Google/Gmail/search status, model routing config, memory bucket counts, queue status, notification health, and job intervals.
+
 For production, add Redis and set `HIRA_REQUIRE_REDIS=1` once `REDIS_URL` is working. This makes chat history, upload job state, locks, and queues fail loudly instead of silently falling back to one-process memory after a restart.
 
 Keep proactive phone notifications by running a separate Railway worker with `HIRA_SERVICE_MODE=pwa_worker`. That worker runs morning/evening briefings, weekly planning, Friday khutbah/project checks, nudges, daily check-ins, prayer reminders, and follow-ups through PWA push/app notifications without Telegram polling. The PWA web service defaults to `HIRA_WEB_INLINE_SCHEDULER=0`; set it to `1` only for a single-service fallback deployment.

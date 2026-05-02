@@ -243,6 +243,44 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(selected, "agentic-model")
 
+    def test_memory_categories_include_new_buckets_and_aliases(self):
+        self.assertIn("teaching", bot.gs.DEFAULT_MEMORY)
+        self.assertIn("business", bot.gs.DEFAULT_MEMORY)
+        self.assertIn("sports", bot.gs.DEFAULT_MEMORY)
+        self.assertIn("constraints", bot.gs.DEFAULT_MEMORY)
+        self.assertIn("recent_summaries", bot.gs.DEFAULT_MEMORY)
+
+        with (
+            patch.object(bot.gs, "get_config", return_value=""),
+            patch.object(bot.gs, "set_config") as set_config,
+        ):
+            memory = bot.gs.add_memory("lfc", "Liverpool context belongs here")
+
+        self.assertIn("Liverpool context belongs here", memory["sports"])
+        self.assertTrue(set_config.called)
+
+    def test_runtime_status_contains_observability_sections(self):
+        fake_memory = {category: [] for category in bot.MEMORY_DISPLAY_CATEGORIES}
+        fake_memory["sports"] = ["Liverpool"]
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "get_memory", return_value=fake_memory),
+            patch.object(bot.gs, "get_projects", return_value=[{"project": "GamePlan"}]),
+            patch.object(bot.gs, "get_app_notifications", return_value=[{"id": "1"}]),
+            patch.object(bot.gs, "get_web_push_subscriptions", return_value=[{"endpoint": "x"}]),
+            patch.object(bot.gs, "gmail_ok", return_value=True),
+            patch.object(bot.gs, "get_config", return_value="2026-05-02"),
+            patch.object(bot, "_get_redis", return_value=None),
+        ):
+            status = bot.build_runtime_status()
+
+        self.assertIn("memory", status)
+        self.assertIn("integrations", status)
+        self.assertEqual(status["memory_buckets"]["sports"], 1)
+        self.assertEqual(status["projects"]["count"], 1)
+        self.assertEqual(status["notifications"]["queued_count"], 1)
+
     def test_pwa_link_prompt_includes_fetch_url_tool(self):
         tools = bot.pwa_tools_for_message("check this link https://www.formula1.com/en/teams")
         names = {tool["name"] for tool in tools}
