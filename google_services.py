@@ -2034,6 +2034,7 @@ DEFAULT_MEMORY = {
     "templates": [],
     "constraints": [],
     "recent_summaries": [],
+    "topic_profiles": [],
 }
 
 
@@ -2090,6 +2091,10 @@ def add_memory(category: str, text: str) -> dict:
         "rule": "constraints",
         "summary": "recent_summaries",
         "recent": "recent_summaries",
+        "topic": "topic_profiles",
+        "topic_profile": "topic_profiles",
+        "interest": "topic_profiles",
+        "interests": "topic_profiles",
     }
     category = aliases.get(category, category)
     if category not in DEFAULT_MEMORY:
@@ -2100,6 +2105,43 @@ def add_memory(category: str, text: str) -> dict:
         memory[category].append(item)
     set_memory(memory)
     return memory
+
+
+def add_topic_profile(profile: dict) -> dict:
+    memory = get_memory()
+    topic = str(profile.get("topic", "")).strip()
+    if not topic:
+        raise ValueError("Topic profile needs a topic name")
+    clean = {
+        "topic": topic,
+        "category": str(profile.get("category", "") or "interests").strip(),
+        "why": str(profile.get("why", "")).strip(),
+        "track": [str(item).strip() for item in profile.get("track", []) if str(item).strip()],
+        "preferred_angle": str(profile.get("preferred_angle", "")).strip(),
+        "preferred_sources": [str(item).strip() for item in profile.get("preferred_sources", []) if str(item).strip()],
+        "live_facts": [str(item).strip() for item in profile.get("live_facts", []) if str(item).strip()],
+        "stable_context": [str(item).strip() for item in profile.get("stable_context", []) if str(item).strip()],
+        "update_cadence": str(profile.get("update_cadence", "")).strip(),
+    }
+    encoded = json.dumps(clean, ensure_ascii=False, sort_keys=True)
+    existing = memory.get("topic_profiles", [])
+    next_profiles = []
+    replaced = False
+    for item in existing:
+        try:
+            parsed = json.loads(item)
+        except Exception:
+            parsed = {}
+        if str(parsed.get("topic", "")).strip().lower() == topic.lower():
+            next_profiles.append(encoded)
+            replaced = True
+        else:
+            next_profiles.append(item)
+    if not replaced:
+        next_profiles.append(encoded)
+    memory["topic_profiles"] = next_profiles[-40:]
+    set_memory(memory)
+    return clean
 
 
 def clear_memory() -> dict:

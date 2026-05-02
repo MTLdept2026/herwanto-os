@@ -249,6 +249,7 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("sports", bot.gs.DEFAULT_MEMORY)
         self.assertIn("constraints", bot.gs.DEFAULT_MEMORY)
         self.assertIn("recent_summaries", bot.gs.DEFAULT_MEMORY)
+        self.assertIn("topic_profiles", bot.gs.DEFAULT_MEMORY)
 
         with (
             patch.object(bot.gs, "get_config", return_value=""),
@@ -258,6 +259,61 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertIn("Liverpool context belongs here", memory["sports"])
         self.assertTrue(set_config.called)
+
+    def test_topic_profile_storage_replaces_by_topic(self):
+        store = {}
+
+        with (
+            patch.object(bot.gs, "get_config", side_effect=lambda key: store.get(key, "")),
+            patch.object(bot.gs, "set_config", side_effect=lambda key, value: store.__setitem__(key, value)),
+        ):
+            first = bot.gs.add_topic_profile({
+                "topic": "MotoGP",
+                "category": "sports",
+                "track": ["Ducati", "Marc Marquez"],
+                "live_facts": ["standings", "race results"],
+            })
+            second = bot.gs.add_topic_profile({
+                "topic": "MotoGP",
+                "category": "sports",
+                "track": ["Ducati", "race weekends"],
+            })
+
+        self.assertEqual(first["topic"], "MotoGP")
+        self.assertEqual(second["topic"], "MotoGP")
+        memory = json.loads(store["assistant_memory"])
+        self.assertEqual(len(memory["topic_profiles"]), 1)
+        self.assertIn("race weekends", memory["topic_profiles"][0])
+
+    def test_new_interest_forces_topic_profile_tool(self):
+        forced = bot._forced_tool_for_text(
+            "New interest: MotoGP. Track Ducati, Marc Marquez, standings and race weekends.",
+            [{"name": "create_topic_profile"}, {"name": "remember_user_info"}],
+        )
+
+        self.assertEqual(forced, "create_topic_profile")
+
+    def test_pwa_new_interest_includes_topic_profile_tool(self):
+        tools = bot.pwa_tools_for_message("I'm getting into Japanese city pop. Build me a beginner map.")
+        names = {tool["name"] for tool in tools}
+
+        self.assertIn("create_topic_profile", names)
+
+    def test_execute_topic_profile_tool(self):
+        with patch.object(bot.gs, "add_topic_profile", return_value={
+            "topic": "MotoGP",
+            "category": "sports",
+            "track": ["Ducati"],
+            "live_facts": ["standings"],
+        }):
+            result = asyncio.run(bot._execute_tool("create_topic_profile", {
+                "topic": "MotoGP",
+                "category": "sports",
+                "track": ["Ducati"],
+                "live_facts": ["standings"],
+            }))
+
+        self.assertIn("Created topic profile: MotoGP", result)
 
     def test_runtime_status_contains_observability_sections(self):
         fake_memory = {category: [] for category in bot.MEMORY_DISPLAY_CATEGORIES}

@@ -169,6 +169,7 @@ MEMORY_DISPLAY_CATEGORIES = (
     "templates",
     "constraints",
     "recent_summaries",
+    "topic_profiles",
 )
 
 def get_history(user_id):
@@ -432,7 +433,7 @@ Rules:
 - Never invent mosque or place locations. If a place location affects the answer and you do not have a verified source/tool result, say what you know and what is unverified. Be especially careful with Singapore masjid names that sound similar.
 - Known mosque correction: Masjid Al-Muttaqin is at 5140 Ang Mo Kio Ave 6, Singapore 569844, not Kovan.
 - For journey-time estimates, use the current device location context when it is provided. If it is not provided, use only explicit user-provided origin/destination or stable stored memory, and label any estimate as rough.
-- You have tools: create_calendar_event, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_mtl_classlists, analyze_mtl_scores, update_mtl_class_score, fill_mtl_percentage_scores, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, update_project_status, get_nea_weather, get_muis_prayer_times, get_muis_friday_khutbah, get_latest_news, get_liverpool_brief, get_f1_brief, web_search, and fetch_url. Use them proactively.
+- You have tools: create_calendar_event, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_mtl_classlists, analyze_mtl_scores, update_mtl_class_score, fill_mtl_percentage_scores, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, create_topic_profile, update_project_status, get_nea_weather, get_muis_prayer_times, get_muis_friday_khutbah, get_latest_news, get_liverpool_brief, get_f1_brief, web_search, and fetch_url. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
 - When the user mentions marking scripts, papers, compositions, kefahaman, karangan, worksheets, or a marking stack, use marking tools instead of ordinary reminders: add_marking_task for a new stack, update_marking_progress when he says how many scripts are marked, reset_marking_load when he asks to reset/clear the marking load or board, and get_marking_brief when he asks what marking is outstanding. Marking tasks are mission-critical and must persist even at 0 outstanding; only complete one when he explicitly says that marking stack is done, completed, can be closed, reset, or cleared.
@@ -457,6 +458,7 @@ Rules:
 - When the user pastes a web link or asks you to read/check a URL, call fetch_url. If fetch_url fails or the page is paywalled/dynamic, say what failed and use web_search/get_latest_news for corroborating public sources where available.
 - When the user asks about weather, temperature, high/low temp, hot/cold conditions, rain, forecast, haze, PSI, air quality, umbrella, or whether it will rain in Singapore — call get_nea_weather before answering. If no area is specified, use Yishun. Weather answers must include available temperature, humidity, PSI/PM2.5 air quality, 2-hour nowcast, and 24-hour forecast details.
 - When the user says "remember", "note that", or gives stable preferences/facts about himself — call remember_user_info.
+- When the user says they have a new interest, are getting into a topic, want H.I.R.A to track/learn/follow something, or asks to build a beginner map for a new topic — call create_topic_profile. Store what to track, preferred angle, which facts should be live-checked, and stable background context. Do not store volatile standings/results/prices as permanent facts; mark those as live_facts.
 - When the user gives a project progress update — call update_project_status.
 - When the user asks to follow up with someone later, call create_followup.
 - When the user asks to follow up based on an email, Gmail, inbox, or a recent message, call get_gmail_brief first and use the returned sender, subject, date, snippet/body excerpt to create the follow-up. Do not ask him to paste email details unless Gmail is not connected or the matching email cannot be found.
@@ -748,6 +750,42 @@ MEMORY_TOOL = {
             "text": {"type": "string", "description": "Concise memory to store"}
         },
         "required": ["category", "text"]
+    }
+}
+
+TOPIC_PROFILE_TOOL = {
+    "name": "create_topic_profile",
+    "description": "Create or update a structured profile for a new or growing interest H.I.R.A should learn, track, and explain through Herwanto's preferred lens. Use when he says new interest, getting into, picked up, follow/track this, deep dive, beginner map, or wants H.I.R.A to remember an interest.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "topic": {"type": "string", "description": "Topic name, e.g. MotoGP, Japanese city pop, espresso, mechanical keyboards."},
+            "category": {"type": "string", "description": "Broad bucket such as sports, music, tech, culture, business, teaching, personal, or faith."},
+            "why": {"type": "string", "description": "Why Herwanto cares or what drew him in, if known."},
+            "track": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "People, teams, subtopics, events, concepts, or questions to keep an eye on."
+            },
+            "preferred_angle": {"type": "string", "description": "How to explain it to him, e.g. beginner-friendly, tactical, historical, product-minded, Singapore context."},
+            "preferred_sources": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Sources or source types to prefer if the user names any."
+            },
+            "live_facts": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Facts that must be web-checked each time, e.g. standings, results, prices, lineups, latest releases."
+            },
+            "stable_context": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Stable background to learn, e.g. rules, history, terminology, key people, beginner map."
+            },
+            "update_cadence": {"type": "string", "description": "Optional cadence, e.g. race weekends, weekly, when I ask, major news only."}
+        },
+        "required": ["topic"]
     }
 }
 
@@ -2691,6 +2729,13 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     ]):
         return "fill_mtl_percentage_scores"
 
+    if "create_topic_profile" in available and has_any([
+        "new interest", "new topic", "getting into", "got into", "picked up",
+        "i'm into", "im into", "i am into", "deep dive", "beginner map",
+        "track this", "follow this", "learn this", "teach me about"
+    ]):
+        return "create_topic_profile"
+
     if "analyze_mtl_scores" in available and has_any([
         "analyse", "analyze", "analysis", "mean", "median", "average", "pass rate",
         "distinction", "underperforming", "under-performing", "weak", "watchlist",
@@ -3807,7 +3852,7 @@ async def remember_cmd(update, context):
     if not text:
         await reply(update,
             "Usage: `/remember preferences | Keep replies very concise`\n"
-            "Categories: profile, preferences, people, places, teaching, business, projects, sports, files, templates, constraints, recent_summaries",
+            "Categories: profile, preferences, people, places, teaching, business, projects, sports, files, templates, constraints, recent_summaries, topic_profiles",
             parse_mode="Markdown")
         return
     if "|" in text:
@@ -4018,6 +4063,7 @@ def _core_tools():
         DOCUMENT_ARTIFACT_TOOL,
         SLIDE_ARTIFACT_TOOL,
         TEMPLATE_MEMORY_TOOL,
+        TOPIC_PROFILE_TOOL,
         FOLLOWUP_TOOL,
         COMPLETE_TASK_TOOL,
         COMPLETE_FOLLOWUP_TOOL,
@@ -4101,8 +4147,10 @@ def pwa_tools_for_message(text: str) -> list[dict]:
         add(DOCUMENT_ARTIFACT_TOOL, TEMPLATE_MEMORY_TOOL)
     if re.search(r"\b(slide|slides|deck|ppt|pptx|powerpoint|presentation|pitch)\b", text):
         add(SLIDE_ARTIFACT_TOOL, TEMPLATE_MEMORY_TOOL)
+    if re.search(r"\b(new interest|new topic|getting into|got into|picked up|i'?m into|i am into|deep dive|beginner map|track this|follow this|learn this|teach me about)\b", text):
+        add(TOPIC_PROFILE_TOOL, MEMORY_TOOL)
     if re.search(r"\b(remember|note that|preference|prefer|template|style|project status|milestone)\b", text):
-        add(MEMORY_TOOL, PROJECT_TOOL, TEMPLATE_MEMORY_TOOL)
+        add(MEMORY_TOOL, PROJECT_TOOL, TEMPLATE_MEMORY_TOOL, TOPIC_PROFILE_TOOL)
     if re.search(r"\b(gameplan|ruh|rūḥ|app|apps|project|projects|product|products|app store|play store|review|approved|rejected|submitted|launched|shipped|released|blocked|progress|status|milestone|client|demo)\b", text):
         add(CONTEXT_TOOL, PROJECT_TOOL, MEMORY_TOOL)
 
@@ -4556,6 +4604,18 @@ async def _execute_tool(name: str, inp: dict) -> str:
             return f"Remembered under {inp.get('category', 'profile')}: {inp['text']}.{week_note}"
         except Exception as e:
             return f"Failed to remember: {e}"
+
+    elif name == "create_topic_profile":
+        try:
+            profile = gs.add_topic_profile(inp)
+            track = ", ".join(profile.get("track") or []) or "general developments"
+            live = ", ".join(profile.get("live_facts") or []) or "latest/current facts"
+            return (
+                f"Created topic profile: {profile['topic']} ({profile.get('category') or 'interests'}). "
+                f"Track: {track}. Live-check: {live}."
+            )
+        except Exception as e:
+            return f"Failed to create topic profile: {e}"
 
     elif name == "set_current_school_week":
         try:
