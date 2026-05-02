@@ -1320,6 +1320,91 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(event["id"], "evt-1")
         self.assertGreater(score, 0.45)
 
+    def test_duplicate_delete_query_prefers_exact_duplicate_group(self):
+        events = [
+            {
+                "id": "evt-1",
+                "summary": "CCA NSG duty",
+                "location": "",
+                "description": "",
+                "start": {"dateTime": "2026-05-07T15:00:00+08:00"},
+                "end": {"dateTime": "2026-05-07T18:00:00+08:00"},
+                "_calendar_id": "primary",
+            },
+            {
+                "id": "evt-2",
+                "summary": "NSG C Div Game - N2 vs Whitley / N2A vs Assumption Pathway",
+                "location": "",
+                "description": "",
+                "start": {"dateTime": "2026-05-07T15:00:00+08:00"},
+                "end": {"dateTime": "2026-05-07T18:00:00+08:00"},
+                "_calendar_id": "primary",
+            },
+            {
+                "id": "evt-3",
+                "summary": "NSG C Div Game - N2 vs Whitley / N2A vs Assumption Pathway",
+                "location": "",
+                "description": "",
+                "start": {"dateTime": "2026-05-07T15:00:00+08:00"},
+                "end": {"dateTime": "2026-05-07T18:00:00+08:00"},
+                "_calendar_id": "secondary",
+            },
+        ]
+
+        with patch.object(bot.gs, "get_events_between", return_value=events):
+            event, score = bot._resolve_calendar_event_for_deletion(
+                "duplicate of my CCA NSG duty on calendar. Please remove 1"
+            )
+
+        self.assertEqual(event["id"], "evt-2")
+        self.assertGreaterEqual(score, 0.45)
+
+    def test_duplicate_delete_query_returns_no_match_when_multiple_duplicate_groups_are_ambiguous(self):
+        events = [
+            {
+                "id": "evt-1",
+                "summary": "Team sync",
+                "location": "",
+                "description": "",
+                "start": {"dateTime": "2026-05-07T09:00:00+08:00"},
+                "end": {"dateTime": "2026-05-07T09:30:00+08:00"},
+                "_calendar_id": "primary",
+            },
+            {
+                "id": "evt-2",
+                "summary": "Team sync",
+                "location": "",
+                "description": "",
+                "start": {"dateTime": "2026-05-07T09:00:00+08:00"},
+                "end": {"dateTime": "2026-05-07T09:30:00+08:00"},
+                "_calendar_id": "secondary",
+            },
+            {
+                "id": "evt-3",
+                "summary": "Parent meeting",
+                "location": "",
+                "description": "",
+                "start": {"dateTime": "2026-05-08T10:00:00+08:00"},
+                "end": {"dateTime": "2026-05-08T10:30:00+08:00"},
+                "_calendar_id": "primary",
+            },
+            {
+                "id": "evt-4",
+                "summary": "Parent meeting",
+                "location": "",
+                "description": "",
+                "start": {"dateTime": "2026-05-08T10:00:00+08:00"},
+                "end": {"dateTime": "2026-05-08T10:30:00+08:00"},
+                "_calendar_id": "secondary",
+            },
+        ]
+
+        with patch.object(bot.gs, "get_events_between", return_value=events):
+            event, score = bot._resolve_calendar_event_for_deletion("remove 1 duplicate from my calendar")
+
+        self.assertIsNone(event)
+        self.assertEqual(score, 0)
+
     def test_gmail_account_extraction_detects_work_email(self):
         account, query = bot._extract_gmail_account_from_text("show my last 5 work emails")
 

@@ -10,7 +10,7 @@ import logging
 import re
 import resource
 import tempfile
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from datetime import datetime, timedelta, time as dt_time, date
 from difflib import SequenceMatcher
 import pytz
@@ -2692,6 +2692,37 @@ def _event_text(event: dict) -> str:
         end.get("dateTime", end.get("date", "")),
     ])
 
+def _looks_like_duplicate_delete_query(query: str) -> bool:
+    text = " ".join((query or "").lower().split())
+    if not text:
+        return False
+    return bool(re.search(r"\b(duplicate|dup|copy|instance)\b", text)) or bool(
+        re.search(r"\bremove\s+(?:1|one)\b", text)
+    )
+
+def _normalized_event_summary(event: dict) -> str:
+    summary = re.sub(r"[^a-z0-9]+", " ", (event.get("summary", "") or "").lower())
+    return " ".join(summary.split())
+
+def _event_duplicate_key(event: dict) -> tuple[str, str, str]:
+    start = event.get("start", {}).get("dateTime", event.get("start", {}).get("date", ""))
+    end = event.get("end", {}).get("dateTime", event.get("end", {}).get("date", ""))
+    return (_normalized_event_summary(event), start, end)
+
+def _duplicate_event_groups(events: list[dict]) -> list[list[dict]]:
+    grouped: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
+    for event in events:
+        key = _event_duplicate_key(event)
+        if key[0] and key[1]:
+            grouped[key].append(event)
+    return [group for group in grouped.values() if len(group) >= 2]
+
+def _duplicate_group_text(group: list[dict]) -> str:
+    if not group:
+        return ""
+    event = group[0]
+    return f"{event.get('summary', '')} {_event_when_text(event)}"
+
 def _event_when_text(event: dict) -> str:
     raw_start = event.get("start", {}).get("dateTime", event.get("start", {}).get("date", ""))
     raw_end = event.get("end", {}).get("dateTime", event.get("end", {}).get("date", ""))
@@ -2712,6 +2743,38 @@ def _find_best_calendar_event(query: str, days_back: int = 7, days_ahead: int = 
     events = gs.get_events_between(start, end)
     if not events:
         return None, 0
+    scored = sorted(
+        ((event, _score_text_match(query, _event_text(event))) for event in events),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    return scored[0]
+
+def _resolve_calendar_event_for_deletion(query: str, days_back: int = 7, days_ahead: int = 30):
+    now = datetime.now(SGT)
+    start = now - timedelta(days=max(0, int(days_back or 7)))
+    end = now + timedelta(days=max(1, int(days_ahead or 30)))
+    events = gs.get_events_between(start, end)
+    if not events:
+        return None, 0
+
+    if _looks_like_duplicate_delete_query(query):
+        duplicate_groups = _duplicate_event_groups(events)
+        if len(duplicate_groups) == 1:
+            group = duplicate_groups[0]
+            return group[0], max(0.8, _score_text_match(query, _duplicate_group_text(group)))
+        if duplicate_groups:
+            scored_groups = sorted(
+                ((group, _score_text_match(query, _duplicate_group_text(group))) for group in duplicate_groups),
+                key=lambda item: item[1],
+                reverse=True,
+            )
+            best_group, best_score = scored_groups[0]
+            next_score = scored_groups[1][1] if len(scored_groups) > 1 else 0
+            if best_score >= 0.45 and best_score >= next_score + 0.12:
+                return best_group[0], best_score
+            return None, 0
+
     scored = sorted(
         ((event, _score_text_match(query, _event_text(event))) for event in events),
         key=lambda item: item[1],
@@ -5492,7 +5555,7 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "delete_calendar_event_by_text":
         try:
-            event, score = _find_best_calendar_event(
+            event, score = _resolve_calendar_event_for_deletion(
                 inp["query"],
                 days_back=inp.get("days_back", 7),
                 days_ahead=inp.get("days_ahead", 30),
@@ -5805,7 +5868,7 @@ async def _process_user_text(update, context, text: str):
         if calendar_delete_match:
             query = calendar_delete_match.group(1).strip()
             try:
-                event, score = _find_best_calendar_event(query)
+                event, score = _resolve_calendar_event_for_deletion(query)
                 if not event or score < 0.45:
                     await update.message.reply_text("I could not confidently match that to a calendar event. Give me the event title or date so I do not delete the wrong thing.")
                     return

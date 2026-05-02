@@ -1312,6 +1312,15 @@ async function refreshHomeAndApp() {
   await checkForAppUpdate();
 }
 
+function currentAgendaDays() {
+  return Number($("#agendaDays")?.value || 7);
+}
+
+async function refreshAgendaSurfaces() {
+  await loadHome();
+  await loadAgenda(currentAgendaDays());
+}
+
 async function loadAgenda(days = 7) {
   $("#agendaOutput").innerHTML = "<div>Loading...</div>";
   try {
@@ -1511,7 +1520,7 @@ async function uploadChatAttachment(note) {
     updateMessage(pending, reply);
     state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: reply };
     saveChatHistory();
-    await loadHome();
+    await refreshAgendaSurfaces();
     setStatus(`${files.length} attachment${files.length === 1 ? "" : "s"} analysed.`, "ok");
   } catch (error) {
     const friendly = `I could not analyse the attachment${files.length === 1 ? "" : "s"}: ${error.message}`;
@@ -1590,7 +1599,7 @@ async function sendChat(message) {
     pending.querySelectorAll(".tool-status").forEach((item) => item.remove());
     state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: reply };
     saveChatHistory();
-    await loadHome();
+    await refreshAgendaSurfaces();
     setStatus("H.I.R.A replied.", "ok");
   } catch (error) {
     const friendly = "H.I.R.A hit a backend snag. Try again in a moment.";
@@ -1691,7 +1700,7 @@ document.querySelectorAll(".nav-tab").forEach((tab) => {
     const view = tab.dataset.view;
     setView(view);
     if (view === "home") await loadHome();
-    if (view === "agenda") await loadAgenda(7);
+    if (view === "agenda") await loadAgenda(currentAgendaDays());
     if (view === "tasks") await loadTasks(7);
   });
 });
@@ -1743,7 +1752,7 @@ $("#uploadForm").addEventListener("submit", uploadFile);
 $("#refreshHomeBtn").addEventListener("click", refreshHomeAndApp);
 $("#viewAgendaBtn").addEventListener("click", async () => {
   setView("agenda");
-  await loadAgenda(Number($("#agendaDays").value || 7));
+  await loadAgenda(currentAgendaDays());
 });
 $("#homeSettingsBtn").addEventListener("click", () => {
   const panel = $("#settingsPanel");
@@ -1752,8 +1761,8 @@ $("#homeSettingsBtn").addEventListener("click", () => {
   updateNotificationControls();
   panel.scrollIntoView({ block: "start" });
 });
-$("#refreshAgendaBtn").addEventListener("click", () => loadAgenda(Number($("#agendaDays").value || 7)));
-$("#agendaDays").addEventListener("change", () => loadAgenda(Number($("#agendaDays").value || 7)));
+$("#refreshAgendaBtn").addEventListener("click", () => loadAgenda(currentAgendaDays()));
+$("#agendaDays").addEventListener("change", () => loadAgenda(currentAgendaDays()));
 $("#refreshTasksBtn").addEventListener("click", () => loadTasks(Number($("#tasksDays").value || 7)));
 $("#tasksDays").addEventListener("change", () => loadTasks(Number($("#tasksDays").value || 7)));
 $("#refreshFilesBtn").addEventListener("click", () => setStatus("File upload is ready.", "ok"));
