@@ -1020,6 +1020,12 @@ async function completeTask(taskId, checkbox) {
   try {
     await api(`/api/tasks/${encodeURIComponent(taskId)}/done`, { method: "POST", headers: headers(false) });
     taskItem?.classList.add("completed");
+    // Glyph flash — single sweep to confirm completion
+    const glyph = document.getElementById("topbarGlyph");
+    if (glyph) {
+      glyph.classList.add("is-flash");
+      setTimeout(() => glyph.classList.remove("is-flash"), 950);
+    }
     const shortDesc = desc ? `"${desc.slice(0, 52)}${desc.length > 52 ? "…" : ""}"` : `#${taskId}`;
     setStatus(`Done ✓ ${shortDesc}`, "ok");
     // Give the fade animation a moment before refreshing
@@ -1057,6 +1063,8 @@ function setHiraSpeaking(el, speaking) {
   signal?.classList.toggle("is-speaking", Boolean(speaking));
   const label = $("#hiraSignalState");
   if (label) label.textContent = "Live";
+  // Glyph strip — cascade when HIRA is processing, breathe at idle
+  document.getElementById("topbarGlyph")?.classList.toggle("is-active", Boolean(speaking));
 }
 
 function updateMessage(el, text) {

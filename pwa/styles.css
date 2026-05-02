@@ -2932,155 +2932,299 @@ html[data-theme="dark"] .load-badge.load-green {
   }
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   NOTHING OS TOPBAR — RADICAL EDITION
-   Built from scratch. Not patched. Nothing would bin the old one entirely.
-   ═══════════════════════════════════════════════════════════════════════════ */
 
-/* ── Base shell ─────────────────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════
+   NOTHING OS TOPBAR — v3
+   Pure OLED black, Doto wordmark, Space Mono labels,
+   monochrome icon controls. No flex-end. No pseudo-elements.
+   border-left only for separator.
+   ═══════════════════════════════════════════════════════════════ */
+
 .topbar {
   background: #000000;
-  border-bottom: 1px solid #141414;
-  padding: 20px clamp(16px, 4vw, 28px) 20px;
-  min-height: 100px;
-  align-items: flex-end;
-  gap: 0;
+  border-bottom: 1px solid #1c1c1c;
+  padding: 20px clamp(20px, 3.5vw, 32px);
+  min-height: 88px;
+  /* inherits display:flex; align-items:center; justify-content:space-between */
 }
 
-/* ── System label ───────────────────────────────────────────────────────── */
+/* Eyebrow — metadata label above wordmark */
 .topbar .eyebrow {
-  font-size: 8px;
-  letter-spacing: 0.26em;
-  color: #262626;
-  margin-bottom: 8px;
-  font-family: var(--font-ui);
-}
-
-/* ── H.I.R.A wordmark ───────────────────────────────────────────────────── */
-.topbar h1 {
-  font-family: var(--font-dot);
-  font-weight: 900;
-  font-size: clamp(40px, 7vw, 62px);
-  line-height: 0.85;
-  letter-spacing: 0.08em;
-  color: #e8e8e8;
-  text-shadow: none;
-}
-
-/* ── Descriptor line — visible, but subordinate ─────────────────────────── */
-.topbar .brand-subtitle {
-  display: block;
-  margin-top: 10px;
-  font-family: var(--font-ui);
+  color: #999999;
   font-size: 9px;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  color: #3a3a3a;
-  font-weight: 400;
-  line-height: 1.4;
+  letter-spacing: 0.24em;
+  margin-bottom: 2px;
 }
 
-/* ── Action cluster ─────────────────────────────────────────────────────── */
+/* H.I.R.A wordmark */
+.topbar h1 {
+  font-family: "Doto", monospace;
+  font-weight: 900;
+  font-size: clamp(38px, 6.5vw, 56px);
+  color: #ffffff;
+  letter-spacing: 0.07em;
+  line-height: 1;
+}
 
-/* Hide the theme toggle — that belongs in settings, not the header */
+/* Tagline — decorative, intentionally dim */
+.topbar .brand-subtitle {
+  margin-top: 6px;
+  color: #666666;
+  font-family: "Space Mono", monospace;
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  line-height: 1.3;
+}
+
+/* Quick theme toggle lives in settings — hide in header */
 .topbar .quick-theme-toggle {
   display: none;
 }
 
-.topbar-actions {
+/* Right icon cluster — border-left separator, zero gap */
+.topbar .topbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
   gap: 0;
-  padding-left: 0;
-  border-left: none;
-  align-items: flex-end;
+  padding-left: 20px;
+  border-left: 1px solid #1c1c1c;
 }
 
-/* Glyph-style column separator */
-.topbar-actions::before {
-  content: "";
-  display: block;
-  width: 1px;
-  height: 52px;
-  background: linear-gradient(to bottom, transparent, #1e1e1e 30%, #1e1e1e 70%, transparent);
-  margin-right: 16px;
-  flex-shrink: 0;
-}
-
-/* ── Icon buttons: invisible borders by default ─────────────────────────── */
-.topbar-actions .icon-btn {
+/* Icon buttons — 44×44 touch target, transparent, very dim default */
+.topbar .topbar-actions .icon-btn {
   width: 44px;
-  height: 52px;
-  min-height: 52px;
-  border: 1px solid transparent;
-  border-radius: 0;
-  color: #303030;
-  background: transparent;
+  height: 44px;
+  min-height: 44px;
   padding: 0;
-  position: relative;
-  display: inline-grid;
+  border-radius: 0;
+  border: 1px solid transparent;
+  border-bottom: 1px solid transparent;
+  background: transparent;
+  color: #3a3a3a;
+  display: grid;
+  place-items: center;
+  box-shadow: none;
+}
+
+.topbar .topbar-actions .icon-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* Hover — brighten icon, no border, no bg */
+.topbar .topbar-actions .icon-btn:hover {
+  border-color: transparent;
+  border-bottom-color: transparent;
+  background: transparent;
+  color: #c8c8c8;
+  box-shadow: none;
+}
+
+/* Active/focus — slightly brighter */
+.topbar .topbar-actions .icon-btn:active {
+  color: #e8e8e8;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* Open state — bottom underline only. NOT a full border box. NOT red. */
+.topbar .topbar-actions .icon-btn.is-open,
+.topbar .topbar-actions .icon-btn:focus-visible {
+  border-color: transparent;
+  border-bottom-color: #c8c8c8;
+  background: transparent;
+  color: #e8e8e8;
+  box-shadow: none;
+  outline: none;
+}
+
+/* notification-btn — override 92px grid to clean 44px icon */
+.topbar .topbar-actions .notification-btn {
+  width: 44px;
+  height: 44px;
+  min-height: 44px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0;
   place-items: center;
 }
 
-.topbar-actions .icon-btn svg {
-  width: 20px;
-  height: 20px;
+/* Hide the green toggle switch — not relevant in header context */
+.topbar .topbar-actions .notification-btn .notification-top-toggle {
+  display: none !important;
 }
 
-/* Hover: icon brightens, no border box */
-.topbar-actions .icon-btn:hover {
-  border-color: transparent;
-  color: #c8c8c8;
-  background: transparent;
-  box-shadow: none;
+
+
+/* ═══════════════════════════════════════════════════════════════
+   NOTHING GLYPH INTERFACE
+   Thin white LED segments on OLED black.
+   Three states: idle-breathe, active-cascade, flash-pulse.
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Topbar glyph strip ─────────────────────────────────────── */
+.topbar-glyph {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 14px;
+  margin-top: 10px;
 }
 
-/* Active / open: white icon, subtle underline — NO red border box */
-.topbar-actions .icon-btn:active,
-.topbar-actions .icon-btn:focus-visible,
-.topbar-actions .icon-btn.is-open {
-  border-color: transparent;
-  border-bottom-color: #e8e8e8;
-  color: #e8e8e8;
-  background: transparent;
-  box-shadow: none;
+.topbar-glyph span {
+  width: 2px;
+  background: #ffffff;
+  opacity: 0;
+  flex-shrink: 0;
 }
 
-/* ── Notification button: bell only, no toggle switch ───────────────────── */
-
-/* Override the wide grid layout so it's just the bell icon */
-.topbar-actions .notification-btn {
-  width: 44px;
-  height: 52px;
-  grid-template-columns: 1fr;
-  gap: 0;
+/* Three clusters of 4, separated by wider gap */
+.topbar-glyph span:nth-child(4),
+.topbar-glyph span:nth-child(8) {
+  margin-right: 8px;
 }
 
-/* Hide the on/off toggle switch from the topbar — it lives in the panel */
-.topbar-actions .notification-btn .notification-top-toggle {
-  display: none;
+/* Segment heights — irregular rhythm like the physical glyph */
+.topbar-glyph span:nth-child(1)  { height: 14px; }
+.topbar-glyph span:nth-child(2)  { height:  7px; }
+.topbar-glyph span:nth-child(3)  { height: 11px; }
+.topbar-glyph span:nth-child(4)  { height:  5px; }
+.topbar-glyph span:nth-child(5)  { height: 14px; }
+.topbar-glyph span:nth-child(6)  { height:  9px; }
+.topbar-glyph span:nth-child(7)  { height:  6px; }
+.topbar-glyph span:nth-child(8)  { height: 12px; }
+.topbar-glyph span:nth-child(9)  { height: 14px; }
+.topbar-glyph span:nth-child(10) { height:  7px; }
+.topbar-glyph span:nth-child(11) { height: 10px; }
+.topbar-glyph span:nth-child(12) { height:  5px; }
+
+/* Idle: first segment of each cluster breathes softly — system alive */
+.topbar-glyph span:nth-child(1) {
+  opacity: 0.22;
+  animation: glyph-breathe 3.8s ease-in-out infinite;
+  animation-delay: 0ms;
+}
+.topbar-glyph span:nth-child(5) {
+  opacity: 0.14;
+  animation: glyph-breathe 3.8s ease-in-out infinite;
+  animation-delay: 600ms;
+}
+.topbar-glyph span:nth-child(9) {
+  opacity: 0.10;
+  animation: glyph-breathe 3.8s ease-in-out infinite;
+  animation-delay: 1200ms;
 }
 
-/* Tiny red dot for unread notifications — top-right of bell */
-#notificationBadge {
-  position: absolute;
-  top: 10px;
-  right: 8px;
-  min-width: 6px;
-  width: 6px;
-  height: 6px;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: #ff2d2d;
-  font-size: 0;
+/* Active (HIRA thinking): all 12 cascade left → right */
+.topbar-glyph.is-active span {
+  animation: glyph-cascade 700ms steps(1) infinite !important;
+  box-shadow: 0 0 5px #fff, 0 0 10px rgba(255, 255, 255, 0.35);
+}
+.topbar-glyph.is-active span:nth-child(1)  { animation-delay:   0ms !important; }
+.topbar-glyph.is-active span:nth-child(2)  { animation-delay:  58ms !important; }
+.topbar-glyph.is-active span:nth-child(3)  { animation-delay: 116ms !important; }
+.topbar-glyph.is-active span:nth-child(4)  { animation-delay: 174ms !important; }
+.topbar-glyph.is-active span:nth-child(5)  { animation-delay: 232ms !important; }
+.topbar-glyph.is-active span:nth-child(6)  { animation-delay: 290ms !important; }
+.topbar-glyph.is-active span:nth-child(7)  { animation-delay: 348ms !important; }
+.topbar-glyph.is-active span:nth-child(8)  { animation-delay: 406ms !important; }
+.topbar-glyph.is-active span:nth-child(9)  { animation-delay: 464ms !important; }
+.topbar-glyph.is-active span:nth-child(10) { animation-delay: 522ms !important; }
+.topbar-glyph.is-active span:nth-child(11) { animation-delay: 580ms !important; }
+.topbar-glyph.is-active span:nth-child(12) { animation-delay: 638ms !important; }
+
+/* Flash (task complete): single pulse across all segments */
+.topbar-glyph.is-flash span {
+  animation: glyph-flash 900ms ease-out forwards !important;
+  box-shadow: 0 0 8px #fff, 0 0 16px rgba(255, 255, 255, 0.4);
+}
+.topbar-glyph.is-flash span:nth-child(1)  { animation-delay:   0ms !important; }
+.topbar-glyph.is-flash span:nth-child(2)  { animation-delay:  30ms !important; }
+.topbar-glyph.is-flash span:nth-child(3)  { animation-delay:  60ms !important; }
+.topbar-glyph.is-flash span:nth-child(4)  { animation-delay:  90ms !important; }
+.topbar-glyph.is-flash span:nth-child(5)  { animation-delay: 120ms !important; }
+.topbar-glyph.is-flash span:nth-child(6)  { animation-delay: 150ms !important; }
+.topbar-glyph.is-flash span:nth-child(7)  { animation-delay: 180ms !important; }
+.topbar-glyph.is-flash span:nth-child(8)  { animation-delay: 210ms !important; }
+.topbar-glyph.is-flash span:nth-child(9)  { animation-delay: 240ms !important; }
+.topbar-glyph.is-flash span:nth-child(10) { animation-delay: 270ms !important; }
+.topbar-glyph.is-flash span:nth-child(11) { animation-delay: 300ms !important; }
+.topbar-glyph.is-flash span:nth-child(12) { animation-delay: 330ms !important; }
+
+/* ── Glyph keyframes ────────────────────────────────────────── */
+@keyframes glyph-breathe {
+  0%, 100% { opacity: 0.06; }
+  45%       { opacity: 0.28; }
+  55%       { opacity: 0.28; }
 }
 
-/* ── Task completion fade ───────────────────────────────────────────────── */
-.task-item {
-  transition: opacity 0.4s ease;
+@keyframes glyph-cascade {
+  0%,  68% { opacity: 1;    }
+  69%, 100% { opacity: 0.06; }
 }
 
-.task-item.completed {
-  opacity: 0.2;
-  pointer-events: none;
+@keyframes glyph-flash {
+  0%   { opacity: 1;    }
+  60%  { opacity: 0.9;  }
+  100% { opacity: 0.06; }
+}
+
+/* ── Nav tab active: glyph underline, no orange fill ────────── */
+.nav-tab.active,
+.chip.active {
+  background: transparent !important;
+  color: #ffffff !important;
+  border-color: var(--border-visible) !important;
+  border-bottom-color: #ffffff !important;
+  border-bottom-width: 2px !important;
+  position: relative;
+}
+
+/* Keep theme-btn.active as-is (different component) */
+.theme-btn.active {
+  background: var(--interactive);
+  color: #ffffff;
+  border-color: var(--interactive);
+}
+
+/* ── Signal bars: true Nothing Glyph (white LED, not orange) ── */
+html[data-theme="dark"] .hira-signal-bars span {
+  background: #ffffff;
+  opacity: 0.08;
+}
+
+html[data-theme="dark"] .hira-signal.is-speaking .hira-signal-bars span {
+  background: #ffffff;
+  opacity: 0.9;
+  box-shadow: 0 0 4px rgba(255, 255, 255, 0.7), 0 0 8px rgba(255, 255, 255, 0.25);
+}
+
+/* ── Segment bar LED bloom on active segments ───────────────── */
+.segment.active {
+  box-shadow: 0 0 6px currentColor, 0 0 12px rgba(0, 0, 0, 0);
+}
+
+html[data-theme="dark"] .segment.active {
+  box-shadow: 0 0 5px rgba(255, 255, 255, 0.5);
+}
+
+html[data-theme="dark"] .segment.active.success {
+  box-shadow: 0 0 5px rgba(45, 179, 122, 0.6), 0 0 10px rgba(45, 179, 122, 0.2);
+}
+
+html[data-theme="dark"] .segment.active.warning {
+  box-shadow: 0 0 5px rgba(255, 154, 61, 0.5), 0 0 10px rgba(255, 154, 61, 0.15);
+}
+
+html[data-theme="dark"] .segment.active.red {
+  box-shadow: 0 0 5px rgba(227, 27, 35, 0.65), 0 0 10px rgba(227, 27, 35, 0.2);
+}
+
+html[data-theme="dark"] .segment.active.accent {
+  box-shadow: 0 0 5px rgba(255, 85, 0, 0.6), 0 0 10px rgba(255, 85, 0, 0.2);
 }
 
