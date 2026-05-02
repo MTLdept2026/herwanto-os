@@ -180,8 +180,9 @@ function renderNotifications() {
     .map((item) => {
       const created = item.created ? new Date(item.created).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
       const id = escapeHtml(String(item.id || ""));
+      const kind = notificationKindClass(item.kind);
       return `
-        <article class="notification-item ${item.kind || "notice"}" data-notification-id="${id}">
+        <article class="notification-item ${kind}" data-notification-id="${id}">
           <div class="notification-item-head">
             <strong>${markdownish(item.title || "H.I.R.A")}</strong>
             ${created ? `<small>${markdownish(created)}</small>` : ""}
@@ -822,7 +823,14 @@ function escapeHtml(text) {
   return (text || "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function notificationKindClass(kind) {
+  const clean = String(kind || "notice").trim().toLowerCase();
+  return ["notice", "briefing", "reminder", "update", "test"].includes(clean) ? clean : "notice";
 }
 
 function markdownish(text) {

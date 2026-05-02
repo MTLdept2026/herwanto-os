@@ -5,12 +5,14 @@ import asyncio
 import gc
 import json
 import os
+import secrets
 import tempfile
 import time
 import uuid
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime
+import ipaddress
 from pathlib import Path
 from typing import Optional
 
@@ -73,6 +75,7 @@ _MEMORY_GC_RATIO = _env_float("HIRA_WEB_MEMORY_GC_RATIO", 0.80)
 _MEMORY_REJECT_RATIO = _env_float("HIRA_WEB_MEMORY_REJECT_RATIO", 0.92)
 _MEMORY_WATCHDOG_SECONDS = _env_int("HIRA_WEB_MEMORY_WATCHDOG_SECONDS", 45, minimum=10)
 _CHAT_MAX_TOKENS = _env_int("HIRA_WEB_CHAT_MAX_TOKENS", 3200, minimum=650)
+_AUTH_RATE_LIMIT = _env_int("HIRA_WEB_AUTH_RATE_LIMIT", 8)
 _WEB_INLINE_SCHEDULER = _env_bool("HIRA_WEB_INLINE_SCHEDULER", False)
 _STATIC_PATHS = {
     "/",
@@ -142,6 +145,21 @@ async def add_static_cache_headers(request: Request, call_next):
             {"detail": f"Request is too large. Limit is {_MAX_REQUEST_BYTES // (1024 * 1024)} MB."},
             status_code=413,
         )
+    if request.url.path.startswith("/api/"):
+        expected = _expected_web_token()
+        if not expected:
+            return JSONResponse(
+                {"detail": "HIRA_WEB_TOKEN is not configured. Set it in Railway environment variables."},
+                status_code=503,
+            )
+        if not _token_matches(request.headers.get("x-hira-token"), expected):
+            if not await _AUTH_RATE_LIMITER.is_allowed(_request_ip(request)):
+                return JSONResponse(
+                    {"detail": "Too many invalid token attempts. Try again in a minute."},
+                    status_code=429,
+                    headers={"Retry-After": "60"},
+                )
+            return JSONResponse({"detail": "Invalid H.I.R.A web token"}, status_code=401)
     is_static_path = request.url.path in _STATIC_PATHS or request.url.path.startswith("/static/")
     if _memory_pressure_high() and not is_static_path:
         gc.collect()
@@ -480,11 +498,20 @@ def _marking_summary() -> dict:
     }
 
 
+def _expected_web_token() -> str:
+    return os.environ.get("HIRA_WEB_TOKEN", "").strip()
+
+
+def _token_matches(candidate: str | None, expected: str) -> bool:
+    candidate = str(candidate or "")
+    return bool(expected) and secrets.compare_digest(candidate, expected)
+
+
 def _require_token(x_hira_token: Optional[str] = Header(default=None)):
-    expected = os.environ.get("HIRA_WEB_TOKEN", "").strip()
+    expected = _expected_web_token()
     if not expected:
         raise HTTPException(status_code=503, detail="HIRA_WEB_TOKEN is not configured. Set it in Railway environment variables.")
-    if x_hira_token != expected:
+    if not _token_matches(x_hira_token, expected):
         raise HTTPException(status_code=401, detail="Invalid H.I.R.A web token")
 
 
@@ -526,14 +553,37 @@ class _SlidingWindowRateLimiter:
 
 _CHAT_RATE_LIMITER   = _SlidingWindowRateLimiter(max_requests=_env_int("HIRA_CHAT_RATE_LIMIT", 20), window_seconds=60)
 _UPLOAD_RATE_LIMITER = _SlidingWindowRateLimiter(max_requests=_env_int("HIRA_UPLOAD_RATE_LIMIT", 10), window_seconds=60)
+_AUTH_RATE_LIMITER   = _SlidingWindowRateLimiter(max_requests=_AUTH_RATE_LIMIT, window_seconds=60)
 
 
 def _request_ip(request: Request) -> str:
-    """Extract the real client IP, respecting Railway's X-Forwarded-For header."""
+    """Return a rate-limit key without trusting spoofable proxy headers by default."""
+    direct = request.client.host if request.client else "unknown"
+    if not _env_bool("HIRA_TRUST_PROXY_HEADERS", False):
+        return direct
+    try:
+        direct_ip = ipaddress.ip_address(direct)
+    except ValueError:
+        return direct
+    if not (direct_ip.is_loopback or direct_ip.is_private):
+        return direct
     forwarded = request.headers.get("x-forwarded-for", "")
     if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+        candidate = forwarded.split(",")[0].strip()
+        try:
+            ipaddress.ip_address(candidate)
+            return candidate
+        except ValueError:
+            return direct
+    for header in ("x-real-ip", "cf-connecting-ip", "true-client-ip"):
+        candidate = request.headers.get(header, "").strip()
+        if candidate:
+            try:
+                ipaddress.ip_address(candidate)
+                return candidate
+            except ValueError:
+                return direct
+    return direct
 
 
 def _client_key(client_id: str | None) -> str:
@@ -665,6 +715,10 @@ async def _spool_upload_to_temp(file: UploadFile, max_bytes: int) -> tuple[str, 
 
 @app.get("/healthz")
 def healthz():
+    return {"ok": not _memory_pressure_high()}
+
+
+def _health_details():
     limit = bot._memory_limit_mb()
     rss = bot._rss_mb()
     redis_connected = bot._get_redis() is not None
@@ -1034,7 +1088,7 @@ def notifications_health(x_hira_token: Optional[str] = Header(default=None)):
 @app.get("/api/admin/status")
 def admin_status(x_hira_token: Optional[str] = Header(default=None)):
     _require_token(x_hira_token)
-    base = healthz()
+    base = _health_details()
     try:
         runtime = bot.build_runtime_status()
     except Exception as exc:

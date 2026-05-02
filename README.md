@@ -175,6 +175,7 @@ git push -u origin main
    - `ANTHROPIC_API_KEY`
    - `GOOGLE_SERVICE_ACCOUNT_JSON`
    - `GOOGLE_SHEET_ID`
+   - `HIRA_ALLOWED_USER_IDS` with your numeric Telegram user ID(s)
    - Optional for editable generated Google Docs/Slides links: `GOOGLE_ARTIFACT_SHARE_EMAIL`
    - Optional for voice notes: `OPENAI_API_KEY`
    - Optional for Gmail: `GOOGLE_GMAIL_USER`
@@ -354,7 +355,7 @@ For Railway, create a PWA web service from this repo and use:
 HIRA_SERVICE_MODE=pwa
 ```
 
-Copy the same environment variables as the Telegram bot service. Set `HIRA_WEB_TOKEN` to a private phrase if you want the PWA API protected; the app will ask for it on first use.
+Copy the same environment variables as the Telegram bot service. Set `HIRA_WEB_TOKEN` to a private phrase; the app will ask for it on first use. Keep `HIRA_TRUST_PROXY_HEADERS=0` unless your host strips client-supplied forwarding headers before they reach H.I.R.A.
 
 Current PWA surfaces:
 - Chat with H.I.R.A
@@ -373,7 +374,7 @@ The PWA chat uses the same H.I.R.A tool brain as Telegram. With the same product
 
 For OS-level PWA notifications while the app is closed, generate VAPID keys with `vapid --gen`, set `HIRA_WEB_PUSH_PUBLIC_KEY` to `vapid --applicationServerKey`, set `HIRA_WEB_PUSH_PRIVATE_KEY` to a base64-encoded `private_key.pem`, and set `HIRA_WEB_PUSH_SUBJECT` to `mailto:you@example.com` on both Railway services. Then tap **Enable app notifications** in H.I.R.A. Without VAPID keys, H.I.R.A still shows queued app notifications the next time the PWA is open.
 
-The PWA backend includes Railway Hobby guardrails: two active chats/uploads by default, a bounded upload queue, larger capped request/upload sizes, disk-spooled PDF/DOCX/PPTX extraction for heavier education files, a `/healthz` memory readout, and load shedding only under high memory pressure. Keep `uvicorn` at one worker unless all scheduler work stays in the separate worker service; multiple web workers can duplicate in-process jobs. Tune with `HIRA_WEB_CHAT_CONCURRENCY`, `HIRA_WEB_UPLOAD_CONCURRENCY`, `HIRA_WEB_UPLOAD_QUEUE_WORKERS`, `HIRA_WEB_MAX_UPLOAD_MB`, `HIRA_WEB_MAX_DOCUMENT_MB`, `HIRA_WEB_CHAT_MAX_TOKENS`, and `HIRA_WEB_MEMORY_REJECT_RATIO` after watching Railway memory and CPU metrics.
+The PWA backend includes Railway Hobby guardrails: two active chats/uploads by default, a bounded upload queue, larger capped request/upload sizes, disk-spooled PDF/DOCX/PPTX extraction for heavier education files, a minimal public `/healthz`, and load shedding only under high memory pressure. Detailed runtime health lives behind `/api/admin/status` with the PWA token. Keep `uvicorn` at one worker unless all scheduler work stays in the separate worker service; multiple web workers can duplicate in-process jobs. Tune with `HIRA_WEB_CHAT_CONCURRENCY`, `HIRA_WEB_UPLOAD_CONCURRENCY`, `HIRA_WEB_UPLOAD_QUEUE_WORKERS`, `HIRA_WEB_MAX_UPLOAD_MB`, `HIRA_WEB_MAX_DOCUMENT_MB`, `HIRA_WEB_CHAT_MAX_TOKENS`, and `HIRA_WEB_MEMORY_REJECT_RATIO` after watching Railway memory and CPU metrics.
 
 Model routing is configurable with `HIRA_QUICK_MODEL`, `HIRA_ROUTER_MODEL`, `HIRA_STRUCTURED_MODEL`, `HIRA_AGENTIC_MODEL`, and `HIRA_DEEP_MODEL`. Keep quick/router/structured on cheaper fast models, and point `HIRA_DEEP_MODEL` at a stronger model when you want coding, architecture, documents, research, business strategy, or high-stakes reasoning to use the bigger brain.
 
@@ -383,7 +384,7 @@ Long-term memory is bucketed into `profile`, `preferences`, `people`, `places`, 
 
 Source discipline is deterministic before agentic chat: volatile or current questions get an internal live-source hint with recommended tools before H.I.R.A answers. Use `/api/admin/status` with the same `X-Hira-Token` as the PWA to inspect H.I.R.A health in one response: runtime memory, Redis/Google/Gmail/search status, model routing config, memory bucket counts, queue status, notification health, and job intervals. Use `/api/admin/memory?limit=5` to review memory buckets, recent items, and pruning rules.
 
-For production, add Redis and set `HIRA_REQUIRE_REDIS=1` once `REDIS_URL` is working. This makes chat history, upload job state, locks, and queues fail loudly instead of silently falling back to one-process memory after a restart.
+For production, add Redis and set `HIRA_REQUIRE_REDIS=1` once `REDIS_URL` is working. This makes chat history, upload job state, locks, and queues fail loudly instead of silently falling back to one-process memory after a restart. Telegram access fails closed unless `HIRA_ALLOWED_USER_IDS` is set; use `HIRA_TELEGRAM_OPEN_DEV_MODE=1` only for local development.
 
 Keep proactive phone notifications by running a separate Railway worker with `HIRA_SERVICE_MODE=pwa_worker`. That worker runs morning/evening briefings, weekly planning, Friday khutbah/project checks, nudges, daily check-ins, prayer reminders, and follow-ups through PWA push/app notifications without Telegram polling. The PWA web service defaults to `HIRA_WEB_INLINE_SCHEDULER=0`; set it to `1` only for a single-service fallback deployment.
 

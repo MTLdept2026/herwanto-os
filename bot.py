@@ -45,22 +45,25 @@ _SYSTEM_PROMPT_CACHE = {"key": None, "value": None}
 
 # ─── TELEGRAM USER AUTHORIZATION ─────────────────────────────────────────────
 _raw_allowed = os.environ.get("HIRA_ALLOWED_USER_IDS", "").strip()
+TELEGRAM_OPEN_DEV_MODE = os.environ.get("HIRA_TELEGRAM_OPEN_DEV_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
 ALLOWED_TELEGRAM_USER_IDS: set[int] = set()
 if _raw_allowed:
     for _uid in _raw_allowed.split(","):
         _uid = _uid.strip()
         if _uid.isdigit():
             ALLOWED_TELEGRAM_USER_IDS.add(int(_uid))
-if not ALLOWED_TELEGRAM_USER_IDS:
+if not ALLOWED_TELEGRAM_USER_IDS and TELEGRAM_OPEN_DEV_MODE:
     logger.warning(
-        "HIRA_ALLOWED_USER_IDS is not set — the Telegram bot accepts messages from ANY user. "
-        "Set this to your Telegram user ID(s) in Railway environment variables."
+        "HIRA_TELEGRAM_OPEN_DEV_MODE is enabled and HIRA_ALLOWED_USER_IDS is not set — "
+        "the Telegram bot accepts messages from ANY user."
     )
+elif not ALLOWED_TELEGRAM_USER_IDS:
+    logger.error("HIRA_ALLOWED_USER_IDS is not set; Telegram bot startup will fail closed.")
 
 async def _is_authorized(update) -> bool:
-    """Return True if the sender is an allowed user, or if no whitelist is configured (open dev mode)."""
+    """Return True if the sender is an allowed user, or explicit open dev mode is enabled."""
     if not ALLOWED_TELEGRAM_USER_IDS:
-        return True
+        return TELEGRAM_OPEN_DEV_MODE
     user = update.effective_user
     if user and user.id in ALLOWED_TELEGRAM_USER_IDS:
         return True
@@ -5798,11 +5801,13 @@ def main():
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
         raise ValueError("TELEGRAM_BOT_TOKEN not set")
+    if not ALLOWED_TELEGRAM_USER_IDS and not TELEGRAM_OPEN_DEV_MODE:
+        raise ValueError("HIRA_ALLOWED_USER_IDS must be set unless HIRA_TELEGRAM_OPEN_DEV_MODE=1")
     app = Application.builder().token(token).build()
 
     # ── Authorization filter ──────────────────────────────────────────────────
     # If HIRA_ALLOWED_USER_IDS is configured, restrict all handlers to those
-    # user IDs only. Unauthorized senders receive a single "Unauthorized." reply.
+    # user IDs only. Open access requires explicit HIRA_TELEGRAM_OPEN_DEV_MODE.
     if ALLOWED_TELEGRAM_USER_IDS:
         _auth = filters.User(user_id=list(ALLOWED_TELEGRAM_USER_IDS))
         async def _unauthorized_handler(update, context):
