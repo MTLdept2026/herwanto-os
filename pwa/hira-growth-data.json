@@ -1,0 +1,209 @@
+{
+  "updated": "2026-05-02",
+  "name": "H.I.R.A Growth Log",
+  "subtitle": "How Herwanto Interface for Responsive Assistance grew from an installable assistant into a more reliable personal operating system.",
+  "summary": {
+    "start": "2026-04-28",
+    "current": "2026-05-02",
+    "commitsTracked": 76,
+    "majorPhases": 9,
+    "currentStage": "Self-documenting assistant core"
+  },
+  "metrics": [
+    {
+      "label": "Days of build acceleration",
+      "value": "5",
+      "note": "From first installable PWA commit to topic-profile memory."
+    },
+    {
+      "label": "Tracked upgrade commits",
+      "value": "76",
+      "note": "Grouped from git history through the growth-log minisite."
+    },
+    {
+      "label": "Memory buckets",
+      "value": "13",
+      "note": "Profile, preferences, teaching, business, sports, topic profiles, and more."
+    },
+    {
+      "label": "Specialist live domains",
+      "value": "5+",
+      "note": "Weather, MUIS, Gmail, Liverpool/F1, documents, classlists, and web links."
+    }
+  ],
+  "capabilityRings": [
+    {
+      "name": "Interface",
+      "score": 92,
+      "description": "Installable PWA, mobile cockpit, chat, files, dashboard, notifications, health surfaces."
+    },
+    {
+      "name": "Reliability",
+      "score": 86,
+      "description": "Railway guardrails, worker split, Redis requirement option, upload queue, memory pressure checks."
+    },
+    {
+      "name": "Context",
+      "score": 88,
+      "description": "Timetable, Google Calendar, MTL classlists, Drive references, file memory, topic profiles."
+    },
+    {
+      "name": "Live Knowledge",
+      "score": 82,
+      "description": "Weather, MUIS, Google News, Tavily search, fetch URL, structured Liverpool and F1 briefers."
+    },
+    {
+      "name": "Personalisation",
+      "score": 90,
+      "description": "Taste profile, stable memory buckets, project radar, sports preferences, new-interest profiles."
+    }
+  ],
+  "chapters": [
+    {
+      "date": "2026-04-28",
+      "era": "Inception",
+      "title": "Hira becomes installable",
+      "commit": "f4cdc70",
+      "tag": "PWA",
+      "summary": "H.I.R.A moved from a bot-shaped assistant toward a dedicated private app surface.",
+      "details": [
+        "Installable PWA introduced.",
+        "Railway start mode added for the PWA.",
+        "Agenda, chat formatting, grouped school calendar variables, and task surfaces became part of the app shell."
+      ],
+      "impact": "Anyone could now understand H.I.R.A as a personal cockpit, not just a Telegram command bot."
+    },
+    {
+      "date": "2026-04-28",
+      "era": "Cockpit",
+      "title": "The app gets a body",
+      "commit": "94a3428",
+      "tag": "Design",
+      "summary": "The PWA became visually and ergonomically distinctive: a cockpit, clock, notification controls, and branded H.I.R.A core.",
+      "details": [
+        "Mobile cockpit and home branding polished.",
+        "Notification states, clock, asset refresh, and installed-app behavior were refined.",
+        "Chat streaming and backend responsiveness improved."
+      ],
+      "impact": "H.I.R.A started feeling like a real daily-use system rather than a prototype page."
+    },
+    {
+      "date": "2026-04-29",
+      "era": "Personal Ops",
+      "title": "Hira learns to nudge, follow up, and carry files",
+      "commit": "df39e7f",
+      "tag": "Workflow",
+      "summary": "The assistant gained more practical work surfaces: attachments, Gmail-informed follow-ups, nudges in chat, and push reminders.",
+      "details": [
+        "Chat attachment uploads added.",
+        "Gmail details began powering email follow-ups.",
+        "Push reminders bridged into the PWA chat.",
+        "Railway memory usage and overnight jobs were hardened."
+      ],
+      "impact": "H.I.R.A became less passive: it could hold pending work and push useful reminders back into the app."
+    },
+    {
+      "date": "2026-04-30",
+      "era": "Dashboard Intelligence",
+      "title": "The daily workload dashboard takes shape",
+      "commit": "d8482d4",
+      "tag": "Dashboard",
+      "summary": "H.I.R.A started showing workload state instead of only answering direct questions.",
+      "details": [
+        "NEA weather arrived.",
+        "Marking load dashboards became class/work-type aware.",
+        "Daily score, workload trend, voice graph, signal module, and mobile dashboard states were refined.",
+        "Weather routing and header alignment improved."
+      ],
+      "impact": "The home screen became a scan-friendly operational view of Herwanto's day."
+    },
+    {
+      "date": "2026-05-01",
+      "era": "Grounding",
+      "title": "Hira becomes more careful with facts",
+      "commit": "3a7ccaf",
+      "tag": "Trust",
+      "summary": "The assistant gained stronger source discipline for prayer, location, schedule, and school data.",
+      "details": [
+        "MUIS prayer and khutbah behavior became source-grounded.",
+        "PWA memory guardrails and notification worker mode improved stability.",
+        "Async uploads and notification health tools were added.",
+        "MTL Drive, classlist context, score entry, and analysis tools arrived."
+      ],
+      "impact": "H.I.R.A became safer to trust for high-friction daily details: prayers, classlists, files, and score workflows."
+    },
+    {
+      "date": "2026-05-02",
+      "era": "Live Interests",
+      "title": "Sports and browsing stop being guesswork",
+      "commit": "982ecf3",
+      "tag": "Live Web",
+      "summary": "H.I.R.A learned to read links, respect current Liverpool/F1 context, and avoid stale sports corrections.",
+      "details": [
+        "Direct URL fetching added.",
+        "F1 and Liverpool preferences became first-class context.",
+        "Liverpool quick-route failure was fixed.",
+        "Structured Liverpool and F1 brief tools were added."
+      ],
+      "impact": "When Herwanto asks about current teams, line-ups, results, or rumours, H.I.R.A now knows to verify instead of bluffing."
+    },
+    {
+      "date": "2026-05-02",
+      "era": "Runtime Upgrade",
+      "title": "Hobby-plan architecture hardening",
+      "commit": "6120a05",
+      "tag": "Railway",
+      "summary": "The backend was tuned for Railway Hobby and made less fragile under real use.",
+      "details": [
+        "Chat/upload concurrency increased responsibly.",
+        "Upload jobs moved into a bounded queue.",
+        "Web scheduling separated from the worker service.",
+        "Redis can be required in production.",
+        "Admin status endpoint exposes runtime, queues, models, notifications, and integrations."
+      ],
+      "impact": "H.I.R.A gained a more reliable server shape: clearer ownership, better queues, and visible health."
+    },
+    {
+      "date": "2026-05-02",
+      "era": "Personal Memory",
+      "title": "Hira gets cleaner long-term memory",
+      "commit": "ea9b036",
+      "tag": "Memory",
+      "summary": "Memory was split into clearer buckets, then upgraded with topic profiles for new interests.",
+      "details": [
+        "Memory buckets added for teaching, business, sports, constraints, summaries, and topic profiles.",
+        "Model routing became configurable for quick, structured, agentic, and deep work.",
+        "Topic profiles now store what to track, preferred angle, live facts, stable context, and cadence."
+      ],
+      "impact": "New interests can become structured knowledge lenses instead of scattered notes."
+    },
+    {
+      "date": "2026-05-02",
+      "era": "Self-Documentation",
+      "title": "Hira gets a public growth story",
+      "commit": "growth-site",
+      "tag": "Growth Log",
+      "summary": "A dedicated minisite now charts H.I.R.A's growth from inception to current capability.",
+      "details": [
+        "Growth story added at /growth and /hira-growth.",
+        "Timeline, capability rings, current capabilities, and update protocol are driven by JSON data.",
+        "Future upgrades can append a chapter to pwa/hira-growth-data.json."
+      ],
+      "impact": "Anyone can now understand how much H.I.R.A has grown without reading the codebase or commit history."
+    }
+  ],
+  "currentCapabilities": [
+    "Installable private PWA with chat, agenda, tasks, Gmail, files, uploads, notifications, and dashboard views.",
+    "Telegram-compatible tool brain with calendar, reminders, marking, MTL classlists, Gmail, artifacts, weather, MUIS prayer/khutbah, news, web search, and URL reading.",
+    "Structured sports intelligence for Liverpool and F1.",
+    "Railway Hobby runtime profile with upload queue, memory guardrails, worker split, Redis production option, and admin status.",
+    "Long-term memory buckets and topic profiles for new interests.",
+    "Configurable model routing for quick replies, structured parsing, agentic work, and deep work."
+  ],
+  "updateProtocol": [
+    "Append a new chapter to pwa/hira-growth-data.json for every meaningful H.I.R.A upgrade.",
+    "Update summary.commitsTracked when major commits are added.",
+    "Adjust capabilityRings only when an upgrade changes a real capability, not for copy/UI polish.",
+    "Keep live facts out of permanent story text unless they are stable architecture facts."
+  ]
+}

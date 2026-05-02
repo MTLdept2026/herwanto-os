@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0e0e0b" />
+    <title>H.I.R.A Growth Log</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Doto:wght@400..900&family=Space+Grotesk:wght@400;500;700&family=Space+Mono:wght@400;700&family=VT323&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/static/hira-growth.css?v=20260502-1" />
+  </head>
+  <body>
+    <main class="growth-shell">
+      <header class="growth-hero">
+        <nav class="growth-nav" aria-label="H.I.R.A growth navigation">
+          <a class="brand-link" href="/">
+            <img src="/static/icon.svg" alt="" />
+            <span>H.I.R.A</span>
+          </a>
+          <a class="nav-link" href="#timeline">Timeline</a>
+          <a class="nav-link" href="#capabilities">Capabilities</a>
+          <a class="nav-link" href="#updates">Update Protocol</a>
+        </nav>
+
+        <section class="hero-grid">
+          <div class="hero-copy">
+            <p class="eyebrow">Assistant Evolution Log</p>
+            <h1>How H.I.R.A grew from helper to personal operating system.</h1>
+            <p id="growthSubtitle" class="hero-subtitle">Loading growth record...</p>
+          </div>
+          <div class="hero-panel" aria-label="Current H.I.R.A stage">
+            <div class="signal-orbit" aria-hidden="true">
+              <span></span><span></span><span></span><span></span>
+            </div>
+            <p class="eyebrow">Current Stage</p>
+            <strong id="currentStage">Loading</strong>
+            <div id="heroStats" class="hero-stats"></div>
+          </div>
+        </section>
+      </header>
+
+      <section class="metrics-band" aria-label="Growth metrics">
+        <div id="growthMetrics" class="metrics-grid"></div>
+      </section>
+
+      <section id="capabilities" class="section-block">
+        <div class="section-title">
+          <p class="eyebrow">Capability Map</p>
+          <h2>What changed under the surface</h2>
+        </div>
+        <div id="capabilityRings" class="ring-grid"></div>
+      </section>
+
+      <section id="timeline" class="section-block">
+        <div class="section-title">
+          <p class="eyebrow">Build Story</p>
+          <h2>From inception to current core</h2>
+        </div>
+        <div id="timelineList" class="timeline-list"></div>
+      </section>
+
+      <section class="section-block current-block">
+        <div class="section-title">
+          <p class="eyebrow">Now</p>
+          <h2>What H.I.R.A can explain about itself today</h2>
+        </div>
+        <ul id="currentCapabilities" class="capability-list"></ul>
+      </section>
+
+      <section id="updates" class="section-block update-block">
+        <div>
+          <p class="eyebrow">Maintenance Rule</p>
+          <h2>Every upgrade leaves a trail</h2>
+        </div>
+        <ol id="updateProtocol" class="update-list"></ol>
+      </section>
+    </main>
+
+    <script src="/static/hira-growth.js?v=20260502-1"></script>
+  </body>
+</html>

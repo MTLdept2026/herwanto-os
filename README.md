@@ -336,6 +336,8 @@ GamePlan is now in pilot mode with first-school onboarding as the next milestone
 
 The PWA is a Telegram-free interface for H.I.R.A. It can be installed from Chrome/Edge/Safari-compatible browsers on Android and macOS.
 
+H.I.R.A's growth story lives at `/growth` (also `/hira-growth`). The page is driven by `pwa/hira-growth-data.json`; append a chapter there whenever H.I.R.A gets a meaningful upgrade so the minisite stays current.
+
 Local run:
 ```bash
 python3 -m pip install -r requirements.txt

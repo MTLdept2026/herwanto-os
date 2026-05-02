@@ -74,7 +74,19 @@ _MEMORY_REJECT_RATIO = _env_float("HIRA_WEB_MEMORY_REJECT_RATIO", 0.92)
 _MEMORY_WATCHDOG_SECONDS = _env_int("HIRA_WEB_MEMORY_WATCHDOG_SECONDS", 45, minimum=10)
 _CHAT_MAX_TOKENS = _env_int("HIRA_WEB_CHAT_MAX_TOKENS", 3200, minimum=650)
 _WEB_INLINE_SCHEDULER = _env_bool("HIRA_WEB_INLINE_SCHEDULER", False)
-_STATIC_PATHS = {"/", "/healthz", "/manifest.webmanifest", "/service-worker.js", "/app.js", "/styles.css"}
+_STATIC_PATHS = {
+    "/",
+    "/growth",
+    "/hira-growth",
+    "/healthz",
+    "/manifest.webmanifest",
+    "/service-worker.js",
+    "/app.js",
+    "/styles.css",
+    "/hira-growth.css",
+    "/hira-growth.js",
+    "/hira-growth-data.json",
+}
 _UPLOAD_QUEUE: asyncio.Queue[dict] | None = None
 _UPLOAD_QUEUE_TASKS: list[asyncio.Task] = []
 
@@ -133,7 +145,22 @@ async def add_static_cache_headers(request: Request, call_next):
             headers={"Retry-After": "20"},
         )
     response = await call_next(request)
-    if request.url.path in {"/", "/service-worker.js", "/app.js", "/styles.css", "/static/app.js", "/static/styles.css"}:
+    if request.url.path in {
+        "/",
+        "/growth",
+        "/hira-growth",
+        "/service-worker.js",
+        "/app.js",
+        "/styles.css",
+        "/hira-growth.css",
+        "/hira-growth.js",
+        "/hira-growth-data.json",
+        "/static/app.js",
+        "/static/styles.css",
+        "/static/hira-growth.css",
+        "/static/hira-growth.js",
+        "/static/hira-growth-data.json",
+    }:
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
@@ -614,6 +641,12 @@ def index():
     return FileResponse(PWA_DIR / "index.html")
 
 
+@app.get("/growth")
+@app.get("/hira-growth")
+def growth_site():
+    return FileResponse(PWA_DIR / "hira-growth.html")
+
+
 @app.get("/manifest.webmanifest")
 def manifest():
     return FileResponse(PWA_DIR / "manifest.webmanifest", media_type="application/manifest+json")
@@ -632,6 +665,21 @@ def root_styles():
 @app.get("/app.js")
 def root_app_js():
     return FileResponse(PWA_DIR / "app.js", media_type="application/javascript")
+
+
+@app.get("/hira-growth.css")
+def root_growth_css():
+    return FileResponse(PWA_DIR / "hira-growth.css", media_type="text/css")
+
+
+@app.get("/hira-growth.js")
+def root_growth_js():
+    return FileResponse(PWA_DIR / "hira-growth.js", media_type="application/javascript")
+
+
+@app.get("/hira-growth-data.json")
+def root_growth_data():
+    return FileResponse(PWA_DIR / "hira-growth-data.json", media_type="application/json")
 
 
 @app.get("/api/home")
