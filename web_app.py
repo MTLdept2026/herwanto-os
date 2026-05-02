@@ -838,7 +838,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
     if bot.re.search(r"\b(?:work|moe|school|personal)\s+(?:gmail|email|emails|mail)\b", message, bot.re.I):
         account_hint, _ = bot._extract_gmail_account_from_text(message)
         user_content = f"{message}\n\n[Email account hint: use account=\"{account_hint}\" for Gmail tools.]"
-    user_content = f"{user_content}{bot.source_discipline_hint(message)}"
+    user_content = f"{user_content}{bot.intent_lens_hint(message)}{bot.source_discipline_hint(message)}"
     location_context = _device_location_context(location)
     if location_context:
         user_content = f"{user_content}{location_context}"

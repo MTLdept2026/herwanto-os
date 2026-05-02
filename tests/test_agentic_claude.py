@@ -396,6 +396,76 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(review["buckets"]["source_notes"]["count"], 2)
         self.assertEqual(review["buckets"]["source_notes"]["recent"], ["Source note B"])
 
+    def test_relevant_memory_retrieval_prioritises_corrections(self):
+        fake_memory = {category: [] for category in bot.MEMORY_DISPLAY_CATEGORIES}
+        fake_memory["correction_ledger"] = [
+            {"correction": "When Herwanto asks about HIRA upgrades, update the growth log after changes."}
+        ]
+        fake_memory["topic_profiles"] = ["Liverpool context should use live sources."]
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "get_memory", return_value=fake_memory),
+        ):
+            recalled = bot.retrieve_relevant_memory("upgrade HIRA memory and remember growth log", limit=2)
+            hint = bot.intent_lens_hint("upgrade HIRA memory and remember growth log")
+
+        self.assertEqual(recalled[0]["category"], "correction_ledger")
+        self.assertIn("growth log", recalled[0]["text"])
+        self.assertIn("Likely intent", hint)
+        self.assertIn("correction_ledger", hint)
+
+    def test_proactive_intelligence_flags_packed_due_marking_day(self):
+        load = {
+            "today": {
+                "score": 76,
+                "load": "Packed",
+                "marking_scripts": 22,
+            },
+            "days": [
+                {"date": "2026-05-02", "score": 76, "label": "Today", "load": "Packed"},
+                {"date": "2026-05-03", "score": 30, "label": "Sun", "load": "Pretty chill"},
+            ],
+        }
+        tasks = {
+            "items": [
+                {
+                    "id": "7",
+                    "description": "Submit CCA attendance",
+                    "due": "2026-05-03",
+                }
+            ]
+        }
+        now = bot.SGT.localize(bot.datetime(2026, 5, 2, 9, 0))
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot, "build_daily_load", return_value=load),
+            patch.object(bot, "build_task_structured", return_value=tasks),
+            patch.object(bot.gs, "get_followups", return_value=[]),
+        ):
+            insights = bot.build_proactive_intelligence_insights(now=now)
+
+        self.assertTrue(insights)
+        self.assertEqual(insights[0]["title"], "Workload pinch point")
+        self.assertIn("22 unmarked", insights[0]["body"])
+
+    def test_due_proactive_intelligence_deduplicates_seen_items(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 2, 9, 0))
+        insight = {
+            "id": "2026-05-02:quiet_window",
+            "title": "Quiet window",
+            "body": "Move one deeper project.",
+            "priority": "low",
+        }
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot, "build_proactive_intelligence_insights", return_value=[insight]),
+            patch.object(bot.gs, "get_config", return_value=json.dumps({insight["id"]: now.isoformat()})),
+        ):
+            self.assertEqual(bot.due_proactive_intelligence(now), [])
+
     def test_runtime_status_contains_observability_sections(self):
         fake_memory = {category: [] for category in bot.MEMORY_DISPLAY_CATEGORIES}
         fake_memory["sports"] = ["Liverpool"]

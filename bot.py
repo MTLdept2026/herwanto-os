@@ -186,6 +186,7 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
 
 JOB_INTERVALS = {
     "proactive_nudges": _env_int("HIRA_PROACTIVE_NUDGE_INTERVAL", 60, 30),
+    "proactive_intelligence": _env_int("HIRA_PROACTIVE_INTELLIGENCE_INTERVAL", 21600, 1800),
     "daily_checkins": _env_int("HIRA_DAILY_CHECKIN_INTERVAL", 300, 60),
     "followups": _env_int("HIRA_FOLLOWUP_INTERVAL", 3600, 300),
 }
@@ -391,6 +392,141 @@ def build_memory_review(limit: int = 5) -> dict:
         ],
     }
 
+
+def _memory_item_text(item) -> str:
+    if isinstance(item, dict):
+        parts = []
+        for key in ("correction", "learned", "next_behavior", "topic", "insight", "summary", "text", "stable_context", "preferred_angle"):
+            value = item.get(key)
+            if value:
+                parts.append(str(value))
+        if not parts:
+            parts = [json.dumps(item, ensure_ascii=False)]
+        return " | ".join(parts)
+    return str(item)
+
+
+def _intent_tokens(text: str) -> set[str]:
+    stop = {
+        "the", "and", "for", "you", "your", "what", "when", "where", "how", "can", "could",
+        "would", "should", "this", "that", "with", "from", "have", "need", "want", "like",
+        "hira", "please", "pls", "about", "into", "just", "really", "today", "tomorrow",
+    }
+    return {
+        token for token in re.findall(r"[a-z0-9][a-z0-9_.@-]*", (text or "").lower())
+        if len(token) > 2 and token not in stop
+    }
+
+
+def retrieve_relevant_memory(text: str, limit: int = 6) -> list[dict]:
+    if not google_ok():
+        return []
+    tokens = _intent_tokens(text)
+    if not tokens and len((text or "").strip()) < 8:
+        return []
+    try:
+        memory = gs.get_memory()
+    except Exception as exc:
+        logger.debug(f"Relevant memory retrieval failed: {exc}")
+        return []
+
+    priority = {
+        "correction_ledger": 12,
+        "constraints": 10,
+        "self_reflections": 8,
+        "preferences": 7,
+        "topic_profiles": 7,
+        "recent_summaries": 5,
+        "projects": 5,
+        "teaching": 4,
+        "business": 4,
+        "sports": 4,
+        "source_notes": 4,
+        "people": 3,
+        "places": 2,
+        "files": 1,
+        "templates": 1,
+        "profile": 1,
+    }
+    scored = []
+    for category in MEMORY_DISPLAY_CATEGORIES:
+        items = list(memory.get(category, []))
+        for recency, item in enumerate(items[-60:]):
+            rendered = _clip_memory_text(_memory_item_text(item), 420)
+            lower = rendered.lower()
+            overlap = sum(1 for token in tokens if token in lower)
+            intent_bonus = 0
+            if category in {"correction_ledger", "constraints", "self_reflections", "preferences"} and re.search(
+                r"\b(prefer|remember|correct|wrong|mistake|style|upgrade|improve|mean|meant|context)\b",
+                text or "",
+                re.I,
+            ):
+                intent_bonus = 4
+            if category in {"topic_profiles", "sports", "source_notes"} and re.search(
+                r"\b(latest|current|track|follow|interest|liverpool|lfc|f1|news|rumou?r)\b",
+                text or "",
+                re.I,
+            ):
+                intent_bonus = 4
+            score = priority.get(category, 0) + (overlap * 5) + intent_bonus + min(3, recency // 12)
+            if score >= 8 and (overlap or intent_bonus or category in {"constraints", "correction_ledger"}):
+                scored.append({
+                    "category": category,
+                    "text": rendered,
+                    "score": score,
+                })
+    scored.sort(key=lambda item: (item["score"], item["category"]), reverse=True)
+    return scored[: max(1, min(int(limit or 6), 12))]
+
+
+def infer_intent_lens(text: str) -> dict:
+    clean = " ".join((text or "").split())
+    lower = clean.lower()
+    if re.search(r"\b(class|lesson|student|marking|school|mtl|nbss|worksheet|assessment)\b", lower):
+        hat = "educator"
+    elif re.search(r"\b(code|debug|app|ios|android|react|vite|capacitor|deploy|github|api)\b", lower):
+        hat = "developer"
+    elif re.search(r"\b(gameplan|ruh|rūḥ|business|client|pricing|market|product|pitch)\b", lower):
+        hat = "entrepreneur"
+    else:
+        hat = "personal"
+
+    if re.search(r"\b(what do i do|priority|prioritise|prioritize|overwhelmed|packed|busy|workload|focus)\b", lower):
+        likely = "prioritise the next practical move"
+    elif re.search(r"\b(upgrade|improve|better|review|architecture|self)\b", lower):
+        likely = "improve H.I.R.A's own behaviour or architecture"
+    elif re.search(r"\b(latest|current|news|rumou?r|today|now)\b", lower):
+        likely = "answer with live-source discipline"
+    elif re.search(r"\b(remember|prefer|style|mean|meant|correction|wrong)\b", lower):
+        likely = "apply or store durable personal context"
+    else:
+        likely = "answer the direct request while preserving context"
+
+    return {
+        "hat": hat,
+        "likely_intent": likely,
+        "stance": "be concise, use relevant memory, and distinguish literal wording from likely intent",
+    }
+
+
+def intent_lens_hint(text: str) -> str:
+    lens = infer_intent_lens(text)
+    memories = retrieve_relevant_memory(text, limit=5)
+    lines = [
+        "\n\n[Intent lens:",
+        f"- Inferred hat: {lens['hat']}.",
+        f"- Likely intent: {lens['likely_intent']}.",
+        f"- Response stance: {lens['stance']}.",
+    ]
+    if memories:
+        lines.append("- Relevant memory to consider:")
+        for item in memories:
+            lines.append(f"  - {item['category']}: {item['text']}")
+    else:
+        lines.append("- No highly relevant stored memory found; do not pretend otherwise.")
+    lines.append("Use this lens quietly. Do not mention it unless Herwanto asks how you reasoned.]")
+    return "\n".join(lines)
+
 def _rss_mb() -> float:
     try:
         with open("/proc/self/status", "r", encoding="utf-8") as fh:
@@ -540,6 +676,7 @@ Personality:
 - Never be mean-spirited, insulting, crude, or sarcastic at the user's expense. Punch up at chaos, bureaucracy, vague requirements, and bad error messages.
 - Protect his attention: summarise, prioritise, and make the next action obvious.
 - Notice patterns across school, CCA, projects, deadlines, and personal preferences.
+- Use the intent lens and relevant memory context to infer what Herwanto likely means, not only the literal words.
 - When he is stressed or overloaded, steady the room first, then give a short practical plan.
 - When he is building something, be direct and product-minded.
 - When he is teaching, be precise, culturally aware, and DBP-clean for Bahasa Melayu.
@@ -2028,6 +2165,144 @@ def build_daily_load(days: int = 7) -> dict:
         "next_week": next_week,
         "rest_note": _rest_load_note(previous_week, next_week),
     }
+
+
+def _proactive_seen_key(now: datetime | None = None) -> str:
+    current = now or datetime.now(SGT)
+    return f"proactive_intelligence_seen:{current.strftime('%Y-%m')}"
+
+
+def _get_proactive_seen(now: datetime | None = None) -> dict:
+    try:
+        raw = gs.get_config(_proactive_seen_key(now)) or "{}"
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _mark_proactive_seen(insight_id: str, now: datetime | None = None):
+    current = now or datetime.now(SGT)
+    seen = _get_proactive_seen(current)
+    seen[str(insight_id)] = current.isoformat()
+    try:
+        gs.set_config(_proactive_seen_key(current), json.dumps(seen, ensure_ascii=False))
+    except Exception as exc:
+        logger.warning(f"Could not persist proactive intelligence seen state: {exc}")
+
+
+def _task_due_days(task: dict, today: date) -> int:
+    try:
+        return (date.fromisoformat(task.get("due", "")) - today).days
+    except Exception:
+        return 999
+
+
+def build_proactive_intelligence_insights(days: int = 7, now: datetime | None = None) -> list[dict]:
+    """Build high-signal proactive suggestions from workload, due items, marking, and follow-ups."""
+    if not google_ok():
+        return []
+    current = now or datetime.now(SGT)
+    today = current.date()
+    insights: list[dict] = []
+
+    try:
+        load = build_daily_load(days)
+    except Exception as exc:
+        logger.warning(f"Proactive load scan failed: {exc}")
+        load = {}
+
+    today_load = load.get("today", {}) if isinstance(load, dict) else {}
+    next_days = load.get("days", []) if isinstance(load, dict) else []
+    marking_scripts = int(today_load.get("marking_scripts", 0) or 0)
+    today_score = int(today_load.get("score", 0) or 0)
+
+    try:
+        tasks = build_task_structured(days).get("items", [])
+    except Exception as exc:
+        logger.warning(f"Proactive task scan failed: {exc}")
+        tasks = []
+    urgent_tasks = [task for task in tasks if _task_due_days(task, today) <= 2]
+
+    try:
+        followups = gs.get_followups()
+    except Exception:
+        followups = []
+    due_followups = [item for item in followups if item.get("due_date", "9999-12-31") <= (today + timedelta(days=1)).isoformat()]
+
+    if today_score >= 58 and (urgent_tasks or marking_scripts):
+        task_bits = []
+        if urgent_tasks:
+            task_bits.append(f"{len(urgent_tasks)} due item(s) within 48 hours")
+        if marking_scripts:
+            task_bits.append(f"{marking_scripts} unmarked script(s)")
+        insights.append({
+            "id": f"{today.isoformat()}:packed_due_marking",
+            "kind": "workload",
+            "priority": "high" if today_score >= 82 else "medium",
+            "title": "Workload pinch point",
+            "body": (
+                f"Today looks {str(today_load.get('load', 'packed')).lower()} and has "
+                f"{', '.join(task_bits)}. Clear one small due item or marking slice before the day gets noisy."
+            ),
+        })
+
+    future_spike = max(next_days[1: min(len(next_days), days)], key=lambda item: int(item.get("score", 0) or 0), default=None)
+    if future_spike and int(future_spike.get("score", 0) or 0) >= 70:
+        spike_date = future_spike.get("date", "")
+        before_spike = []
+        for task in tasks:
+            due = task.get("due", "")
+            if due and due <= spike_date and _task_due_days(task, today) >= 0:
+                before_spike.append(task)
+        if before_spike:
+            first = before_spike[0]
+            insights.append({
+                "id": f"{spike_date}:pre_spike_task:{first.get('id', 'x')}",
+                "kind": "planning",
+                "priority": "medium",
+                "title": "Pre-empt the packed day",
+                "body": (
+                    f"{future_spike.get('label', spike_date)} is shaping up as {str(future_spike.get('load', 'packed')).lower()}. "
+                    f"Move this before then if possible: {first.get('description', 'one due item')}."
+                ),
+            })
+
+    if due_followups:
+        followup = sorted(due_followups, key=lambda item: item.get("due_date", ""))[0]
+        person = f"{followup.get('person')} - " if followup.get("person") else ""
+        insights.append({
+            "id": f"{today.isoformat()}:followup:{followup.get('id', 'x')}",
+            "kind": "followup",
+            "priority": "medium",
+            "title": "Follow-up due",
+            "body": f"{person}{followup.get('topic', 'A follow-up')} is due by {followup.get('due_date', today.isoformat())}.",
+        })
+
+    if not insights and current.hour < 11 and today_score <= 34:
+        insights.append({
+            "id": f"{today.isoformat()}:quiet_window",
+            "kind": "opportunity",
+            "priority": "low",
+            "title": "Quiet window",
+            "body": "Today looks lighter on paper. Good window to move one deeper project before admin expands to fill the room.",
+        })
+
+    order = {"high": 0, "medium": 1, "low": 2}
+    unique = {}
+    for insight in insights:
+        unique.setdefault(insight["id"], insight)
+    return sorted(unique.values(), key=lambda item: (order.get(item.get("priority", "medium"), 1), item["id"]))[:3]
+
+
+def due_proactive_intelligence(now: datetime | None = None) -> list[dict]:
+    current = now or datetime.now(SGT)
+    if current.hour < _env_int("HIRA_PROACTIVE_INTELLIGENCE_START_HOUR", 6, 0):
+        return []
+    if current.hour > _env_int("HIRA_PROACTIVE_INTELLIGENCE_END_HOUR", 21, 0):
+        return []
+    seen = _get_proactive_seen(current)
+    return [item for item in build_proactive_intelligence_insights(now=current) if item["id"] not in seen]
 
 def _news_topics():
     if google_ok():
@@ -4628,6 +4903,7 @@ async def should_route_quick_pwa_chat(messages: list[dict], message: str) -> boo
 async def stream_quick_pwa_reply(messages: list[dict], message: str):
     context = messages[-6:]
     prompt_messages = context + [{"role": "user", "content": message}]
+    lens = intent_lens_hint(message)
     try:
         async with async_claude.messages.stream(
             model=QUICK_MODEL,
@@ -4636,6 +4912,7 @@ async def stream_quick_pwa_reply(messages: list[dict], message: str):
                 "You are H.I.R.A, Herwanto's concise personal assistant. "
                 "Answer lightweight chat naturally in one or two short sentences. "
                 "Do not use tools or pretend to have checked live data."
+                f"{lens}"
             ),
             messages=prompt_messages,
         ) as stream:
@@ -5379,7 +5656,7 @@ async def _process_user_text(update, context, text: str):
     if re.search(r"\b(?:work|moe|school|personal)\s+(?:gmail|email|emails|mail)\b", text, re.I):
         account_hint, _ = _extract_gmail_account_from_text(text)
         user_content = f"{text}\n\n[Email account hint: use account=\"{account_hint}\" for Gmail tools.]"
-    user_content = f"{user_content}{source_discipline_hint(text)}"
+    user_content = f"{user_content}{intent_lens_hint(text)}{source_discipline_hint(text)}"
     history.append({"role": "user", "content": user_content})
     if len(history) > MAX_TURNS:
         # Summarise the about-to-be-dropped portion before trimming
@@ -5572,6 +5849,34 @@ async def proactive_nudges_job(context):
         logger.error(f"Proactive nudge error: {e}")
     finally:
         _finish_background_job("proactive_nudges")
+
+
+async def proactive_intelligence_job(context):
+    if not google_ok():
+        return
+    if not _acquire_job_lock("proactive_intelligence", max(900, JOB_INTERVALS["proactive_intelligence"] - 30)):
+        return
+    try:
+        _log_memory("before proactive_intelligence")
+        now = datetime.now(SGT)
+        for insight in due_proactive_intelligence(now):
+            body = insight.get("body", "")
+            if not body:
+                continue
+            text = f"*{insight.get('title', 'H.I.R.A heads-up')}*\n\n{body}"
+            if context:
+                await _send_telegram_notification(context, text)
+            _queue_app_notification(
+                "update",
+                insight.get("title", "H.I.R.A heads-up"),
+                body,
+                source=f"proactive_intelligence:{insight['id']}",
+            )
+            _mark_proactive_seen(insight["id"], now)
+    except Exception as e:
+        logger.error(f"Proactive intelligence error: {e}")
+    finally:
+        _finish_background_job("proactive_intelligence")
 
 async def daily_checkins_job(context):
     if not google_ok():
@@ -5777,6 +6082,12 @@ async def run_pwa_notification_worker():
             proactive_nudges_job,
         )),
         asyncio.create_task(_pwa_worker_repeating_loop(
+            "proactive_intelligence",
+            JOB_INTERVALS["proactive_intelligence"],
+            15,
+            proactive_intelligence_job,
+        )),
+        asyncio.create_task(_pwa_worker_repeating_loop(
             "daily_checkins",
             JOB_INTERVALS["daily_checkins"],
             20,
@@ -5893,6 +6204,13 @@ def main():
         interval=JOB_INTERVALS["proactive_nudges"],
         first=10,
         name="proactive_nudges",
+        job_kwargs={"coalesce": True, "max_instances": 1},
+    )
+    jq.run_repeating(
+        proactive_intelligence_job,
+        interval=JOB_INTERVALS["proactive_intelligence"],
+        first=15,
+        name="proactive_intelligence",
         job_kwargs={"coalesce": True, "max_instances": 1},
     )
     jq.run_repeating(

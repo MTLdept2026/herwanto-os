@@ -5,9 +5,9 @@
   "summary": {
     "start": "2026-04-28",
     "current": "2026-05-02",
-    "commitsTracked": 95,
-    "majorPhases": 14,
-    "currentStage": "Hardened private core"
+    "commitsTracked": 96,
+    "majorPhases": 15,
+    "currentStage": "Proactive context intelligence"
   },
   "metrics": [
     {
@@ -17,7 +17,7 @@
     },
     {
       "label": "Tracked upgrade commits",
-      "value": "95",
+      "value": "96",
       "note": "Grouped from git history through the growth-log minisite."
     },
     {
@@ -44,8 +44,8 @@
     },
     {
       "name": "Context",
-      "score": 88,
-      "description": "Timetable, Google Calendar, MTL classlists, Drive references, file memory, topic profiles, and conversation summaries."
+      "score": 91,
+      "description": "Timetable, Google Calendar, MTL classlists, Drive references, file memory, topic profiles, conversation summaries, relevant-memory retrieval, and intent lensing."
     },
     {
       "name": "Live Knowledge",
@@ -54,8 +54,8 @@
     },
     {
       "name": "Self-Improvement",
-      "score": 87,
-      "description": "Priority-weighted memory prompt, implicit correction detection, weekly consolidation job, conversation summarisation into recent_summaries, and /forget confirmation gate."
+      "score": 90,
+      "description": "Priority-weighted memory prompt, relevant recall, intent lens, proactive workload insights, implicit correction detection, weekly consolidation, and conversation summarisation."
     }
   ],
   "chapters": [
@@ -266,6 +266,22 @@
         "Public /healthz now exposes only minimal status while detailed runtime diagnostics remain behind /api/admin/status."
       ],
       "impact": "H.I.R.A now behaves more like a private operating system: missing security config stops access instead of opening it, abuse attempts are slowed earlier, and diagnostic detail stays behind the token."
+    },
+    {
+      "date": "2026-05-02",
+      "era": "Proactive Context Intelligence",
+      "title": "Hira starts noticing before being asked",
+      "commit": "proactive-context-v1",
+      "tag": "Proactive Intelligence",
+      "summary": "H.I.R.A gained a first proactive intelligence layer plus an intent lens that retrieves relevant memory before answering.",
+      "details": [
+        "New intent lens infers Herwanto's likely hat and intent, then attaches relevant memory from corrections, constraints, reflections, summaries, topic profiles, projects, and source notes.",
+        "PWA and Telegram chat now receive this memory-aware lens before source-discipline hints, improving continuity across conversations.",
+        "Quick PWA replies also receive the lens, so lightweight chat can still respect durable context without pretending to use tools.",
+        "Proactive intelligence scanner now checks workload, due tasks, marking load, follow-ups, quiet windows, and upcoming packed days.",
+        "Deduplicated proactive insights run in the PWA worker and Telegram job queue, with configurable interval and active hours."
+      ],
+      "impact": "H.I.R.A can now connect past lessons to present requests and surface early heads-ups like packed-day task pressure or marking pile collisions without waiting for Herwanto to ask."
     }
   ],
   "currentCapabilities": [
@@ -274,6 +290,8 @@
     "Structured sports intelligence for Liverpool and F1.",
     "Railway Hobby runtime profile with upload queue, memory guardrails, worker split, Redis production option, and admin status.",
     "Long-term memory buckets, topic profiles for new interests, correction ledger, self-reflection notes, source-backed research notes, and conversation summaries.",
+    "Intent lens with relevant-memory retrieval before answers, including quick PWA replies.",
+    "Proactive intelligence scanner for workload pinch points, marking pressure, follow-ups, quiet windows, and upcoming packed days.",
     "Priority-weighted memory prompt: corrections and constraints always visible; low-signal buckets trimmed.",
     "Closed learning loop: implicit + explicit correction capture → weekly consolidation job → promoted to preferences/constraints.",
     "Security: Telegram fail-closed allowlist, web API fail-closed auth, invalid-token throttling, safer notification rendering, /forget confirmation gate, and file upload size guards.",
