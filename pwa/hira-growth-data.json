@@ -5,25 +5,25 @@
   "summary": {
     "start": "2026-04-28",
     "current": "2026-05-02",
-    "commitsTracked": 76,
-    "majorPhases": 9,
-    "currentStage": "Self-documenting assistant core"
+    "commitsTracked": 77,
+    "majorPhases": 10,
+    "currentStage": "Reflective learning core"
   },
   "metrics": [
     {
       "label": "Days of build acceleration",
       "value": "5",
-      "note": "From first installable PWA commit to topic-profile memory."
+      "note": "From first installable PWA commit to reflection-aware memory."
     },
     {
       "label": "Tracked upgrade commits",
-      "value": "76",
+      "value": "77",
       "note": "Grouped from git history through the growth-log minisite."
     },
     {
       "label": "Memory buckets",
-      "value": "13",
-      "note": "Profile, preferences, teaching, business, sports, topic profiles, and more."
+      "value": "15",
+      "note": "Profile, preferences, teaching, business, sports, topic profiles, corrections, reflections, and more."
     },
     {
       "label": "Specialist live domains",
@@ -54,8 +54,8 @@
     },
     {
       "name": "Personalisation",
-      "score": 90,
-      "description": "Taste profile, stable memory buckets, project radar, sports preferences, new-interest profiles."
+      "score": 92,
+      "description": "Taste profile, stable memory buckets, project radar, sports preferences, new-interest profiles, corrections, and reflections."
     }
   ],
   "chapters": [
@@ -190,6 +190,20 @@
         "Future upgrades can append a chapter to pwa/hira-growth-data.json."
       ],
       "impact": "Anyone can now understand how much H.I.R.A has grown without reading the codebase or commit history."
+    },
+    {
+      "date": "2026-05-02",
+      "era": "Reflective Learning",
+      "title": "Hira starts learning from corrections",
+      "commit": "reflective-core",
+      "tag": "Self-Reflection",
+      "summary": "H.I.R.A gained a deterministic learning loop for corrections and meaningful chats.",
+      "details": [
+        "Correction ledger added as high-priority memory.",
+        "Self-reflection notes now capture important learning moments from PWA and Telegram chats.",
+        "The system prompt now treats corrections and reflections as durable behaviour guidance."
+      ],
+      "impact": "When Herwanto corrects H.I.R.A or introduces an important direction, that lesson can persist and shape future answers."
     }
   ],
   "currentCapabilities": [
@@ -197,7 +211,7 @@
     "Telegram-compatible tool brain with calendar, reminders, marking, MTL classlists, Gmail, artifacts, weather, MUIS prayer/khutbah, news, web search, and URL reading.",
     "Structured sports intelligence for Liverpool and F1.",
     "Railway Hobby runtime profile with upload queue, memory guardrails, worker split, Redis production option, and admin status.",
-    "Long-term memory buckets and topic profiles for new interests.",
+    "Long-term memory buckets, topic profiles for new interests, correction ledger, and self-reflection notes.",
     "Configurable model routing for quick replies, structured parsing, agentic work, and deep work."
   ],
   "updateProtocol": [

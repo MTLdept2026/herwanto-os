@@ -821,6 +821,12 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             reply_text = final_text or "".join(reply_parts).strip() or "Done."
             history.append({"role": "assistant", "content": reply_text})
             bot.save_history(history_key, history[-bot.MAX_TURNS:])
+            try:
+                recorded = bot.record_chat_learning_event(message, reply_text, source="pwa")
+                if recorded:
+                    yield sse({"type": "learning", "count": len(recorded), "kinds": [item["type"] for item in recorded]})
+            except Exception as exc:
+                bot.logger.warning(f"PWA learning event failed: {exc}")
             yield sse(timing("saved"))
             yield sse({"type": "saved"})
         except Exception as exc:

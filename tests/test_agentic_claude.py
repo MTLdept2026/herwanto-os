@@ -250,6 +250,8 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("constraints", bot.gs.DEFAULT_MEMORY)
         self.assertIn("recent_summaries", bot.gs.DEFAULT_MEMORY)
         self.assertIn("topic_profiles", bot.gs.DEFAULT_MEMORY)
+        self.assertIn("correction_ledger", bot.gs.DEFAULT_MEMORY)
+        self.assertIn("self_reflections", bot.gs.DEFAULT_MEMORY)
 
         with (
             patch.object(bot.gs, "get_config", return_value=""),
@@ -258,6 +260,15 @@ class AgenticClaudeTests(unittest.TestCase):
             memory = bot.gs.add_memory("lfc", "Liverpool context belongs here")
 
         self.assertIn("Liverpool context belongs here", memory["sports"])
+        self.assertTrue(set_config.called)
+
+        with (
+            patch.object(bot.gs, "get_config", return_value=""),
+            patch.object(bot.gs, "set_config") as set_config,
+        ):
+            memory = bot.gs.add_memory("mistake", "Do not repeat this correction")
+
+        self.assertIn("Do not repeat this correction", memory["correction_ledger"])
         self.assertTrue(set_config.called)
 
     def test_topic_profile_storage_replaces_by_topic(self):
@@ -314,6 +325,26 @@ class AgenticClaudeTests(unittest.TestCase):
             }))
 
         self.assertIn("Created topic profile: MotoGP", result)
+
+    def test_chat_learning_event_records_correction_and_reflection(self):
+        store = {}
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "get_config", side_effect=lambda key: store.get(key, "")),
+            patch.object(bot.gs, "set_config", side_effect=lambda key, value: store.__setitem__(key, value)),
+        ):
+            recorded = bot.record_chat_learning_event(
+                "Actually Hira, Wirtz and Isak are Liverpool context now.",
+                "Got it.",
+                source="test",
+            )
+
+        self.assertEqual({item["type"] for item in recorded}, {"correction", "self_reflection"})
+        memory = json.loads(store["assistant_memory"])
+        self.assertEqual(len(memory["correction_ledger"]), 1)
+        self.assertEqual(len(memory["self_reflections"]), 1)
+        self.assertIn("Wirtz and Isak", memory["correction_ledger"][0])
 
     def test_runtime_status_contains_observability_sections(self):
         fake_memory = {category: [] for category in bot.MEMORY_DISPLAY_CATEGORIES}

@@ -170,6 +170,8 @@ MEMORY_DISPLAY_CATEGORIES = (
     "constraints",
     "recent_summaries",
     "topic_profiles",
+    "correction_ledger",
+    "self_reflections",
 )
 
 def get_history(user_id):
@@ -458,6 +460,8 @@ Rules:
 - When the user pastes a web link or asks you to read/check a URL, call fetch_url. If fetch_url fails or the page is paywalled/dynamic, say what failed and use web_search/get_latest_news for corroborating public sources where available.
 - When the user asks about weather, temperature, high/low temp, hot/cold conditions, rain, forecast, haze, PSI, air quality, umbrella, or whether it will rain in Singapore — call get_nea_weather before answering. If no area is specified, use Yishun. Weather answers must include available temperature, humidity, PSI/PM2.5 air quality, 2-hour nowcast, and 24-hour forecast details.
 - When the user says "remember", "note that", or gives stable preferences/facts about himself — call remember_user_info.
+- Treat Correction_Ledger memory as high-priority. If it conflicts with older memory, follow the correction and do not repeat the old mistake.
+- Treat Self_Reflections memory as your own learning journal: use it to improve future behaviour, source discipline, and follow-through.
 - When the user says they have a new interest, are getting into a topic, want H.I.R.A to track/learn/follow something, or asks to build a beginner map for a new topic — call create_topic_profile. Store what to track, preferred angle, which facts should be live-checked, and stable background context. Do not store volatile standings/results/prices as permanent facts; mark those as live_facts.
 - When the user gives a project progress update — call update_project_status.
 - When the user asks to follow up with someone later, call create_followup.
@@ -1286,6 +1290,77 @@ def _clip_memory_text(value: str, limit: int = 1200) -> str:
     if len(clean) <= limit:
         return clean
     return clean[:limit - 3].rstrip() + "..."
+
+def _looks_like_correction(text: str) -> bool:
+    clean = " ".join((text or "").lower().split())
+    if not clean:
+        return False
+    return bool(re.search(
+        r"\b("
+        r"actually|correction|correct that|not quite|not really|wrong|incorrect|mistake|"
+        r"you got|you said|you missed|you forgot|don't say|dont say|should know|"
+        r"needs to know|lost when it comes to|out of the loop|still a fav|still a favourite|"
+        r"still a favorite"
+        r")\b",
+        clean,
+    ))
+
+def _looks_reflection_worthy(text: str) -> bool:
+    clean = " ".join((text or "").lower().split())
+    if not clean:
+        return False
+    return _looks_like_correction(clean) or bool(re.search(
+        r"\b("
+        r"new interest|new topic|getting into|picked up|deep dive|track this|follow this|"
+        r"learn this|remember|upgrade|improve|architecture|brain|self aware|self-aware|"
+        r"knowledge base|web|browse|live update|current|latest|lineups?|standings|rumou?rs?"
+        r")\b",
+        clean,
+    ))
+
+def record_chat_learning_event(user_text: str, assistant_text: str = "", source: str = "chat") -> list[dict]:
+    if not google_ok():
+        return []
+    user_summary = _clip_memory_text(user_text, 360)
+    assistant_summary = _clip_memory_text(assistant_text, 260)
+    if not user_summary or not _looks_reflection_worthy(user_summary):
+        return []
+
+    now = datetime.now(SGT).strftime("%Y-%m-%d %H:%M SGT")
+    recorded: list[dict] = []
+    try:
+        if _looks_like_correction(user_summary):
+            correction = gs.add_correction({
+                "date": now,
+                "source": source,
+                "correction": user_summary,
+                "assistant_response": assistant_summary,
+                "priority": "high",
+            })
+            recorded.append({"type": "correction", "entry": correction})
+    except Exception as exc:
+        logger.warning(f"Could not record correction learning event: {exc}")
+
+    try:
+        behavior = (
+            "Before answering similar future requests, check correction_ledger and use live/source-backed tools "
+            "when the fact may have changed."
+        )
+        if re.search(r"\b(new interest|new topic|getting into|picked up|deep dive|track this|follow this|learn this)\b", user_summary, re.I):
+            behavior = "Build or update a topic profile, separate stable context from live facts, and offer a beginner map when useful."
+        elif re.search(r"\b(upgrade|improve|architecture|brain|self aware|self-aware|knowledge base)\b", user_summary, re.I):
+            behavior = "Record what changed, update the growth log when the upgrade is meaningful, and preserve the lesson for future design decisions."
+        reflection = gs.add_self_reflection({
+            "date": now,
+            "source": source,
+            "trigger": user_summary,
+            "learned": f"Herwanto signalled this was important: {user_summary}",
+            "next_behavior": behavior,
+        })
+        recorded.append({"type": "self_reflection", "entry": reflection})
+    except Exception as exc:
+        logger.warning(f"Could not record self-reflection learning event: {exc}")
+    return recorded
 
 def _artifact_template_context() -> str:
     if not google_ok():
@@ -5018,6 +5093,7 @@ async def _process_user_text(update, context, text: str):
         # Save only user message + final reply to persistent history
         history.append({"role": "assistant", "content": reply_text})
         save_history(user_id, history)
+        record_chat_learning_event(text, reply_text, source="telegram")
         await reply(update, reply_text)
 
     except Exception as e:

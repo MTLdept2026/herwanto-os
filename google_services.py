@@ -2035,6 +2035,8 @@ DEFAULT_MEMORY = {
     "constraints": [],
     "recent_summaries": [],
     "topic_profiles": [],
+    "correction_ledger": [],
+    "self_reflections": [],
 }
 
 
@@ -2095,6 +2097,13 @@ def add_memory(category: str, text: str) -> dict:
         "topic_profile": "topic_profiles",
         "interest": "topic_profiles",
         "interests": "topic_profiles",
+        "correction": "correction_ledger",
+        "corrections": "correction_ledger",
+        "mistake": "correction_ledger",
+        "mistakes": "correction_ledger",
+        "reflection": "self_reflections",
+        "reflections": "self_reflections",
+        "learning": "self_reflections",
     }
     category = aliases.get(category, category)
     if category not in DEFAULT_MEMORY:
@@ -2105,6 +2114,43 @@ def add_memory(category: str, text: str) -> dict:
         memory[category].append(item)
     set_memory(memory)
     return memory
+
+
+def _append_memory_json(category: str, payload: dict, limit: int = 80) -> dict:
+    memory = get_memory()
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    bucket = memory.get(category, [])
+    if encoded not in bucket:
+        bucket.append(encoded)
+    memory[category] = bucket[-limit:]
+    set_memory(memory)
+    return payload
+
+
+def add_correction(entry: dict) -> dict:
+    clean = {
+        "date": str(entry.get("date", "")).strip(),
+        "source": str(entry.get("source", "")).strip(),
+        "correction": str(entry.get("correction", "")).strip(),
+        "assistant_response": str(entry.get("assistant_response", "")).strip(),
+        "priority": str(entry.get("priority", "") or "high").strip(),
+    }
+    if not clean["correction"]:
+        raise ValueError("Correction entry needs correction text")
+    return _append_memory_json("correction_ledger", clean, limit=80)
+
+
+def add_self_reflection(entry: dict) -> dict:
+    clean = {
+        "date": str(entry.get("date", "")).strip(),
+        "source": str(entry.get("source", "")).strip(),
+        "trigger": str(entry.get("trigger", "")).strip(),
+        "learned": str(entry.get("learned", "")).strip(),
+        "next_behavior": str(entry.get("next_behavior", "")).strip(),
+    }
+    if not clean["learned"]:
+        raise ValueError("Self-reflection entry needs learned text")
+    return _append_memory_json("self_reflections", clean, limit=120)
 
 
 def add_topic_profile(profile: dict) -> dict:
