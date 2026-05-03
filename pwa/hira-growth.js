@@ -101,7 +101,10 @@ function render(data) {
   if (rings) rings.replaceChildren(...(data.capabilityRings || []).map(ringCard));
 
   const timeline = $("#timelineList");
-  if (timeline) timeline.replaceChildren(...(data.chapters || []).map(timelineCard));
+  if (timeline) {
+    const chapters = Array.isArray(data.chapters) ? [...data.chapters].reverse() : [];
+    timeline.replaceChildren(...chapters.map(timelineCard));
+  }
 
   const caps = $("#currentCapabilities");
   if (caps) caps.replaceChildren(...(data.currentCapabilities || []).map((t) => el("li", "", t)));

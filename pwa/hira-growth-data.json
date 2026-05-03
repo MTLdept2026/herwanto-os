@@ -324,6 +324,8 @@
     "Long-term memory buckets, topic profiles for new interests, correction ledger, self-reflection notes, source-backed research notes, and conversation summaries.",
     "Intent lens with relevant-memory retrieval before answers, including quick PWA replies.",
     "Proactive intelligence scanner for workload pinch points, marking pressure, follow-ups, quiet windows, and upcoming packed days.",
+    "Unified Proactive Intelligence v2 queue that ranks nudges, check-ins, follow-ups, prayers, tasks, digest picks, and internal intelligence with suppression and feedback learning.",
+    "Curated live digest that gathers multiple shortlist candidates, ranks them for quality and relevance, and adds a short why-it-matters layer.",
     "Checked availability planner for after-school training slots that combines timetable lessons, calendar conflicts, and CCA-day avoidance.",
     "Priority-weighted memory prompt: corrections and constraints always visible; low-signal buckets trimmed.",
     "Closed learning loop: implicit + explicit correction capture → weekly consolidation job → promoted to preferences/constraints.",
