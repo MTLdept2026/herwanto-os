@@ -3,16 +3,16 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#060606" />
+    <meta name="theme-color" content="#efebe3" />
     <title>H.I.R.A Growth Log</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Doto:wght@400..900&family=Space+Grotesk:wght@400;500;700&family=Space+Mono:wght@400;700&family=VT323&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Doto:wght@400..900&family=Space+Grotesk:wght@400;500;700&family=Space+Mono:wght@400;700&display=swap"
       rel="stylesheet"
     />
     <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/hira-growth.css?v=20260503-1" />
+    <link rel="stylesheet" href="/static/hira-growth.css?v=20260503-2" />
   </head>
   <body>
     <main class="growth-shell">
@@ -29,6 +29,10 @@
 
         <section class="hero-grid">
           <div class="hero-copy">
+            <div class="hero-index" aria-hidden="true">
+              <span>01</span>
+              <span>Growth System</span>
+            </div>
             <p class="eyebrow">Assistant Evolution Log</p>
             <h1>How H.I.R.A grew from helper to personal operating system.</h1>
             <p id="growthSubtitle" class="hero-subtitle">Loading growth record...</p>
@@ -39,6 +43,9 @@
             </div>
             <p class="eyebrow">Current Stage</p>
             <strong id="currentStage">Loading</strong>
+            <p class="hero-panel-copy">
+              A restrained record of what changed, why it mattered, and how the system became more useful.
+            </p>
             <div id="heroStats" class="hero-stats"></div>
           </div>
         </section>
@@ -81,6 +88,6 @@
       </section>
     </main>
 
-    <script src="/static/hira-growth.js?v=20260503-1"></script>
+    <script src="/static/hira-growth.js?v=20260503-2"></script>
   </body>
 </html>
