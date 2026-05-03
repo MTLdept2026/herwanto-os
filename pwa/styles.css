@@ -2672,17 +2672,62 @@ html[data-theme="dark"] .load-badge.load-green {
   }
 
   .topbar {
-    grid-template-columns: 1fr auto;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
-    gap: var(--space-sm);
-    padding-left: 20px;
-    padding-right: 0;
+    gap: 10px;
+    padding: 6px 0 12px;
+  }
+
+  .topbar-brand {
+    gap: 12px;
+    min-width: 0;
+  }
+
+  .topbar-brand-copy {
+    min-width: 0;
+  }
+
+  .brand-mark-topbar {
+    width: 40px;
+    height: 40px;
+  }
+
+  .topbar .eyebrow {
+    font-size: 8px;
+    letter-spacing: 0.18em;
+    margin-bottom: 2px;
+  }
+
+  .topbar h1 {
+    font-size: clamp(28px, 11vw, 44px);
+    letter-spacing: 0.05em;
+  }
+
+  .topbar .brand-subtitle {
+    margin-top: 4px;
+    font-size: 8px;
+    letter-spacing: 0.1em;
+    line-height: 1.2;
+    max-width: 24ch;
+  }
+
+  .topbar-glyph {
+    margin-top: 10px;
   }
 
   .topbar-actions {
     display: grid;
-    grid-template-columns: repeat(2, 52px);
+    grid-template-columns: repeat(2, 44px);
     justify-items: end;
+    padding-left: 10px;
+    border-left: 1px solid #151515;
+  }
+
+  .topbar .topbar-actions .icon-btn,
+  .topbar .topbar-actions .notification-btn {
+    width: 40px;
+    height: 40px;
+    min-height: 40px;
   }
 
   .quick-theme-toggle {
@@ -2753,9 +2798,9 @@ html[data-theme="dark"] .load-badge.load-green {
   }
 
   .nav-tab {
-    min-height: 42px;
+    min-height: 40px;
     padding: 0 6px;
-    font-size: 12px;
+    font-size: 11px;
     white-space: nowrap;
   }
 
