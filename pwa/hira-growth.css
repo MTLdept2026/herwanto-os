@@ -323,6 +323,8 @@ h2 {
 
 .hero-panel > .eyebrow {
   margin-top: 120px;
+  padding-inline: 0;
+  background: transparent;
 }
 
 .hero-panel > strong {

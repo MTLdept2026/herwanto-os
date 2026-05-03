@@ -831,10 +831,15 @@ h3 {
   flex-shrink: 0;
 }
 
+.brand-mark-topbar {
+  width: 54px;
+  height: 54px;
+}
+
 .brand-mark-rail {
   width: 44px;
   height: 44px;
-  margin-bottom: 4px;
+  margin-bottom: 8px;
 }
 
 .brand-lockup .brand-subtitle {
@@ -2963,8 +2968,13 @@ html[data-theme="dark"] .load-badge.load-green {
 
 .topbar-brand {
   display: flex;
-  align-items: flex-start;
-  gap: 16px;
+  align-items: center;
+  gap: 18px;
+}
+
+.topbar-brand-copy {
+  display: grid;
+  align-content: center;
 }
 
 /* Eyebrow — metadata label above wordmark */
@@ -2972,7 +2982,7 @@ html[data-theme="dark"] .load-badge.load-green {
   color: #999999;
   font-size: 9px;
   letter-spacing: 0.24em;
-  margin-bottom: 2px;
+  margin-bottom: 4px;
 }
 
 /* H.I.R.A wordmark */
@@ -2982,12 +2992,12 @@ html[data-theme="dark"] .load-badge.load-green {
   font-size: clamp(38px, 6.5vw, 56px);
   color: #ffffff;
   letter-spacing: 0.07em;
-  line-height: 1;
+  line-height: 0.92;
 }
 
 /* Tagline — decorative, intentionally dim */
 .topbar .brand-subtitle {
-  margin-top: 6px;
+  margin-top: 8px;
   color: #666666;
   font-family: "Space Mono", monospace;
   font-size: 9px;
