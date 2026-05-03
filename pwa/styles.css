@@ -612,9 +612,9 @@ h3 {
   padding: clamp(34px, 3.4vw, 42px) clamp(38px, 3.8vw, 46px);
   background:
     radial-gradient(circle, rgba(255, 255, 255, 0.05) 0.8px, transparent 0.9px),
-    #111111;
+    var(--bg-dark);
   background-size: 14px 14px, auto;
-  border-color: #111111;
+  border-color: var(--bg-dark);
   color: #ffffff;
   box-shadow: var(--shadow-soft);
 }

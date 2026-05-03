@@ -33,9 +33,9 @@ app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
 try:
-    _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "2"))
+    _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
 except ValueError:
-    _HOME_EXECUTOR_WORKERS = 2
+    _HOME_EXECUTOR_WORKERS = 4
 _HOME_EXECUTOR_WORKERS = max(1, min(4, _HOME_EXECUTOR_WORKERS))
 _HOME_EXECUTOR = ThreadPoolExecutor(max_workers=_HOME_EXECUTOR_WORKERS)
 _WEB_SCHEDULER_TASKS: list[asyncio.Task] = []
@@ -432,7 +432,7 @@ def _parallel_home_data(days: int) -> dict:
         },
     }
     futures = {key: _HOME_EXECUTOR.submit(builder) for key, builder in jobs.items()}
-    wait(futures.values(), timeout=12)
+    wait(futures.values(), timeout=20)
     results = {}
     for key, future in futures.items():
         if not future.done():
