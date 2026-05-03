@@ -832,8 +832,8 @@ h3 {
 }
 
 .brand-mark-topbar {
-  width: 54px;
-  height: 54px;
+  width: 78px;
+  height: 78px;
 }
 
 .brand-mark-rail {
@@ -2673,13 +2673,13 @@ html[data-theme="dark"] .load-badge.load-green {
 
   .topbar {
     grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
+    align-items: start;
     gap: 10px;
     padding: 6px 0 12px;
   }
 
   .topbar-brand {
-    gap: 12px;
+    gap: 10px;
     min-width: 0;
   }
 
@@ -2688,8 +2688,8 @@ html[data-theme="dark"] .load-badge.load-green {
   }
 
   .brand-mark-topbar {
-    width: 40px;
-    height: 40px;
+    width: 52px;
+    height: 52px;
   }
 
   .topbar .eyebrow {
@@ -2699,16 +2699,16 @@ html[data-theme="dark"] .load-badge.load-green {
   }
 
   .topbar h1 {
-    font-size: clamp(28px, 11vw, 44px);
-    letter-spacing: 0.05em;
+    font-size: clamp(26px, 9.4vw, 38px);
+    letter-spacing: 0.04em;
   }
 
   .topbar .brand-subtitle {
     margin-top: 4px;
-    font-size: 8px;
-    letter-spacing: 0.1em;
-    line-height: 1.2;
-    max-width: 24ch;
+    font-size: 6px;
+    letter-spacing: 0.08em;
+    line-height: 1.1;
+    max-width: none;
   }
 
   .topbar-glyph {
@@ -3012,14 +3012,16 @@ html[data-theme="dark"] .load-badge.load-green {
 }
 
 .topbar-brand {
-  display: flex;
-  align-items: center;
-  gap: 18px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  align-content: start;
 }
 
 .topbar-brand-copy {
   display: grid;
   align-content: center;
+  justify-items: start;
 }
 
 /* Eyebrow — metadata label above wordmark */
@@ -3038,6 +3040,7 @@ html[data-theme="dark"] .load-badge.load-green {
   color: #ffffff;
   letter-spacing: 0.07em;
   line-height: 0.92;
+  white-space: nowrap;
 }
 
 /* Tagline — decorative, intentionally dim */
@@ -3045,11 +3048,12 @@ html[data-theme="dark"] .load-badge.load-green {
   margin-top: 8px;
   color: #666666;
   font-family: "Space Mono", monospace;
-  font-size: 9px;
+  font-size: clamp(7px, 0.78vw, 9px);
   font-weight: 400;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   line-height: 1.3;
+  white-space: nowrap;
 }
 
 /* Quick theme toggle lives in settings — hide in header */
