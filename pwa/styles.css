@@ -824,6 +824,19 @@ h3 {
   gap: 8px;
 }
 
+.brand-mark {
+  width: 46px;
+  height: 46px;
+  display: block;
+  flex-shrink: 0;
+}
+
+.brand-mark-rail {
+  width: 44px;
+  height: 44px;
+  margin-bottom: 4px;
+}
+
 .brand-lockup .brand-subtitle {
   max-width: 34ch;
 }
@@ -2948,6 +2961,12 @@ html[data-theme="dark"] .load-badge.load-green {
   /* inherits display:flex; align-items:center; justify-content:space-between */
 }
 
+.topbar-brand {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
 /* Eyebrow — metadata label above wordmark */
 .topbar .eyebrow {
   color: #999999;
@@ -3151,4 +3170,3 @@ html[data-theme="dark"] .load-badge.load-green {
     0 0 28px rgba(255,  60, 0, 0.80),
     0 0 50px rgba(200,   0, 10, 0.40);
 }
-
