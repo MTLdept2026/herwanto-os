@@ -36,6 +36,30 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("apscheduler.executors.default").setLevel(logging.WARNING)
 logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
 
+def _daily_time_from_env(key: str, default_hour: int, default_minute: int = 0) -> tuple[int, int]:
+    raw = os.environ.get(key, "").strip()
+    if not raw:
+        return default_hour, default_minute
+    try:
+        hour_text, minute_text = raw.replace(".", ":").split(":", 1)
+        hour = int(hour_text)
+        minute = int(minute_text)
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return hour, minute
+    except Exception:
+        pass
+    logger.warning(f"Invalid {key}={raw!r}; using {default_hour:02d}:{default_minute:02d} SGT")
+    return default_hour, default_minute
+
+
+MORNING_BRIEFING_TIME = _daily_time_from_env("HIRA_MORNING_BRIEFING_TIME", 6, 45)
+EVENING_BRIEFING_TIME = _daily_time_from_env("HIRA_EVENING_BRIEFING_TIME", 21, 0)
+try:
+    DAILY_JOB_GRACE_MINUTES = max(1, int(os.environ.get("HIRA_DAILY_JOB_GRACE_MINUTES", "20") or 20))
+except ValueError:
+    logger.warning("Invalid HIRA_DAILY_JOB_GRACE_MINUTES; using 20 minutes")
+    DAILY_JOB_GRACE_MINUTES = 20
+
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 if not ANTHROPIC_API_KEY:
     logger.warning("ANTHROPIC_API_KEY is not set; Claude calls will fail until it is configured.")
@@ -6934,16 +6958,24 @@ Rules: be conservative — only promote genuinely durable rules. Return ONLY JSO
 
 
 async def _pwa_worker_daily_loop(name: str, hour: int, minute: int, job, days: tuple[int, ...] | None = None):
+    last_attempt_date = None
     while True:
         try:
             now = datetime.now(SGT)
             target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            if now >= target:
+            grace_until = target + timedelta(minutes=DAILY_JOB_GRACE_MINUTES)
+            today_key = now.strftime("%Y-%m-%d")
+            if (
+                target <= now <= grace_until
+                and today_key != last_attempt_date
+                and (days is None or now.weekday() in days)
+            ):
+                logger.info(f"PWA worker running daily job {name} for {today_key}")
+                last_attempt_date = today_key
+                await job(None)
+            if now >= grace_until:
                 target = target + timedelta(days=1)
             await asyncio.sleep(max(60, min(1800, (target - now).total_seconds())))
-            now = datetime.now(SGT)
-            if now.hour == hour and now.minute == minute and (days is None or now.weekday() in days):
-                await job(None)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -6966,9 +6998,11 @@ async def _pwa_worker_repeating_loop(name: str, interval: int, first: int, job):
 async def run_pwa_notification_worker():
     logger.info("H.I.R.A PWA notification worker running.")
     _log_memory("pwa_worker startup", force=True)
+    morning_hour, morning_minute = MORNING_BRIEFING_TIME
+    evening_hour, evening_minute = EVENING_BRIEFING_TIME
     tasks = [
-        asyncio.create_task(_pwa_worker_daily_loop("morning_briefing", 7, 0, morning_briefing_job)),
-        asyncio.create_task(_pwa_worker_daily_loop("evening_briefing", 21, 0, evening_briefing_job)),
+        asyncio.create_task(_pwa_worker_daily_loop("morning_briefing", morning_hour, morning_minute, morning_briefing_job)),
+        asyncio.create_task(_pwa_worker_daily_loop("evening_briefing", evening_hour, evening_minute, evening_briefing_job)),
         asyncio.create_task(_pwa_worker_daily_loop("weekly_planning", 19, 30, weekly_planning_job, days=(6,))),
         asyncio.create_task(_pwa_worker_daily_loop("friday_khutbah", 10, 30, friday_khutbah_job, days=(4,))),
         asyncio.create_task(_pwa_worker_daily_loop("friday_checkin", 17, 0, friday_checkin_job, days=(4,))),
@@ -7091,8 +7125,10 @@ def main():
     if _unauth_handler_obj:
         app.add_handler(_unauth_handler_obj)
     jq = app.job_queue
-    jq.run_daily(morning_briefing_job, time=dt_time(7, 0, 0, tzinfo=SGT), name="morning_briefing")
-    jq.run_daily(evening_briefing_job, time=dt_time(21, 0, 0, tzinfo=SGT), name="evening_briefing")
+    morning_hour, morning_minute = MORNING_BRIEFING_TIME
+    evening_hour, evening_minute = EVENING_BRIEFING_TIME
+    jq.run_daily(morning_briefing_job, time=dt_time(morning_hour, morning_minute, 0, tzinfo=SGT), name="morning_briefing")
+    jq.run_daily(evening_briefing_job, time=dt_time(evening_hour, evening_minute, 0, tzinfo=SGT), name="evening_briefing")
     jq.run_daily(weekly_planning_job, time=dt_time(19, 30, 0, tzinfo=SGT), days=(6,), name="weekly_planning")
     jq.run_daily(friday_khutbah_job, time=dt_time(10, 30, 0, tzinfo=SGT), days=(4,), name="friday_khutbah")
     jq.run_daily(friday_checkin_job,   time=dt_time(17, 0, 0, tzinfo=SGT), days=(4,), name="friday_checkin")

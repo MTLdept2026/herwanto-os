@@ -192,17 +192,21 @@ async def add_static_cache_headers(request: Request, call_next):
 
 
 async def _web_daily_briefing_loop(hour: int, minute: int, sender, source: str):
+    last_attempt_date = None
     while True:
         try:
             now = datetime.now(bot.SGT)
             target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            if now >= target:
+            grace_until = target + bot.timedelta(minutes=bot.DAILY_JOB_GRACE_MINUTES)
+            today_key = now.strftime("%Y-%m-%d")
+            if target <= now <= grace_until and today_key != last_attempt_date:
+                bot.logger.info(f"Web scheduler running {source} for {today_key}")
+                last_attempt_date = today_key
+                await sender(context=None, source=source)
+            if now >= grace_until:
                 target = target + bot.timedelta(days=1)
             sleep_for = max(60, min(1800, (target - now).total_seconds()))
             await asyncio.sleep(sleep_for)
-            now = datetime.now(bot.SGT)
-            if now.hour == hour and now.minute == minute:
-                await sender(context=None, source=source)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -268,12 +272,14 @@ async def start_web_scheduler():
     if _WEB_SCHEDULER_TASKS:
         return
     if enabled:
+        morning_hour, morning_minute = bot.MORNING_BRIEFING_TIME
         _WEB_SCHEDULER_TASKS.append(asyncio.create_task(
-            _web_daily_briefing_loop(7, 0, bot.send_morning_briefing_once, "web_morning_briefing")
+            _web_daily_briefing_loop(morning_hour, morning_minute, bot.send_morning_briefing_once, "web_morning_briefing")
         ))
     if evening_enabled:
+        evening_hour, evening_minute = bot.EVENING_BRIEFING_TIME
         _WEB_SCHEDULER_TASKS.append(asyncio.create_task(
-            _web_daily_briefing_loop(21, 0, bot.send_evening_briefing_once, "web_evening_briefing")
+            _web_daily_briefing_loop(evening_hour, evening_minute, bot.send_evening_briefing_once, "web_evening_briefing")
         ))
     if prayer_enabled:
         _WEB_SCHEDULER_TASKS.append(asyncio.create_task(_web_prayer_reminder_loop()))
@@ -743,6 +749,11 @@ def _health_details():
         "redis_connected": redis_connected,
         "redis_required": bot.redis_required(),
         "web_inline_scheduler": _WEB_INLINE_SCHEDULER,
+        "schedules": {
+            "morning_briefing_sgt": f"{bot.MORNING_BRIEFING_TIME[0]:02d}:{bot.MORNING_BRIEFING_TIME[1]:02d}",
+            "evening_briefing_sgt": f"{bot.EVENING_BRIEFING_TIME[0]:02d}:{bot.EVENING_BRIEFING_TIME[1]:02d}",
+            "daily_job_grace_minutes": bot.DAILY_JOB_GRACE_MINUTES,
+        },
         "upload_queue_depth": _upload_queue_depth(),
         "upload_queue_max": _UPLOAD_QUEUE_MAX,
         "upload_queue_workers": len(_UPLOAD_QUEUE_TASKS),
