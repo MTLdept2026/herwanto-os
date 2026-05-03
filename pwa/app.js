@@ -546,7 +546,6 @@ async function pollNotifications() {
     for (const item of items) {
       if (rememberNotification(item)) {
         fresh.push(item);
-        showSystemNotification(item);
       }
     }
     await markNotificationsSeen(items.map((item) => item.id));
@@ -575,11 +574,23 @@ function renderHealth(data) {
   const prayerRows = (data.prayers?.prayers || [])
     .map((item) => `${item.label} ${item.time}${item.prompted ? ` sent ${item.prompted_at}` : ""}`)
     .join(" · ");
+  const deliveryRows = (data.recent_delivery_log || [])
+    .slice()
+    .reverse()
+    .map((item) => `${item.source || item.kind || "push"} ${item.sent}/${item.attempted}${item.expired ? ` expired ${item.expired}` : ""}`)
+    .join(" · ");
+  const outcomeRows = Object.entries(data.outcome_actions || {})
+    .map(([key, value]) => `${key} ${value}`)
+    .join(" · ");
   el.hidden = false;
   el.innerHTML = `
     <div class="status-row"><span>Push keys</span><strong>${data.push_public_key && data.push_private_key ? "Ready" : "Missing"}</strong></div>
     <div class="status-row"><span>Subscriptions</span><strong>${data.subscription_count || 0}</strong></div>
+    <div class="status-row"><span>This device</span><strong>${data.current_client_subscribed ? "Connected" : "Not connected"}</strong></div>
+    <div class="status-row"><span>Stale subs</span><strong>${data.stale_subscription_count || 0}</strong></div>
     <div class="status-row"><span>Queued</span><strong>${data.queued_notification_count || 0}</strong></div>
+    <p class="subtle">${markdownish(deliveryRows || "No recent push delivery attempts logged.")}</p>
+    <p class="subtle">${markdownish(outcomeRows || "No notification feedback captured yet.")}</p>
     <p class="subtle">${markdownish(prayerRows || "Prayer status unavailable.")}</p>
   `;
 }
@@ -648,6 +659,36 @@ function renderConnections(services) {
     )
     .join("");
   refreshIcons($("#homeConnectionsList"));
+}
+
+function renderProactiveQueue(data = {}) {
+  const top = Array.isArray(data.top) ? data.top : [];
+  const changed = Array.isArray(data.changed) ? data.changed : [];
+  if (!top.length) {
+    const changedText = changed.length ? `<p class="subtle">${markdownish(changed.join(" "))}</p>` : "";
+    return `<div class="empty-state compact">No urgent proactive items right now.</div>${changedText}`;
+  }
+  const cards = top.map((item, index) => {
+    const score = Number(item.score || 0);
+    const priority = String(item.priority || "medium").toUpperCase();
+    const hint = item.action_hint ? `<p><strong>Next:</strong> ${markdownish(item.action_hint)}</p>` : "";
+    const why = item.why ? `<p><strong>Why:</strong> ${markdownish(item.why)}</p>` : "";
+    const date = item.event_date ? `<small>${markdownish(item.event_date)}</small>` : "";
+    return `
+      <article class="agenda-card">
+        <div class="agenda-card-head">
+          <strong>${index + 1}. ${markdownish(item.title || "H.I.R.A")}</strong>
+          <span>${score} · ${priority}</span>
+        </div>
+        <p>${markdownish(item.body || "")}</p>
+        ${why}
+        ${hint}
+        ${date}
+      </article>
+    `;
+  }).join("");
+  const changedNote = changed.length ? `<p class="subtle">${markdownish(changed.join(" "))}</p>` : "";
+  return `${cards}${changedNote}`;
 }
 
 function fileMemorySegments(text) {
@@ -1222,12 +1263,14 @@ async function loadHome() {
     refreshButton.classList.remove("is-updated");
   }
   $("#homeAgenda").innerHTML = "<div>Loading...</div>";
+  $("#homeProactive").innerHTML = "<div>Loading...</div>";
   $("#homeTasks").innerHTML = "<div>Loading...</div>";
   $("#homeIslamic").innerHTML = "<div>Loading...</div>";
   try {
     const data = await api(`/api/home?days=${state.homeDays}`, { headers: headers(false) });
     updateLiveClock();
     $("#homeAgenda").innerHTML = renderAgendaCards(data.agenda);
+    $("#homeProactive").innerHTML = renderProactiveQueue(data.proactive || {});
     $("#homeTasks").innerHTML = renderTaskBriefFromText(data.tasks);
     $("#homeIslamic").innerHTML = renderTextBlock(data.islamic || "Islamic rhythm unavailable right now.");
     const fileLines = countMeaningfulLines(data.files);
@@ -1245,10 +1288,16 @@ async function loadHome() {
     renderDailyLoad(data.daily_load || {});
     const agendaCount = countMeaningfulLines(data.agenda);
     const taskCount = countMeaningfulLines(data.tasks);
+    const proactiveTop = Array.isArray(data.proactive?.top) ? data.proactive.top : [];
+    const lead = proactiveTop[0] || null;
     $("#homeAgendaCount").textContent = String(agendaCount);
     $("#homeTaskCount").textContent = String(taskCount);
     renderSegments("#homeAgendaBar", Math.min(12, Math.max(1, agendaCount)), 12, "accent");
     renderSegments("#homeTaskBar", Math.min(12, Math.max(1, taskCount)), 12, taskCount > 6 ? "warning" : "accent");
+    if (lead) {
+      $("#homeFocusValue").textContent = lead.title || "Priority";
+      $("#homeFocusLabel").textContent = `${String(lead.priority || "medium").toUpperCase()} PRIORITY · ${String(lead.score || 0)}`;
+    }
     const marking = data.marking || {};
     const totalScripts = Number(marking.total_scripts || 0);
     const markedScripts = Number(marking.marked_scripts || 0);
@@ -1275,6 +1324,7 @@ async function loadHome() {
     }
   } catch (error) {
     $("#homeAgenda").textContent = `Error: ${error.message}`;
+    $("#homeProactive").textContent = `Error: ${error.message}`;
     $("#homeTasks").textContent = `Error: ${error.message}`;
     $("#homeIslamic").textContent = `Error: ${error.message}`;
     $("#fileMemoryValue").textContent = "--";

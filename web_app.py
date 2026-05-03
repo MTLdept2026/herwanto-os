@@ -213,10 +213,7 @@ async def _web_daily_briefing_loop(hour: int, minute: int, sender, source: str):
 async def _web_prayer_reminder_loop():
     while True:
         try:
-            due = bot._prayer_reminder_due(datetime.now(bot.SGT))
-            if due:
-                text = f"*Prayer reminder*\n\n{due['label']} entered at {due['time']}. {due['note']}"
-                bot._queue_app_notification("reminder", f"{due['label']} prayer", text, source=f"web_prayer:{due['key']}")
+            await bot._dispatch_proactive_candidates(None, bot.build_proactive_v2_queue(now=datetime.now(bot.SGT), families={"prayer"}), limit=2)
             await asyncio.sleep(60)
         except asyncio.CancelledError:
             raise
@@ -236,9 +233,11 @@ async def _web_friday_khutbah_loop():
             await asyncio.sleep(sleep_for)
             now = datetime.now(bot.SGT)
             if now.weekday() == 4 and now.hour == 10 and now.minute == 30 and bot.google_ok():
-                text = bot._friday_khutbah_heads_up_due(now)
-                if text:
-                    bot._queue_app_notification("update", "Friday khutbah", text, source="web_friday_khutbah")
+                sent = await bot._dispatch_proactive_candidates(None, bot.build_proactive_v2_queue(now=now, families={"friday_khutbah"}), limit=1)
+                if not sent:
+                    text = bot._friday_khutbah_heads_up_due(now)
+                    if text:
+                        bot._queue_app_notification("update", "Friday khutbah", text, source="web_friday_khutbah")
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -376,6 +375,8 @@ def _parallel_home_data(days: int) -> dict:
     jobs = {
         "agenda": lambda: bot.build_agenda(days),
         "daily_load": lambda: bot.build_daily_load(days),
+        "digest": bot.build_curated_digest_snapshot,
+        "proactive": lambda: bot.build_proactive_v2_snapshot(days=days),
         "tasks": lambda: bot.build_task_brief(days),
         "islamic": lambda: bot.build_islamic_brief(),
         "files": bot.build_files_index,
@@ -399,6 +400,18 @@ def _parallel_home_data(days: int) -> dict:
             "previous_week": [],
             "next_week": [],
             "rest_note": "Workload comparison unavailable until schedule data is connected.",
+        },
+        "digest": {
+            "generated_at": "",
+            "items": [],
+        },
+        "proactive": {
+            "generated_at": "",
+            "top": [],
+            "queue_count": 0,
+            "ready_count": 0,
+            "suppressed_count": 0,
+            "changed": [],
         },
         "tasks": "Task brief unavailable until Google is connected.",
         "islamic": "Islamic rhythm unavailable right now.",
@@ -1057,7 +1070,10 @@ def notifications_test(
 
 
 @app.get("/api/notifications/health")
-def notifications_health(x_hira_token: Optional[str] = Header(default=None)):
+def notifications_health(
+    x_hira_token: Optional[str] = Header(default=None),
+    x_hira_client: Optional[str] = Header(default=None),
+):
     _require_token(x_hira_token)
     try:
         subscriptions = bot.gs.get_web_push_subscriptions()
@@ -1073,14 +1089,33 @@ def notifications_health(x_hira_token: Optional[str] = Header(default=None)):
         queue_error = str(exc)
     else:
         queue_error = ""
+    client_key = _client_key(x_hira_client)
+    current_subscription = bot.gs.get_web_push_subscription(client_key)
+    delivery_log = bot.gs.get_web_push_delivery_log()
+    outcome_summary = bot.gs.get_notification_outcome_summary(days=14)
+    stale_threshold = datetime.now(bot.SGT) - bot.timedelta(days=30)
+    stale_subscriptions = 0
+    for item in subscriptions:
+        try:
+            last_seen = datetime.fromisoformat(item.get("last_seen", "") or item.get("created", ""))
+        except Exception:
+            continue
+        if last_seen < stale_threshold:
+            stale_subscriptions += 1
     return {
         "push_public_key": bool(os.environ.get("HIRA_WEB_PUSH_PUBLIC_KEY", "").strip()),
         "push_private_key": bool(os.environ.get("HIRA_WEB_PUSH_PRIVATE_KEY", "").strip()),
         "push_subject": bool(os.environ.get("HIRA_WEB_PUSH_SUBJECT", "").strip()),
         "subscription_count": len(subscriptions),
+        "stale_subscription_count": stale_subscriptions,
         "subscription_error": subscription_error,
         "queued_notification_count": len(queued),
         "queue_error": queue_error,
+        "current_client_id": client_key,
+        "current_client_subscribed": bool(current_subscription),
+        "current_client_last_seen": current_subscription.get("last_seen", "") if current_subscription else "",
+        "recent_delivery_log": delivery_log[-5:],
+        "outcome_actions": outcome_summary.get("actions", {}),
         "prayers": bot.prayer_notification_status(),
     }
 
@@ -1156,6 +1191,18 @@ def notifications_seen(
 ):
     _require_token(x_hira_token)
     try:
+        client_key = _client_key(x_hira_client)
+        for notification_id in req.ids:
+            item = bot.gs.get_app_notification(notification_id)
+            if item:
+                bot._record_notification_outcome(
+                    "seen",
+                    notification_id=item.get("id", ""),
+                    source=item.get("source", ""),
+                    kind=item.get("kind", ""),
+                    client_id=client_key,
+                    title=item.get("title", ""),
+                )
         marked = bot.gs.mark_app_notifications_seen(_client_key(x_hira_client), req.ids)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Could not update notifications: {exc}") from exc
@@ -1166,9 +1213,22 @@ def notifications_seen(
 def notifications_archive(
     req: NotificationSeenRequest,
     x_hira_token: Optional[str] = Header(default=None),
+    x_hira_client: Optional[str] = Header(default=None),
 ):
     _require_token(x_hira_token)
     try:
+        client_key = _client_key(x_hira_client)
+        for notification_id in req.ids:
+            item = bot.gs.get_app_notification(notification_id)
+            if item:
+                bot._record_notification_outcome(
+                    "dismissed",
+                    notification_id=item.get("id", ""),
+                    source=item.get("source", ""),
+                    kind=item.get("kind", ""),
+                    client_id=client_key,
+                    title=item.get("title", ""),
+                )
         archived = bot.gs.archive_app_notifications(req.ids)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Could not dismiss notifications: {exc}") from exc
@@ -1179,10 +1239,23 @@ def notifications_archive(
 def insight_feedback(
     req: InsightFeedbackRequest,
     x_hira_token: Optional[str] = Header(default=None),
+    x_hira_client: Optional[str] = Header(default=None),
 ):
     _require_token(x_hira_token)
     try:
         feedback = bot.gs.add_insight_feedback(req.kind, req.target, req.rating, req.note)
+        if req.kind == "notification":
+            item = bot.gs.get_app_notification(req.target)
+            if item:
+                bot._record_notification_outcome(
+                    req.rating,
+                    notification_id=item.get("id", ""),
+                    source=item.get("source", ""),
+                    kind=item.get("kind", ""),
+                    rating=req.rating,
+                    client_id=_client_key(x_hira_client),
+                    title=item.get("title", ""),
+                )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Could not save feedback: {exc}") from exc
     return {"ok": True, "count": len(feedback)}

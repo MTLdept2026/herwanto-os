@@ -1822,6 +1822,120 @@ def archive_app_notifications(notification_ids: list[str]) -> int:
     return changed
 
 
+def get_app_notification(notification_id: str) -> dict | None:
+    target = str(notification_id or "").strip()
+    if not target:
+        return None
+    for item in get_app_notifications(include_archived=True):
+        if str(item.get("id", "")).strip() == target:
+            return item
+    return None
+
+
+def _notification_outcome_group(source: str, kind: str = "") -> str:
+    clean_source = str(source or "").strip()
+    if clean_source:
+        return clean_source.split(":", 1)[0]
+    return str(kind or "notice").strip() or "notice"
+
+
+def get_notification_outcomes() -> list:
+    raw = get_config("notification_outcomes")
+    if not raw:
+        return []
+    try:
+        entries = json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(entries, list):
+        return []
+    clean = []
+    for item in entries[-400:]:
+        if not isinstance(item, dict):
+            continue
+        clean.append({
+            "created": str(item.get("created", "")).strip(),
+            "notification_id": str(item.get("notification_id", "")).strip(),
+            "source": str(item.get("source", "")).strip(),
+            "group": str(item.get("group", "")).strip(),
+            "kind": str(item.get("kind", "")).strip(),
+            "action": str(item.get("action", "")).strip(),
+            "rating": str(item.get("rating", "")).strip(),
+            "client_id": str(item.get("client_id", "")).strip(),
+            "title": str(item.get("title", "")).strip(),
+        })
+    return clean
+
+
+def set_notification_outcomes(entries: list):
+    set_config("notification_outcomes", json.dumps(entries[-400:], ensure_ascii=False))
+
+
+def add_notification_outcome(
+    action: str,
+    notification_id: str = "",
+    source: str = "",
+    kind: str = "",
+    rating: str = "",
+    client_id: str = "",
+    title: str = "",
+) -> list:
+    entries = get_notification_outcomes()
+    item = {
+        "created": datetime.now(SGT).isoformat(),
+        "notification_id": str(notification_id or "").strip()[:80],
+        "source": str(source or "").strip()[:240],
+        "group": _notification_outcome_group(source, kind)[:80],
+        "kind": str(kind or "").strip()[:40],
+        "action": str(action or "").strip()[:40],
+        "rating": str(rating or "").strip()[:40],
+        "client_id": str(client_id or "").strip()[:120],
+        "title": str(title or "").strip()[:240],
+    }
+    if not item["action"]:
+        return entries
+    entries.append(item)
+    set_notification_outcomes(entries)
+    return entries
+
+
+def get_notification_outcome_summary(days: int = 14) -> dict:
+    current = datetime.now(SGT)
+    threshold = current - timedelta(days=max(1, int(days or 14)))
+    summary = {
+        "actions": {},
+        "groups": {},
+        "sources": {},
+        "recent": [],
+    }
+    for item in get_notification_outcomes():
+        try:
+            created = datetime.fromisoformat(item.get("created", ""))
+        except Exception:
+            continue
+        if created < threshold:
+            continue
+        action = item.get("action", "") or "unknown"
+        group = item.get("group", "") or _notification_outcome_group(item.get("source", ""), item.get("kind", ""))
+        source = item.get("source", "") or group
+        summary["actions"][action] = summary["actions"].get(action, 0) + 1
+        group_bucket = summary["groups"].setdefault(group, {"count": 0, "negative": 0, "positive": 0})
+        group_bucket["count"] += 1
+        if action in {"dismissed", "not_now"}:
+            group_bucket["negative"] += 1
+        if action == "useful":
+            group_bucket["positive"] += 1
+        source_bucket = summary["sources"].setdefault(source, {"count": 0, "negative": 0, "positive": 0})
+        source_bucket["count"] += 1
+        if action in {"dismissed", "not_now"}:
+            source_bucket["negative"] += 1
+        if action == "useful":
+            source_bucket["positive"] += 1
+        summary["recent"].append(item)
+    summary["recent"] = summary["recent"][-30:]
+    return summary
+
+
 def get_insight_feedback() -> list:
     raw = get_config("insight_feedback")
     if not raw:
@@ -1921,6 +2035,16 @@ def get_web_push_subscriptions() -> list:
     return clean
 
 
+def get_web_push_subscription(client_id: str) -> dict | None:
+    target = str(client_id or "").strip()
+    if not target:
+        return None
+    for item in get_web_push_subscriptions():
+        if item.get("client_id") == target:
+            return item
+    return None
+
+
 def set_web_push_subscriptions(subscriptions: list):
     set_config("web_push_subscriptions", json.dumps(subscriptions[-30:], ensure_ascii=False))
 
@@ -1949,6 +2073,51 @@ def save_web_push_subscription(client_id: str, subscription: dict) -> bool:
         })
     set_web_push_subscriptions(subscriptions)
     return True
+
+
+def get_web_push_delivery_log() -> list:
+    raw = get_config("web_push_delivery_log")
+    if not raw:
+        return []
+    try:
+        entries = json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(entries, list):
+        return []
+    clean = []
+    for item in entries[-80:]:
+        if not isinstance(item, dict):
+            continue
+        clean.append({
+            "created": str(item.get("created", "")).strip(),
+            "source": str(item.get("source", "")).strip(),
+            "kind": str(item.get("kind", "")).strip(),
+            "title": str(item.get("title", "")).strip(),
+            "attempted": int(item.get("attempted", 0) or 0),
+            "sent": int(item.get("sent", 0) or 0),
+            "expired": int(item.get("expired", 0) or 0),
+        })
+    return clean
+
+
+def set_web_push_delivery_log(entries: list):
+    set_config("web_push_delivery_log", json.dumps(entries[-80:], ensure_ascii=False))
+
+
+def add_web_push_delivery_log(source: str, kind: str, title: str, attempted: int, sent: int, expired: int = 0) -> list:
+    entries = get_web_push_delivery_log()
+    entries.append({
+        "created": datetime.now(SGT).isoformat(),
+        "source": str(source or "").strip()[:240],
+        "kind": str(kind or "").strip()[:40],
+        "title": str(title or "").strip()[:240],
+        "attempted": int(attempted or 0),
+        "sent": int(sent or 0),
+        "expired": int(expired or 0),
+    })
+    set_web_push_delivery_log(entries)
+    return entries
 
 
 def send_web_push_notification(title: str, body: str, data: dict | None = None) -> int:
@@ -1990,6 +2159,7 @@ def send_web_push_notification(title: str, body: str, data: dict | None = None) 
     sent = 0
     kept = []
     subscriptions = get_web_push_subscriptions()
+    expired = 0
     try:
         for item in subscriptions:
             try:
@@ -2005,6 +2175,8 @@ def send_web_push_notification(title: str, body: str, data: dict | None = None) 
                 status_code = getattr(getattr(exc, "response", None), "status_code", None)
                 if status_code not in (404, 410):
                     kept.append(item)
+                else:
+                    expired += 1
             except Exception:
                 kept.append(item)
     finally:
@@ -2015,6 +2187,15 @@ def send_web_push_notification(title: str, body: str, data: dict | None = None) 
                 pass
     if len(kept) != len(subscriptions):
         set_web_push_subscriptions(kept)
+    payload_data = data or {}
+    add_web_push_delivery_log(
+        source=str(payload_data.get("source", "")).strip(),
+        kind=str(payload_data.get("kind", "")).strip(),
+        title=title,
+        attempted=len(subscriptions),
+        sent=sent,
+        expired=expired,
+    )
     return sent
 
 

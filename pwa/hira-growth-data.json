@@ -1,13 +1,13 @@
 {
-  "updated": "2026-05-02",
+  "updated": "2026-05-03",
   "name": "H.I.R.A Growth Log",
   "subtitle": "How Herwanto Interface for Responsive Assistance grew from an installable assistant into a more reliable personal operating system.",
   "summary": {
     "start": "2026-04-28",
-    "current": "2026-05-02",
-    "commitsTracked": 97,
-    "majorPhases": 16,
-    "currentStage": "Calendar-trust scheduling"
+    "current": "2026-05-03",
+    "commitsTracked": 99,
+    "majorPhases": 17,
+    "currentStage": "Proactive intelligence v2"
   },
   "metrics": [
     {
@@ -17,7 +17,7 @@
     },
     {
       "label": "Tracked upgrade commits",
-      "value": "97",
+      "value": "99",
       "note": "Grouped from git history through the growth-log minisite."
     },
     {
@@ -298,6 +298,22 @@
         "System rules now explicitly say to copy exact appointment dates from tool results and never shift dates by assumption."
       ],
       "impact": "H.I.R.A is less likely to suggest a training slot on a CCA day or move an appointment by a day; calendar/timetable truth is now mandatory for availability answers."
+    },
+    {
+      "date": "2026-05-03",
+      "era": "Proactive Intelligence v2",
+      "title": "Hira learns to rank, suppress, and curate",
+      "commit": "proactive-intelligence-v2",
+      "tag": "Ranking + Digest",
+      "summary": "H.I.R.A's proactive system moved from separate notification jobs into one shared ranking pipeline, and the digest became a curated live shortlist instead of a flat headline dump.",
+      "details": [
+        "Notification outcomes now persist as queue, push, seen, dismissed, useful, and not_now events.",
+        "A unified candidate -> score -> suppress -> send -> learn pipeline now ranks nudges, check-ins, follow-ups, prayer prompts, weekly planning, Friday review, proactive intelligence, tasks, and digest picks together.",
+        "Low-value repeat signals are cooled down automatically after dismiss or not_now feedback.",
+        "The home screen now surfaces a shared Priority Queue so the app and notification engine reflect the same top-ranked proactive items.",
+        "Morning digest now gathers multiple live Google News candidates per topic, scores them for quality and personal relevance, keeps topic diversity, and adds a short Why it matters layer."
+      ],
+      "impact": "H.I.R.A is now less noisy, more selective, and more editorial. It can pull live inputs, rank what matters now, suppress stale or unwanted repeats, and present the best signals in a more curated daily flow."
     }
   ],
   "currentCapabilities": [

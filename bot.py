@@ -240,6 +240,8 @@ def build_runtime_status() -> dict:
     project_count = None
     notification_count = None
     subscription_count = None
+    outcome_summary = {}
+    delivery_log = []
     memory_error = ""
     google_connected = google_ok()
     def safe_config(key: str) -> str:
@@ -268,6 +270,14 @@ def build_runtime_status() -> dict:
             subscription_count = len(gs.get_web_push_subscriptions())
         except Exception:
             subscription_count = None
+        try:
+            outcome_summary = gs.get_notification_outcome_summary(days=14).get("actions", {})
+        except Exception:
+            outcome_summary = {}
+        try:
+            delivery_log = gs.get_web_push_delivery_log()[-5:]
+        except Exception:
+            delivery_log = []
     return {
         "memory": {
             "rss_mb": round(rss, 1),
@@ -298,6 +308,8 @@ def build_runtime_status() -> dict:
         "notifications": {
             "queued_count": notification_count,
             "subscription_count": subscription_count,
+            "outcome_actions": outcome_summary,
+            "recent_delivery_log": delivery_log,
         },
         "jobs": {
             "intervals_seconds": dict(JOB_INTERVALS),
@@ -2324,7 +2336,388 @@ def due_proactive_intelligence(now: datetime | None = None) -> list[dict]:
     if current.hour > _env_int("HIRA_PROACTIVE_INTELLIGENCE_END_HOUR", 21, 0):
         return []
     seen = _get_proactive_seen(current)
-    return [item for item in build_proactive_intelligence_insights(now=current) if item["id"] not in seen]
+    items = [item for item in build_proactive_intelligence_insights(now=current) if item["id"] not in seen]
+    ranked = []
+    for item in items:
+        source = f"proactive_intelligence:{item['id']}"
+        if _should_suppress_notification(source, "update", now=current):
+            continue
+        ranked.append((item, _notification_feedback_bias(source, "update", now=current)))
+    ranked.sort(
+        key=lambda pair: (
+            {"high": 0, "medium": 1, "low": 2}.get(pair[0].get("priority", "medium"), 1),
+            -pair[1],
+            pair[0]["id"],
+        )
+    )
+    return [item for item, _score in ranked]
+
+
+def _priority_rank(priority: str) -> int:
+    return {"high": 3, "medium": 2, "low": 1}.get(str(priority or "").strip().lower(), 1)
+
+
+def _task_candidate_score(task: dict, today: date) -> int:
+    score = 40
+    days_due = _task_due_days(task, today)
+    if days_due < 0:
+        score += 34
+    elif days_due == 0:
+        score += 28
+    elif days_due == 1:
+        score += 22
+    elif days_due <= 3:
+        score += 14
+    score += _priority_rank(task.get("priority", "")) * 6
+    if task.get("next_action"):
+        score += 4
+    if task.get("effort", "") == "high":
+        score += 2
+    return min(100, score)
+
+
+def _make_proactive_candidate(
+    family: str,
+    source: str,
+    kind: str,
+    title: str,
+    body: str,
+    score: int,
+    priority: str = "medium",
+    why: str = "",
+    action_hint: str = "",
+    event_date: str = "",
+    metadata: dict | None = None,
+) -> dict:
+    source_clean = str(source or "").strip()
+    feedback_bias = _notification_feedback_bias(source_clean, kind)
+    final_score = max(0, min(100, int(score or 0) + feedback_bias))
+    suppressed = _should_suppress_notification(source_clean, kind)
+    return {
+        "id": source_clean or f"{family}:{title}",
+        "family": str(family or "").strip() or "general",
+        "source": source_clean,
+        "kind": str(kind or "update").strip() or "update",
+        "title": str(title or "H.I.R.A").strip() or "H.I.R.A",
+        "body": str(body or "").strip(),
+        "score": final_score,
+        "base_score": int(score or 0),
+        "feedback_bias": feedback_bias,
+        "priority": str(priority or "medium").strip() or "medium",
+        "why": str(why or "").strip(),
+        "action_hint": str(action_hint or "").strip(),
+        "event_date": str(event_date or "").strip(),
+        "suppressed": bool(suppressed),
+        "metadata": dict(metadata or {}),
+    }
+
+
+def _dedupe_proactive_candidates(candidates: list[dict]) -> list[dict]:
+    kept = {}
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        key = str(candidate.get("source") or candidate.get("id") or "").strip()
+        if not key:
+            continue
+        existing = kept.get(key)
+        if not existing or int(candidate.get("score", 0) or 0) > int(existing.get("score", 0) or 0):
+            kept[key] = candidate
+    return list(kept.values())
+
+
+def build_proactive_v2_queue(now: datetime | None = None, days: int = 7, families: set[str] | None = None) -> list[dict]:
+    current = now or datetime.now(SGT)
+    today = current.date()
+    allowed = {str(item).strip() for item in families} if families else None
+    candidates: list[dict] = []
+
+    def allow(family: str) -> bool:
+        return allowed is None or family in allowed
+
+    if google_ok():
+        try:
+            if allow("nudge"):
+                for nudge in gs.due_nudges(current):
+                    candidates.append(_make_proactive_candidate(
+                        "nudge",
+                        f"nudge:{nudge['id']}",
+                        "reminder",
+                        "H.I.R.A nudge",
+                        nudge.get("message", ""),
+                        96,
+                        priority="high",
+                        why="Due now from a scheduled nudge.",
+                        action_hint="Act now or snooze externally.",
+                        event_date=str(nudge.get("send_at", "")),
+                        metadata={"nudge_id": str(nudge.get("id", ""))},
+                    ))
+        except Exception as exc:
+            logger.warning(f"Proactive v2 nudge scan failed: {exc}")
+
+        try:
+            if allow("checkin"):
+                for checkin in gs.due_checkins(current) + _due_break_aware_checkins(current):
+                    slot = str(checkin.get("due_slot", ""))
+                    score = 78 if checkin.get("schedule_aware") else 72
+                    why = f"Check-in window due{f' at {slot}' if slot else ''}."
+                    candidates.append(_make_proactive_candidate(
+                        "checkin",
+                        f"checkin:{checkin['id']}",
+                        "reminder",
+                        "H.I.R.A check-in",
+                        checkin.get("question", ""),
+                        score,
+                        priority="medium",
+                        why=why,
+                        action_hint="Reply yes/done once completed.",
+                        metadata={"checkin_id": str(checkin.get("id", "")), "due_slot": slot},
+                    ))
+        except Exception as exc:
+            logger.warning(f"Proactive v2 check-in scan failed: {exc}")
+
+        try:
+            if allow("followup"):
+                for followup in gs.due_followups(today.isoformat()):
+                    days_late = 0
+                    try:
+                        days_late = max(0, (today - date.fromisoformat(followup.get("due_date", today.isoformat()))).days)
+                    except Exception:
+                        days_late = 0
+                    score = min(95, 76 + min(12, days_late * 4))
+                    candidates.append(_make_proactive_candidate(
+                        "followup",
+                        f"followup:{followup['id']}",
+                        "reminder",
+                        "H.I.R.A follow-up",
+                        _format_followup(followup),
+                        score,
+                        priority="high" if days_late else "medium",
+                        why="Follow-up is due and still open.",
+                        action_hint=f"Use /donefollowup {followup['id']} when settled.",
+                        event_date=str(followup.get("due_date", "")),
+                        metadata={"followup_id": str(followup.get("id", ""))},
+                    ))
+        except Exception as exc:
+            logger.warning(f"Proactive v2 follow-up scan failed: {exc}")
+
+        try:
+            if allow("prayer"):
+                due = _prayer_reminder_due(current)
+                if due:
+                    text = f"{due['label']} entered at {due['time']}. {due['note']}"
+                    candidates.append(_make_proactive_candidate(
+                        "prayer",
+                        f"prayer:{due['key']}",
+                        "reminder",
+                        f"{due['label']} prayer",
+                        text,
+                        98,
+                        priority="high",
+                        why="Prayer time just entered.",
+                        action_hint="Pray at the next available pocket.",
+                        metadata={"prayer_key": str(due.get("key", ""))},
+                    ))
+        except Exception as exc:
+            logger.warning(f"Proactive v2 prayer scan failed: {exc}")
+
+        try:
+            if allow("friday_khutbah"):
+                khutbah_text = _friday_khutbah_heads_up_due(current)
+                if khutbah_text:
+                    candidates.append(_make_proactive_candidate(
+                        "friday_khutbah",
+                        "friday_khutbah",
+                        "update",
+                        "Friday khutbah",
+                        khutbah_text,
+                        82,
+                        priority="medium",
+                        why="Friday sermon heads-up is due.",
+                        action_hint="Carry one point into Jumu'ah.",
+                    ))
+        except Exception as exc:
+            logger.warning(f"Proactive v2 khutbah scan failed: {exc}")
+
+        try:
+            if allow("friday_checkin") and current.weekday() == 4 and current.hour >= 12:
+                projects = gs.get_projects()
+                if projects:
+                    score = 74
+                    body = "Friday is a good checkpoint for projects that could drift over the weekend."
+                    candidates.append(_make_proactive_candidate(
+                        "friday_checkin",
+                        "friday_checkin",
+                        "update",
+                        "Weekly project check-in",
+                        body,
+                        score,
+                        priority="medium",
+                        why="Friday review window is open.",
+                        action_hint="Review project statuses and next milestones.",
+                    ))
+        except Exception as exc:
+            logger.warning(f"Proactive v2 Friday project scan failed: {exc}")
+
+        try:
+            if allow("weekly_planning") and current.weekday() in {6, 0}:
+                score = 70 if current.weekday() == 6 else 62
+                why = "Weekly planning window is open." if current.weekday() == 6 else "Week start planning is still useful now."
+                candidates.append(_make_proactive_candidate(
+                    "weekly_planning",
+                    "weekly_planning",
+                    "update",
+                    "Weekly plan",
+                    "Look ahead across calendar, reminders, follow-ups, and marking before the week gets noisy.",
+                    score,
+                    priority="medium",
+                    why=why,
+                    action_hint="Open the weekly plan and front-load one hard thing.",
+                ))
+        except Exception as exc:
+            logger.warning(f"Proactive v2 weekly planning scan failed: {exc}")
+
+    try:
+        if allow("digest") and 5 <= current.hour <= 11:
+            for entry in build_curated_digest_entries(now=current, limit=3, fetch_limit=4, record=False):
+                item = entry.get("item", {}) if isinstance(entry.get("item"), dict) else {}
+                title = str(item.get("title", "")).strip()
+                if not title:
+                    continue
+                label = str(entry.get("label", "")).strip()
+                source = str(item.get("source", "")).strip()
+                why = str(entry.get("why", "")).strip() or "shortlist relevance"
+                meta = " · ".join(part for part in [label, source] if part)
+                body = title if not meta else f"{title}\n\n{meta}"
+                candidates.append(_make_proactive_candidate(
+                    "digest",
+                    f"digest:{entry.get('key', '')}",
+                    "update",
+                    "Morning digest",
+                    body,
+                    max(58, int(entry.get("score", 0) or 0)),
+                    priority="medium",
+                    why=f"Fresh digest pick with {why}.",
+                    action_hint="Open the full digest for the rest of the shortlist.",
+                    metadata={"digest_key": str(entry.get("key", ""))},
+                ))
+        if allow("intelligence"):
+            for insight in build_proactive_intelligence_insights(days=days, now=current):
+                score = {"high": 84, "medium": 72, "low": 58}.get(insight.get("priority", "medium"), 72)
+                candidates.append(_make_proactive_candidate(
+                    "intelligence",
+                    f"proactive_intelligence:{insight['id']}",
+                    "update",
+                    insight.get("title", "H.I.R.A heads-up"),
+                    insight.get("body", ""),
+                    score,
+                    priority=insight.get("priority", "medium"),
+                    why="Detected from workload, due items, marking, or follow-ups.",
+                    action_hint="Use this to pre-empt friction before the day crowds in.",
+                    metadata={"insight_id": str(insight.get("id", ""))},
+                ))
+    except Exception as exc:
+        logger.warning(f"Proactive v2 intelligence scan failed: {exc}")
+
+    try:
+        if allow("task"):
+            structured = build_task_structured(days)
+            for task in structured.get("items", [])[:5]:
+                score = _task_candidate_score(task, today)
+                if score < 58:
+                    continue
+                due = task.get("due", "")
+                why = "Task is overdue." if task.get("overdue") else f"Task due by {due or 'soon'}."
+                candidates.append(_make_proactive_candidate(
+                    "task",
+                    f"task:{task.get('id', '')}",
+                    "update",
+                    task.get("description", "Task"),
+                    task.get("next_action", "") or f"{due} {task.get('category', '')}".strip(),
+                    score,
+                    priority=task.get("priority", "") or ("high" if task.get("overdue") else "medium"),
+                    why=why,
+                    action_hint=task.get("next_action", "") or "Clear one concrete next action.",
+                    event_date=due,
+                    metadata={"task_id": str(task.get("id", "")), "due": due},
+                ))
+    except Exception as exc:
+        logger.warning(f"Proactive v2 task scan failed: {exc}")
+
+    queue = _dedupe_proactive_candidates(candidates)
+    queue.sort(
+        key=lambda item: (
+            1 if item.get("suppressed") else 0,
+            -int(item.get("score", 0) or 0),
+            -_priority_rank(item.get("priority", "medium")),
+            str(item.get("source", "")),
+        )
+    )
+    return queue
+
+
+def build_proactive_v2_snapshot(now: datetime | None = None, days: int = 7, limit: int = 3) -> dict:
+    current = now or datetime.now(SGT)
+    queue = build_proactive_v2_queue(now=current, days=days)
+    ready = [item for item in queue if not item.get("suppressed")]
+    suppressed = [item for item in queue if item.get("suppressed")]
+    changed = []
+    for item in ready[: max(3, limit)]:
+        bias = int(item.get("feedback_bias", 0) or 0)
+        if bias:
+            changed.append(f"{item.get('title', 'Item')} is being {'boosted' if bias > 0 else 'downranked'} by recent feedback.")
+    if suppressed:
+        changed.append(f"{len(suppressed)} signal(s) suppressed because similar items were dismissed or marked not now.")
+    return {
+        "generated_at": current.strftime("%A, %-d %B %Y, %H:%M SGT"),
+        "top": ready[: max(1, int(limit or 3))],
+        "queue_count": len(queue),
+        "ready_count": len(ready),
+        "suppressed_count": len(suppressed),
+        "changed": changed[:3],
+    }
+
+
+async def _dispatch_proactive_candidates(context, candidates: list[dict], limit: int = 3) -> int:
+    sent_count = 0
+    for candidate in candidates:
+        if candidate.get("suppressed"):
+            continue
+        if sent_count >= max(1, int(limit or 3)):
+            break
+        title = str(candidate.get("title", "H.I.R.A")).strip() or "H.I.R.A"
+        body = str(candidate.get("body", "")).strip()
+        if not body:
+            continue
+        kind = str(candidate.get("kind", "update")).strip() or "update"
+        source = str(candidate.get("source", "")).strip()
+        family = str(candidate.get("family", "")).strip()
+        if family == "checkin":
+            telegram_text = f"*{title}*\n\n{body}\n\nReply `yes`, `done`, or `alhamdulillah` once it is done and I’ll stop asking for today."
+        elif family == "followup":
+            followup_id = candidate.get("metadata", {}).get("followup_id", "")
+            telegram_text = f"*{title}*\n\n{body}\n\nUse `/donefollowup {followup_id}` when settled." if followup_id else f"*{title}*\n\n{body}"
+        else:
+            telegram_text = f"*{title}*\n\n{body}"
+        if context is not None:
+            await _send_telegram_notification(context, telegram_text)
+        queued = _queue_app_notification(kind, title, body, source=source)
+        if not queued:
+            continue
+        if family == "nudge":
+            gs.mark_nudge_sent(candidate.get("metadata", {}).get("nudge_id", ""))
+        elif family == "checkin":
+            gs.mark_checkin_prompted(
+                candidate.get("metadata", {}).get("checkin_id", ""),
+                candidate.get("metadata", {}).get("due_slot", ""),
+                datetime.now(SGT),
+            )
+        elif family == "followup":
+            gs.mark_followup_prompted(candidate.get("metadata", {}).get("followup_id", ""), datetime.now(SGT).strftime("%Y-%m-%d"))
+        elif family == "intelligence":
+            _mark_proactive_seen(candidate.get("metadata", {}).get("insight_id", ""), datetime.now(SGT))
+        sent_count += 1
+    return sent_count
 
 def _news_topics():
     if google_ok():
@@ -2334,14 +2727,131 @@ def _news_topics():
             pass
     return [(label, query) for label, query in ss.DIGEST_TOPICS]
 
+
+def _digest_label_lens(label: str) -> tuple[str, int]:
+    clean = str(label or "").lower()
+    if any(term in clean for term in ("education", "moe", "sg education")):
+        return ("school relevance", 10)
+    if any(term in clean for term in ("ai", "developer", "app dev", "android", "ios", "macos", "design", "ui/ux", "nothing")):
+        return ("product/build relevance", 8)
+    if any(term in clean for term in ("liverpool", "f1")):
+        return ("personal interest", 6)
+    if any(term in clean for term in ("islam", "sg news")):
+        return ("daily life relevance", 5)
+    return ("shortlist relevance", 4)
+
+
+def _curated_digest_score(label: str, item: dict, slot_index: int = 0) -> tuple[int, str]:
+    lens, lens_bonus = _digest_label_lens(label)
+    score = 50 + ss.news_quality_score(item) + lens_bonus
+    title_text = str(item.get("title", "")).lower()
+    if any(term in title_text for term in ("today", "new", "launch", "update", "policy", "developer", "release", "security")):
+        score += 4
+    score -= max(0, int(slot_index or 0)) * 2
+    return min(100, score), lens
+
+
+def build_curated_digest_entries(now: datetime | None = None, limit: int = 4, fetch_limit: int = 4, record: bool = False) -> list[dict]:
+    current = now or datetime.now(SGT)
+    seen = _recent_news_digest_keys(current)
+    candidates = []
+    used_keys = set()
+    for label, query in _news_topics():
+        items = ss.google_news(query, max_items=max(2, int(fetch_limit or 4)))
+        for index, item in enumerate(items):
+            key = ss.news_item_key(item)
+            if not key or key in used_keys or key in seen:
+                continue
+            score, lens = _curated_digest_score(label, item, slot_index=index)
+            candidates.append({
+                "label": label,
+                "item": item,
+                "key": key,
+                "score": score,
+                "why": lens,
+            })
+            used_keys.add(key)
+    candidates.sort(key=lambda entry: (-int(entry.get("score", 0) or 0), str(entry.get("label", "")), str(entry.get("key", ""))))
+
+    chosen = []
+    chosen_labels = set()
+    for entry in candidates:
+        label = str(entry.get("label", "")).strip().lower()
+        if label in chosen_labels:
+            continue
+        chosen.append(entry)
+        chosen_labels.add(label)
+        if len(chosen) >= max(1, int(limit or 4)):
+            break
+
+    if len(chosen) < max(1, int(limit or 4)):
+        for entry in candidates:
+            if entry in chosen:
+                continue
+            chosen.append(entry)
+            if len(chosen) >= max(1, int(limit or 4)):
+                break
+
+    if not chosen:
+        fallback = ss.pick_fresh_morning_digest_entries(
+            topics=_news_topics(),
+            seen_keys=seen,
+            max_items_per_topic=1,
+            fetch_limit=1,
+        )
+        chosen = [
+            {**entry, "score": 55, "why": "shortlist relevance"}
+            for entry in fallback[: max(1, int(limit or 4))]
+        ]
+
+    if record and chosen:
+        _remember_news_digest_entries(chosen, now=current)
+    return chosen[: max(1, int(limit or 4))]
+
+
+def format_curated_digest(entries: list[dict]) -> str:
+    lines = []
+    for entry in entries or []:
+        label = str(entry.get("label", "")).strip()
+        item = entry.get("item") if isinstance(entry.get("item"), dict) else {}
+        title = str(item.get("title", "")).strip()
+        source = str(item.get("source", "")).strip()
+        why = str(entry.get("why", "")).strip()
+        if not title:
+            continue
+        meta = " · ".join(part for part in [label, source] if part)
+        lines.append(f"- *{title}*{f' ({meta})' if meta else ''}")
+        if why:
+            lines.append(f"  Why it matters: {why}.")
+    return "\n".join(lines).strip()
+
+
+def build_curated_digest_snapshot(now: datetime | None = None, limit: int = 4) -> dict:
+    current = now or datetime.now(SGT)
+    entries = build_curated_digest_entries(now=current, limit=limit, fetch_limit=4, record=False)
+    return {
+        "generated_at": current.strftime("%A, %-d %B %Y, %H:%M SGT"),
+        "items": [
+            {
+                "label": entry.get("label", ""),
+                "title": entry.get("item", {}).get("title", ""),
+                "source": entry.get("item", {}).get("source", ""),
+                "url": entry.get("item", {}).get("url", ""),
+                "why": entry.get("why", ""),
+                "score": entry.get("score", 0),
+            }
+            for entry in entries
+        ],
+    }
+
 def build_news_digest(query: str = "", max_items: int = 2) -> str:
     max_items = max(1, min(int(max_items or 2), 5))
     if query.strip():
         items = ss.google_news(query.strip(), max_items=max_items)
         return f"*News: {query.strip()}*\n\n{ss.format_news_items(items)}"
 
-    digest = ss.get_digest_for_topics(_news_topics(), max_items=max_items)
-    return f"*Latest from your shortlist*\n\n{digest or 'No news found.'}"
+    curated = format_curated_digest(build_curated_digest_entries(limit=max_items, fetch_limit=4, record=False))
+    return f"*Latest from your shortlist*\n\n{curated or 'No news found.'}"
 
 
 TASTE_CALIBRATION_QUESTIONS = [
@@ -3795,7 +4305,7 @@ def _correct_weekday_date_mismatches(text: str) -> str:
     return text
 
 
-def build_briefing():
+def build_briefing(record_news_digest: bool = False):
     now = datetime.now(SGT)
     today = now.date()
     lines = [f"Good morning, Herwanto!\n_{now.strftime('%A, %-d %B %Y')}_\n"]
@@ -3859,7 +4369,7 @@ def build_briefing():
 
     # Morning news digest
     try:
-        digest = ss.get_morning_digest(_news_topics())
+        digest = _fresh_morning_digest(now=now, record=record_news_digest)
         if digest:
             lines.append("")
             lines.append("*Morning digest:*")
@@ -5945,12 +6455,38 @@ async def handle_voice(update, context):
 # ─── SCHEDULED JOBS ──────────────────────────────────────────────────────────
 
 def _queue_app_notification(kind: str, title: str, body: str, source: str = ""):
+    if _should_suppress_notification(source, kind):
+        logger.info(f"Notification suppressed by preference memory for source={source or kind}")
+        return None
     try:
         item = gs.enqueue_app_notification(kind, title, body, source=source)
+        if item.get("id"):
+            _record_notification_outcome(
+                "queued",
+                notification_id=item.get("id", ""),
+                source=source,
+                kind=kind,
+                title=title,
+            )
         if not _quiet_hours_active() or kind in {"urgent"}:
-            gs.send_web_push_notification(title, body, data={"id": item.get("id", ""), "kind": kind, "source": source})
+            sent = gs.send_web_push_notification(
+                title,
+                body,
+                data={"id": item.get("id", ""), "kind": kind, "source": source},
+            )
+            _record_notification_outcome(
+                "pushed" if sent else "push_missed",
+                notification_id=item.get("id", ""),
+                source=source,
+                kind=kind,
+                title=title,
+            )
+            if sent == 0:
+                logger.warning(f"No web push delivery confirmed for notification source={source or kind}")
+        return item
     except Exception as e:
         logger.warning(f"App notification queue error: {e}")
+        return None
 
 
 def _quiet_hours_active(now: datetime | None = None) -> bool:
@@ -5962,6 +6498,169 @@ def _quiet_hours_active(now: datetime | None = None) -> bool:
 
 MORNING_BRIEFING_SENT_KEY = "last_morning_briefing_date"
 EVENING_BRIEFING_SENT_KEY = "last_evening_briefing_date"
+NEWS_DIGEST_HISTORY_KEY = "news_digest_history"
+NEWS_DIGEST_FRESHNESS_HOURS = 48
+NOTIFICATION_NEGATIVE_ACTIONS = {"dismissed", "not_now"}
+NOTIFICATION_COOLDOWN_HOURS = {
+    "checkin": 8,
+    "followup": 18,
+    "proactive_intelligence": 24,
+    "friday_checkin": 36,
+    "weekly_planning": 24,
+    "friday_khutbah": 24,
+    "web_friday_khutbah": 24,
+}
+
+
+def _notification_source_group(source: str, kind: str = "") -> str:
+    clean_source = str(source or "").strip()
+    if clean_source:
+        return clean_source.split(":", 1)[0]
+    return str(kind or "notice").strip() or "notice"
+
+
+def _record_notification_outcome(
+    action: str,
+    notification_id: str = "",
+    source: str = "",
+    kind: str = "",
+    rating: str = "",
+    client_id: str = "",
+    title: str = "",
+):
+    try:
+        gs.add_notification_outcome(
+            action=action,
+            notification_id=notification_id,
+            source=source,
+            kind=kind,
+            rating=rating,
+            client_id=client_id,
+            title=title,
+        )
+    except Exception as exc:
+        logger.warning(f"Could not persist notification outcome: {exc}")
+
+
+def _notification_feedback_bias(source: str, kind: str, now: datetime | None = None, days: int = 30) -> int:
+    current = now or datetime.now(SGT)
+    threshold = current - timedelta(days=max(1, int(days or 30)))
+    exact = str(source or "").strip()
+    group = _notification_source_group(source, kind)
+    score = 0
+    try:
+        outcomes = gs.get_notification_outcomes()
+    except Exception:
+        return 0
+    for item in outcomes:
+        try:
+            created = datetime.fromisoformat(item.get("created", ""))
+        except Exception:
+            continue
+        if created < threshold:
+            continue
+        action = str(item.get("action", "")).strip()
+        item_source = str(item.get("source", "")).strip()
+        item_group = str(item.get("group", "")).strip() or _notification_source_group(item_source, item.get("kind", ""))
+        if item_source != exact and item_group != group:
+            continue
+        weight = 2 if item_source == exact else 1
+        if action == "useful":
+            score += 2 * weight
+        elif action in NOTIFICATION_NEGATIVE_ACTIONS:
+            score -= 2 * weight
+    return score
+
+
+def _should_suppress_notification(source: str, kind: str, now: datetime | None = None) -> bool:
+    current = now or datetime.now(SGT)
+    exact = str(source or "").strip()
+    group = _notification_source_group(source, kind)
+    cooldown_hours = NOTIFICATION_COOLDOWN_HOURS.get(group)
+    if not cooldown_hours or group in {"briefing", "morning_briefing", "evening_briefing", "prayer", "web_prayer", "nudge"}:
+        return False
+    threshold = current - timedelta(hours=cooldown_hours)
+    try:
+        outcomes = gs.get_notification_outcomes()
+    except Exception:
+        return False
+    for item in reversed(outcomes):
+        try:
+            created = datetime.fromisoformat(item.get("created", ""))
+        except Exception:
+            continue
+        if created < threshold:
+            break
+        action = str(item.get("action", "")).strip()
+        if action not in NOTIFICATION_NEGATIVE_ACTIONS:
+            continue
+        item_source = str(item.get("source", "")).strip()
+        item_group = str(item.get("group", "")).strip() or _notification_source_group(item_source, item.get("kind", ""))
+        if item_source == exact or item_group == group:
+            return True
+    return False
+
+
+def _get_news_digest_history() -> list[dict]:
+    try:
+        raw = gs.get_config(NEWS_DIGEST_HISTORY_KEY) or "[]"
+        history = json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(history, list):
+        return []
+    clean = []
+    for item in history[-240:]:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key", "")).strip()
+        shown_at = str(item.get("shown_at", "")).strip()
+        title = str(item.get("title", "")).strip()
+        if not key or not shown_at:
+            continue
+        clean.append({"key": key, "shown_at": shown_at, "title": title})
+    return clean
+
+
+def _recent_news_digest_keys(now: datetime | None = None, hours: int = NEWS_DIGEST_FRESHNESS_HOURS) -> set[str]:
+    current = now or datetime.now(SGT)
+    threshold = current - timedelta(hours=max(1, int(hours or NEWS_DIGEST_FRESHNESS_HOURS)))
+    keys = set()
+    for item in _get_news_digest_history():
+        try:
+            shown_at = datetime.fromisoformat(item["shown_at"])
+        except Exception:
+            continue
+        if shown_at >= threshold:
+            keys.add(item["key"])
+    return keys
+
+
+def _remember_news_digest_entries(entries: list[dict], now: datetime | None = None):
+    if not entries:
+        return
+    current = now or datetime.now(SGT)
+    history = _get_news_digest_history()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        item = entry.get("item") if isinstance(entry.get("item"), dict) else {}
+        key = str(entry.get("key", "")).strip()
+        title = str(item.get("title", "")).strip()
+        if not key:
+            continue
+        history.append({"key": key, "title": title, "shown_at": current.isoformat()})
+    history = history[-240:]
+    try:
+        gs.set_config(NEWS_DIGEST_HISTORY_KEY, json.dumps(history, ensure_ascii=False))
+    except Exception as exc:
+        logger.warning(f"Could not persist news digest history: {exc}")
+
+
+def _fresh_morning_digest(now: datetime | None = None, record: bool = False) -> str:
+    current = now or datetime.now(SGT)
+    entries = build_curated_digest_entries(now=current, limit=4, fetch_limit=4, record=record)
+    return format_curated_digest(entries)
 
 
 async def send_morning_briefing_once(context=None, force: bool = False, source: str = "morning_briefing") -> bool:
@@ -5974,7 +6673,7 @@ async def send_morning_briefing_once(context=None, force: bool = False, source: 
     try:
         if not force and gs.get_config(MORNING_BRIEFING_SENT_KEY) == today_key:
             return False
-        text = build_briefing()
+        text = build_briefing(record_news_digest=True)
         if context is not None:
             await _send_telegram_notification(context, text)
         _queue_app_notification("briefing", "Morning briefing", text, source=f"{source}:{today_key}")
@@ -6031,6 +6730,9 @@ async def friday_checkin_job(context):
     if not _acquire_job_lock("friday_checkin", 900):
         return
     try:
+        sent = await _dispatch_proactive_candidates(context, build_proactive_v2_queue(now=datetime.now(SGT), families={"friday_checkin"}), limit=1)
+        if sent:
+            return
         projs = gs.get_projects()
         lines = ["*Weekly project check-in*\n"]
         for p in projs:
@@ -6053,6 +6755,9 @@ async def weekly_planning_job(context):
     if not _acquire_job_lock("weekly_planning", 900):
         return
     try:
+        sent = await _dispatch_proactive_candidates(context, build_proactive_v2_queue(now=datetime.now(SGT), families={"weekly_planning"}), limit=1)
+        if sent:
+            return
         text = build_weekly_plan()
         await _send_telegram_notification(context, text)
         _queue_app_notification("update", "Weekly plan", text, source="weekly_planning")
@@ -6067,11 +6772,7 @@ async def proactive_nudges_job(context):
     try:
         _log_memory("before proactive_nudges")
         now = datetime.now(SGT)
-        for nudge in gs.due_nudges(now):
-            text = f"*H.I.R.A nudge*\n\n{nudge['message']}"
-            await _send_telegram_notification(context, text)
-            _queue_app_notification("reminder", "H.I.R.A nudge", nudge["message"], source=f"nudge:{nudge['id']}")
-            gs.mark_nudge_sent(nudge["id"])
+        await _dispatch_proactive_candidates(context, build_proactive_v2_queue(now=now, families={"nudge"}), limit=6)
     except Exception as e:
         logger.error(f"Proactive nudge error: {e}")
     finally:
@@ -6086,20 +6787,7 @@ async def proactive_intelligence_job(context):
     try:
         _log_memory("before proactive_intelligence")
         now = datetime.now(SGT)
-        for insight in due_proactive_intelligence(now):
-            body = insight.get("body", "")
-            if not body:
-                continue
-            text = f"*{insight.get('title', 'H.I.R.A heads-up')}*\n\n{body}"
-            if context:
-                await _send_telegram_notification(context, text)
-            _queue_app_notification(
-                "update",
-                insight.get("title", "H.I.R.A heads-up"),
-                body,
-                source=f"proactive_intelligence:{insight['id']}",
-            )
-            _mark_proactive_seen(insight["id"], now)
+        await _dispatch_proactive_candidates(context, build_proactive_v2_queue(now=now, days=7, families={"intelligence"}), limit=3)
     except Exception as e:
         logger.error(f"Proactive intelligence error: {e}")
     finally:
@@ -6113,12 +6801,7 @@ async def daily_checkins_job(context):
     try:
         _log_memory("before daily_checkins")
         now = datetime.now(SGT)
-        due_checkins = gs.due_checkins(now) + _due_break_aware_checkins(now)
-        for checkin in due_checkins:
-            text = f"*H.I.R.A check-in*\n\n{checkin['question']}\n\nReply `yes`, `done`, or `alhamdulillah` once it is done and I’ll stop asking for today."
-            await _send_telegram_notification(context, text)
-            _queue_app_notification("reminder", "H.I.R.A check-in", checkin["question"], source=f"checkin:{checkin['id']}")
-            gs.mark_checkin_prompted(checkin["id"], checkin["due_slot"], now)
+        await _dispatch_proactive_candidates(context, build_proactive_v2_queue(now=now, families={"checkin"}), limit=6)
     except Exception as e:
         logger.error(f"Daily check-in error: {e}")
     finally:
@@ -6131,12 +6814,7 @@ async def prayer_reminders_job(context):
     if not _acquire_job_lock("prayer_reminders", 55):
         return
     try:
-        due = _prayer_reminder_due(datetime.now(SGT))
-        if not due:
-            return
-        text = f"*Prayer reminder*\n\n{due['label']} entered at {due['time']}. {due['note']}"
-        await _send_telegram_notification(context, text)
-        _queue_app_notification("reminder", f"{due['label']} prayer", text, source=f"prayer:{due['key']}")
+        await _dispatch_proactive_candidates(context, build_proactive_v2_queue(now=datetime.now(SGT), families={"prayer"}), limit=2)
     except Exception as e:
         logger.error(f"Prayer reminder error: {e}")
 
@@ -6147,12 +6825,7 @@ async def friday_khutbah_job(context):
     if not _acquire_job_lock("friday_khutbah", 900):
         return
     try:
-        text = _friday_khutbah_heads_up_due(datetime.now(SGT))
-        if not text:
-            return
-        if context:
-            await _send_telegram_notification(context, text)
-        _queue_app_notification("update", "Friday khutbah", text, source="friday_khutbah")
+        await _dispatch_proactive_candidates(context, build_proactive_v2_queue(now=datetime.now(SGT), families={"friday_khutbah"}), limit=1)
     except Exception as e:
         logger.error(f"Friday khutbah heads-up error: {e}")
 
@@ -6164,12 +6837,7 @@ async def followups_job(context):
         return
     try:
         _log_memory("before followups")
-        today = datetime.now(SGT).strftime("%Y-%m-%d")
-        for followup in gs.due_followups(today):
-            text = f"*H.I.R.A follow-up*\n\n{_format_followup(followup)}\n\nUse `/donefollowup {followup['id']}` when settled."
-            await _send_telegram_notification(context, text)
-            _queue_app_notification("reminder", "H.I.R.A follow-up", _format_followup(followup), source=f"followup:{followup['id']}")
-            gs.mark_followup_prompted(followup["id"], today)
+        await _dispatch_proactive_candidates(context, build_proactive_v2_queue(now=datetime.now(SGT), families={"followup"}), limit=6)
     except Exception as e:
         logger.error(f"Follow-up job error: {e}")
     finally:

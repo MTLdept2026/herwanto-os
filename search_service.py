@@ -8,6 +8,7 @@ Web search tool (AI chat): Tavily API — free tier 1000/month.
 import os
 import logging
 import re
+import hashlib
 import requests
 import feedparser
 from html.parser import HTMLParser
@@ -282,6 +283,58 @@ def _rank_news_items(items: list[dict]) -> list[dict]:
     return sorted(ranked, key=_news_quality_score, reverse=True)
 
 
+def news_quality_score(item: dict) -> int:
+    return _news_quality_score(item)
+
+
+def news_item_key(item: dict) -> str:
+    title = " ".join(str(item.get("title", "")).lower().split())
+    url = str(item.get("url", "")).strip().lower()
+    seed = url or title
+    if not seed:
+        return ""
+    return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
+
+
+def pick_fresh_morning_digest_entries(topics=None, seen_keys=None, max_items_per_topic: int = 1, fetch_limit: int = 6):
+    """
+    Fetch morning digest candidates and skip items already shown recently.
+    Returns a list of {"label", "item", "key"} objects.
+    """
+    seen = {str(key).strip() for key in (seen_keys or []) if str(key).strip()}
+    chosen = []
+    used_keys = set()
+    per_topic = max(1, int(max_items_per_topic or 1))
+    limit = max(per_topic, int(fetch_limit or 6))
+    for label, query in (topics or DIGEST_TOPICS):
+        items = google_news(query, max_items=limit)
+        if not items:
+            continue
+        picked = 0
+        for item in items:
+            key = news_item_key(item)
+            if not key or key in used_keys or key in seen:
+                continue
+            chosen.append({"label": label, "item": item, "key": key})
+            used_keys.add(key)
+            picked += 1
+            if picked >= per_topic:
+                break
+    return chosen
+
+
+def format_morning_digest_entries(entries) -> str:
+    lines = []
+    for entry in entries or []:
+        label = str(entry.get("label", "")).strip()
+        item = entry.get("item") if isinstance(entry, dict) else {}
+        title = str((item or {}).get("title", "")).strip()
+        if not label or not title:
+            continue
+        lines.append(f"{label}: {title}")
+    return "\n".join(lines)
+
+
 def get_digest_for_topics(topics, max_items=2):
     """Return latest headlines for a list of (label, query) topics."""
     lines = []
@@ -302,9 +355,5 @@ def get_morning_digest(topics=None):
     Fetch one headline per topic using Google News RSS.
     No API key needed — always works.
     """
-    lines = []
-    for label, query in (topics or DIGEST_TOPICS):
-        items = google_news(query, max_items=1)
-        if items:
-            lines.append(f"{label}: {items[0]['title']}")
-    return "\n".join(lines)
+    entries = pick_fresh_morning_digest_entries(topics=topics, max_items_per_topic=1, fetch_limit=1)
+    return format_morning_digest_entries(entries)

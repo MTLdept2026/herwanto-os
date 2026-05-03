@@ -10,6 +10,7 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 import bot
 import islamic_service
 import pdf_service
+import search_service
 import weather_service
 import web_app
 
@@ -217,6 +218,118 @@ class AgenticClaudeTests(unittest.TestCase):
         )
 
         self.assertEqual(forced, "get_liverpool_brief")
+
+    def test_news_item_key_prefers_url_for_stable_deduping(self):
+        item_a = {"title": "Same story title", "url": "https://example.com/story"}
+        item_b = {"title": "Same story title updated", "url": "https://example.com/story"}
+
+        self.assertEqual(search_service.news_item_key(item_a), search_service.news_item_key(item_b))
+
+    def test_pick_fresh_morning_digest_entries_skips_recent_keys(self):
+        def fake_google_news(query, max_items=5):
+            return [
+                {"title": f"{query} old", "url": f"https://example.com/{query}/old"},
+                {"title": f"{query} fresh", "url": f"https://example.com/{query}/fresh"},
+            ]
+
+        topics = [("Topic A", "alpha"), ("Topic B", "beta")]
+        seen_keys = {search_service.news_item_key({"title": "alpha old", "url": "https://example.com/alpha/old"})}
+        with patch("search_service.google_news", side_effect=fake_google_news):
+            entries = search_service.pick_fresh_morning_digest_entries(topics=topics, seen_keys=seen_keys, fetch_limit=2)
+
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[0]["label"], "Topic A")
+        self.assertEqual(entries[0]["item"]["title"], "alpha fresh")
+        self.assertEqual(entries[1]["item"]["title"], "beta old")
+
+    def test_notification_feedback_bias_prefers_useful_over_negative(self):
+        now = bot.datetime.now(bot.SGT)
+        outcomes = [
+            {"created": now.isoformat(), "source": "checkin:7", "group": "checkin", "kind": "reminder", "action": "useful"},
+            {"created": now.isoformat(), "source": "checkin:7", "group": "checkin", "kind": "reminder", "action": "dismissed"},
+            {"created": now.isoformat(), "source": "checkin:8", "group": "checkin", "kind": "reminder", "action": "dismissed"},
+        ]
+        with patch("bot.gs.get_notification_outcomes", return_value=outcomes):
+            score_exact = bot._notification_feedback_bias("checkin:7", "reminder", now=now)
+            score_other = bot._notification_feedback_bias("checkin:8", "reminder", now=now)
+
+        self.assertGreater(score_exact, score_other)
+
+    def test_notification_suppression_honours_recent_negative_feedback(self):
+        now = bot.datetime.now(bot.SGT)
+        outcomes = [
+            {"created": now.isoformat(), "source": "followup:3", "group": "followup", "kind": "reminder", "action": "not_now"}
+        ]
+        with patch("bot.gs.get_notification_outcomes", return_value=outcomes):
+            self.assertTrue(bot._should_suppress_notification("followup:3", "reminder", now=now))
+            self.assertTrue(bot._should_suppress_notification("followup:9", "reminder", now=now))
+            self.assertFalse(bot._should_suppress_notification("briefing:today", "briefing", now=now))
+
+    def test_proactive_v2_queue_prefers_higher_score_ready_items(self):
+        now = bot.datetime.now(bot.SGT)
+        with patch("bot.google_ok", return_value=False), \
+             patch("bot.build_proactive_intelligence_insights", return_value=[
+                 {"id": "alpha", "title": "Alpha", "body": "First", "priority": "medium"},
+                 {"id": "beta", "title": "Beta", "body": "Second", "priority": "high"},
+             ]), \
+             patch("bot.build_task_structured", return_value={"items": []}), \
+             patch("bot._should_suppress_notification", side_effect=lambda source, kind, now=None: source.endswith("alpha")), \
+             patch("bot._notification_feedback_bias", side_effect=lambda source, kind, now=None, days=30: 4 if source.endswith("beta") else 0):
+            queue = bot.build_proactive_v2_queue(now=now, families={"intelligence"})
+
+        self.assertEqual(queue[0]["title"], "Beta")
+        self.assertFalse(queue[0]["suppressed"])
+        self.assertTrue(any(item["title"] == "Alpha" and item["suppressed"] for item in queue))
+
+    def test_proactive_v2_snapshot_reports_suppressed_and_top_items(self):
+        now = bot.datetime.now(bot.SGT)
+        fake_queue = [
+            {"title": "Top item", "score": 88, "priority": "high", "suppressed": False, "feedback_bias": 2},
+            {"title": "Muted item", "score": 61, "priority": "medium", "suppressed": True, "feedback_bias": -2},
+        ]
+        with patch("bot.build_proactive_v2_queue", return_value=fake_queue):
+            snapshot = bot.build_proactive_v2_snapshot(now=now, limit=3)
+
+        self.assertEqual(snapshot["ready_count"], 1)
+        self.assertEqual(snapshot["suppressed_count"], 1)
+        self.assertEqual(snapshot["top"][0]["title"], "Top item")
+        self.assertTrue(snapshot["changed"])
+
+    def test_curated_digest_entries_rank_diverse_topics(self):
+        fake_topics = [("SG Education", "edu"), ("AI", "ai")]
+
+        def fake_google_news(query, max_items=4):
+            if query == "edu":
+                return [
+                    {"title": "MOE policy update for schools", "url": "https://example.com/edu-1", "source": "CNA"},
+                    {"title": "Extra school explainer", "url": "https://example.com/edu-2", "source": "ST"},
+                ]
+            return [
+                {"title": "AI developer release notes", "url": "https://example.com/ai-1", "source": "The Verge"},
+                {"title": "AI listicle filler", "url": "https://example.com/ai-2", "source": "Blog"},
+            ]
+
+        with patch("bot._news_topics", return_value=fake_topics), \
+             patch("bot._recent_news_digest_keys", return_value=set()), \
+             patch("search_service.google_news", side_effect=fake_google_news):
+            entries = bot.build_curated_digest_entries(limit=2, fetch_limit=2, record=False)
+
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[0]["label"], "SG Education")
+        self.assertEqual(entries[1]["label"], "AI")
+        self.assertTrue(all(entry.get("why") for entry in entries))
+
+    def test_format_curated_digest_includes_why_lines(self):
+        text = bot.format_curated_digest([
+            {
+                "label": "AI",
+                "why": "product/build relevance",
+                "item": {"title": "AI developer release notes", "source": "The Verge"},
+            }
+        ])
+
+        self.assertIn("Why it matters", text)
+        self.assertIn("product/build relevance", text)
 
     def test_pwa_lfc_prompt_includes_news_search_tools(self):
         tools = bot.pwa_tools_for_message("latest LFC transfer rumours and injuries")
