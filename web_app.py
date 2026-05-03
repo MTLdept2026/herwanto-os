@@ -213,7 +213,7 @@ async def _web_daily_briefing_loop(hour: int, minute: int, sender, source: str):
 async def _web_prayer_reminder_loop():
     while True:
         try:
-            await bot._dispatch_proactive_candidates(None, bot.build_proactive_v2_queue(now=datetime.now(bot.SGT), families={"prayer"}), limit=2)
+            await bot.prayer_reminders_job(None)
             await asyncio.sleep(60)
         except asyncio.CancelledError:
             raise

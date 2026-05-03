@@ -6460,6 +6460,9 @@ def _queue_app_notification(kind: str, title: str, body: str, source: str = ""):
         return None
     try:
         item = gs.enqueue_app_notification(kind, title, body, source=source)
+        if item.get("_duplicate"):
+            logger.info(f"Notification already active for source={source or kind}")
+            return None
         if item.get("id"):
             _record_notification_outcome(
                 "queued",

@@ -1759,22 +1759,49 @@ def _compact_notification_body(body: str) -> str:
 def enqueue_app_notification(kind: str, title: str, body: str, source: str = "") -> dict:
     notifications = get_app_notifications(include_archived=True)
     now = datetime.now(SGT).isoformat()
+    clean_kind = (kind or "notice").strip()
+    clean_title = (title or "H.I.R.A").strip()
+    clean_body = (body or "").strip()
+    clean_source = (source or "").strip()
+    if not clean_body:
+        return {
+            "id": "",
+            "kind": clean_kind,
+            "title": clean_title,
+            "body": clean_body,
+            "created": now,
+            "source": clean_source,
+            "seen_by": [],
+            "archived": False,
+        }
+    for item in reversed(notifications):
+        if item.get("archived"):
+            continue
+        if clean_source and str(item.get("source", "")).strip() == clean_source:
+            item["_duplicate"] = True
+            return item
+        if (
+            not clean_source
+            and str(item.get("kind", "")).strip() == clean_kind
+            and str(item.get("title", "")).strip() == clean_title
+            and str(item.get("body", "")).strip() == clean_body
+        ):
+            item["_duplicate"] = True
+            return item
     next_id = 1
     numeric_ids = [int(item["id"]) for item in notifications if str(item.get("id", "")).isdigit()]
     if numeric_ids:
         next_id = max(numeric_ids) + 1
     item = {
         "id": str(next_id),
-        "kind": (kind or "notice").strip(),
-        "title": (title or "H.I.R.A").strip(),
-        "body": (body or "").strip(),
+        "kind": clean_kind,
+        "title": clean_title,
+        "body": clean_body,
         "created": now,
-        "source": (source or "").strip(),
+        "source": clean_source,
         "seen_by": [],
         "archived": False,
     }
-    if not item["body"]:
-        return item
     notifications.append(item)
     set_app_notifications(notifications)
     return item
