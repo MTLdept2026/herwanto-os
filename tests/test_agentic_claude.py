@@ -319,6 +319,64 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(entries[1]["label"], "AI")
         self.assertTrue(all(entry.get("why") for entry in entries))
 
+    def test_curated_digest_keeps_first_class_interest_slots(self):
+        fake_topics = [
+            ("SG Education", "edu"),
+            ("AI", "ai"),
+            ("🏎️ F1", "f1"),
+            ("⚽ Liverpool / EPL", "lfc"),
+            ("Developer", "dev"),
+        ]
+
+        def fake_google_news(query, max_items=4):
+            return [{
+                "title": f"{query} ordinary update",
+                "url": f"https://example.com/{query}",
+                "source": "Example",
+            }]
+
+        with patch("bot._news_topics", return_value=fake_topics), \
+             patch("bot._recent_news_digest_keys", return_value=set()), \
+             patch("search_service.google_news", side_effect=fake_google_news):
+            entries = bot.build_curated_digest_entries(limit=4, fetch_limit=2, record=False)
+
+        labels = [entry["label"] for entry in entries]
+        self.assertIn("🏎️ F1", labels)
+        self.assertIn("⚽ Liverpool / EPL", labels)
+
+    def test_curated_digest_keeps_seen_f1_when_no_fresh_f1_item_available(self):
+        f1_item = {"title": "F1 paddock update", "url": "https://example.com/f1", "source": "Example"}
+        seen_key = search_service.news_item_key(f1_item)
+
+        def fake_google_news(query, max_items=4):
+            if query == "f1":
+                return [f1_item]
+            return [{
+                "title": f"{query} policy update today",
+                "url": f"https://example.com/{query}",
+                "source": "Example",
+            }]
+
+        with patch("bot._news_topics", return_value=[("SG Education", "edu"), ("AI", "ai"), ("🏎️ F1", "f1")]), \
+             patch("bot._recent_news_digest_keys", return_value={seen_key}), \
+             patch("search_service.google_news", side_effect=fake_google_news):
+            entries = bot.build_curated_digest_entries(limit=3, fetch_limit=2, record=False)
+
+        self.assertIn("🏎️ F1", [entry["label"] for entry in entries])
+
+    def test_curated_digest_shows_required_topic_when_feed_returns_no_items(self):
+        with patch("bot._news_topics", return_value=[("SG Education", "edu"), ("🏎️ F1", "f1")]), \
+             patch("bot._recent_news_digest_keys", return_value=set()), \
+             patch("search_service.google_news", side_effect=lambda query, max_items=4: [] if query == "f1" else [{
+                 "title": "MOE policy update today",
+                 "url": "https://example.com/edu",
+                 "source": "Example",
+             }]):
+            entries = bot.build_curated_digest_entries(limit=2, fetch_limit=2, record=False)
+
+        f1_entry = next(entry for entry in entries if entry["label"] == "🏎️ F1")
+        self.assertIn("no fresh headline returned", f1_entry["item"]["title"])
+
     def test_format_curated_digest_includes_why_lines(self):
         text = bot.format_curated_digest([
             {
@@ -337,6 +395,41 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertIn("get_latest_news", names)
         self.assertIn("get_liverpool_brief", names)
+
+    def test_pwa_lfc_correction_includes_structured_brief(self):
+        tools = bot.pwa_tools_for_message("Liverpool didn't host Man Utd yesterday. Get your facts straight pls")
+        names = {tool["name"] for tool in tools}
+
+        self.assertIn("get_latest_news", names)
+        self.assertIn("get_liverpool_brief", names)
+
+    def test_pwa_lfc_followup_uses_recent_sports_context(self):
+        tools = bot.pwa_tools_for_message(
+            "So what was the match like?",
+            recent_context="User corrected that Liverpool did not host Man Utd yesterday.",
+        )
+        names = {tool["name"] for tool in tools}
+
+        self.assertIn("get_liverpool_brief", names)
+
+    def test_forced_lfc_tool_uses_recent_match_context(self):
+        forced = bot._forced_tool_for_current_turn(
+            [
+                {"role": "user", "content": "Liverpool didn't host Man Utd yesterday."},
+                {"role": "assistant", "content": "I should verify the fixture."},
+                {"role": "user", "content": "So what was the match like?"},
+            ],
+            [bot.LIVERPOOL_BRIEF_TOOL, bot.NEWS_TOOL],
+        )
+
+        self.assertEqual(forced, "get_liverpool_brief")
+
+    def test_system_prompt_requires_supporter_mood_read_after_sports_facts(self):
+        prompt = bot.SYSTEM_PROMPT()
+
+        self.assertIn("After giving verified Liverpool or F1 scores/match details", prompt)
+        self.assertIn("supporter-read", prompt)
+        self.assertIn("Do not let mood-reading replace the verified facts", prompt)
 
     def test_lfc_player_chat_is_not_quick_routed(self):
         text = "Still anxious about this weekend lfc big match. Hope wirtz and isak have a banger."

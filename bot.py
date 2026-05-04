@@ -733,6 +733,8 @@ Rules:
 - Natural language is the main interface. Slash commands are shortcuts, not required. If the user asks in plain English/Singlish, infer the intent and use tools directly.
 - Prefer doing the requested action or lookup over explaining which command to use. Only mention a slash command if the user asks how to do it manually or the action is blocked.
 - After tool results, answer in natural language with a brief useful summary. Do not dump raw tool output unless the user asks for raw output.
+- When Herwanto corrects you, repair the answer before reassuring him: first state the corrected fact with source-backed details if the fact is live/current, then apologise briefly, then say the prevention rule. Never respond to a correction with only "noted" or "won't happen again".
+- If you say you will check, pull, verify, look up, or get the actual result/details, you must call the relevant tool in that same turn before answering. Do not end with "give me a moment" as the final answer.
 - For data lookups, use the user's words as intent: "last 5 emails" means latest 5 Gmail messages; "what's on today" means schedule/context; "anything due" means reminders/tasks; "who do I owe replies/follow-ups to" means Gmail/follow-up/task context as relevant.
 - For timetable or lesson lookups, use get_timetable. TIMETABLE in timetable.py is the source of truth for lessons; Google Calendar is only for events/appointments.
 - For availability planning ("best slots", "free slots", "when can I schedule", "after school", "not during CCA day"), call find_available_training_slots before suggesting times. Do not suggest a slot until timetable lessons and Google Calendar conflicts have been checked.
@@ -775,6 +777,8 @@ Rules:
 - When the user asks to calculate and enter a score/mark/result into an MTL classlist sheet, calculate only from the numbers he gives or sheet values retrieved with include_scores=true, then call update_mtl_class_score. Do not guess a student or column; if the tool reports ambiguity, ask for the missing class/student/column detail.
 - When the user asks to fill percentage columns in an MTL classlist, call fill_mtl_percentage_scores. Use class_query and assessment_query if the user provides them; otherwise the tool will ask for specificity when multiple % columns match.
 - When the user asks about latest news, current events, headlines, football, Liverpool/LFC, F1, AI, Singapore education, apps, Apple, Nothing OS, or his shortlisted topics — call get_latest_news before answering. Prefer get_liverpool_brief for Liverpool/LFC questions and get_f1_brief for Formula 1 questions because they gather structured source slices.
+- For sports corrections and follow-ups, preserve the conversation subject. If Herwanto corrects a Liverpool/F1 claim, or then asks "what was the match like?", "the result?", "recap?", "home or away?", or "actual details?", use the relevant structured sports brief before answering even if the follow-up omits the team name.
+- After giving verified Liverpool or F1 scores/match details, add a short supporter-read: infer Herwanto's likely mood from his known loyalties and the result. Keep it humble ("I imagine", "this probably lands as") and concrete, not melodramatic. For Liverpool losses, acknowledge frustration, defensive/selection worries, or rivalry pain before any tactical note. For wins, share the lift and what he will probably enjoy. Do not let mood-reading replace the verified facts.
 - Liverpool FC is a first-class interest. Herwanto supports Liverpool. Track the current squad/line-ups, Premier League standing, progress in every competition Liverpool are still in, injuries/suspensions, fixtures/results, and transfer news/rumours. As of the 2025-26 squad context, Liverpool are managed by Arne Slot and the first-team group includes Alisson, Giorgi Mamardashvili, Freddie Woodman, Virgil van Dijk, Ibrahima Konate, Joe Gomez, Milos Kerkez, Conor Bradley, Andy Robertson, Jeremie Frimpong, Giovanni Leoni, Wataru Endo, Florian Wirtz, Dominik Szoboszlai, Alexis Mac Allister, Curtis Jones, Ryan Gravenberch, Trey Nyoni, Alexander Isak, Mohamed Salah, Federico Chiesa, Cody Gakpo, Hugo Ekitike, and Rio Ngumoha. If Herwanto mentions Wirtz, Isak, or "lfc big match", assume Liverpool context and do not correct him back to old clubs without first checking current sources. For current starting XIs, matchday line-ups, EPL table position, points, goal difference, form, Champions League/FA Cup/Carabao Cup progress, injuries, contract situations, departures, signings, or rumours, always use get_latest_news/web_search/fetch_url and cite the source. Clearly label transfer items as confirmed, reported, or rumour/speculation.
 - F1 is a first-class interest. Herwanto supports Mercedes, especially Kimi Antonelli and George Russell; Lewis Hamilton is still one of his favourites even at Ferrari. As of the 2026 season, the official F1 line-up is: Mercedes — George Russell, Kimi Antonelli; Ferrari — Charles Leclerc, Lewis Hamilton; McLaren — Lando Norris, Oscar Piastri; Red Bull Racing — Max Verstappen, Isack Hadjar; Racing Bulls — Liam Lawson, Arvid Lindblad; Williams — Carlos Sainz, Alexander Albon; Aston Martin — Fernando Alonso, Lance Stroll; Haas — Esteban Ocon, Oliver Bearman; Alpine — Pierre Gasly, Franco Colapinto; Audi — Nico Hulkenberg, Gabriel Bortoleto; Cadillac — Sergio Perez, Valtteri Bottas. For live F1 results, championship standings, race-weekend timings, current team stats, driver stats, rumours, penalties, or upgrades, use get_latest_news/web_search/fetch_url and cite what you found instead of relying on memory.
 - When the user pastes a web link or asks you to read/check a URL, call fetch_url. If fetch_url fails or the page is paywalled/dynamic, say what failed and use web_search/get_latest_news for corroborating public sources where available.
@@ -1657,6 +1661,7 @@ def _looks_like_correction(text: str) -> bool:
     return bool(re.search(
         r"\b("
         r"actually|correction|correct that|not quite|not really|wrong|incorrect|mistake|"
+        r"facts straight|fact check|source check|verify that|check that|"
         r"you got|you said|you missed|you forgot|don't say|dont say|should know|"
         r"needs to know|lost when it comes to|out of the loop|still a fav|still a favourite|"
         r"still a favorite"
@@ -2752,6 +2757,14 @@ def _news_topics():
     return [(label, query) for label, query in ss.DIGEST_TOPICS]
 
 
+REQUIRED_DIGEST_LABEL_TERMS = ("f1", "liverpool")
+
+
+def _is_required_digest_label(label: str) -> bool:
+    clean = str(label or "").lower()
+    return any(term in clean for term in REQUIRED_DIGEST_LABEL_TERMS)
+
+
 def _digest_label_lens(label: str) -> tuple[str, int]:
     clean = str(label or "").lower()
     if any(term in clean for term in ("education", "moe", "sg education")):
@@ -2779,26 +2792,65 @@ def build_curated_digest_entries(now: datetime | None = None, limit: int = 4, fe
     current = now or datetime.now(SGT)
     seen = _recent_news_digest_keys(current)
     candidates = []
+    seen_candidates = []
     used_keys = set()
-    for label, query in _news_topics():
+    topics = _news_topics()
+    for label, query in topics:
         items = ss.google_news(query, max_items=max(2, int(fetch_limit or 4)))
         for index, item in enumerate(items):
             key = ss.news_item_key(item)
-            if not key or key in used_keys or key in seen:
+            if not key or key in used_keys:
                 continue
             score, lens = _curated_digest_score(label, item, slot_index=index)
-            candidates.append({
+            entry = {
                 "label": label,
                 "item": item,
                 "key": key,
                 "score": score,
                 "why": lens,
-            })
+            }
+            if key in seen:
+                seen_candidates.append(entry)
+                used_keys.add(key)
+                continue
+            candidates.append(entry)
             used_keys.add(key)
     candidates.sort(key=lambda entry: (-int(entry.get("score", 0) or 0), str(entry.get("label", "")), str(entry.get("key", ""))))
+    seen_candidates.sort(key=lambda entry: (-int(entry.get("score", 0) or 0), str(entry.get("label", "")), str(entry.get("key", ""))))
 
     chosen = []
     chosen_labels = set()
+
+    for entry in candidates + seen_candidates:
+        label = str(entry.get("label", "")).strip()
+        label_key = label.lower()
+        if not _is_required_digest_label(label) or label_key in chosen_labels:
+            continue
+        chosen.append(entry)
+        chosen_labels.add(label_key)
+        if len(chosen) >= max(1, int(limit or 4)):
+            break
+
+    for label, _query in topics:
+        label_text = str(label or "").strip()
+        label_key = label_text.lower()
+        if not _is_required_digest_label(label_text) or label_key in chosen_labels:
+            continue
+        chosen.append({
+            "label": label_text,
+            "item": {
+                "title": f"{label_text} check: no fresh headline returned by Google News RSS",
+                "source": "H.I.R.A",
+                "url": "",
+            },
+            "key": f"required-digest:{label_key}:{current.strftime('%Y-%m-%d')}",
+            "score": 54,
+            "why": "personal interest",
+        })
+        chosen_labels.add(label_key)
+        if len(chosen) >= max(1, int(limit or 4)):
+            break
+
     for entry in candidates:
         label = str(entry.get("label", "")).strip().lower()
         if label in chosen_labels:
@@ -4237,7 +4289,29 @@ def _forced_tool_for_current_turn(messages: list[dict], tools: list[dict]) -> st
     content = last_message.get("content")
     if not isinstance(content, str):
         return None
-    return _forced_tool_for_text(content, tools)
+    forced = _forced_tool_for_text(content, tools)
+    if forced:
+        return forced
+    available = {tool["name"] for tool in tools}
+    clean = " ".join(content.lower().split())
+    recent_context = "\n".join(
+        str(item.get("content", ""))[:600]
+        for item in messages[-6:-1]
+        if isinstance(item.get("content"), str)
+    ).lower()
+    if (
+        "get_liverpool_brief" in available
+        and re.search(r"\b(match|result|recap|score|home|away|host(?:ed)?|fixture|game|details?|what was it like)\b", clean)
+        and re.search(r"\b(liverpool|lfc|man utd|man united|manchester united|premier league|epl)\b", recent_context)
+    ):
+        return "get_liverpool_brief"
+    if (
+        "get_f1_brief" in available
+        and re.search(r"\b(race|result|recap|score|standings|qualifying|sprint|grand prix|details?|what was it like)\b", clean)
+        and re.search(r"\b(f1|formula 1|grand prix|mercedes|ferrari|mclaren|red bull|hamilton|russell|antonelli)\b", recent_context)
+    ):
+        return "get_f1_brief"
+    return None
 
 
 async def _run_forced_weather_fallback(tool_choice: str | None) -> str | None:
@@ -5480,8 +5554,10 @@ def _core_tools():
         tools.append(SEARCH_TOOL)
     return tools
 
-def pwa_tools_for_message(text: str) -> list[dict]:
+def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
     text = (text or "").lower()
+    context = (recent_context or "").lower()
+    combined = f"{context}\n{text}"
     tools: list[dict] = []
 
     def add(*items):
@@ -5505,11 +5581,19 @@ def pwa_tools_for_message(text: str) -> list[dict]:
         add(NUDGE_TOOL, DAILY_CHECKIN_TOOL, BREAK_AWARE_CHECKIN_TOOL)
     if re.search(r"\b(follow[- ]?up|follow up|owe replies|chase)\b", text):
         add(FOLLOWUP_TOOL, COMPLETE_FOLLOWUP_TOOL, GMAIL_BRIEF_TOOL, TASK_BRIEF_TOOL)
-    if re.search(r"\b(news|latest|current|headline|headlines|search|web|football|f1|liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|apple|ai|singapore education|nothing os)\b", text):
+    sports_followup = (
+        re.search(r"\b(match|result|results|recap|details?|score|home|away|host(?:ed)?|fixture|game|what was it like)\b", text)
+        and re.search(r"\b(football|f1|formula 1|liverpool|lfc|man utd|man united|manchester united|premier league|epl|grand prix|mercedes|ferrari|mclaren|red bull)\b", combined)
+    )
+    correction_followup = _looks_like_correction(text) and re.search(
+        r"\b(football|f1|formula 1|liverpool|lfc|man utd|man united|manchester united|premier league|epl|grand prix|mercedes|ferrari|mclaren|red bull)\b",
+        combined,
+    )
+    if re.search(r"\b(news|latest|current|headline|headlines|search|web|football|f1|liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|apple|ai|singapore education|nothing os)\b", text) or sports_followup or correction_followup:
         add(NEWS_TOOL, SOURCE_NOTE_TOOL)
-        if re.search(r"\b(liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike)\b", text):
+        if re.search(r"\b(liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|man utd|man united|manchester united)\b", combined):
             add(LIVERPOOL_BRIEF_TOOL)
-        if re.search(r"\b(f1|formula 1|grand prix|qualifying|driver standings|constructor standings|mercedes|ferrari|mclaren|red bull|kimi|antonelli|russell|hamilton)\b", text):
+        if re.search(r"\b(f1|formula 1|grand prix|qualifying|driver standings|constructor standings|mercedes|ferrari|mclaren|red bull|kimi|antonelli|russell|hamilton)\b", combined):
             add(F1_BRIEF_TOOL)
         if ss.search_enabled():
             add(SEARCH_TOOL)
@@ -5605,8 +5689,9 @@ def _looks_tool_heavy(text: str) -> bool:
         r"haze|psi|pm2\.5|air quality|nea|mss|project|projects|gameplan|ruh|rūḥ|apps?|app store|"
         r"milestone|launched|shipped|released|approved|rejected|submitted|blocked|"
         r"football|f1|liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|"
-        r"line-?up|starting xi|standings|table|fixtures?|results?|transfers?|rumou?rs?|injur(?:y|ies)|"
+        r"match|recap|score|home|away|host(?:ed)?|line-?up|starting xi|standings|table|fixtures?|results?|transfers?|rumou?rs?|injur(?:y|ies)|"
         r"salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|"
+        r"facts straight|fact check|source check|actual details?|actual result|"
         r"document|worksheet|slides?|ppt|deck|follow\s*up|done|complete)\b",
         text,
         re.I,
@@ -5627,6 +5712,16 @@ def _obvious_quick_chat(text: str) -> bool:
 async def should_route_quick_pwa_chat(messages: list[dict], message: str) -> bool:
     text = (message or "").strip()
     if not text or len(text) > 120 or _looks_tool_heavy(text):
+        return False
+    recent_context = "\n".join(
+        str(item.get("content", ""))[:500]
+        for item in messages[-4:]
+        if isinstance(item.get("content"), str)
+    ).lower()
+    if (
+        re.search(r"\b(match|result|recap|score|home|away|host(?:ed)?|fixture|game|details?)\b", text, re.I)
+        and re.search(r"\b(liverpool|lfc|man utd|man united|manchester united|f1|formula 1|grand prix)\b", recent_context)
+    ):
         return False
     if _obvious_quick_chat(text):
         return True

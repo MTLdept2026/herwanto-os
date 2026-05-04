@@ -935,7 +935,12 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             quick = await bot.should_route_quick_pwa_chat(list(history[:-1]), message)
             yield sse(timing("route"))
             yield sse({"type": "route", "name": "quick" if quick else "agentic"})
-            tools = [] if quick else bot.pwa_tools_for_message(message)
+            recent_context = "\n".join(
+                str(item.get("content", ""))[:600]
+                for item in history[-6:-1]
+                if isinstance(item.get("content"), str)
+            )
+            tools = [] if quick else bot.pwa_tools_for_message(message, recent_context=recent_context)
             if not quick:
                 yield sse({"type": "tools", "count": len(tools), "names": [tool["name"] for tool in tools]})
             stream = (
