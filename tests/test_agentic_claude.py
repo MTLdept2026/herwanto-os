@@ -1384,6 +1384,46 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(synced["title"], "Kefahaman 2G3")
         update_marking.assert_called_once_with("1", done=True)
 
+    def test_complete_task_tool_marks_plural_matching_reminders(self):
+        reminders = [
+            {
+                "id": "21",
+                "description": "ESWG EdTech vendor follow-up",
+                "due": "2026-04-15",
+                "category": "Teaching",
+                "done": False,
+            },
+            {
+                "id": "22",
+                "description": "PLT EdTech project update",
+                "due": "2026-04-16",
+                "category": "Projects",
+                "done": False,
+            },
+            {
+                "id": "23",
+                "description": "PLT admin project update",
+                "due": "2026-04-16",
+                "category": "Projects",
+                "done": False,
+            },
+        ]
+
+        with (
+            patch.object(bot.gs, "get_reminders", return_value=reminders),
+            patch.object(bot.gs, "mark_done", return_value=True) as mark_done,
+        ):
+            result = asyncio.run(bot._execute_tool(
+                "complete_task_by_text",
+                {"query": "The edtech entries have been completed"},
+            ))
+
+        self.assertIn("Marked 2 reminders done", result)
+        self.assertIn("#21 ESWG EdTech vendor follow-up", result)
+        self.assertIn("#22 PLT EdTech project update", result)
+        self.assertNotIn("#23", result)
+        self.assertEqual([call.args[0] for call in mark_done.call_args_list], ["21", "22"])
+
     def test_home_marking_summary_ignores_completed_stacks(self):
         completed = {
             "id": "1",

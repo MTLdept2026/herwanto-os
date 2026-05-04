@@ -1366,7 +1366,7 @@ FOLLOWUP_TOOL = {
 
 COMPLETE_TASK_TOOL = {
     "name": "complete_task_by_text",
-    "description": "Mark the closest matching reminder/task done from natural text.",
+    "description": "Mark matching reminder/task items done from natural text. If the user refers to plural entries/items, mark all confident matches.",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -3259,6 +3259,58 @@ def _find_best_reminder(query: str):
         reverse=True,
     )
     return scored[0]
+
+_TASK_COMPLETION_STOP_WORDS = {
+    "a", "an", "and", "are", "been", "clear", "cleared", "complete",
+    "completed", "done", "entries", "entry", "from", "have", "has", "item",
+    "items", "list", "mark", "marked", "my", "of", "overdue", "please",
+    "task", "tasks", "the", "these", "those", "to",
+}
+
+def _completion_query_terms(query: str) -> set[str]:
+    terms = set()
+    for raw in re.findall(r"[a-z0-9]+", (query or "").lower()):
+        if raw in _TASK_COMPLETION_STOP_WORDS or len(raw) < 3:
+            continue
+        terms.add(raw[:-1] if raw.endswith("s") and len(raw) > 4 else raw)
+    return terms
+
+def _reminder_matches_completion_terms(reminder: dict, terms: set[str]) -> bool:
+    if not terms:
+        return False
+    haystack = f"{reminder.get('description', '')} {reminder.get('category', '')}".lower()
+    haystack_terms = {
+        raw[:-1] if raw.endswith("s") and len(raw) > 4 else raw
+        for raw in re.findall(r"[a-z0-9]+", haystack)
+    }
+    return bool(terms & haystack_terms)
+
+def _find_matching_reminders(query: str, limit: int = 6) -> list[tuple[dict, float]]:
+    reminders = gs.get_reminders()
+    if not reminders:
+        return []
+    if str(query).strip().isdigit():
+        return [(r, 1.0) for r in reminders if str(r.get("id")) == str(query).strip()]
+    terms = _completion_query_terms(query)
+    scored = sorted(
+        (
+            (r, _score_text_match(query, f"{r['description']} {r['category']} {r['due']}"))
+            for r in reminders
+        ),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    best_score = scored[0][1] if scored else 0
+    matches = [
+        (reminder, score)
+        for reminder, score in scored
+        if score >= 0.4
+        and score >= best_score - 0.18
+        and _reminder_matches_completion_terms(reminder, terms)
+    ]
+    if matches:
+        return matches[:limit]
+    return [scored[0]] if best_score >= 0.35 else []
 
 def _find_best_followup(query: str):
     followups = gs.get_followups()
@@ -6342,14 +6394,26 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "complete_task_by_text":
         try:
-            reminder, score = _find_best_reminder(inp["query"])
-            if not reminder or score < 0.35:
+            matches = _find_matching_reminders(inp["query"])
+            if not matches:
                 return "No confident reminder match found."
-            ok, synced_marking = complete_reminder_by_id(reminder["id"])
-            if not ok:
+            completed = []
+            synced_titles = []
+            for reminder, _score in matches:
+                ok, synced_marking = complete_reminder_by_id(reminder["id"])
+                if ok:
+                    completed.append(reminder)
+                    if synced_marking:
+                        synced_titles.append(synced_marking["title"])
+            if not completed:
                 return "No reminder found."
-            marking_note = f" Also completed marking stack: {synced_marking['title']}." if synced_marking else ""
-            return f"Marked reminder #{reminder['id']} done: {reminder['description']}.{marking_note}"
+            if len(completed) == 1:
+                marking_note = f" Also completed marking stack: {synced_titles[0]}." if synced_titles else ""
+                reminder = completed[0]
+                return f"Marked reminder #{reminder['id']} done: {reminder['description']}.{marking_note}"
+            summary = "; ".join(f"#{item['id']} {item['description']}" for item in completed)
+            marking_note = f" Also completed marking stack(s): {', '.join(synced_titles)}." if synced_titles else ""
+            return f"Marked {len(completed)} reminders done: {summary}.{marking_note}"
         except Exception as e:
             return f"Failed to mark task done: {e}"
 

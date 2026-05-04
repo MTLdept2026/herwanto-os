@@ -1092,7 +1092,7 @@ async function completeTask(taskId, checkbox) {
   const taskItem = checkbox.closest(".task-item");
   const desc = taskItem?.querySelector(".task-copy p")?.textContent?.trim() || "";
   try {
-    await api(`/api/tasks/${encodeURIComponent(taskId)}/done`, { method: "POST", headers: headers(false) });
+    const data = await api(`/api/tasks/${encodeURIComponent(taskId)}/done`, { method: "POST", headers: headers(false) });
     taskItem?.classList.add("completed");
     // Glyph flash — single sweep to confirm completion
     const glyph = document.getElementById("topbarGlyph");
@@ -1102,6 +1102,11 @@ async function completeTask(taskId, checkbox) {
     }
     const shortDesc = desc ? `"${desc.slice(0, 52)}${desc.length > 52 ? "…" : ""}"` : `#${taskId}`;
     setStatus(`Done ✓ ${shortDesc}`, "ok");
+    const syncedMarking = data?.synced_marking?.title;
+    const chatAck = desc
+      ? `Done - cleared "${desc}" from your task list.${syncedMarking ? ` Also closed the matching marking stack: ${syncedMarking}.` : ""}`
+      : `Done - cleared task #${taskId}.${syncedMarking ? ` Also closed the matching marking stack: ${syncedMarking}.` : ""}`;
+    addMessage("hira", chatAck);
     // Give the fade animation a moment before refreshing
     setTimeout(async () => {
       await loadHome();
