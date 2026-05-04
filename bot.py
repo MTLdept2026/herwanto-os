@@ -59,6 +59,11 @@ try:
 except ValueError:
     logger.warning("Invalid HIRA_DAILY_JOB_GRACE_MINUTES; using 20 minutes")
     DAILY_JOB_GRACE_MINUTES = 20
+try:
+    MORNING_BRIEFING_CATCHUP_MINUTES = max(1, int(os.environ.get("HIRA_MORNING_BRIEFING_CATCHUP_MINUTES", "90") or 90))
+except ValueError:
+    logger.warning("Invalid HIRA_MORNING_BRIEFING_CATCHUP_MINUTES; using 90 minutes")
+    MORNING_BRIEFING_CATCHUP_MINUTES = 90
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 if not ANTHROPIC_API_KEY:
@@ -6647,10 +6652,10 @@ def _queue_app_notification(kind: str, title: str, body: str, source: str = ""):
         return None
     try:
         item = gs.enqueue_app_notification(kind, title, body, source=source)
-        if item.get("_duplicate"):
-            logger.info(f"Notification already active for source={source or kind}")
-            return None
-        if item.get("id"):
+        duplicate = bool(item.get("_duplicate"))
+        if duplicate:
+            logger.info(f"Notification already active for source={source or kind}; retrying push delivery")
+        if item.get("id") and not duplicate:
             _record_notification_outcome(
                 "queued",
                 notification_id=item.get("id", ""),
@@ -6673,6 +6678,9 @@ def _queue_app_notification(kind: str, title: str, body: str, source: str = ""):
             )
             if sent == 0:
                 logger.warning(f"No web push delivery confirmed for notification source={source or kind}")
+            item["_push_sent"] = sent
+        else:
+            item["_push_sent"] = 0
         return item
     except Exception as e:
         logger.warning(f"App notification queue error: {e}")
@@ -6862,11 +6870,17 @@ async def send_morning_briefing_once(context=None, force: bool = False, source: 
     today_key = datetime.now(SGT).strftime("%Y-%m-%d")
     try:
         if not force and gs.get_config(MORNING_BRIEFING_SENT_KEY) == today_key:
-            return False
+            return True
         text = build_briefing(record_news_digest=True)
         if context is not None:
             await _send_telegram_notification(context, text)
-        _queue_app_notification("briefing", "Morning briefing", text, source=f"{source}:{today_key}")
+        item = _queue_app_notification("briefing", "Morning briefing", text, source=f"{source}:{today_key}")
+        if not item:
+            logger.warning("Morning briefing queued no app notification; will retry during catch-up window")
+            return False
+        if int(item.get("_push_sent", 0) or 0) <= 0:
+            logger.warning("Morning briefing push had no confirmed phone deliveries; will retry during catch-up window")
+            return False
         gs.set_config(MORNING_BRIEFING_SENT_KEY, today_key)
         return True
     except Exception as e:
@@ -6883,7 +6897,7 @@ async def send_evening_briefing_once(context=None, force: bool = False, source: 
     today_key = datetime.now(SGT).strftime("%Y-%m-%d")
     try:
         if not force and gs.get_config(EVENING_BRIEFING_SENT_KEY) == today_key:
-            return False
+            return True
         text = build_evening_briefing()
         if context is not None:
             await _send_telegram_notification(context, text)
@@ -6912,7 +6926,7 @@ async def _send_telegram_notification(context, text: str):
 
 
 async def morning_briefing_job(context):
-    await send_morning_briefing_once(context, source="morning_briefing")
+    return await send_morning_briefing_once(context, source="morning_briefing")
 
 async def friday_checkin_job(context):
     if not google_ok():
@@ -7120,22 +7134,38 @@ Rules: be conservative — only promote genuinely durable rules. Return ONLY JSO
         _finish_background_job("memory_consolidation")
 
 
-async def _pwa_worker_daily_loop(name: str, hour: int, minute: int, job, days: tuple[int, ...] | None = None):
+async def _pwa_worker_daily_loop(
+    name: str,
+    hour: int,
+    minute: int,
+    job,
+    days: tuple[int, ...] | None = None,
+    grace_minutes: int | None = None,
+    retry_until_success: bool = False,
+):
     last_attempt_date = None
+    last_success_date = None
     while True:
         try:
             now = datetime.now(SGT)
             target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            grace_until = target + timedelta(minutes=DAILY_JOB_GRACE_MINUTES)
+            grace_until = target + timedelta(minutes=grace_minutes or DAILY_JOB_GRACE_MINUTES)
             today_key = now.strftime("%Y-%m-%d")
+            should_run = target <= now <= grace_until and (days is None or now.weekday() in days)
+            if retry_until_success:
+                should_run = should_run and today_key != last_success_date
+            else:
+                should_run = should_run and today_key != last_attempt_date
             if (
-                target <= now <= grace_until
-                and today_key != last_attempt_date
-                and (days is None or now.weekday() in days)
+                should_run
             ):
                 logger.info(f"PWA worker running daily job {name} for {today_key}")
-                last_attempt_date = today_key
-                await job(None)
+                if not retry_until_success:
+                    last_attempt_date = today_key
+                result = await job(None)
+                if retry_until_success and result:
+                    last_success_date = today_key
+                    last_attempt_date = today_key
             if now >= grace_until:
                 target = target + timedelta(days=1)
             await asyncio.sleep(max(60, min(1800, (target - now).total_seconds())))
@@ -7164,7 +7194,14 @@ async def run_pwa_notification_worker():
     morning_hour, morning_minute = MORNING_BRIEFING_TIME
     evening_hour, evening_minute = EVENING_BRIEFING_TIME
     tasks = [
-        asyncio.create_task(_pwa_worker_daily_loop("morning_briefing", morning_hour, morning_minute, morning_briefing_job)),
+        asyncio.create_task(_pwa_worker_daily_loop(
+            "morning_briefing",
+            morning_hour,
+            morning_minute,
+            morning_briefing_job,
+            grace_minutes=MORNING_BRIEFING_CATCHUP_MINUTES,
+            retry_until_success=True,
+        )),
         asyncio.create_task(_pwa_worker_daily_loop("evening_briefing", evening_hour, evening_minute, evening_briefing_job)),
         asyncio.create_task(_pwa_worker_daily_loop("weekly_planning", 19, 30, weekly_planning_job, days=(6,))),
         asyncio.create_task(_pwa_worker_daily_loop("friday_khutbah", 10, 30, friday_khutbah_job, days=(4,))),

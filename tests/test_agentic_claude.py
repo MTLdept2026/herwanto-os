@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 import unittest
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
@@ -264,6 +264,103 @@ class AgenticClaudeTests(unittest.TestCase):
             self.assertTrue(bot._should_suppress_notification("followup:3", "reminder", now=now))
             self.assertTrue(bot._should_suppress_notification("followup:9", "reminder", now=now))
             self.assertFalse(bot._should_suppress_notification("briefing:today", "briefing", now=now))
+
+    def test_web_push_payload_uses_phone_sized_preview(self):
+        payloads = []
+        fake_pywebpush = ModuleType("pywebpush")
+        fake_pywebpush.WebPushException = Exception
+        fake_pywebpush.webpush = lambda **kwargs: payloads.append(kwargs["data"])
+
+        with (
+            patch.dict(os.environ, {"HIRA_WEB_PUSH_PRIVATE_KEY": "test-key"}),
+            patch.dict("sys.modules", {"pywebpush": fake_pywebpush}),
+            patch.object(bot.gs, "get_web_push_subscriptions", return_value=[{
+                "client_id": "phone",
+                "subscription": {"endpoint": "https://push.example/sub"},
+            }]),
+            patch.object(bot.gs, "get_web_push_delivery_log", return_value=[]),
+            patch.object(bot.gs, "set_web_push_delivery_log"),
+        ):
+            sent = bot.gs.send_web_push_notification(
+                "Evening roundup",
+                "Line one\n" + ("A long briefing line. " * 200),
+                data={"id": "1", "kind": "briefing", "source": "evening_briefing:2026-05-04"},
+            )
+
+        self.assertEqual(sent, 1)
+        self.assertLess(len(payloads[0].encode("utf-8")), 1200)
+        self.assertIn("Open H.I.R.A", json.loads(payloads[0])["body"])
+
+    def test_web_push_delivery_log_records_failure_reason(self):
+        class FakeWebPushException(Exception):
+            def __init__(self):
+                super().__init__("push failed")
+                self.response = SimpleNamespace(status_code=401, text="Unauthorized registration")
+
+        fake_pywebpush = ModuleType("pywebpush")
+        fake_pywebpush.WebPushException = FakeWebPushException
+        fake_pywebpush.webpush = lambda **kwargs: (_ for _ in ()).throw(FakeWebPushException())
+
+        with (
+            patch.dict(os.environ, {"HIRA_WEB_PUSH_PRIVATE_KEY": "test-key"}),
+            patch.dict("sys.modules", {"pywebpush": fake_pywebpush}),
+            patch.object(bot.gs, "get_web_push_subscriptions", return_value=[{
+                "client_id": "phone",
+                "subscription": {"endpoint": "https://push.example/sub"},
+            }]),
+            patch.object(bot.gs, "get_web_push_delivery_log", return_value=[]),
+            patch.object(bot.gs, "set_web_push_delivery_log") as set_log,
+        ):
+            sent = bot.gs.send_web_push_notification(
+                "Evening roundup",
+                "Briefing body",
+                data={"id": "1", "kind": "briefing", "source": "evening_briefing:2026-05-04"},
+            )
+
+        entry = set_log.call_args.args[0][-1]
+        self.assertEqual(sent, 0)
+        self.assertEqual(entry["errors"], {"http_401": 1})
+        self.assertIn("Unauthorized registration", entry["last_error"])
+
+    def test_morning_briefing_waits_for_confirmed_phone_push(self):
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot, "_acquire_job_lock", return_value=True),
+            patch.object(bot.gs, "get_config", return_value=""),
+            patch.object(bot, "build_briefing", return_value="Morning digest body"),
+            patch.object(bot, "_queue_app_notification", return_value={
+                "id": "1",
+                "kind": "briefing",
+                "title": "Morning briefing",
+                "body": "Morning digest body",
+                "_push_sent": 0,
+            }),
+            patch.object(bot.gs, "set_config") as set_config,
+        ):
+            sent = asyncio.run(bot.send_morning_briefing_once())
+
+        self.assertFalse(sent)
+        set_config.assert_not_called()
+
+    def test_morning_briefing_marks_done_after_phone_push(self):
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot, "_acquire_job_lock", return_value=True),
+            patch.object(bot.gs, "get_config", return_value=""),
+            patch.object(bot, "build_briefing", return_value="Morning digest body"),
+            patch.object(bot, "_queue_app_notification", return_value={
+                "id": "1",
+                "kind": "briefing",
+                "title": "Morning briefing",
+                "body": "Morning digest body",
+                "_push_sent": 1,
+            }),
+            patch.object(bot.gs, "set_config") as set_config,
+        ):
+            sent = asyncio.run(bot.send_morning_briefing_once())
+
+        self.assertTrue(sent)
+        set_config.assert_called_once()
 
     def test_proactive_v2_queue_prefers_higher_score_ready_items(self):
         now = bot.datetime.now(bot.SGT)

@@ -8,6 +8,7 @@ Sheets acts as persistent storage for reminders, projects, and config.
 import os
 import json
 import base64
+import logging
 import re
 import tempfile
 import pytz
@@ -25,6 +26,7 @@ from google.oauth2.credentials import Credentials
 from google.oauth2 import service_account
 
 SGT = pytz.timezone('Asia/Singapore')
+logger = logging.getLogger(__name__)
 
 SCOPES = [
     'https://www.googleapis.com/auth/calendar',
@@ -45,7 +47,15 @@ DEFAULT_CLASSLIST_SHEET_IDS = [
     "1sKTqAgllMFy0Fq4nLBpF2vxdGpzn3ByMGKCq-NuLSDI",  # 2026 S4 MTL CLASSLIST
 ]
 _thread_local = threading.local()
-APP_NOTIFICATION_PUSH_BODY_LIMIT = 1800
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)) or default)
+    except Exception:
+        return default
+
+
+APP_NOTIFICATION_PUSH_BODY_LIMIT = max(240, min(1800, _int_env("HIRA_WEB_PUSH_BODY_LIMIT", 650)))
 APP_NOTIFICATION_SHEET = "AppNotifications"
 APP_NOTIFICATION_HEADERS = ["id", "kind", "title", "body", "created", "source", "seen_by", "archived"]
 SCORE_STATUS_LABELS = {
@@ -2124,6 +2134,9 @@ def get_web_push_delivery_log() -> list:
             "attempted": int(item.get("attempted", 0) or 0),
             "sent": int(item.get("sent", 0) or 0),
             "expired": int(item.get("expired", 0) or 0),
+            "errors": item.get("errors", {}) if isinstance(item.get("errors"), dict) else {},
+            "last_error": str(item.get("last_error", "")).strip()[:300],
+            "payload_bytes": int(item.get("payload_bytes", 0) or 0),
         })
     return clean
 
@@ -2132,7 +2145,17 @@ def set_web_push_delivery_log(entries: list):
     set_config("web_push_delivery_log", json.dumps(entries[-80:], ensure_ascii=False))
 
 
-def add_web_push_delivery_log(source: str, kind: str, title: str, attempted: int, sent: int, expired: int = 0) -> list:
+def add_web_push_delivery_log(
+    source: str,
+    kind: str,
+    title: str,
+    attempted: int,
+    sent: int,
+    expired: int = 0,
+    errors: dict | None = None,
+    last_error: str = "",
+    payload_bytes: int = 0,
+) -> list:
     entries = get_web_push_delivery_log()
     entries.append({
         "created": datetime.now(SGT).isoformat(),
@@ -2142,19 +2165,58 @@ def add_web_push_delivery_log(source: str, kind: str, title: str, attempted: int
         "attempted": int(attempted or 0),
         "sent": int(sent or 0),
         "expired": int(expired or 0),
+        "errors": errors or {},
+        "last_error": str(last_error or "").strip()[:300],
+        "payload_bytes": int(payload_bytes or 0),
     })
     set_web_push_delivery_log(entries)
     return entries
 
 
+def _web_push_error_label(exc: Exception) -> str:
+    status_code = getattr(getattr(exc, "response", None), "status_code", None)
+    if status_code:
+        return f"http_{status_code}"
+    return exc.__class__.__name__
+
+
+def _web_push_error_detail(exc: Exception) -> str:
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    text = str(getattr(response, "text", "") or "").strip()
+    if text:
+        text = re.sub(r"\s+", " ", text)
+        return f"{status_code}: {text}"[:300] if status_code else text[:300]
+    return str(exc or exc.__class__.__name__).strip()[:300]
+
+
 def send_web_push_notification(title: str, body: str, data: dict | None = None) -> int:
     private_key = os.environ.get("HIRA_WEB_PUSH_PRIVATE_KEY", "").strip()
     subject = os.environ.get("HIRA_WEB_PUSH_SUBJECT", "mailto:hira@example.com").strip()
+    payload_data = data or {}
     if not private_key:
+        add_web_push_delivery_log(
+            source=str(payload_data.get("source", "")).strip(),
+            kind=str(payload_data.get("kind", "")).strip(),
+            title=title,
+            attempted=0,
+            sent=0,
+            errors={"missing_private_key": 1},
+            last_error="HIRA_WEB_PUSH_PRIVATE_KEY is not set for this service.",
+        )
         return 0
     try:
         from pywebpush import WebPushException, webpush
-    except Exception:
+    except Exception as exc:
+        add_web_push_delivery_log(
+            source=str(payload_data.get("source", "")).strip(),
+            kind=str(payload_data.get("kind", "")).strip(),
+            title=title,
+            attempted=0,
+            sent=0,
+            errors={"pywebpush_import_failed": 1},
+            last_error=str(exc or "pywebpush import failed")[:300],
+        )
         return 0
 
     payload = json.dumps({
@@ -2162,8 +2224,9 @@ def send_web_push_notification(title: str, body: str, data: dict | None = None) 
         "body": _compact_notification_body(body),
         "icon": "/static/icon.svg",
         "badge": "/static/icon.svg",
-        "data": data or {},
+        "data": payload_data,
     }, ensure_ascii=False)
+    payload_bytes = len(payload.encode("utf-8"))
 
     key_file = None
     key_for_webpush = private_key
@@ -2187,6 +2250,8 @@ def send_web_push_notification(title: str, body: str, data: dict | None = None) 
     kept = []
     subscriptions = get_web_push_subscriptions()
     expired = 0
+    errors = {}
+    last_error = ""
     try:
         for item in subscriptions:
             try:
@@ -2200,11 +2265,28 @@ def send_web_push_notification(title: str, body: str, data: dict | None = None) 
                 kept.append(item)
             except WebPushException as exc:
                 status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                label = _web_push_error_label(exc)
+                errors[label] = errors.get(label, 0) + 1
+                last_error = _web_push_error_detail(exc) or last_error
+                logger.warning(
+                    "Web push delivery failed for client_id=%s status=%s error=%s",
+                    item.get("client_id", ""),
+                    status_code or "",
+                    last_error,
+                )
                 if status_code not in (404, 410):
                     kept.append(item)
                 else:
                     expired += 1
-            except Exception:
+            except Exception as exc:
+                label = _web_push_error_label(exc)
+                errors[label] = errors.get(label, 0) + 1
+                last_error = _web_push_error_detail(exc) or last_error
+                logger.warning(
+                    "Web push delivery error for client_id=%s error=%s",
+                    item.get("client_id", ""),
+                    last_error,
+                )
                 kept.append(item)
     finally:
         if key_file:
@@ -2214,7 +2296,6 @@ def send_web_push_notification(title: str, body: str, data: dict | None = None) 
                 pass
     if len(kept) != len(subscriptions):
         set_web_push_subscriptions(kept)
-    payload_data = data or {}
     add_web_push_delivery_log(
         source=str(payload_data.get("source", "")).strip(),
         kind=str(payload_data.get("kind", "")).strip(),
@@ -2222,6 +2303,9 @@ def send_web_push_notification(title: str, body: str, data: dict | None = None) 
         attempted=len(subscriptions),
         sent=sent,
         expired=expired,
+        errors=errors,
+        last_error=last_error,
+        payload_bytes=payload_bytes,
     )
     return sent
 

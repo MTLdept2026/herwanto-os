@@ -437,8 +437,21 @@ function mirrorStoredNotificationsToChat() {
 }
 
 function rememberNotification(item) {
-  if (state.notifications.some((existing) => String(existing.id) === String(item.id))) {
-    mirrorNotificationToChat(item);
+  const existingIndex = state.notifications.findIndex((existing) => String(existing.id) === String(item.id));
+  if (existingIndex !== -1) {
+    const existing = state.notifications[existingIndex];
+    const incomingBody = String(item.body || "");
+    const existingBody = String(existing.body || "");
+    const useIncomingBody = incomingBody.length > existingBody.length && !incomingBody.includes("Open H.I.R.A");
+    state.notifications[existingIndex] = {
+      ...existing,
+      ...item,
+      body: useIncomingBody ? incomingBody : existingBody,
+      created: existing.created || item.created,
+    };
+    saveNotifications();
+    renderNotifications();
+    mirrorNotificationToChat(state.notifications[existingIndex]);
     return false;
   }
   state.notifications.unshift(item);
@@ -577,7 +590,18 @@ function renderHealth(data) {
   const deliveryRows = (data.recent_delivery_log || [])
     .slice()
     .reverse()
-    .map((item) => `${item.source || item.kind || "push"} ${item.sent}/${item.attempted}${item.expired ? ` expired ${item.expired}` : ""}`)
+    .map((item) => {
+      const errors = Object.entries(item.errors || {})
+        .map(([key, value]) => `${key} ${value}`)
+        .join(", ");
+      const suffix = [
+        item.expired ? `expired ${item.expired}` : "",
+        item.payload_bytes ? `${item.payload_bytes} bytes` : "",
+        errors ? `errors: ${errors}` : "",
+        item.last_error ? `last: ${item.last_error}` : "",
+      ].filter(Boolean).join("; ");
+      return `${item.source || item.kind || "push"} ${item.sent}/${item.attempted}${suffix ? ` (${suffix})` : ""}`;
+    })
     .join(" · ");
   const outcomeRows = Object.entries(data.outcome_actions || {})
     .map(([key, value]) => `${key} ${value}`)
