@@ -295,6 +295,17 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(snapshot["top"][0]["title"], "Top item")
         self.assertTrue(snapshot["changed"])
 
+    def test_proactive_v2_snapshot_keeps_digest_out_of_priority_queue(self):
+        now = bot.datetime.now(bot.SGT)
+        fake_queue = [
+            {"family": "digest", "title": "Morning digest", "score": 78, "priority": "medium", "suppressed": False},
+            {"family": "task", "title": "Task", "score": 80, "priority": "high", "suppressed": False},
+        ]
+        with patch("bot.build_proactive_v2_queue", return_value=fake_queue):
+            snapshot = bot.build_proactive_v2_snapshot(now=now, limit=3)
+
+        self.assertEqual([item["title"] for item in snapshot["top"]], ["Task"])
+
     def test_curated_digest_entries_rank_diverse_topics(self):
         fake_topics = [("SG Education", "edu"), ("AI", "ai")]
 

@@ -2687,7 +2687,11 @@ def build_proactive_v2_queue(now: datetime | None = None, days: int = 7, familie
 
 def build_proactive_v2_snapshot(now: datetime | None = None, days: int = 7, limit: int = 3) -> dict:
     current = now or datetime.now(SGT)
-    queue = build_proactive_v2_queue(now=current, days=days)
+    queue = [
+        item
+        for item in build_proactive_v2_queue(now=current, days=days)
+        if item.get("family") != "digest"
+    ]
     ready = [item for item in queue if not item.get("suppressed")]
     suppressed = [item for item in queue if item.get("suppressed")]
     changed = []

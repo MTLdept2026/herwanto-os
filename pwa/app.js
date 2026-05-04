@@ -691,6 +691,31 @@ function renderProactiveQueue(data = {}) {
   return `${cards}${changedNote}`;
 }
 
+function renderMorningDigest(data = {}) {
+  const items = Array.isArray(data.items) ? data.items : [];
+  if (!items.length) {
+    return `<div class="empty-state compact">No digest items returned yet.</div>`;
+  }
+  return items.map((item, index) => {
+    const meta = [item.label, item.source].filter(Boolean).join(" · ");
+    const why = item.why ? `<p><strong>Why:</strong> ${markdownish(item.why)}</p>` : "";
+    const title = markdownish(item.title || "Digest item");
+    const link = item.url
+      ? `<p><a href="${encodeURI(item.url)}" target="_blank" rel="noopener">Read source</a></p>`
+      : "";
+    return `
+      <article class="agenda-card digest-card">
+        <div class="agenda-card-head">
+          <strong>${index + 1}. ${title}</strong>
+          ${meta ? `<span>${markdownish(meta)}</span>` : ""}
+        </div>
+        ${why}
+        ${link}
+      </article>
+    `;
+  }).join("");
+}
+
 function fileMemorySegments(text) {
   const count = countMeaningfulLines(text);
   if (!count) return 1;
@@ -1278,6 +1303,7 @@ async function loadHome() {
     updateLiveClock();
     $("#homeAgenda").innerHTML = renderAgendaCards(data.agenda);
     $("#homeProactive").innerHTML = renderProactiveQueue(data.proactive || {});
+    $("#homeDigest").innerHTML = renderMorningDigest(data.digest || {});
     $("#homeTasks").innerHTML = renderTaskBriefFromText(data.tasks);
     $("#homeIslamic").innerHTML = renderTextBlock(data.islamic || "Islamic rhythm unavailable right now.");
     const fileLines = countMeaningfulLines(data.files);
@@ -1332,6 +1358,7 @@ async function loadHome() {
   } catch (error) {
     $("#homeAgenda").textContent = `Error: ${error.message}`;
     $("#homeProactive").textContent = `Error: ${error.message}`;
+    $("#homeDigest").textContent = `Error: ${error.message}`;
     $("#homeTasks").textContent = `Error: ${error.message}`;
     $("#homeIslamic").textContent = `Error: ${error.message}`;
     $("#fileMemoryValue").textContent = "--";
