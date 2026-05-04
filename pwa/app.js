@@ -1147,6 +1147,10 @@ function appendToolStatus(el, name) {
   scrollMessagesToBottom();
 }
 
+function clearToolStatuses(el) {
+  el?.querySelectorAll(".tool-status").forEach((item) => item.remove());
+}
+
 function chatNeedsDeviceLocation(message = "") {
   return /\b(location|where|journey|travel|route|directions|commute|drive|driving|mrt|bus|walk|walking|masjid|mosque|nearby|near me)\b/i.test(message);
 }
@@ -1222,6 +1226,9 @@ async function streamChatResponse(message, onEvent) {
       if (event.type === "replace") streamedText = event.text || "";
       if (event.type === "done") finalText = event.text || streamedText;
       onEvent(event, streamedText);
+      if (event.type === "error") {
+        throw new Error(event.message || "H.I.R.A hit a backend snag. Try again in a moment.");
+      }
     }
   }
   return finalText || streamedText || "Done.";
@@ -1568,6 +1575,7 @@ async function uploadChatAttachment(note) {
     pending.classList.remove("pending");
     setHiraSpeaking(pending, false);
     updateMessage(pending, reply);
+    clearToolStatuses(pending);
     state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: reply };
     saveChatHistory();
     await refreshAgendaSurfaces();
@@ -1641,12 +1649,11 @@ async function sendChat(message) {
         pending.classList.toggle("pending", !latestText);
         updateMessage(pending, latestText);
       }
-      if (event.type === "error") throw new Error(event.message);
     });
     pending.classList.remove("pending");
     setHiraSpeaking(pending, false);
     updateMessage(pending, reply);
-    pending.querySelectorAll(".tool-status").forEach((item) => item.remove());
+    clearToolStatuses(pending);
     state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: reply };
     saveChatHistory();
     await refreshAgendaSurfaces();
@@ -1655,7 +1662,8 @@ async function sendChat(message) {
     const friendly = "H.I.R.A hit a backend snag. Try again in a moment.";
     pending.classList.remove("pending");
     setHiraSpeaking(pending, false);
-    pending.querySelector(".message-body").textContent = friendly;
+    clearToolStatuses(pending);
+    updateMessage(pending, friendly);
     state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: friendly };
     saveChatHistory();
     console.error(error);

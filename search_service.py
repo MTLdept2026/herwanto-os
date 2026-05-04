@@ -17,6 +17,7 @@ from urllib.parse import quote, urlparse
 logger = logging.getLogger(__name__)
 
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
+GOOGLE_NEWS_TIMEOUT = 8
 
 # Google News RSS — one per digest topic, no API key needed
 # Format: news.google.com/rss/search?q=QUERY&hl=en-SG&gl=SG&ceid=SG:en
@@ -200,11 +201,21 @@ def format_results(results):
 
 # ─── MORNING DIGEST (Google News RSS — always free) ──────────────────────────
 
+def _parse_google_news_rss(query: str):
+    url = f"https://news.google.com/rss/search?q={quote(query)}&hl=en-SG&gl=SG&ceid=SG:en"
+    resp = requests.get(
+        url,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; HIRA/1.0; +https://example.com/hira)"},
+        timeout=GOOGLE_NEWS_TIMEOUT,
+    )
+    resp.raise_for_status()
+    return feedparser.parse(resp.content)
+
+
 def _google_news_headline(query, max_items=1):
     """Fetch latest headline(s) from Google News RSS for a given query."""
-    url = f"https://news.google.com/rss/search?q={quote(query)}&hl=en-SG&gl=SG&ceid=SG:en"
     try:
-        feed = feedparser.parse(url)
+        feed = _parse_google_news_rss(query)
         return [e.title for e in feed.entries[:max_items] if hasattr(e, "title")]
     except Exception as e:
         logger.warning(f"RSS error for '{query}': {e}")
@@ -213,9 +224,8 @@ def _google_news_headline(query, max_items=1):
 
 def google_news(query, max_items=5):
     """Fetch latest Google News RSS items for a query."""
-    url = f"https://news.google.com/rss/search?q={quote(query)}&hl=en-SG&gl=SG&ceid=SG:en"
     try:
-        feed = feedparser.parse(url)
+        feed = _parse_google_news_rss(query)
         items = []
         for entry in feed.entries[: max_items * 4]:
             items.append({

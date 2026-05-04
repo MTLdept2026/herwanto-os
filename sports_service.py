@@ -8,6 +8,8 @@ source-backed sections instead of relying on stale memory.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 import search_service as ss
 
 
@@ -55,6 +57,16 @@ def _format_search(query: str, max_items: int) -> list[str]:
     return lines
 
 
+def _format_sections(sections: list[tuple[str, str]], count: int) -> list[str]:
+    lines: list[str] = []
+    with ThreadPoolExecutor(max_workers=min(5, len(sections))) as executor:
+        futures = [executor.submit(_format_items, label, query, count) for label, query in sections]
+        for future in futures:
+            lines.extend(future.result())
+            lines.append("")
+    return lines
+
+
 def build_liverpool_brief(focus: str = "", max_items: int = 3) -> str:
     count = _clamp_items(max_items)
     focus_text = (focus or "current Liverpool FC status").strip()
@@ -85,9 +97,7 @@ def build_liverpool_brief(focus: str = "", max_items: int = 3) -> str:
         "Answer guidance: cite sources, separate confirmed news from reports/rumours, and do not rely on old-club memory for current Liverpool players.",
         "",
     ]
-    for label, query in sections:
-        lines.extend(_format_items(label, query, count))
-        lines.append("")
+    lines.extend(_format_sections(sections, count))
     lines.extend(_format_search(f"Liverpool FC {focus_text}", count))
     return "\n".join(lines).strip()
 
@@ -122,8 +132,6 @@ def build_f1_brief(focus: str = "", max_items: int = 3) -> str:
         "Answer guidance: cite sources, prioritise Mercedes/Russell/Antonelli while keeping Hamilton context, and distinguish confirmed reports from rumours.",
         "",
     ]
-    for label, query in sections:
-        lines.extend(_format_items(label, query, count))
-        lines.append("")
+    lines.extend(_format_sections(sections, count))
     lines.extend(_format_search(f"Formula 1 {focus_text}", count))
     return "\n".join(lines).strip()
