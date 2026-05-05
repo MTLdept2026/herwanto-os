@@ -374,6 +374,55 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertLess(len(payloads[0].encode("utf-8")), 1200)
         self.assertIn("Open H.I.R.A", json.loads(payloads[0])["body"])
 
+    def test_web_push_prefers_standalone_subscription_over_browser(self):
+        endpoints = []
+        fake_pywebpush = ModuleType("pywebpush")
+        fake_pywebpush.WebPushException = Exception
+        fake_pywebpush.webpush = lambda **kwargs: endpoints.append(kwargs["subscription_info"]["endpoint"])
+
+        with (
+            patch.dict(os.environ, {"HIRA_WEB_PUSH_PRIVATE_KEY": "test-key"}),
+            patch.dict("sys.modules", {"pywebpush": fake_pywebpush}),
+            patch.object(bot.gs, "get_web_push_subscriptions", return_value=[
+                {
+                    "client_id": "browser",
+                    "display_mode": "browser",
+                    "subscription": {"endpoint": "https://push.example/browser"},
+                },
+                {
+                    "client_id": "pwa",
+                    "display_mode": "standalone",
+                    "subscription": {"endpoint": "https://push.example/pwa"},
+                },
+            ]),
+            patch.object(bot.gs, "get_web_push_delivery_log", return_value=[]),
+            patch.object(bot.gs, "set_web_push_delivery_log"),
+        ):
+            sent = bot.gs.send_web_push_notification(
+                "Morning briefing",
+                "Briefing body",
+                data={"id": "1", "kind": "briefing", "source": "morning_briefing:2026-05-06"},
+            )
+
+        self.assertEqual(sent, 1)
+        self.assertEqual(endpoints, ["https://push.example/pwa"])
+
+    def test_save_web_push_subscription_records_display_mode(self):
+        with (
+            patch.object(bot.gs, "get_web_push_subscriptions", return_value=[]),
+            patch.object(bot.gs, "set_web_push_subscriptions") as set_subs,
+        ):
+            ok = bot.gs.save_web_push_subscription(
+                "phone",
+                {"endpoint": "https://push.example/pwa"},
+                metadata={"display_mode": "standalone", "app_version": "20260506-5", "user_agent": "Android Chrome"},
+            )
+
+        self.assertTrue(ok)
+        saved = set_subs.call_args.args[0][0]
+        self.assertEqual(saved["display_mode"], "standalone")
+        self.assertEqual(saved["app_version"], "20260506-5")
+
     def test_web_push_delivery_log_records_failure_reason(self):
         class FakeWebPushException(Exception):
             def __init__(self):

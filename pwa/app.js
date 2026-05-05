@@ -458,7 +458,12 @@ async function syncPushSubscription(subscription, { force = false } = {}) {
   await api("/api/notifications/subscribe", {
     method: "POST",
     headers: headers(),
-    body: JSON.stringify({ subscription }),
+    body: JSON.stringify({
+      subscription,
+      display_mode: isStandalonePwa() ? "standalone" : "browser",
+      app_version: APP_VERSION,
+      user_agent: navigator.userAgent || "",
+    }),
   });
   state.lastPushSyncAt = now;
   localStorage.setItem("hira_pwa_last_push_sync_at", String(now));
@@ -789,7 +794,9 @@ function renderHealth(data) {
   el.innerHTML = `
     <div class="status-row"><span>Push keys</span><strong>${data.push_public_key && data.push_private_key ? "Ready" : "Missing"}</strong></div>
     <div class="status-row"><span>Subscriptions</span><strong>${data.subscription_count || 0}</strong></div>
+    <div class="status-row"><span>Standalone subs</span><strong>${data.standalone_subscription_count || 0}</strong></div>
     <div class="status-row"><span>This device</span><strong>${data.current_client_subscribed ? "Connected" : "Not connected"}</strong></div>
+    <div class="status-row"><span>This mode</span><strong>${data.current_client_display_mode || appDisplayMode()}</strong></div>
     <div class="status-row"><span>Stale subs</span><strong>${data.stale_subscription_count || 0}</strong></div>
     <div class="status-row"><span>Queued</span><strong>${data.queued_notification_count || 0}</strong></div>
     <div class="status-row"><span>Recovery</span><strong>${data.push_recovery_enabled ? "On" : "Off"}</strong></div>

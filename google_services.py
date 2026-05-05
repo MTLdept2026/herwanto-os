@@ -2161,6 +2161,9 @@ def get_web_push_subscriptions() -> list:
             "subscription": subscription,
             "created": str(item.get("created", "")).strip(),
             "last_seen": str(item.get("last_seen", "")).strip(),
+            "display_mode": str(item.get("display_mode", "")).strip() or "unknown",
+            "app_version": str(item.get("app_version", "")).strip(),
+            "user_agent": str(item.get("user_agent", "")).strip()[:180],
         })
     return clean
 
@@ -2179,11 +2182,15 @@ def set_web_push_subscriptions(subscriptions: list):
     set_config("web_push_subscriptions", json.dumps(subscriptions[-30:], ensure_ascii=False))
 
 
-def save_web_push_subscription(client_id: str, subscription: dict) -> bool:
+def save_web_push_subscription(client_id: str, subscription: dict, metadata: dict | None = None) -> bool:
     client_id = str(client_id or "").strip()
     endpoint = subscription.get("endpoint") if isinstance(subscription, dict) else ""
     if not client_id or not endpoint:
         return False
+    metadata = metadata or {}
+    display_mode = str(metadata.get("display_mode", "") or "").strip() or "unknown"
+    app_version = str(metadata.get("app_version", "") or "").strip()
+    user_agent = str(metadata.get("user_agent", "") or "").strip()[:180]
     subscriptions = get_web_push_subscriptions()
     now = datetime.now(SGT).isoformat()
     updated = False
@@ -2192,6 +2199,9 @@ def save_web_push_subscription(client_id: str, subscription: dict) -> bool:
             item["client_id"] = client_id
             item["subscription"] = subscription
             item["last_seen"] = now
+            item["display_mode"] = display_mode
+            item["app_version"] = app_version
+            item["user_agent"] = user_agent
             updated = True
             break
     if not updated:
@@ -2200,9 +2210,20 @@ def save_web_push_subscription(client_id: str, subscription: dict) -> bool:
             "subscription": subscription,
             "created": now,
             "last_seen": now,
+            "display_mode": display_mode,
+            "app_version": app_version,
+            "user_agent": user_agent,
         })
     set_web_push_subscriptions(subscriptions)
     return True
+
+
+def _preferred_web_push_subscriptions(subscriptions: list) -> list:
+    standalone = [
+        item for item in subscriptions
+        if str(item.get("display_mode", "")).strip().lower() in {"standalone", "fullscreen"}
+    ]
+    return standalone or subscriptions
 
 
 def get_web_push_delivery_log() -> list:
@@ -2341,7 +2362,7 @@ def send_web_push_notification(title: str, body: str, data: dict | None = None) 
 
     sent = 0
     kept = []
-    subscriptions = get_web_push_subscriptions()
+    subscriptions = _preferred_web_push_subscriptions(get_web_push_subscriptions())
     expired = 0
     errors = {}
     last_error = ""

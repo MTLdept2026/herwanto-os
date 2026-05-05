@@ -535,6 +535,9 @@ class NotificationActionRequest(BaseModel):
 
 class PushSubscribeRequest(BaseModel):
     subscription: dict
+    display_mode: str = "unknown"
+    app_version: str = ""
+    user_agent: str = ""
 
 
 class InsightFeedbackRequest(BaseModel):
@@ -1473,7 +1476,10 @@ def notifications_health(
     current_subscription = diagnostics["current_subscription"]
     stale_threshold = datetime.now(bot.SGT) - bot.timedelta(days=30)
     stale_subscriptions = 0
+    standalone_subscriptions = 0
     for item in subscriptions:
+        if str(item.get("display_mode", "")).strip().lower() in {"standalone", "fullscreen"}:
+            standalone_subscriptions += 1
         try:
             last_seen = datetime.fromisoformat(item.get("last_seen", "") or item.get("created", ""))
         except Exception:
@@ -1485,6 +1491,7 @@ def notifications_health(
         "push_private_key": bool(os.environ.get("HIRA_WEB_PUSH_PRIVATE_KEY", "").strip()),
         "push_subject": bool(os.environ.get("HIRA_WEB_PUSH_SUBJECT", "").strip()),
         "subscription_count": len(subscriptions),
+        "standalone_subscription_count": standalone_subscriptions,
         "stale_subscription_count": stale_subscriptions,
         "subscription_error": subscription_error,
         "queued_notification_count": len(queued),
@@ -1493,6 +1500,7 @@ def notifications_health(
         "current_client_id": client_key,
         "current_client_subscribed": bool(current_subscription),
         "current_client_last_seen": current_subscription.get("last_seen", "") if current_subscription else "",
+        "current_client_display_mode": current_subscription.get("display_mode", "") if current_subscription else "",
         "recent_delivery_log": delivery_log[-5:],
         "push_recovery": _push_recovery_summary(delivery_log, queued, subscriptions, subscription_error, queue_error),
         "outcome_actions": outcome_summary.get("actions", {}),
@@ -1550,7 +1558,15 @@ def notifications_subscribe(
 ):
     _require_token(x_hira_token)
     try:
-        ok = bot.gs.save_web_push_subscription(_client_key(x_hira_client), req.subscription)
+        ok = bot.gs.save_web_push_subscription(
+            _client_key(x_hira_client),
+            req.subscription,
+            metadata={
+                "display_mode": req.display_mode,
+                "app_version": req.app_version,
+                "user_agent": req.user_agent,
+            },
+        )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Could not save notification subscription: {exc}") from exc
     if not ok:
