@@ -605,8 +605,18 @@ async function pollNotifications() {
   }
 }
 
-async function sendTestNotification() {
+async function sendTestNotification(event) {
+  const button = event?.currentTarget || $("#testNotificationsBtn");
+  const previousLabel = button?.textContent || "Test push";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Testing...";
+  }
+  setStatus("Testing push notification...", "ok");
   try {
+    if ("Notification" in window && Notification.permission === "granted") {
+      await ensurePushSubscription({ force: true });
+    }
     const data = await api("/api/notifications/test", {
       method: "POST",
       headers: headers(false),
@@ -615,6 +625,11 @@ async function sendTestNotification() {
     setStatus(data.sent ? "Test push sent to this device." : "Test notification queued; push may need reconnecting.", data.sent ? "ok" : "warn");
   } catch (error) {
     setStatus(`Notification test failed: ${error.message}`, "error");
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = previousLabel;
+    }
   }
 }
 
