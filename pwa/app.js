@@ -13,6 +13,7 @@ const state = {
   feedback: JSON.parse(localStorage.getItem("hira_pwa_feedback") || "{}"),
   deviceLocation: JSON.parse(localStorage.getItem("hira_pwa_device_location") || "null"),
   notificationPoll: null,
+  lastPushSyncAt: Number(localStorage.getItem("hira_pwa_last_push_sync_at") || "0"),
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -159,6 +160,13 @@ function urlBase64ToUint8Array(value) {
   return Uint8Array.from([...raw].map((char) => char.charCodeAt(0)));
 }
 
+function bytesEqual(left, right) {
+  if (!left || !right || left.byteLength !== right.byteLength) return false;
+  const a = new Uint8Array(left);
+  const b = new Uint8Array(right);
+  return a.every((value, index) => value === b[index]);
+}
+
 function renderNotifications() {
   const badge = $("#notificationBadge");
   const list = $("#notificationsList");
@@ -300,17 +308,24 @@ async function updateNotificationControls() {
 
   try {
     const registration = await navigator.serviceWorker.ready;
-    const subscription = await registration.pushManager.getSubscription();
+    let subscription = await registration.pushManager.getSubscription();
+    if (state.token) {
+      const synced = await ensurePushSubscription().catch((error) => {
+        setStatus(`Push reconnect: ${error.message}`, "warn");
+        return false;
+      });
+      if (synced) subscription = await registration.pushManager.getSubscription();
+    }
     setNotificationButtons({
       label: subscription ? "On" : "Setup",
       title: subscription
-        ? "Browser permission and push subscription are active."
+        ? "Browser permission and push subscription are active. H.I.R.A will keep this device synced."
         : "Browser permission is on, but push still needs to be connected.",
       stateText: subscription
         ? "State: enabled and connected on this device."
         : "State: browser permission is on, push is not connected yet.",
       tone: subscription ? "ok" : "warn",
-      disabled: !!subscription,
+      disabled: false,
     });
   } catch (_) {
     setNotificationButtons({
@@ -365,21 +380,43 @@ async function enableNotifications() {
 }
 
 async function subscribeForPushNotifications() {
+  return ensurePushSubscription({ force: true });
+}
+
+async function ensurePushSubscription({ force = false } = {}) {
   if (!("serviceWorker" in navigator) || !("PushManager" in window)) return false;
+  if (!state.token) return false;
   const config = await api("/api/notifications/config", { headers: headers(false) });
   const publicKey = (config.vapid_public_key || "").trim();
   if (!publicKey) return false;
   const registration = await navigator.serviceWorker.ready;
+  const applicationServerKey = urlBase64ToUint8Array(publicKey);
   const existing = await registration.pushManager.getSubscription();
-  const subscription = existing || await registration.pushManager.subscribe({
+  const existingKey = existing?.options?.applicationServerKey || null;
+  const shouldReplace = existing && existingKey && !bytesEqual(existingKey, applicationServerKey);
+  if (shouldReplace) {
+    await existing.unsubscribe();
+  }
+  const subscription = shouldReplace || !existing ? await registration.pushManager.subscribe({
     userVisibleOnly: true,
-    applicationServerKey: urlBase64ToUint8Array(publicKey),
-  });
+    applicationServerKey,
+  }) : existing;
+  await syncPushSubscription(subscription, { force });
+  return true;
+}
+
+async function syncPushSubscription(subscription, { force = false } = {}) {
+  if (!subscription) return false;
+  if (!state.token) return false;
+  const now = Date.now();
+  if (!force && now - state.lastPushSyncAt < 1000 * 60 * 30) return true;
   await api("/api/notifications/subscribe", {
     method: "POST",
     headers: headers(),
     body: JSON.stringify({ subscription }),
   });
+  state.lastPushSyncAt = now;
+  localStorage.setItem("hira_pwa_last_push_sync_at", String(now));
   return true;
 }
 
@@ -1800,6 +1837,7 @@ $("#saveTokenBtn").addEventListener("click", () => {
   localStorage.setItem("hira_web_token", state.token);
   $("#settingsPanel").hidden = true;
   setStatus("Token saved on this device.", "ok");
+  updateNotificationControls();
   startNotificationPolling();
 });
 $("#clearTokenBtn").addEventListener("click", () => {
