@@ -2238,6 +2238,15 @@ html[data-theme="dark"] .load-badge.load-green {
   border-radius: 0 0 2px 2px;
 }
 
+.composer.has-input {
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--border-dark));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.composer.input-pulse {
+  animation: composer-input-pulse 240ms ease-out;
+}
+
 .composer textarea {
   grid-column: 2;
   grid-row: 1;
@@ -2255,6 +2264,11 @@ html[data-theme="dark"] .load-badge.load-green {
   line-height: 1;
   resize: none;
   overflow-y: auto;
+}
+
+.composer.has-input textarea {
+  color: #ffffff;
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .composer textarea::placeholder {
@@ -2286,6 +2300,22 @@ html[data-theme="dark"] .load-badge.load-green {
   font-size: 11px;
   letter-spacing: 0.14em;
   padding: 0 10px;
+}
+
+#sendBtn:disabled {
+  background: var(--surface-muted);
+  border-color: var(--border-visible);
+  color: var(--text-disabled);
+  opacity: 1;
+  transform: none;
+  box-shadow: none;
+}
+
+#sendBtn.is-ready {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+  animation: send-ready 260ms ease-out;
 }
 
 #sendBtn svg {
@@ -2624,6 +2654,34 @@ html[data-theme="dark"] .load-badge.load-green {
   }
 }
 
+@keyframes composer-input-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+
+  45% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+
+  100% {
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent);
+  }
+}
+
+@keyframes send-ready {
+  0% {
+    transform: scale(0.98);
+  }
+
+  60% {
+    transform: scale(1.02);
+  }
+
+  100% {
+    transform: scale(1);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .hira-signal-bars span,
   .hira-signal.is-speaking .hira-signal-bars span,
@@ -2631,7 +2689,9 @@ html[data-theme="dark"] .load-badge.load-green {
   .ops-card,
   .load-stat,
   .load-dot,
-  .segment.active {
+  .segment.active,
+  .composer.input-pulse,
+  #sendBtn.is-ready {
     animation: none;
   }
 }

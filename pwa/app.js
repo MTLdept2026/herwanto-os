@@ -14,6 +14,7 @@ const state = {
   deviceLocation: JSON.parse(localStorage.getItem("hira_pwa_device_location") || "null"),
   notificationPoll: null,
   lastPushSyncAt: Number(localStorage.getItem("hira_pwa_last_push_sync_at") || "0"),
+  lastInputPulseAt: 0,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -151,6 +152,15 @@ function plainNotificationText(text) {
 
 function saveNotifications() {
   localStorage.setItem("hira_pwa_notifications", JSON.stringify(state.notifications.slice(0, 30)));
+}
+
+function hapticTap(duration = 8) {
+  if (!("vibrate" in navigator)) return;
+  try {
+    navigator.vibrate(duration);
+  } catch (_) {
+    // Some browsers expose vibrate but block it; visual feedback still covers it.
+  }
 }
 
 function urlBase64ToUint8Array(value) {
@@ -1628,15 +1638,54 @@ function chatAttachmentLabel(files = state.chatAttachments) {
 function setChatAttachments(files) {
   state.chatAttachments = Array.from(files || []).filter(Boolean);
   const chip = $("#chatAttachment");
-  if (!chip) return;
-  chip.hidden = !state.chatAttachments.length;
-  $("#chatAttachmentName").textContent = chatAttachmentLabel();
-  refreshIcons(chip);
+  if (chip) {
+    chip.hidden = !state.chatAttachments.length;
+    $("#chatAttachmentName").textContent = chatAttachmentLabel();
+    refreshIcons(chip);
+  }
+  updateComposerState();
 }
 
 function clearChatAttachment() {
   setChatAttachments([]);
   $("#chatFileInput").value = "";
+}
+
+function composerHasPayload() {
+  return Boolean($("#messageInput")?.value.trim()) || state.chatAttachments.length > 0;
+}
+
+function updateComposerState() {
+  const composer = $("#chatForm");
+  const sendButton = $("#sendBtn");
+  const hasPayload = composerHasPayload();
+  if (composer) {
+    composer.classList.toggle("has-input", hasPayload);
+    composer.classList.toggle("is-busy", state.chatBusy);
+  }
+  if (sendButton) {
+    sendButton.disabled = state.chatBusy || !hasPayload;
+    sendButton.classList.toggle("is-ready", hasPayload && !state.chatBusy);
+  }
+}
+
+function pulseComposerInput() {
+  const composer = $("#chatForm");
+  if (!composer) return;
+  composer.classList.remove("input-pulse");
+  void composer.offsetWidth;
+  composer.classList.add("input-pulse");
+  const now = Date.now();
+  if (now - state.lastInputPulseAt > 220) {
+    hapticTap(6);
+    state.lastInputPulseAt = now;
+  }
+}
+
+function refreshAgendaSurfacesSoon() {
+  refreshAgendaSurfaces().catch((error) => {
+    setStatus(`Background refresh: ${error.message}`, "warn");
+  });
 }
 
 async function uploadChatAttachment(note) {
@@ -1651,8 +1700,8 @@ async function uploadChatAttachment(note) {
   const pending = addMessage("hira", "", true);
   pending.classList.add("pending");
   setHiraSpeaking(pending, true);
-  $("#sendBtn").disabled = true;
   $("#attachBtn").disabled = true;
+  updateComposerState();
   clearChatAttachment();
   try {
     setStatus(files.some((file) => file.type.startsWith("audio/")) ? "Transcribing attachments..." : "Analysing attachments...", "muted");
@@ -1686,7 +1735,6 @@ async function uploadChatAttachment(note) {
     clearToolStatuses(pending);
     state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: reply };
     saveChatHistory();
-    await refreshAgendaSurfaces();
     setStatus(`${files.length} attachment${files.length === 1 ? "" : "s"} analysed.`, "ok");
   } catch (error) {
     const friendly = `I could not analyse the attachment${files.length === 1 ? "" : "s"}: ${error.message}`;
@@ -1699,8 +1747,9 @@ async function uploadChatAttachment(note) {
     setStatus(error.message, "error");
   } finally {
     state.chatBusy = false;
-    $("#sendBtn").disabled = false;
     $("#attachBtn").disabled = false;
+    updateComposerState();
+    refreshAgendaSurfacesSoon();
   }
 }
 
@@ -1731,11 +1780,11 @@ async function submitUploadJob(form, onProgress) {
 async function sendChat(message) {
   if (state.chatBusy) return;
   state.chatBusy = true;
+  updateComposerState();
   addMessage("user", message);
   const pending = addMessage("hira", "", true);
   pending.classList.add("pending");
   setHiraSpeaking(pending, true);
-  $("#sendBtn").disabled = true;
   try {
     let latestText = "";
     const reply = await streamChatResponse(message, (event, streamedText = latestText) => {
@@ -1764,7 +1813,6 @@ async function sendChat(message) {
     clearToolStatuses(pending);
     state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: reply };
     saveChatHistory();
-    await refreshAgendaSurfaces();
     setStatus("H.I.R.A replied.", "ok");
   } catch (error) {
     const friendly = "H.I.R.A hit a backend snag. Try again in a moment.";
@@ -1778,7 +1826,8 @@ async function sendChat(message) {
     setStatus(friendly, "error");
   } finally {
     state.chatBusy = false;
-    $("#sendBtn").disabled = false;
+    updateComposerState();
+    refreshAgendaSurfacesSoon();
   }
 }
 
@@ -1884,8 +1933,10 @@ $("#chatForm").addEventListener("submit", (event) => {
   const input = $("#messageInput");
   const message = input.value.trim();
   if (!message && !state.chatAttachments.length) return;
+  hapticTap(12);
   input.value = "";
   input.style.height = "auto";
+  updateComposerState();
   if (state.chatAttachments.length) {
     uploadChatAttachment(message);
     return;
@@ -1901,6 +1952,7 @@ $("#chatFileInput").addEventListener("change", (event) => {
   const files = Array.from(event.currentTarget.files || []);
   if (!files.length) return;
   setChatAttachments(files);
+  hapticTap(10);
   setStatus(`${files.length} file${files.length === 1 ? "" : "s"} ready for chat analysis.`, "ok");
 });
 
@@ -1910,6 +1962,8 @@ $("#messageInput").addEventListener("input", (event) => {
   const el = event.currentTarget;
   el.style.height = "auto";
   el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
+  updateComposerState();
+  if (el.value.trim()) pulseComposerInput();
 });
 
 $("#resetChatBtn").addEventListener("click", clearChat);
@@ -1978,6 +2032,7 @@ rememberNotificationFromUrl();
 mirrorStoredNotificationsToChat();
 renderNotifications();
 updateNotificationControls();
+updateComposerState();
 setView("home");
 updateLiveClock();
 setInterval(updateLiveClock, 1000);
