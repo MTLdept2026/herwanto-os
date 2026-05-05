@@ -14,6 +14,7 @@ import tempfile
 import pytz
 import threading
 import statistics
+import time
 from functools import lru_cache
 from datetime import datetime, timedelta
 from email.message import EmailMessage
@@ -47,6 +48,16 @@ DEFAULT_CLASSLIST_SHEET_IDS = [
     "1sKTqAgllMFy0Fq4nLBpF2vxdGpzn3ByMGKCq-NuLSDI",  # 2026 S4 MTL CLASSLIST
 ]
 _thread_local = threading.local()
+_redis_client = None
+_config_cache_lock = threading.RLock()
+_config_cache = {
+    "expires_at": 0.0,
+    "values": None,
+    "row_numbers": None,
+    "row_count": 0,
+    "stale_after_error": False,
+}
+_REDIS_NUDGE_KEY = "hira:proactive_nudges:fallback"
 
 def _int_env(name: str, default: int) -> int:
     try:
@@ -55,6 +66,7 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+_CONFIG_CACHE_TTL_SECONDS = max(0, _int_env("HIRA_CONFIG_CACHE_TTL_SECONDS", 45))
 APP_NOTIFICATION_PUSH_BODY_LIMIT = max(240, min(1800, _int_env("HIRA_WEB_PUSH_BODY_LIMIT", 650)))
 APP_NOTIFICATION_SHEET = "AppNotifications"
 APP_NOTIFICATION_HEADERS = ["id", "kind", "title", "body", "created", "source", "seen_by", "archived"]
@@ -1558,36 +1570,111 @@ def update_project(project: str, status: str, milestone="", milestone_date="", n
 # ─── SHEETS: CONFIG ──────────────────────────────────────────────────────────
 # Sheet structure: key | value
 
-def get_config(key: str):
+def _read_config_sheet() -> tuple[dict, dict, int]:
     r = _sheets().spreadsheets().values().get(
         spreadsheetId=SHEET_ID, range="Config!A2:B"
     ).execute()
-    for row in r.get("values", []):
-        if row and row[0] == key:
-            return row[1] if len(row) > 1 else None
-    return None
+    values = {}
+    row_numbers = {}
+    rows = r.get("values", [])
+    for index, row in enumerate(rows):
+        if row and row[0] not in values:
+            values[row[0]] = row[1] if len(row) > 1 else None
+            row_numbers[row[0]] = index + 2
+    return values, row_numbers, len(rows)
+
+
+def _config_cache_valid(now: float | None = None) -> bool:
+    values = _config_cache.get("values")
+    if values is None:
+        return False
+    if _CONFIG_CACHE_TTL_SECONDS <= 0:
+        return False
+    return (now if now is not None else time.monotonic()) < float(_config_cache.get("expires_at", 0.0) or 0.0)
+
+
+def _load_config_cache(force: bool = False) -> tuple[dict, dict, int]:
+    with _config_cache_lock:
+        now = time.monotonic()
+        if not force and _config_cache_valid(now):
+            return (
+                dict(_config_cache.get("values") or {}),
+                dict(_config_cache.get("row_numbers") or {}),
+                int(_config_cache.get("row_count") or 0),
+            )
+        try:
+            values, row_numbers, row_count = _read_config_sheet()
+        except Exception:
+            stale_values = _config_cache.get("values")
+            if stale_values is not None:
+                logger.warning("Using stale Config cache after Sheets read failed.")
+                _config_cache["stale_after_error"] = True
+                return (
+                    dict(stale_values or {}),
+                    dict(_config_cache.get("row_numbers") or {}),
+                    int(_config_cache.get("row_count") or 0),
+                )
+            raise
+        _config_cache["values"] = values
+        _config_cache["row_numbers"] = row_numbers
+        _config_cache["row_count"] = row_count
+        _config_cache["expires_at"] = time.monotonic() + _CONFIG_CACHE_TTL_SECONDS
+        _config_cache["stale_after_error"] = False
+        return dict(values), dict(row_numbers), row_count
+
+
+def _remember_config_cache_value(key: str, value: str, row_number: int | None = None):
+    if _CONFIG_CACHE_TTL_SECONDS <= 0:
+        return
+    with _config_cache_lock:
+        values = dict(_config_cache.get("values") or {})
+        row_numbers = dict(_config_cache.get("row_numbers") or {})
+        values[key] = value
+        if row_number is not None:
+            row_numbers[key] = row_number
+        _config_cache["values"] = values
+        _config_cache["row_numbers"] = row_numbers
+        _config_cache["row_count"] = max(int(_config_cache.get("row_count") or 0), (row_number or 2) - 1)
+        _config_cache["expires_at"] = time.monotonic() + _CONFIG_CACHE_TTL_SECONDS
+        _config_cache["stale_after_error"] = False
+
+
+def invalidate_config_cache():
+    with _config_cache_lock:
+        _config_cache["expires_at"] = 0.0
+        _config_cache["values"] = None
+        _config_cache["row_numbers"] = None
+        _config_cache["row_count"] = 0
+        _config_cache["stale_after_error"] = False
+
+
+def get_config(key: str):
+    values, _, _ = _load_config_cache()
+    return values.get(key)
 
 
 def set_config(key: str, value: str):
-    r = _sheets().spreadsheets().values().get(
-        spreadsheetId=SHEET_ID, range="Config!A2:B"
-    ).execute()
-    rows = r.get("values", [])
-    for i, row in enumerate(rows):
-        if row and row[0] == key:
-            _sheets().spreadsheets().values().update(
-                spreadsheetId=SHEET_ID,
-                range=f"Config!B{i + 2}",
-                valueInputOption="RAW",
-                body={"values": [[value]]},
-            ).execute()
-            return
+    _, row_numbers, row_count = _load_config_cache()
+    row_number = row_numbers.get(key)
+    if row_number:
+        _sheets().spreadsheets().values().update(
+            spreadsheetId=SHEET_ID,
+            range=f"Config!B{row_number}",
+            valueInputOption="RAW",
+            body={"values": [[value]]},
+        ).execute()
+        _remember_config_cache_value(key, value, row_number)
+        return
+    with _config_cache_lock:
+        if _config_cache.get("stale_after_error"):
+            raise RuntimeError(f"Cannot append Config key {key!r} while Sheets Config read is unavailable.")
     _sheets().spreadsheets().values().append(
         spreadsheetId=SHEET_ID,
         range="Config!A:B",
         valueInputOption="RAW",
         body={"values": [[key, value]]},
     ).execute()
+    _remember_config_cache_value(key, value, row_count + 2)
 
 
 # ─── SHEETS: APP NOTIFICATIONS ───────────────────────────────────────────────
@@ -2616,18 +2703,26 @@ def remove_news_topic(label: str) -> list:
     return topics
 
 
-# ─── SHEETS: PROACTIVE NUDGES ───────────────────────────────────────────────
-# Stored in Config as JSON so H.I.R.A can initiate chats at specific times.
+def _get_redis():
+    global _redis_client
+    if _redis_client is None:
+        url = os.environ.get("REDIS_URL", "").strip()
+        if not url:
+            _redis_client = False
+        else:
+            try:
+                import redis
 
-def get_nudges(include_sent=False) -> list:
-    raw = get_config("proactive_nudges")
-    if not raw:
-        return []
-    try:
-        nudges = json.loads(raw)
-    except Exception:
-        return []
+                client = redis.from_url(url, decode_responses=True)
+                client.ping()
+                _redis_client = client
+            except Exception as exc:
+                logger.warning(f"Redis unavailable for Sheets fallback storage: {exc}")
+                _redis_client = False
+    return _redis_client if _redis_client else None
 
+
+def _normalise_nudges(nudges: list, include_sent=False) -> list:
     clean = []
     for nudge in nudges:
         if not isinstance(nudge, dict):
@@ -2646,27 +2741,115 @@ def get_nudges(include_sent=False) -> list:
     return [n for n in clean if n["id"] and n["message"] and n["send_at"]]
 
 
+def _redis_nudges(include_sent=False) -> list:
+    r = _get_redis()
+    if not r:
+        return []
+    try:
+        raw = r.get(_REDIS_NUDGE_KEY) or "[]"
+        data = json.loads(raw)
+        return _normalise_nudges(data if isinstance(data, list) else [], include_sent=include_sent)
+    except Exception as exc:
+        logger.warning(f"Could not read Redis nudge fallback: {exc}")
+        return []
+
+
+def _set_redis_nudges(nudges: list):
+    r = _get_redis()
+    if not r:
+        return False
+    try:
+        r.set(_REDIS_NUDGE_KEY, json.dumps(nudges[-120:], ensure_ascii=False), ex=60 * 60 * 24 * 14)
+        return True
+    except Exception as exc:
+        logger.warning(f"Could not persist Redis nudge fallback: {exc}")
+        return False
+
+
+def _merge_nudges(primary: list, fallback: list, include_sent=False) -> list:
+    merged = []
+    seen = set()
+    for source in (primary, fallback):
+        for nudge in source:
+            nid = str(nudge.get("id", "")).strip()
+            if not nid or nid in seen:
+                continue
+            seen.add(nid)
+            merged.append(nudge)
+    return _normalise_nudges(merged, include_sent=include_sent)
+
+
+def _fallback_nudge_id(existing: list) -> str:
+    existing_ids = {str(item.get("id", "")) for item in existing if isinstance(item, dict)}
+    base = f"r-{int(time.time() * 1000)}"
+    if base not in existing_ids:
+        return base
+    suffix = 1
+    while f"{base}-{suffix}" in existing_ids:
+        suffix += 1
+    return f"{base}-{suffix}"
+
+
+# ─── SHEETS: PROACTIVE NUDGES ───────────────────────────────────────────────
+# Stored in Config as JSON so H.I.R.A can initiate chats at specific times.
+
+def _sheet_nudges(include_sent=False) -> list:
+    raw = get_config("proactive_nudges")
+    if not raw:
+        return []
+    try:
+        nudges = json.loads(raw)
+    except Exception:
+        return []
+    return _normalise_nudges(nudges if isinstance(nudges, list) else [], include_sent=include_sent)
+
+
+def get_nudges(include_sent=False) -> list:
+    redis_items = _redis_nudges(include_sent=include_sent)
+    try:
+        sheet_items = _sheet_nudges(include_sent=include_sent)
+    except Exception as exc:
+        logger.warning(f"Sheets nudge read failed; using Redis fallback only: {exc}")
+        return redis_items
+    return _merge_nudges(sheet_items, redis_items, include_sent=include_sent)
+
+
 def set_nudges(nudges: list):
     set_config("proactive_nudges", json.dumps(nudges, ensure_ascii=False))
 
 
 def add_nudge(message: str, send_at: str) -> dict:
-    nudges = get_nudges(include_sent=True)
     now = datetime.now(SGT)
-    next_id = 1
-    numeric_ids = [int(n["id"]) for n in nudges if str(n.get("id", "")).isdigit()]
-    if numeric_ids:
-        next_id = max(numeric_ids) + 1
+    try:
+        sheet_nudges = _sheet_nudges(include_sent=True)
+        next_id = 1
+        numeric_ids = [int(n["id"]) for n in sheet_nudges if str(n.get("id", "")).isdigit()]
+        if numeric_ids:
+            next_id = max(numeric_ids) + 1
+        nudge = {
+            "id": str(next_id),
+            "message": message.strip(),
+            "send_at": send_at.strip(),
+            "status": "pending",
+            "created": now.isoformat(),
+            "sent_at": "",
+        }
+        set_nudges(sheet_nudges + [nudge])
+        return nudge
+    except Exception as exc:
+        logger.warning(f"Sheets nudge write failed; queueing Redis fallback nudge: {exc}")
+
+    fallback_nudges = _redis_nudges(include_sent=True)
     nudge = {
-        "id": str(next_id),
+        "id": _fallback_nudge_id(fallback_nudges),
         "message": message.strip(),
         "send_at": send_at.strip(),
         "status": "pending",
         "created": now.isoformat(),
         "sent_at": "",
     }
-    nudges.append(nudge)
-    set_nudges(nudges)
+    if not _set_redis_nudges(fallback_nudges + [nudge]):
+        raise RuntimeError("Sheets and Redis fallback are both unavailable for proactive nudges.")
     return nudge
 
 
@@ -2678,7 +2861,16 @@ def cancel_nudge(nudge_id: str) -> bool:
             nudge["status"] = "cancelled"
             changed = True
     if changed:
-        set_nudges(nudges)
+        try:
+            redis_items = [n for n in nudges if str(n.get("id", "")).startswith("r-")]
+            if str(nudge_id).startswith("r-"):
+                _set_redis_nudges(redis_items)
+            else:
+                set_nudges([n for n in nudges if not str(n.get("id", "")).startswith("r-")])
+                if redis_items:
+                    _set_redis_nudges(redis_items)
+        except Exception:
+            _set_redis_nudges([n for n in nudges if str(n.get("id", "")).startswith("r-")] or nudges)
     return changed
 
 
@@ -2708,7 +2900,18 @@ def mark_nudge_sent(nudge_id: str):
             nudge["status"] = "sent"
             nudge["sent_at"] = now
             break
-    set_nudges(nudges)
+    sheet_items = [n for n in nudges if not str(n.get("id", "")).startswith("r-")]
+    redis_items = [n for n in nudges if str(n.get("id", "")).startswith("r-")]
+    if str(nudge_id).startswith("r-"):
+        _set_redis_nudges(redis_items)
+        return
+    try:
+        set_nudges(sheet_items)
+    except Exception as exc:
+        logger.warning(f"Could not mark Sheets nudge sent; preserving state in Redis fallback: {exc}")
+        _set_redis_nudges(nudges)
+    if redis_items:
+        _set_redis_nudges(redis_items)
 
 
 # ─── SHEETS: DAILY CHECK-INS ────────────────────────────────────────────────

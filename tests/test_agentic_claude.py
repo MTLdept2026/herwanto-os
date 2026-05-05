@@ -2256,5 +2256,74 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(first["key"], "zohor")
         self.assertIsNone(second)
 
+    def test_config_reads_are_cached_for_nearby_calls(self):
+        class Request:
+            def __init__(self, payload=None):
+                self.payload = payload or {}
+
+            def execute(self):
+                return self.payload
+
+        class Values:
+            def __init__(self):
+                self.get_calls = 0
+                self.updates = []
+                self.appends = []
+
+            def get(self, spreadsheetId, range):
+                self.get_calls += 1
+                return Request({"values": [["proactive_nudges", "[]"], ["foo", "bar"]]})
+
+            def update(self, spreadsheetId, range, valueInputOption, body):
+                self.updates.append((range, body))
+                return Request()
+
+            def append(self, spreadsheetId, range, valueInputOption, body):
+                self.appends.append((range, body))
+                return Request()
+
+        class Sheets:
+            def __init__(self):
+                self.values_api = Values()
+
+            def spreadsheets(self):
+                return self
+
+            def values(self):
+                return self.values_api
+
+        fake = Sheets()
+        bot.gs.invalidate_config_cache()
+        with (
+            patch.object(bot.gs, "_sheets", return_value=fake),
+            patch.object(bot.gs, "_CONFIG_CACHE_TTL_SECONDS", 45),
+        ):
+            self.assertEqual(bot.gs.get_config("foo"), "bar")
+            self.assertEqual(bot.gs.get_config("proactive_nudges"), "[]")
+            bot.gs.set_config("foo", "baz")
+            self.assertEqual(bot.gs.get_config("foo"), "baz")
+
+        self.assertEqual(fake.values_api.get_calls, 1)
+        self.assertEqual(fake.values_api.updates, [("Config!B3", {"values": [["baz"]]})])
+        bot.gs.invalidate_config_cache()
+
+    def test_add_nudge_uses_redis_fallback_when_sheets_are_capped(self):
+        stored = []
+
+        def capture_redis_nudges(nudges):
+            stored[:] = nudges
+            return True
+
+        with (
+            patch.object(bot.gs, "_sheet_nudges", side_effect=RuntimeError("quota exceeded")),
+            patch.object(bot.gs, "_redis_nudges", return_value=[]),
+            patch.object(bot.gs, "_set_redis_nudges", side_effect=capture_redis_nudges),
+        ):
+            nudge = bot.gs.add_nudge("Evening digest", "2026-05-05T22:04:00+08:00")
+
+        self.assertTrue(nudge["id"].startswith("r-"))
+        self.assertEqual(nudge["message"], "Evening digest")
+        self.assertEqual(stored, [nudge])
+
 if __name__ == "__main__":
     unittest.main()
