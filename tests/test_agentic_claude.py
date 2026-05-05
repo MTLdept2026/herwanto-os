@@ -293,6 +293,16 @@ class AgenticClaudeTests(unittest.TestCase):
             self.assertTrue(bot._should_suppress_notification("followup:9", "reminder", now=now))
             self.assertFalse(bot._should_suppress_notification("briefing:today", "briefing", now=now))
 
+    def test_dismissed_task_reminder_is_not_regenerated_on_refresh(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 5, 22, 30))
+        source = "task_reminder:2026-05-05:31"
+        outcomes = [
+            {"created": now.isoformat(), "source": source, "group": "task_reminder", "kind": "reminder", "action": "dismissed"}
+        ]
+
+        with patch("bot.gs.get_notification_outcomes", return_value=outcomes):
+            self.assertTrue(bot._should_suppress_notification(source, "reminder", now=now))
+
     def test_web_push_payload_uses_phone_sized_preview(self):
         payloads = []
         fake_pywebpush = ModuleType("pywebpush")
@@ -678,6 +688,53 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(sent, 1)
         mark_delivered.assert_called_once()
+
+    def test_user_nudge_pushes_during_quiet_hours(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 5, 23, 30))
+
+        self.assertTrue(bot._quiet_hours_active(now=now))
+        self.assertTrue(bot._should_send_phone_push("reminder", "nudge:42", now=now))
+        self.assertFalse(bot._should_send_phone_push("reminder", "checkin:42", now=now))
+
+    def test_dispatch_keeps_pwa_nudge_pending_without_phone_push(self):
+        candidate = {
+            "family": "nudge",
+            "source": "nudge:42",
+            "kind": "reminder",
+            "title": "H.I.R.A nudge",
+            "body": "Go to bed.",
+            "suppressed": False,
+            "metadata": {"nudge_id": "42"},
+        }
+
+        with (
+            patch.object(bot, "_queue_app_notification", return_value={"id": "1", "_push_sent": 0}),
+            patch.object(bot.gs, "mark_nudge_sent") as mark_sent,
+        ):
+            sent = asyncio.run(bot._dispatch_proactive_candidates(None, [candidate], limit=1))
+
+        self.assertEqual(sent, 1)
+        mark_sent.assert_not_called()
+
+    def test_dispatch_marks_pwa_nudge_after_confirmed_phone_push(self):
+        candidate = {
+            "family": "nudge",
+            "source": "nudge:42",
+            "kind": "reminder",
+            "title": "H.I.R.A nudge",
+            "body": "Go to bed.",
+            "suppressed": False,
+            "metadata": {"nudge_id": "42"},
+        }
+
+        with (
+            patch.object(bot, "_queue_app_notification", return_value={"id": "1", "_push_sent": 1}),
+            patch.object(bot.gs, "mark_nudge_sent") as mark_sent,
+        ):
+            sent = asyncio.run(bot._dispatch_proactive_candidates(None, [candidate], limit=1))
+
+        self.assertEqual(sent, 1)
+        mark_sent.assert_called_once_with("42")
 
     def test_dispatch_skips_digest_only_reminder_confidence(self):
         candidate = {

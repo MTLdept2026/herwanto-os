@@ -3139,8 +3139,12 @@ async def _dispatch_proactive_candidates(context, candidates: list[dict], limit:
         queued = _queue_app_notification(kind, title, body, source=source)
         if not queued:
             continue
+        push_sent = int(queued.get("_push_sent", 0) or 0)
         if family == "nudge":
-            gs.mark_nudge_sent(candidate.get("metadata", {}).get("nudge_id", ""))
+            if context is not None or push_sent > 0:
+                gs.mark_nudge_sent(candidate.get("metadata", {}).get("nudge_id", ""))
+            else:
+                logger.warning("Nudge %s kept pending until phone push is confirmed", candidate.get("metadata", {}).get("nudge_id", ""))
         elif family == "checkin":
             gs.mark_checkin_prompted(
                 candidate.get("metadata", {}).get("checkin_id", ""),
@@ -3151,7 +3155,7 @@ async def _dispatch_proactive_candidates(context, candidates: list[dict], limit:
             gs.mark_followup_prompted(candidate.get("metadata", {}).get("followup_id", ""), datetime.now(SGT).strftime("%Y-%m-%d"))
         elif family == "intelligence":
             _mark_proactive_seen(candidate.get("metadata", {}).get("insight_id", ""), datetime.now(SGT))
-        elif family in {"calendar_reminder", "task"} and int(queued.get("_push_sent", 0) or 0) > 0:
+        elif family in {"calendar_reminder", "task"} and push_sent > 0:
             _mark_action_reminder_delivered(source, datetime.now(SGT))
         sent_count += 1
     return sent_count
@@ -7237,7 +7241,7 @@ def _queue_app_notification(kind: str, title: str, body: str, source: str = ""):
                 kind=kind,
                 title=title,
             )
-        if not _quiet_hours_active() or kind in {"urgent"}:
+        if _should_send_phone_push(kind, source):
             sent = gs.send_web_push_notification(
                 title,
                 body,
@@ -7261,6 +7265,18 @@ def _queue_app_notification(kind: str, title: str, body: str, source: str = ""):
         return None
 
 
+def _should_send_phone_push(kind: str, source: str = "", now: datetime | None = None) -> bool:
+    clean_kind = str(kind or "").strip()
+    clean_source = str(source or "").strip()
+    if clean_kind == "urgent":
+        return True
+    if not _quiet_hours_active(now=now):
+        return True
+    # User-scheduled nudges are explicit alarms/reminders, so they should still
+    # reach the phone even when passive proactive notifications are quiet.
+    return clean_source.startswith("nudge:")
+
+
 def _quiet_hours_active(now: datetime | None = None) -> bool:
     now = (now or datetime.now(SGT)).astimezone(SGT)
     start = int(os.environ.get("HIRA_QUIET_START_HOUR", "23") or 23)
@@ -7276,6 +7292,7 @@ NOTIFICATION_NEGATIVE_ACTIONS = {"dismissed", "not_now"}
 NOTIFICATION_COOLDOWN_HOURS = {
     "checkin": 8,
     "followup": 18,
+    "task_reminder": 36,
     "proactive_intelligence": 24,
     "friday_checkin": 36,
     "weekly_planning": 24,

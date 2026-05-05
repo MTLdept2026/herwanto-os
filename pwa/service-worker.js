@@ -1,4 +1,4 @@
-const CACHE_NAME = "hira-os-v61";
+const CACHE_NAME = "hira-os-v62";
 const ASSETS = [
   "/",
   "/styles.css?v=20260505-1",
@@ -41,14 +41,18 @@ self.addEventListener("push", (event) => {
     title,
     body,
   };
+  const kind = String(data.kind || "");
   const options = {
     body,
     icon: payload.icon || "/static/icon.svg",
     badge: payload.badge || "/static/icon.svg",
     tag: payload.data?.id ? `hira-${payload.data.id}` : "hira",
     data,
+    renotify: true,
+    requireInteraction: kind === "reminder",
+    silent: false,
+    vibrate: kind === "reminder" ? [220, 90, 220] : [120],
   };
-  const kind = String(data.kind || "");
   if (kind === "reminder") {
     options.actions = [
       { action: "done", title: "Done" },

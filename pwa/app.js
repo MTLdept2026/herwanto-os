@@ -632,8 +632,7 @@ async function performNotificationAction(action, item = {}) {
     });
     if (["done", "snooze", "not_useful", "not_now"].includes(action)) {
       state.dismissedNotificationIds.push(notification.id);
-      state.dismissedNotificationIds = [...new Set(state.dismissedNotificationIds)].slice(-80);
-      saveDismissedNotifications();
+      saveDismissedNotificationIds();
       state.notifications = state.notifications.filter((existing) => String(existing.id) !== notification.id);
     }
     if (["useful", "not_useful", "not_now"].includes(action)) {
