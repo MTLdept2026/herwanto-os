@@ -1,18 +1,30 @@
+function safeJsonParse(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    return parsed ?? fallback;
+  } catch (_) {
+    localStorage.removeItem(key);
+    return fallback;
+  }
+}
+
 const state = {
   token: localStorage.getItem("hira_web_token") || "",
   theme: localStorage.getItem("hira_theme") || "light",
-  clientId: localStorage.getItem("hira_client_id") || (crypto?.randomUUID ? crypto.randomUUID() : `hira-${Date.now()}`),
+  clientId: localStorage.getItem("hira_client_id") || (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `hira-${Date.now()}`),
   deferredInstall: null,
   currentView: "home",
   homeDays: 7,
   chatBusy: false,
   chatAttachments: [],
-  chatHistory: JSON.parse(localStorage.getItem("hira_pwa_chat") || "[]"),
-  notifications: JSON.parse(localStorage.getItem("hira_pwa_notifications") || "[]"),
-  dismissedNotificationIds: JSON.parse(localStorage.getItem("hira_pwa_dismissed_notification_ids") || "[]"),
-  chatNotificationIds: JSON.parse(localStorage.getItem("hira_pwa_chat_notification_ids") || "[]"),
-  feedback: JSON.parse(localStorage.getItem("hira_pwa_feedback") || "{}"),
-  deviceLocation: JSON.parse(localStorage.getItem("hira_pwa_device_location") || "null"),
+  chatHistory: safeJsonParse("hira_pwa_chat", []),
+  notifications: safeJsonParse("hira_pwa_notifications", []),
+  dismissedNotificationIds: safeJsonParse("hira_pwa_dismissed_notification_ids", []),
+  chatNotificationIds: safeJsonParse("hira_pwa_chat_notification_ids", []),
+  feedback: safeJsonParse("hira_pwa_feedback", {}),
+  deviceLocation: safeJsonParse("hira_pwa_device_location", null),
   notificationPoll: null,
   lastPushSyncAt: Number(localStorage.getItem("hira_pwa_last_push_sync_at") || "0"),
   lastInputPulseAt: 0,

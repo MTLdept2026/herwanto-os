@@ -7279,8 +7279,15 @@ def _should_send_phone_push(kind: str, source: str = "", now: datetime | None = 
 
 def _quiet_hours_active(now: datetime | None = None) -> bool:
     now = (now or datetime.now(SGT)).astimezone(SGT)
-    start = int(os.environ.get("HIRA_QUIET_START_HOUR", "23") or 23)
-    end = int(os.environ.get("HIRA_QUIET_END_HOUR", "5") or 5)
+    try:
+        start = int(os.environ.get("HIRA_QUIET_START_HOUR", "23") or 23) % 24
+        end = int(os.environ.get("HIRA_QUIET_END_HOUR", "5") or 5) % 24
+    except ValueError:
+        start, end = 23, 5
+    if start == end:
+        return False
+    if start < end:
+        return start <= now.hour < end
     return now.hour >= start or now.hour < end
 
 

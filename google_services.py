@@ -1331,7 +1331,13 @@ def get_reminders(include_done=False):
 
 def add_reminder(description: str, due_date: str, category: str = "General") -> int:
     rows = _raw_reminders()
-    next_id = len(rows) + 1
+    numeric_ids = []
+    for row in rows:
+        try:
+            numeric_ids.append(int(str(row[0]).strip()))
+        except Exception:
+            continue
+    next_id = (max(numeric_ids) + 1) if numeric_ids else 1
     today = datetime.now(SGT).strftime("%Y-%m-%d")
     _sheets().spreadsheets().values().append(
         spreadsheetId=SHEET_ID,

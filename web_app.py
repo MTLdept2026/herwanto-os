@@ -1322,12 +1322,7 @@ def _push_recovery_summary(delivery_log: list, queued: list, subscriptions: list
     }
 
 
-@app.get("/api/notifications/health")
-def notifications_health(
-    x_hira_token: Optional[str] = Header(default=None),
-    x_hira_client: Optional[str] = Header(default=None),
-):
-    _require_token(x_hira_token)
+def _safe_notifications_diagnostics(client_key: str = "") -> dict:
     try:
         subscriptions = bot.gs.get_web_push_subscriptions()
     except Exception as exc:
@@ -1342,10 +1337,49 @@ def notifications_health(
         queue_error = str(exc)
     else:
         queue_error = ""
+    try:
+        delivery_log = bot.gs.get_web_push_delivery_log()
+    except Exception as exc:
+        delivery_log = []
+        if not queue_error:
+            queue_error = str(exc)
+    try:
+        outcome_summary = bot.gs.get_notification_outcome_summary(days=14)
+    except Exception:
+        outcome_summary = {"actions": {}}
+    current_subscription = None
+    if client_key:
+        try:
+            current_subscription = bot.gs.get_web_push_subscription(client_key)
+        except Exception as exc:
+            current_subscription = None
+            subscription_error = subscription_error or str(exc)
+    return {
+        "subscriptions": subscriptions,
+        "subscription_error": subscription_error,
+        "queued": queued,
+        "queue_error": queue_error,
+        "delivery_log": delivery_log,
+        "outcome_summary": outcome_summary,
+        "current_subscription": current_subscription,
+    }
+
+
+@app.get("/api/notifications/health")
+def notifications_health(
+    x_hira_token: Optional[str] = Header(default=None),
+    x_hira_client: Optional[str] = Header(default=None),
+):
+    _require_token(x_hira_token)
     client_key = _client_key(x_hira_client)
-    current_subscription = bot.gs.get_web_push_subscription(client_key)
-    delivery_log = bot.gs.get_web_push_delivery_log()
-    outcome_summary = bot.gs.get_notification_outcome_summary(days=14)
+    diagnostics = _safe_notifications_diagnostics(client_key)
+    subscriptions = diagnostics["subscriptions"]
+    queued = diagnostics["queued"]
+    subscription_error = diagnostics["subscription_error"]
+    queue_error = diagnostics["queue_error"]
+    delivery_log = diagnostics["delivery_log"]
+    outcome_summary = diagnostics["outcome_summary"]
+    current_subscription = diagnostics["current_subscription"]
     stale_threshold = datetime.now(bot.SGT) - bot.timedelta(days=30)
     stale_subscriptions = 0
     for item in subscriptions:
@@ -1383,24 +1417,12 @@ def admin_status(x_hira_token: Optional[str] = Header(default=None)):
         runtime = bot.build_runtime_status()
     except Exception as exc:
         runtime = {"error": str(exc)}
-    try:
-        subscriptions = bot.gs.get_web_push_subscriptions()
-    except Exception as exc:
-        subscriptions = []
-        subscription_error = str(exc)
-    else:
-        subscription_error = ""
-    try:
-        queued = bot.gs.get_app_notifications(include_archived=False)
-    except Exception as exc:
-        queued = []
-        queue_error = str(exc)
-    else:
-        queue_error = ""
-    try:
-        delivery_log = bot.gs.get_web_push_delivery_log()
-    except Exception:
-        delivery_log = []
+    diagnostics = _safe_notifications_diagnostics()
+    subscriptions = diagnostics["subscriptions"]
+    queued = diagnostics["queued"]
+    subscription_error = diagnostics["subscription_error"]
+    queue_error = diagnostics["queue_error"]
+    delivery_log = diagnostics["delivery_log"]
     return {
         "health": base,
         "runtime": runtime,

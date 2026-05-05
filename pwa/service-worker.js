@@ -1,8 +1,8 @@
-const CACHE_NAME = "hira-os-v63";
+const CACHE_NAME = "hira-os-v64";
 const ASSETS = [
   "/",
   "/styles.css?v=20260505-1",
-  "/app.js?v=20260506-1",
+  "/app.js?v=20260506-2",
   "/static/icon.svg",
   "/manifest.webmanifest"
 ];
@@ -33,7 +33,16 @@ self.addEventListener("fetch", (event) => {
 });
 
 self.addEventListener("push", (event) => {
-  const payload = event.data ? event.data.json() : {};
+  let payload = {};
+  try {
+    payload = event.data ? event.data.json() : {};
+  } catch (_) {
+    payload = {
+      title: "H.I.R.A",
+      body: event.data ? event.data.text() : "",
+      data: { kind: "notice" },
+    };
+  }
   const title = payload.title || "H.I.R.A";
   const body = payload.body || "";
   const data = {

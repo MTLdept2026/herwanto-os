@@ -63,6 +63,7 @@ class FakeSheetsValues:
     def __init__(self):
         self.batch_updates = []
         self.updates = []
+        self.appends = []
 
     def batchUpdate(self, spreadsheetId, body):
         self.batch_updates.append((spreadsheetId, body))
@@ -70,6 +71,10 @@ class FakeSheetsValues:
 
     def update(self, spreadsheetId, range, valueInputOption, body):
         self.updates.append((spreadsheetId, range, valueInputOption, body))
+        return FakeSheetsRequest()
+
+    def append(self, spreadsheetId, range, valueInputOption, body):
+        self.appends.append((spreadsheetId, range, valueInputOption, body))
         return FakeSheetsRequest()
 
 
@@ -320,6 +325,25 @@ class AgenticClaudeTests(unittest.TestCase):
             self.assertTrue(bot._should_suppress_notification("task_reminder:2026-05-06:31", "reminder", now=now))
             self.assertFalse(bot._should_suppress_notification("task_reminder:2026-05-06:32", "reminder", now=now))
 
+    def test_quiet_hours_supports_daytime_windows(self):
+        during = bot.SGT.localize(bot.datetime(2026, 5, 6, 14, 0))
+        before = bot.SGT.localize(bot.datetime(2026, 5, 6, 10, 0))
+        with patch.dict(os.environ, {"HIRA_QUIET_START_HOUR": "13", "HIRA_QUIET_END_HOUR": "15"}):
+            self.assertTrue(bot._quiet_hours_active(now=during))
+            self.assertFalse(bot._quiet_hours_active(now=before))
+
+    def test_add_reminder_uses_max_numeric_id_not_row_count(self):
+        fake_sheets = FakeSheetsService({})
+        with (
+            patch.object(bot.gs, "_raw_reminders", return_value=[["1"], ["3"]]),
+            patch.object(bot.gs, "_sheets", return_value=fake_sheets),
+        ):
+            reminder_id = bot.gs.add_reminder("Submit remarks", "2026-05-07", "Teaching")
+
+        self.assertEqual(reminder_id, 4)
+        appended = fake_sheets.spreadsheets_api.values_api.appends[0][3]["values"][0]
+        self.assertEqual(appended[0], "4")
+
     def test_web_push_payload_uses_phone_sized_preview(self):
         payloads = []
         fake_pywebpush = ModuleType("pywebpush")
@@ -423,6 +447,24 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(result["attempted"], 0)
         send_push.assert_not_called()
+
+    def test_notification_health_diagnostics_survive_subscription_lookup_failure(self):
+        with (
+            patch.object(web_app.bot.gs, "get_web_push_subscriptions", return_value=[{
+                "client_id": "phone",
+                "subscription": {"endpoint": "https://push.example/sub"},
+                "created": "",
+                "last_seen": "",
+            }]),
+            patch.object(web_app.bot.gs, "get_app_notifications", return_value=[]),
+            patch.object(web_app.bot.gs, "get_web_push_delivery_log", return_value=[]),
+            patch.object(web_app.bot.gs, "get_notification_outcome_summary", return_value={"actions": {}}),
+            patch.object(web_app.bot.gs, "get_web_push_subscription", side_effect=RuntimeError("sheets down")),
+        ):
+            diagnostics = web_app._safe_notifications_diagnostics("phone")
+
+        self.assertIsNone(diagnostics["current_subscription"])
+        self.assertIn("sheets down", diagnostics["subscription_error"])
 
     def test_morning_briefing_waits_for_confirmed_phone_push(self):
         with (
