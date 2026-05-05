@@ -5,6 +5,7 @@ import asyncio
 import gc
 import json
 import os
+import re
 import secrets
 import tempfile
 import time
@@ -351,6 +352,12 @@ class DraftRequest(BaseModel):
 
 class NotificationSeenRequest(BaseModel):
     ids: list[str] = []
+
+
+class NotificationActionRequest(BaseModel):
+    id: str
+    action: str
+    snooze_minutes: int = 30
 
 
 class PushSubscribeRequest(BaseModel):
@@ -1124,6 +1131,50 @@ def notifications_test(
     return {"ok": True, "sent": sent, "notification": item}
 
 
+def _push_recovery_summary(delivery_log: list, queued: list, subscriptions: list, subscription_error: str = "", queue_error: str = "") -> dict:
+    latest = delivery_log[-1] if delivery_log else {}
+    successes = [item for item in delivery_log if int(item.get("sent", 0) or 0) > 0]
+    latest_success = successes[-1] if successes else {}
+    recent_failures = [
+        item for item in delivery_log[-10:]
+        if int(item.get("attempted", 0) or 0) > 0 and int(item.get("sent", 0) or 0) <= 0
+    ]
+    if subscription_error or queue_error:
+        status = "storage_error"
+    elif not os.environ.get("HIRA_WEB_PUSH_PRIVATE_KEY", "").strip():
+        status = "missing_push_key"
+    elif not subscriptions:
+        status = "no_subscriptions"
+    elif latest and int(latest.get("sent", 0) or 0) > 0:
+        status = "healthy"
+    elif latest:
+        status = "delivery_missed"
+    else:
+        status = "no_attempts"
+    issue = ""
+    if status == "storage_error":
+        issue = subscription_error or queue_error
+    elif status == "missing_push_key":
+        issue = "HIRA_WEB_PUSH_PRIVATE_KEY is not configured."
+    elif status == "no_subscriptions":
+        issue = "No browser/device push subscriptions are registered."
+    elif status == "delivery_missed":
+        issue = str(latest.get("last_error", "") or latest.get("errors", {}) or "Last push attempt had no confirmed delivery.")
+    return {
+        "status": status,
+        "issue": issue,
+        "last_attempt_at": latest.get("created", ""),
+        "last_attempt_source": latest.get("source", ""),
+        "last_attempt_sent": int(latest.get("sent", 0) or 0) if latest else 0,
+        "last_attempted": int(latest.get("attempted", 0) or 0) if latest else 0,
+        "last_success_at": latest_success.get("created", ""),
+        "last_success_source": latest_success.get("source", ""),
+        "recent_failure_count": len(recent_failures),
+        "queued_count": len(queued),
+        "subscription_count": len(subscriptions),
+    }
+
+
 @app.get("/api/notifications/health")
 def notifications_health(
     x_hira_token: Optional[str] = Header(default=None),
@@ -1170,6 +1221,7 @@ def notifications_health(
         "current_client_subscribed": bool(current_subscription),
         "current_client_last_seen": current_subscription.get("last_seen", "") if current_subscription else "",
         "recent_delivery_log": delivery_log[-5:],
+        "push_recovery": _push_recovery_summary(delivery_log, queued, subscriptions, subscription_error, queue_error),
         "outcome_actions": outcome_summary.get("actions", {}),
         "prayers": bot.prayer_notification_status(),
     }
@@ -1197,6 +1249,10 @@ def admin_status(x_hira_token: Optional[str] = Header(default=None)):
         queue_error = str(exc)
     else:
         queue_error = ""
+    try:
+        delivery_log = bot.gs.get_web_push_delivery_log()
+    except Exception:
+        delivery_log = []
     return {
         "health": base,
         "runtime": runtime,
@@ -1208,6 +1264,8 @@ def admin_status(x_hira_token: Optional[str] = Header(default=None)):
             "subscription_error": subscription_error,
             "queued_notification_count": len(queued),
             "queue_error": queue_error,
+            "recent_delivery_log": delivery_log[-5:],
+            "push_recovery": _push_recovery_summary(delivery_log, queued, subscriptions, subscription_error, queue_error),
             "prayers": bot.prayer_notification_status(),
         },
     }
@@ -1288,6 +1346,91 @@ def notifications_archive(
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Could not dismiss notifications: {exc}") from exc
     return {"ok": True, "archived": archived}
+
+
+@app.post("/api/notifications/action")
+def notifications_action(
+    req: NotificationActionRequest,
+    x_hira_token: Optional[str] = Header(default=None),
+    x_hira_client: Optional[str] = Header(default=None),
+):
+    _require_token(x_hira_token)
+    action = str(req.action or "").strip().lower()
+    if action not in {"done", "snooze", "useful", "not_useful", "not_now"}:
+        raise HTTPException(status_code=400, detail="Unsupported notification action")
+    try:
+        item = bot.gs.get_app_notification(req.id)
+        if not item:
+            raise HTTPException(status_code=404, detail=f"Notification #{req.id} not found")
+        client_key = _client_key(x_hira_client)
+        source = str(item.get("source", "") or "").strip()
+        kind = str(item.get("kind", "") or "").strip()
+        title = str(item.get("title", "") or "").strip()
+        body = str(item.get("body", "") or "").strip()
+        result = {}
+
+        if action == "done":
+            task_match = re.search(r"(?:^|:)task(?:_reminder)?:[^:]*:(\w[\w-]*)$", source)
+            if not task_match:
+                task_match = re.search(r"^task_reminder:[^:]+:(\w[\w-]*)$", source)
+            followup_match = re.search(r"^followup:(\w[\w-]*)$", source)
+            checkin_match = re.search(r"^checkin:(\w[\w-]*)$", source)
+            if task_match:
+                ok, synced_marking = bot.complete_reminder_by_id(task_match.group(1))
+                result = {"completed": bool(ok), "synced_marking": synced_marking}
+            elif followup_match:
+                ok = bot.gs.complete_followup(followup_match.group(1))
+                result = {"completed": bool(ok)}
+            elif checkin_match:
+                ok = bot.gs.complete_checkin_today(checkin_match.group(1))
+                result = {"completed": bool(ok)}
+            else:
+                result = {"completed": False, "reason": "No linked task, follow-up, or check-in"}
+            bot._record_notification_outcome(
+                "done",
+                notification_id=item.get("id", ""),
+                source=source,
+                kind=kind,
+                client_id=client_key,
+                title=title,
+            )
+            bot.gs.archive_app_notifications([req.id])
+        elif action == "snooze":
+            minutes = max(5, min(1440, int(req.snooze_minutes or 30)))
+            send_at = (datetime.now(bot.SGT) + bot.timedelta(minutes=minutes)).isoformat()
+            message = body or title or "H.I.R.A reminder"
+            nudge = bot.gs.add_nudge(message, send_at)
+            bot._record_notification_outcome(
+                "snoozed",
+                notification_id=item.get("id", ""),
+                source=source,
+                kind=kind,
+                rating=str(minutes),
+                client_id=client_key,
+                title=title,
+            )
+            bot.gs.archive_app_notifications([req.id])
+            result = {"snoozed_until": send_at, "nudge_id": nudge.get("id", "")}
+        else:
+            rating = "useful" if action == "useful" else action
+            bot.gs.add_insight_feedback("notification", req.id, rating)
+            bot._record_notification_outcome(
+                rating,
+                notification_id=item.get("id", ""),
+                source=source,
+                kind=kind,
+                rating=rating,
+                client_id=client_key,
+                title=title,
+            )
+            if rating in {"not_useful", "not_now"}:
+                bot.gs.archive_app_notifications([req.id])
+            result = {"rating": rating}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not apply notification action: {exc}") from exc
+    return {"ok": True, "action": action, **result}
 
 
 @app.post("/api/insights/feedback")

@@ -535,21 +535,27 @@ function rememberPushedNotification(item) {
 function rememberNotificationFromUrl() {
   const params = new URLSearchParams(window.location.search);
   if (!params.has("notification_id")) return;
-  rememberPushedNotification({
+  const item = {
     id: params.get("notification_id"),
     kind: params.get("notification_kind") || "reminder",
     source: params.get("notification_source") || "",
     title: params.get("notification_title") || "H.I.R.A",
     body: params.get("notification_body") || "",
+  };
+  rememberPushedNotification({
+    ...item,
   });
+  const action = params.get("notification_action") || "";
   params.delete("notification_id");
   params.delete("notification_kind");
   params.delete("notification_source");
   params.delete("notification_title");
   params.delete("notification_body");
+  params.delete("notification_action");
   const query = params.toString();
   const nextUrl = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
   window.history.replaceState({}, "", nextUrl);
+  if (action) performNotificationAction(action, item);
 }
 
 async function markNotificationsSeen(ids) {
@@ -601,6 +607,50 @@ async function sendInsightFeedback(target, rating, kind = "notification") {
     setStatus(rating === "useful" ? "Noted. More like this." : "Noted. I will quieten signals like that.", "ok");
   } catch (error) {
     setStatus(`Could not save feedback: ${error.message}`, "warn");
+  }
+}
+
+async function performNotificationAction(action, item = {}) {
+  const notification = {
+    id: String(item?.id || ""),
+    kind: String(item?.kind || "reminder"),
+    title: String(item?.title || "H.I.R.A"),
+    body: String(item?.body || ""),
+    source: String(item?.source || ""),
+  };
+  if (!notification.id || !action) return;
+  rememberPushedNotification(notification);
+  try {
+    const data = await api("/api/notifications/action", {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({
+        id: notification.id,
+        action,
+        snooze_minutes: action === "snooze" ? 30 : 0,
+      }),
+    });
+    if (["done", "snooze", "not_useful", "not_now"].includes(action)) {
+      state.dismissedNotificationIds.push(notification.id);
+      state.dismissedNotificationIds = [...new Set(state.dismissedNotificationIds)].slice(-80);
+      saveDismissedNotifications();
+      state.notifications = state.notifications.filter((existing) => String(existing.id) !== notification.id);
+    }
+    if (["useful", "not_useful", "not_now"].includes(action)) {
+      state.feedback[notification.id] = action;
+      localStorage.setItem("hira_pwa_feedback", JSON.stringify(state.feedback));
+    }
+    renderNotifications();
+    const labels = {
+      done: data.completed === false ? "Noted, but I could not find the linked item." : "Marked done.",
+      snooze: "Snoozed for 30 minutes.",
+      useful: "Noted. More like this.",
+      not_useful: "Noted. I will quieten signals like that.",
+      not_now: "Noted. I will quieten signals like that.",
+    };
+    setStatus(labels[action] || "Notification action saved.", data.completed === false ? "warn" : "ok");
+  } catch (error) {
+    setStatus(`Notification action failed: ${error.message}`, "warn");
   }
 }
 
@@ -687,6 +737,13 @@ function renderHealth(data) {
   const outcomeRows = Object.entries(data.outcome_actions || {})
     .map(([key, value]) => `${key} ${value}`)
     .join(" · ");
+  const recovery = data.push_recovery || {};
+  const recoveryText = [
+    recovery.last_attempt_at ? `last attempt ${recovery.last_attempt_source || "push"} ${recovery.last_attempt_sent || 0}/${recovery.last_attempted || 0}` : "",
+    recovery.last_success_at ? `last success ${recovery.last_success_source || "push"} ${recovery.last_success_at}` : "",
+    recovery.recent_failure_count ? `${recovery.recent_failure_count} recent misses` : "",
+    recovery.issue ? `issue: ${recovery.issue}` : "",
+  ].filter(Boolean).join(" · ");
   el.hidden = false;
   el.innerHTML = `
     <div class="status-row"><span>Push keys</span><strong>${data.push_public_key && data.push_private_key ? "Ready" : "Missing"}</strong></div>
@@ -694,6 +751,8 @@ function renderHealth(data) {
     <div class="status-row"><span>This device</span><strong>${data.current_client_subscribed ? "Connected" : "Not connected"}</strong></div>
     <div class="status-row"><span>Stale subs</span><strong>${data.stale_subscription_count || 0}</strong></div>
     <div class="status-row"><span>Queued</span><strong>${data.queued_notification_count || 0}</strong></div>
+    <div class="status-row"><span>Recovery</span><strong>${recovery.status || "unknown"}</strong></div>
+    <p class="subtle">${markdownish(recoveryText || "No recovery data yet.")}</p>
     <p class="subtle">${markdownish(deliveryRows || "No recent push delivery attempts logged.")}</p>
     <p class="subtle">${markdownish(outcomeRows || "No notification feedback captured yet.")}</p>
     <p class="subtle">${markdownish(prayerRows || "Prayer status unavailable.")}</p>
@@ -2028,8 +2087,13 @@ if ("serviceWorker" in navigator) {
     })
     .catch(updateNotificationControls);
   navigator.serviceWorker.addEventListener("message", (event) => {
-    if (event.data?.type !== "hira-notification") return;
-    rememberPushedNotification(event.data.item || {});
+    if (event.data?.type === "hira-notification") {
+      rememberPushedNotification(event.data.item || {});
+      return;
+    }
+    if (event.data?.type === "hira-notification-action") {
+      performNotificationAction(event.data.action, event.data.item || {});
+    }
   });
 }
 

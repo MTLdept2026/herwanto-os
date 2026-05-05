@@ -390,6 +390,90 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertTrue(sent)
         set_config.assert_called_once()
 
+    def test_evening_briefing_waits_for_confirmed_phone_push(self):
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot, "_acquire_job_lock", return_value=True),
+            patch.object(bot.gs, "get_config", return_value=""),
+            patch.object(bot, "build_evening_briefing", return_value="Evening digest body"),
+            patch.object(bot, "_queue_app_notification", return_value={
+                "id": "1",
+                "kind": "briefing",
+                "title": "Evening roundup",
+                "body": "Evening digest body",
+                "_push_sent": 0,
+            }),
+            patch.object(bot.gs, "set_config") as set_config,
+        ):
+            sent = asyncio.run(bot.send_evening_briefing_once())
+
+        self.assertFalse(sent)
+        set_config.assert_not_called()
+
+    def test_evening_briefing_marks_done_after_phone_push(self):
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot, "_acquire_job_lock", return_value=True),
+            patch.object(bot.gs, "get_config", return_value=""),
+            patch.object(bot, "build_evening_briefing", return_value="Evening digest body"),
+            patch.object(bot, "_queue_app_notification", return_value={
+                "id": "1",
+                "kind": "briefing",
+                "title": "Evening roundup",
+                "body": "Evening digest body",
+                "_push_sent": 1,
+            }),
+            patch.object(bot.gs, "set_config") as set_config,
+        ):
+            sent = asyncio.run(bot.send_evening_briefing_once())
+
+        self.assertTrue(sent)
+        set_config.assert_called_once()
+
+    def test_evening_briefing_retries_stale_sent_flag_without_push_log(self):
+        today_key = bot.datetime.now(bot.SGT).strftime("%Y-%m-%d")
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot, "_acquire_job_lock", return_value=True),
+            patch.object(bot.gs, "get_config", return_value=today_key),
+            patch.object(bot.gs, "get_web_push_delivery_log", return_value=[{
+                "created": bot.datetime.now(bot.SGT).isoformat(),
+                "source": f"evening_briefing:{today_key}",
+                "sent": 0,
+            }]),
+            patch.object(bot, "build_evening_briefing", return_value="Evening digest body"),
+            patch.object(bot, "_queue_app_notification", return_value={
+                "id": "1",
+                "kind": "briefing",
+                "title": "Evening roundup",
+                "body": "Evening digest body",
+                "_push_sent": 1,
+            }),
+            patch.object(bot.gs, "set_config") as set_config,
+        ):
+            sent = asyncio.run(bot.send_evening_briefing_once())
+
+        self.assertTrue(sent)
+        set_config.assert_called_once()
+
+    def test_evening_briefing_skips_when_today_push_was_confirmed(self):
+        today_key = bot.datetime.now(bot.SGT).strftime("%Y-%m-%d")
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot, "_acquire_job_lock", return_value=True),
+            patch.object(bot.gs, "get_config", return_value=today_key),
+            patch.object(bot.gs, "get_web_push_delivery_log", return_value=[{
+                "created": bot.datetime.now(bot.SGT).isoformat(),
+                "source": f"evening_briefing:{today_key}",
+                "sent": 1,
+            }]),
+            patch.object(bot, "build_evening_briefing") as build_evening,
+        ):
+            sent = asyncio.run(bot.send_evening_briefing_once())
+
+        self.assertTrue(sent)
+        build_evening.assert_not_called()
+
     def test_proactive_v2_queue_prefers_higher_score_ready_items(self):
         now = bot.datetime.now(bot.SGT)
         with patch("bot.google_ok", return_value=False), \
@@ -405,6 +489,233 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(queue[0]["title"], "Beta")
         self.assertFalse(queue[0]["suppressed"])
         self.assertTrue(any(item["title"] == "Alpha" and item["suppressed"] for item in queue))
+
+    def test_calendar_reminder_candidate_for_upcoming_trigger_event(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 5, 14, 30))
+        event = {
+            "id": "evt-duty",
+            "summary": "CCA duty briefing",
+            "location": "Hall",
+            "description": "",
+            "start": {"dateTime": "2026-05-05T15:00:00+08:00"},
+            "end": {"dateTime": "2026-05-05T16:00:00+08:00"},
+            "_calendar_id": "primary",
+        }
+
+        with (
+            patch.object(bot, "_notification_feedback_bias", return_value=0),
+            patch.object(bot, "_should_suppress_notification", return_value=False),
+            patch.object(bot, "_action_reminder_was_delivered", return_value=False),
+        ):
+            candidate = bot._calendar_event_reminder_candidate(event, now=now)
+
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate["family"], "calendar_reminder")
+        self.assertEqual(candidate["kind"], "reminder")
+        self.assertIn("CCA duty briefing", candidate["body"])
+        self.assertIn("calendar_reminder:2026-05-05:evt-duty", candidate["source"])
+
+    def test_calendar_reminder_skips_unmatched_or_already_delivered_events(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 5, 14, 30))
+        focus_event = {
+            "id": "evt-focus",
+            "summary": "Focus time",
+            "start": {"dateTime": "2026-05-05T15:00:00+08:00"},
+            "end": {"dateTime": "2026-05-05T16:00:00+08:00"},
+        }
+        duty_event = {
+            "id": "evt-duty",
+            "summary": "Exam duty",
+            "start": {"dateTime": "2026-05-05T15:00:00+08:00"},
+            "end": {"dateTime": "2026-05-05T16:00:00+08:00"},
+        }
+
+        with (
+            patch.object(bot, "_notification_feedback_bias", return_value=0),
+            patch.object(bot, "_should_suppress_notification", return_value=False),
+            patch.object(bot, "_action_reminder_was_delivered", return_value=False),
+        ):
+            self.assertIsNone(bot._calendar_event_reminder_candidate(focus_event, now=now))
+
+        with (
+            patch.object(bot, "_notification_feedback_bias", return_value=0),
+            patch.object(bot, "_should_suppress_notification", return_value=False),
+            patch.object(bot, "_action_reminder_was_delivered", return_value=True),
+        ):
+            self.assertIsNone(bot._calendar_event_reminder_candidate(duty_event, now=now))
+
+    def test_calendar_travel_candidate_pushes_when_leave_window_is_due(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 5, 14, 5))
+        event = {
+            "id": "evt-hdb",
+            "summary": "HDB appointment",
+            "location": "HDB Hub Toa Payoh",
+            "description": "",
+            "start": {"dateTime": "2026-05-05T15:00:00+08:00"},
+            "end": {"dateTime": "2026-05-05T16:00:00+08:00"},
+            "_calendar_id": "primary",
+        }
+
+        with (
+            patch.dict(os.environ, {"HIRA_DEFAULT_TRAVEL_MINUTES": "45", "HIRA_TRAVEL_BUFFER_MINUTES": "10"}),
+            patch.object(bot, "_notification_feedback_bias", return_value=0),
+            patch.object(bot, "_should_suppress_notification", return_value=False),
+            patch.object(bot, "_action_reminder_was_delivered", return_value=False),
+        ):
+            candidate = bot._calendar_event_travel_candidate(event, now=now)
+
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate["title"], "Time to leave")
+        self.assertIn("Rough estimated travel is about 45 min", candidate["body"])
+        self.assertIn("Leave now", candidate["body"])
+        self.assertEqual(candidate["source"], "calendar_travel:2026-05-05:evt-hdb")
+        self.assertEqual(candidate["confidence"], "must_remind")
+
+    def test_calendar_travel_candidate_uses_place_override(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 5, 13, 55))
+        event = {
+            "id": "evt-hdb",
+            "summary": "HDB appointment",
+            "location": "HDB Hub Toa Payoh",
+            "description": "",
+            "start": {"dateTime": "2026-05-05T15:00:00+08:00"},
+            "end": {"dateTime": "2026-05-05T16:00:00+08:00"},
+        }
+
+        with (
+            patch.dict(os.environ, {"HIRA_TRAVEL_TIME_OVERRIDES": "HDB Hub=55", "HIRA_TRAVEL_BUFFER_MINUTES": "10"}),
+            patch.object(bot, "_notification_feedback_bias", return_value=0),
+            patch.object(bot, "_should_suppress_notification", return_value=False),
+            patch.object(bot, "_action_reminder_was_delivered", return_value=False),
+        ):
+            candidate = bot._calendar_event_travel_candidate(event, now=now)
+
+        self.assertIsNotNone(candidate)
+        self.assertIn("Rough estimated travel is about 55 min", candidate["body"])
+
+    def test_calendar_travel_candidate_skips_internal_locations(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 5, 14, 5))
+        event = {
+            "id": "evt-hall",
+            "summary": "CCA briefing",
+            "location": "Hall",
+            "description": "",
+            "start": {"dateTime": "2026-05-05T15:00:00+08:00"},
+            "end": {"dateTime": "2026-05-05T16:00:00+08:00"},
+        }
+
+        self.assertIsNone(bot._calendar_event_travel_candidate(event, now=now))
+
+    def test_calendar_reminder_scan_fetches_travel_horizon(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 5, 13, 35))
+        event = {
+            "id": "evt-hdb",
+            "summary": "HDB appointment",
+            "location": "HDB Hub Toa Payoh",
+            "start": {"dateTime": "2026-05-05T15:00:00+08:00"},
+            "end": {"dateTime": "2026-05-05T16:00:00+08:00"},
+        }
+
+        with (
+            patch.dict(os.environ, {
+                "HIRA_DEFAULT_TRAVEL_MINUTES": "75",
+                "HIRA_TRAVEL_BUFFER_MINUTES": "10",
+                "HIRA_CALENDAR_REMINDER_LOOKAHEAD_MINUTES": "10",
+            }),
+            patch.object(bot.gs, "get_events_between", return_value=[event]) as get_events,
+            patch.object(bot, "_notification_feedback_bias", return_value=0),
+            patch.object(bot, "_should_suppress_notification", return_value=False),
+            patch.object(bot, "_action_reminder_was_delivered", return_value=False),
+        ):
+            candidates = bot._calendar_reminder_candidates(now=now)
+
+        self.assertTrue(any(item["source"] == "calendar_travel:2026-05-05:evt-hdb" for item in candidates))
+        fetch_end = get_events.call_args.args[1]
+        self.assertGreaterEqual(fetch_end, now + bot.timedelta(minutes=85))
+
+    def test_daily_task_candidate_uses_reminder_push_family(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 5, 9, 0))
+        task = {
+            "id": "31",
+            "description": "Submit Sec 2 marks",
+            "due": "2026-05-05",
+            "category": "Teaching",
+            "priority": "high",
+            "effort": "medium",
+            "next_action": "Upload marks before lunch.",
+        }
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot, "_calendar_reminder_candidates", return_value=[]),
+            patch.object(bot, "build_task_structured", return_value={"items": [task]}),
+            patch.object(bot, "_notification_feedback_bias", return_value=0),
+            patch.object(bot, "_should_suppress_notification", return_value=False),
+            patch.object(bot, "_action_reminder_was_delivered", return_value=False),
+        ):
+            queue = bot.build_proactive_v2_queue(now=now, days=2, families={"task"})
+
+        self.assertEqual(queue[0]["family"], "task")
+        self.assertEqual(queue[0]["kind"], "reminder")
+        self.assertEqual(queue[0]["source"], "task_reminder:2026-05-05:31")
+
+    def test_dispatch_marks_action_reminder_after_confirmed_push(self):
+        candidate = {
+            "family": "calendar_reminder",
+            "source": "calendar_reminder:2026-05-05:evt-duty",
+            "kind": "reminder",
+            "title": "Calendar reminder",
+            "body": "CCA duty briefing starts in 30 min.",
+            "suppressed": False,
+            "metadata": {},
+        }
+
+        with (
+            patch.object(bot, "_queue_app_notification", return_value={"id": "1", "_push_sent": 1}),
+            patch.object(bot, "_mark_action_reminder_delivered") as mark_delivered,
+        ):
+            sent = asyncio.run(bot._dispatch_proactive_candidates(None, [candidate], limit=1))
+
+        self.assertEqual(sent, 1)
+        mark_delivered.assert_called_once()
+
+    def test_dispatch_skips_digest_only_reminder_confidence(self):
+        candidate = {
+            "family": "task",
+            "source": "task_reminder:2026-05-05:31",
+            "kind": "reminder",
+            "title": "Low signal task",
+            "body": "Could be handled in digest.",
+            "suppressed": False,
+            "confidence": "digest_only",
+            "metadata": {},
+        }
+
+        with patch.object(bot, "_queue_app_notification") as queue:
+            sent = asyncio.run(bot._dispatch_proactive_candidates(None, [candidate], limit=1))
+
+        self.assertEqual(sent, 0)
+        queue.assert_not_called()
+
+    def test_push_recovery_summary_surfaces_last_success_and_issue(self):
+        log = [
+            {"created": "2026-05-05T08:00:00+08:00", "source": "morning", "attempted": 1, "sent": 1},
+            {
+                "created": "2026-05-05T09:00:00+08:00",
+                "source": "task",
+                "attempted": 1,
+                "sent": 0,
+                "last_error": "401: Unauthorized registration",
+            },
+        ]
+
+        with patch.dict(os.environ, {"HIRA_WEB_PUSH_PRIVATE_KEY": "test-key"}):
+            summary = web_app._push_recovery_summary(log, queued=[{"id": "1"}], subscriptions=[{"client_id": "phone"}])
+
+        self.assertEqual(summary["status"], "delivery_missed")
+        self.assertEqual(summary["last_success_source"], "morning")
+        self.assertIn("Unauthorized", summary["issue"])
+        self.assertEqual(summary["queued_count"], 1)
 
     def test_proactive_v2_snapshot_reports_suppressed_and_top_items(self):
         now = bot.datetime.now(bot.SGT)
@@ -1655,6 +1966,101 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(archived, 1)
         self.assertEqual([item["id"] for item in visible], ["2"])
+
+    def test_notification_action_snooze_creates_nudge_and_archives(self):
+        item = {
+            "id": "9",
+            "kind": "reminder",
+            "title": "Task",
+            "body": "Submit marks",
+            "source": "task_reminder:2026-05-05:31",
+        }
+        req = web_app.NotificationActionRequest(id="9", action="snooze", snooze_minutes=30)
+
+        with (
+            patch.object(web_app, "_require_token"),
+            patch.object(bot.gs, "get_app_notification", return_value=item),
+            patch.object(bot.gs, "add_nudge", return_value={"id": "44"}) as add_nudge,
+            patch.object(bot, "_record_notification_outcome") as record,
+            patch.object(bot.gs, "archive_app_notifications") as archive,
+        ):
+            result = web_app.notifications_action(req, x_hira_token="token", x_hira_client="phone")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["action"], "snooze")
+        add_nudge.assert_called_once()
+        archive.assert_called_once_with(["9"])
+        self.assertEqual(record.call_args.args[0], "snoozed")
+
+    def test_notification_action_done_completes_linked_task(self):
+        item = {
+            "id": "9",
+            "kind": "reminder",
+            "title": "Task",
+            "body": "Submit marks",
+            "source": "task_reminder:2026-05-05:31",
+        }
+        req = web_app.NotificationActionRequest(id="9", action="done")
+
+        with (
+            patch.object(web_app, "_require_token"),
+            patch.object(bot.gs, "get_app_notification", return_value=item),
+            patch.object(bot, "complete_reminder_by_id", return_value=(True, None)) as complete,
+            patch.object(bot, "_record_notification_outcome") as record,
+            patch.object(bot.gs, "archive_app_notifications") as archive,
+        ):
+            result = web_app.notifications_action(req, x_hira_token="token", x_hira_client="phone")
+
+        self.assertTrue(result["completed"])
+        complete.assert_called_once_with("31")
+        archive.assert_called_once_with(["9"])
+        self.assertEqual(record.call_args.args[0], "done")
+
+    def test_notification_action_done_completes_linked_checkin(self):
+        item = {
+            "id": "9",
+            "kind": "reminder",
+            "title": "Check-in",
+            "body": "Done?",
+            "source": "checkin:7",
+        }
+        req = web_app.NotificationActionRequest(id="9", action="done")
+
+        with (
+            patch.object(web_app, "_require_token"),
+            patch.object(bot.gs, "get_app_notification", return_value=item),
+            patch.object(bot.gs, "complete_checkin_today", return_value=True) as complete,
+            patch.object(bot, "_record_notification_outcome"),
+            patch.object(bot.gs, "archive_app_notifications"),
+        ):
+            result = web_app.notifications_action(req, x_hira_token="token", x_hira_client="phone")
+
+        self.assertTrue(result["completed"])
+        complete.assert_called_once_with("7")
+
+    def test_notification_action_not_useful_records_feedback_and_archives(self):
+        item = {
+            "id": "9",
+            "kind": "update",
+            "title": "Digest",
+            "body": "News",
+            "source": "digest:abc",
+        }
+        req = web_app.NotificationActionRequest(id="9", action="not_useful")
+
+        with (
+            patch.object(web_app, "_require_token"),
+            patch.object(bot.gs, "get_app_notification", return_value=item),
+            patch.object(bot.gs, "add_insight_feedback") as feedback,
+            patch.object(bot, "_record_notification_outcome") as record,
+            patch.object(bot.gs, "archive_app_notifications") as archive,
+        ):
+            result = web_app.notifications_action(req, x_hira_token="token", x_hira_client="phone")
+
+        self.assertEqual(result["rating"], "not_useful")
+        feedback.assert_called_once_with("notification", "9", "not_useful")
+        archive.assert_called_once_with(["9"])
+        self.assertEqual(record.call_args.args[0], "not_useful")
 
     def test_pdf_excerpt_prioritises_herwanto_timetable_pages(self):
         pages = [

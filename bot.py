@@ -64,6 +64,11 @@ try:
 except ValueError:
     logger.warning("Invalid HIRA_MORNING_BRIEFING_CATCHUP_MINUTES; using 90 minutes")
     MORNING_BRIEFING_CATCHUP_MINUTES = 90
+try:
+    EVENING_BRIEFING_CATCHUP_MINUTES = max(1, int(os.environ.get("HIRA_EVENING_BRIEFING_CATCHUP_MINUTES", "90") or 90))
+except ValueError:
+    logger.warning("Invalid HIRA_EVENING_BRIEFING_CATCHUP_MINUTES; using 90 minutes")
+    EVENING_BRIEFING_CATCHUP_MINUTES = 90
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 if not ANTHROPIC_API_KEY:
@@ -215,6 +220,7 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
 
 JOB_INTERVALS = {
     "proactive_nudges": _env_int("HIRA_PROACTIVE_NUDGE_INTERVAL", 60, 30),
+    "calendar_reminders": _env_int("HIRA_CALENDAR_REMINDER_INTERVAL", 300, 60),
     "proactive_intelligence": _env_int("HIRA_PROACTIVE_INTELLIGENCE_INTERVAL", 21600, 1800),
     "daily_checkins": _env_int("HIRA_DAILY_CHECKIN_INTERVAL", 300, 60),
     "followups": _env_int("HIRA_FOLLOWUP_INTERVAL", 3600, 300),
@@ -2262,6 +2268,112 @@ def _mark_proactive_seen(insight_id: str, now: datetime | None = None):
         logger.warning(f"Could not persist proactive intelligence seen state: {exc}")
 
 
+ACTION_REMINDER_SENT_KEY = "daily_action_reminder_sent"
+DEFAULT_CALENDAR_REMINDER_TERMS = (
+    "appointment",
+    "briefing",
+    "call",
+    "cca",
+    "deadline",
+    "duty",
+    "exam",
+    "interview",
+    "invigilation",
+    "match",
+    "meeting",
+    "oral",
+    "presentation",
+    "prepare",
+    "relief",
+    "reporting",
+    "submission",
+    "submit",
+    "training",
+    "workshop",
+)
+DEFAULT_TRAVEL_LOCATION_TERMS = (
+    "airport",
+    "ave",
+    "avenue",
+    "building",
+    "centre",
+    "center",
+    "clinic",
+    "drive",
+    "hospital",
+    "hub",
+    "jalan",
+    "mall",
+    "masjid",
+    "mosque",
+    "mrt",
+    "office",
+    "park",
+    "place",
+    "plaza",
+    "road",
+    "station",
+    "street",
+    "tower",
+)
+INTERNAL_LOCATION_TERMS = (
+    "classroom",
+    "general office",
+    "hall",
+    "homeroom",
+    "library",
+    "lt",
+    "meeting room",
+    "staff room",
+)
+CALENDAR_REMINDER_SKIP_TERMS = (
+    "birthday",
+    "blocked",
+    "focus time",
+    "holiday",
+    "leave",
+    "ooo",
+    "out of office",
+)
+
+
+def _action_reminder_sent_key(now: datetime | None = None) -> str:
+    current = now or datetime.now(SGT)
+    return f"{ACTION_REMINDER_SENT_KEY}:{current.strftime('%Y-%m')}"
+
+
+def _get_action_reminder_sent(now: datetime | None = None) -> dict:
+    try:
+        raw = gs.get_config(_action_reminder_sent_key(now)) or "{}"
+        data = json.loads(raw)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _action_reminder_was_delivered(source: str, now: datetime | None = None) -> bool:
+    clean_source = str(source or "").strip()
+    if not clean_source:
+        return False
+    seen = _get_action_reminder_sent(now)
+    if clean_source in seen:
+        return True
+    return _web_push_delivered_for_source(clean_source, now=now)
+
+
+def _mark_action_reminder_delivered(source: str, now: datetime | None = None):
+    clean_source = str(source or "").strip()
+    if not clean_source:
+        return
+    current = now or datetime.now(SGT)
+    seen = _get_action_reminder_sent(current)
+    seen[clean_source] = current.isoformat()
+    try:
+        gs.set_config(_action_reminder_sent_key(current), json.dumps(seen, ensure_ascii=False))
+    except Exception as exc:
+        logger.warning(f"Could not persist action reminder delivered state: {exc}")
+
+
 def _task_due_days(task: dict, today: date) -> int:
     try:
         return (date.fromisoformat(task.get("due", "")) - today).days
@@ -2413,6 +2525,267 @@ def _task_candidate_score(task: dict, today: date) -> int:
     return min(100, score)
 
 
+def _calendar_reminder_terms() -> list[str]:
+    raw = os.environ.get("HIRA_CALENDAR_REMINDER_KEYWORDS", "").strip()
+    if raw:
+        terms = [item.strip().lower() for item in raw.split(",") if item.strip()]
+        if terms:
+            return terms
+    return list(DEFAULT_CALENDAR_REMINDER_TERMS)
+
+
+def _event_start_datetime(event: dict) -> datetime | None:
+    raw_start = event.get("start", {}).get("dateTime", "")
+    if not raw_start:
+        return None
+    try:
+        start_dt = datetime.fromisoformat(raw_start)
+        if start_dt.tzinfo is None:
+            return SGT.localize(start_dt)
+        return start_dt.astimezone(SGT)
+    except Exception:
+        return None
+
+
+def _calendar_event_reminder_source(event: dict, start_dt: datetime) -> str:
+    event_id = str(event.get("id", "")).strip()
+    if not event_id:
+        seed = f"{event.get('summary', '')}:{start_dt.isoformat()}:{event.get('_calendar_id', '')}"
+        event_id = re.sub(r"[^a-zA-Z0-9_-]+", "-", seed).strip("-")[:80]
+    return f"calendar_reminder:{start_dt.strftime('%Y-%m-%d')}:{event_id}"
+
+
+def _calendar_event_travel_source(event: dict, start_dt: datetime) -> str:
+    return _calendar_event_reminder_source(event, start_dt).replace("calendar_reminder:", "calendar_travel:", 1)
+
+
+def _calendar_event_requires_reminder(event: dict) -> bool:
+    text = _event_text(event).lower()
+    if not text.strip():
+        return False
+    if any(term in text for term in CALENDAR_REMINDER_SKIP_TERMS):
+        return False
+    return any(term in text for term in _calendar_reminder_terms())
+
+
+def _travel_override_minutes(location: str) -> int | None:
+    raw = os.environ.get("HIRA_TRAVEL_TIME_OVERRIDES", "").strip()
+    if not raw:
+        return None
+    clean_location = str(location or "").lower()
+    for part in raw.split(","):
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        key = key.strip().lower()
+        if not key or key not in clean_location:
+            continue
+        try:
+            return max(1, int(value.strip()))
+        except ValueError:
+            continue
+    return None
+
+
+def _explicit_travel_minutes(event: dict) -> int | None:
+    text = _event_text(event).lower()
+    patterns = (
+        r"\btravel\s*(?:time)?\s*[:=]?\s*(\d{1,3})\s*(?:m|min|mins|minutes)\b",
+        r"\bcommute\s*[:=]?\s*(\d{1,3})\s*(?:m|min|mins|minutes)\b",
+        r"\bleave\s*(?:by)?\s*(\d{1,3})\s*(?:m|min|mins|minutes)\s*(?:early|before)?\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return max(1, int(match.group(1)))
+    return None
+
+
+def _event_needs_travel(event: dict) -> bool:
+    location = str(event.get("location", "") or "").strip().lower()
+    if not location:
+        return False
+    if any(term in location for term in INTERNAL_LOCATION_TERMS) and len(location.split()) <= 4:
+        return False
+    if re.search(r"\b\d{5,6}\b", location):
+        return True
+    if any(term in location for term in DEFAULT_TRAVEL_LOCATION_TERMS):
+        return True
+    return len(location.split()) >= 3
+
+
+def _estimated_travel_minutes(event: dict) -> int | None:
+    minutes, _source = _estimated_travel_minutes_with_source(event)
+    return minutes
+
+
+def _estimated_travel_minutes_with_source(event: dict) -> tuple[int | None, str]:
+    location = str(event.get("location", "") or "").strip()
+    if not location:
+        return None, "none"
+    explicit = _explicit_travel_minutes(event)
+    if explicit:
+        return explicit, "explicit"
+    override = _travel_override_minutes(location)
+    if override:
+        return override, "override"
+    if not _event_needs_travel(event):
+        return None, "none"
+    default = _env_int("HIRA_DEFAULT_TRAVEL_MINUTES", 45, 5)
+    return min(_env_int("HIRA_CALENDAR_TRAVEL_MAX_MINUTES", 120, 10), default), "default"
+
+
+def _calendar_event_travel_candidate(event: dict, now: datetime | None = None) -> dict | None:
+    current = now or datetime.now(SGT)
+    start_dt = _event_start_datetime(event)
+    if not start_dt or start_dt.date() != current.date():
+        return None
+    travel_minutes, travel_source = _estimated_travel_minutes_with_source(event)
+    if not travel_minutes:
+        return None
+    buffer_minutes = _env_int("HIRA_TRAVEL_BUFFER_MINUTES", 10, 0)
+    leave_dt = start_dt - timedelta(minutes=travel_minutes + buffer_minutes)
+    minutes_until_leave = int((leave_dt - current).total_seconds() // 60)
+    lookahead = _env_int("HIRA_CALENDAR_REMINDER_LOOKAHEAD_MINUTES", 90, 5)
+    catchup = _env_int("HIRA_CALENDAR_REMINDER_CATCHUP_MINUTES", 10, 0)
+    if minutes_until_leave < -catchup or minutes_until_leave > lookahead:
+        return None
+    source = _calendar_event_travel_source(event, start_dt)
+    if _action_reminder_was_delivered(source, now=current):
+        return None
+    summary = str(event.get("summary", "") or "Appointment").strip()
+    location = str(event.get("location", "") or "").strip()
+    leave_text = "now" if minutes_until_leave <= 0 else f"in {minutes_until_leave} min"
+    body = (
+        f"Get moving for {summary} at {location}. "
+        f"Rough estimated travel is about {travel_minutes} min plus {buffer_minutes} min buffer. "
+        f"Leave {leave_text} for the {start_dt.strftime('%H:%M')} start."
+    )
+    return _make_proactive_candidate(
+        "calendar_reminder",
+        source,
+        "reminder",
+        "Time to leave",
+        body,
+        99 if minutes_until_leave <= 0 else 92,
+        priority="high",
+        why="A calendar appointment has an off-site location and the leave-by window is due.",
+        action_hint="Head out or check your route before leaving.",
+        event_date=start_dt.isoformat(),
+        metadata={
+            "event_id": str(event.get("id", "")),
+            "calendar_id": str(event.get("_calendar_id", "")),
+            "start": start_dt.isoformat(),
+            "leave_by": leave_dt.isoformat(),
+            "travel_minutes": str(travel_minutes),
+            "buffer_minutes": str(buffer_minutes),
+            "travel_source": travel_source,
+            "rough_travel_estimate": "true",
+        },
+        confidence="must_remind",
+    )
+
+
+def _calendar_event_reminder_candidate(event: dict, now: datetime | None = None) -> dict | None:
+    current = now or datetime.now(SGT)
+    start_dt = _event_start_datetime(event)
+    if not start_dt or start_dt.date() != current.date():
+        return None
+    minutes_until = int((start_dt - current).total_seconds() // 60)
+    lookahead = _env_int("HIRA_CALENDAR_REMINDER_LOOKAHEAD_MINUTES", 90, 5)
+    catchup = _env_int("HIRA_CALENDAR_REMINDER_CATCHUP_MINUTES", 10, 0)
+    if minutes_until < -catchup or minutes_until > lookahead:
+        return None
+    if not _calendar_event_requires_reminder(event):
+        return None
+    source = _calendar_event_reminder_source(event, start_dt)
+    if _action_reminder_was_delivered(source, now=current):
+        return None
+    summary = str(event.get("summary", "") or "Calendar event").strip()
+    location = str(event.get("location", "") or "").strip()
+    when = start_dt.strftime("%H:%M")
+    timing = "now" if minutes_until <= 0 else f"in {minutes_until} min"
+    loc_text = f" at {location}" if location else ""
+    body = f"{summary} starts {timing} ({when}){loc_text}."
+    priority = "high" if minutes_until <= 30 else "medium"
+    score = 96 if minutes_until <= 10 else 88 if minutes_until <= 30 else 78
+    return _make_proactive_candidate(
+        "calendar_reminder",
+        source,
+        "reminder",
+        "Calendar reminder",
+        body,
+        score,
+        priority=priority,
+        why="A reminder-worthy calendar item is coming up today.",
+        action_hint="Check location, materials, and travel buffer.",
+        event_date=start_dt.isoformat(),
+        metadata={
+            "event_id": str(event.get("id", "")),
+            "calendar_id": str(event.get("_calendar_id", "")),
+            "start": start_dt.isoformat(),
+        },
+    )
+
+
+def _calendar_reminder_candidates(now: datetime | None = None) -> list[dict]:
+    current = now or datetime.now(SGT)
+    lookahead = _env_int("HIRA_CALENDAR_REMINDER_LOOKAHEAD_MINUTES", 90, 5)
+    start = current - timedelta(minutes=_env_int("HIRA_CALENDAR_REMINDER_CATCHUP_MINUTES", 10, 0))
+    travel_horizon = (
+        _env_int("HIRA_CALENDAR_TRAVEL_MAX_MINUTES", 120, 10)
+        + _env_int("HIRA_TRAVEL_BUFFER_MINUTES", 10, 0)
+    )
+    end = current + timedelta(minutes=lookahead + travel_horizon)
+    try:
+        events = gs.get_events_between(start, end)
+    except Exception as exc:
+        logger.warning(f"Calendar reminder scan failed: {exc}")
+        return []
+    candidates = []
+    for event in events:
+        travel_candidate = _calendar_event_travel_candidate(event, now=current)
+        if travel_candidate:
+            candidates.append(travel_candidate)
+        candidate = _calendar_event_reminder_candidate(event, now=current)
+        if candidate:
+            candidates.append(candidate)
+    return candidates
+
+
+def _reminder_confidence_level(
+    family: str,
+    kind: str,
+    score: int,
+    priority: str = "medium",
+    metadata: dict | None = None,
+) -> str:
+    if str(kind or "").strip() != "reminder":
+        return "probably_remind" if int(score or 0) >= 70 else "digest_only"
+    family_clean = str(family or "").strip()
+    priority_clean = str(priority or "").strip().lower()
+    score_int = int(score or 0)
+    metadata = metadata or {}
+    if family_clean in {"nudge", "prayer", "followup"}:
+        return "must_remind"
+    if family_clean == "calendar_reminder":
+        if metadata.get("travel_source") or metadata.get("leave_by"):
+            return "must_remind"
+        return "must_remind" if score_int >= 90 or priority_clean == "high" else "probably_remind"
+    if family_clean == "task":
+        due = str(metadata.get("due", "") or "").strip()
+        if score_int >= 82 or priority_clean == "high":
+            return "must_remind"
+        if due:
+            return "probably_remind"
+        return "digest_only"
+    if score_int < 50:
+        return "ignore"
+    if score_int < 65:
+        return "digest_only"
+    return "must_remind" if score_int >= 88 or priority_clean == "high" else "probably_remind"
+
+
 def _make_proactive_candidate(
     family: str,
     source: str,
@@ -2425,11 +2798,19 @@ def _make_proactive_candidate(
     action_hint: str = "",
     event_date: str = "",
     metadata: dict | None = None,
+    confidence: str = "",
 ) -> dict:
     source_clean = str(source or "").strip()
     feedback_bias = _notification_feedback_bias(source_clean, kind)
     final_score = max(0, min(100, int(score or 0) + feedback_bias))
     suppressed = _should_suppress_notification(source_clean, kind)
+    confidence_clean = str(confidence or "").strip() or _reminder_confidence_level(
+        family,
+        kind,
+        final_score,
+        priority=priority,
+        metadata=metadata or {},
+    )
     return {
         "id": source_clean or f"{family}:{title}",
         "family": str(family or "").strip() or "general",
@@ -2445,6 +2826,7 @@ def _make_proactive_candidate(
         "action_hint": str(action_hint or "").strip(),
         "event_date": str(event_date or "").strip(),
         "suppressed": bool(suppressed),
+        "confidence": confidence_clean,
         "metadata": dict(metadata or {}),
     }
 
@@ -2491,6 +2873,12 @@ def build_proactive_v2_queue(now: datetime | None = None, days: int = 7, familie
                     ))
         except Exception as exc:
             logger.warning(f"Proactive v2 nudge scan failed: {exc}")
+
+        try:
+            if allow("calendar_reminder"):
+                candidates.extend(_calendar_reminder_candidates(now=current))
+        except Exception as exc:
+            logger.warning(f"Proactive v2 calendar reminder scan failed: {exc}")
 
         try:
             if allow("checkin"):
@@ -2664,11 +3052,14 @@ def build_proactive_v2_queue(now: datetime | None = None, days: int = 7, familie
                 if score < 58:
                     continue
                 due = task.get("due", "")
+                source = f"task_reminder:{today.isoformat()}:{task.get('id', '')}"
+                if _action_reminder_was_delivered(source, now=current):
+                    continue
                 why = "Task is overdue." if task.get("overdue") else f"Task due by {due or 'soon'}."
                 candidates.append(_make_proactive_candidate(
                     "task",
-                    f"task:{task.get('id', '')}",
-                    "update",
+                    source,
+                    "reminder",
                     task.get("description", "Task"),
                     task.get("next_action", "") or f"{due} {task.get('category', '')}".strip(),
                     score,
@@ -2733,6 +3124,9 @@ async def _dispatch_proactive_candidates(context, candidates: list[dict], limit:
         kind = str(candidate.get("kind", "update")).strip() or "update"
         source = str(candidate.get("source", "")).strip()
         family = str(candidate.get("family", "")).strip()
+        confidence = str(candidate.get("confidence", "probably_remind")).strip() or "probably_remind"
+        if kind == "reminder" and confidence in {"ignore", "digest_only"}:
+            continue
         if family == "checkin":
             telegram_text = f"*{title}*\n\n{body}\n\nReply `yes`, `done`, or `alhamdulillah` once it is done and I’ll stop asking for today."
         elif family == "followup":
@@ -2757,6 +3151,8 @@ async def _dispatch_proactive_candidates(context, candidates: list[dict], limit:
             gs.mark_followup_prompted(candidate.get("metadata", {}).get("followup_id", ""), datetime.now(SGT).strftime("%Y-%m-%d"))
         elif family == "intelligence":
             _mark_proactive_seen(candidate.get("metadata", {}).get("insight_id", ""), datetime.now(SGT))
+        elif family in {"calendar_reminder", "task"} and int(queued.get("_push_sent", 0) or 0) > 0:
+            _mark_action_reminder_delivered(source, datetime.now(SGT))
         sent_count += 1
     return sent_count
 
@@ -6977,6 +7373,29 @@ def _should_suppress_notification(source: str, kind: str, now: datetime | None =
     return False
 
 
+def _web_push_delivered_for_source(source: str, now: datetime | None = None) -> bool:
+    clean_source = str(source or "").strip()
+    if not clean_source:
+        return False
+    today_key = (now or datetime.now(SGT)).astimezone(SGT).strftime("%Y-%m-%d")
+    try:
+        delivery_log = gs.get_web_push_delivery_log()
+    except Exception:
+        return False
+    for item in reversed(delivery_log):
+        if str(item.get("source", "")).strip() != clean_source:
+            continue
+        try:
+            created = datetime.fromisoformat(str(item.get("created", ""))).astimezone(SGT)
+        except Exception:
+            continue
+        if created.strftime("%Y-%m-%d") != today_key:
+            continue
+        if int(item.get("sent", 0) or 0) > 0:
+            return True
+    return False
+
+
 def _get_news_digest_history() -> list[dict]:
     try:
         raw = gs.get_config(NEWS_DIGEST_HISTORY_KEY) or "[]"
@@ -7073,13 +7492,20 @@ async def send_evening_briefing_once(context=None, force: bool = False, source: 
         logger.warning("Evening briefing skipped: Google services are not connected")
         return False
     today_key = datetime.now(SGT).strftime("%Y-%m-%d")
+    source_key = f"{source}:{today_key}"
     try:
-        if not force and gs.get_config(EVENING_BRIEFING_SENT_KEY) == today_key:
+        if not force and gs.get_config(EVENING_BRIEFING_SENT_KEY) == today_key and _web_push_delivered_for_source(source_key):
             return True
         text = build_evening_briefing()
         if context is not None:
             await _send_telegram_notification(context, text)
-        _queue_app_notification("briefing", "Evening roundup", text, source=f"{source}:{today_key}")
+        item = _queue_app_notification("briefing", "Evening roundup", text, source=source_key)
+        if not item:
+            logger.warning("Evening briefing queued no app notification; will retry during catch-up window")
+            return False
+        if int(item.get("_push_sent", 0) or 0) <= 0:
+            logger.warning("Evening briefing push had no confirmed phone deliveries; will retry during catch-up window")
+            return False
         gs.set_config(EVENING_BRIEFING_SENT_KEY, today_key)
         return True
     except Exception as e:
@@ -7129,7 +7555,7 @@ async def friday_checkin_job(context):
         logger.error(f"Friday check-in error: {e}")
 
 async def evening_briefing_job(context):
-    await send_evening_briefing_once(context, source="evening_briefing")
+    return await send_evening_briefing_once(context, source="evening_briefing")
 
 async def weekly_planning_job(context):
     if not google_ok():
@@ -7159,6 +7585,25 @@ async def proactive_nudges_job(context):
         logger.error(f"Proactive nudge error: {e}")
     finally:
         _finish_background_job("proactive_nudges")
+
+
+async def calendar_reminders_job(context):
+    if not google_ok():
+        return
+    if not _acquire_job_lock("calendar_reminders", max(60, JOB_INTERVALS["calendar_reminders"] - 5)):
+        return
+    try:
+        _log_memory("before calendar_reminders")
+        now = datetime.now(SGT)
+        await _dispatch_proactive_candidates(
+            context,
+            build_proactive_v2_queue(now=now, days=2, families={"calendar_reminder", "task"}),
+            limit=4,
+        )
+    except Exception as e:
+        logger.error(f"Calendar reminder error: {e}")
+    finally:
+        _finish_background_job("calendar_reminders")
 
 
 async def proactive_intelligence_job(context):
@@ -7380,7 +7825,14 @@ async def run_pwa_notification_worker():
             grace_minutes=MORNING_BRIEFING_CATCHUP_MINUTES,
             retry_until_success=True,
         )),
-        asyncio.create_task(_pwa_worker_daily_loop("evening_briefing", evening_hour, evening_minute, evening_briefing_job)),
+        asyncio.create_task(_pwa_worker_daily_loop(
+            "evening_briefing",
+            evening_hour,
+            evening_minute,
+            evening_briefing_job,
+            grace_minutes=EVENING_BRIEFING_CATCHUP_MINUTES,
+            retry_until_success=True,
+        )),
         asyncio.create_task(_pwa_worker_daily_loop("weekly_planning", 19, 30, weekly_planning_job, days=(6,))),
         asyncio.create_task(_pwa_worker_daily_loop("friday_khutbah", 10, 30, friday_khutbah_job, days=(4,))),
         asyncio.create_task(_pwa_worker_daily_loop("friday_checkin", 17, 0, friday_checkin_job, days=(4,))),
@@ -7390,6 +7842,12 @@ async def run_pwa_notification_worker():
             JOB_INTERVALS["proactive_nudges"],
             10,
             proactive_nudges_job,
+        )),
+        asyncio.create_task(_pwa_worker_repeating_loop(
+            "calendar_reminders",
+            JOB_INTERVALS["calendar_reminders"],
+            12,
+            calendar_reminders_job,
         )),
         asyncio.create_task(_pwa_worker_repeating_loop(
             "proactive_intelligence",
@@ -7516,6 +7974,13 @@ def main():
         interval=JOB_INTERVALS["proactive_nudges"],
         first=10,
         name="proactive_nudges",
+        job_kwargs={"coalesce": True, "max_instances": 1},
+    )
+    jq.run_repeating(
+        calendar_reminders_job,
+        interval=JOB_INTERVALS["calendar_reminders"],
+        first=12,
+        name="calendar_reminders",
         job_kwargs={"coalesce": True, "max_instances": 1},
     )
     jq.run_repeating(

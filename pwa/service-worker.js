@@ -1,8 +1,8 @@
-const CACHE_NAME = "hira-os-v60";
+const CACHE_NAME = "hira-os-v61";
 const ASSETS = [
   "/",
   "/styles.css?v=20260505-1",
-  "/app.js?v=20260505-4",
+  "/app.js?v=20260505-5",
   "/static/icon.svg",
   "/manifest.webmanifest"
 ];
@@ -48,6 +48,18 @@ self.addEventListener("push", (event) => {
     tag: payload.data?.id ? `hira-${payload.data.id}` : "hira",
     data,
   };
+  const kind = String(data.kind || "");
+  if (kind === "reminder") {
+    options.actions = [
+      { action: "done", title: "Done" },
+      { action: "snooze", title: "Snooze 30m" },
+    ];
+  } else {
+    options.actions = [
+      { action: "useful", title: "Useful" },
+      { action: "not_useful", title: "Not useful" },
+    ];
+  }
   event.waitUntil(
     Promise.all([
       self.registration.showNotification(title, options),
@@ -62,18 +74,22 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   const data = event.notification.data || {};
+  const action = event.action || "";
   const params = new URLSearchParams();
   if (data.id) params.set("notification_id", data.id);
   if (data.kind) params.set("notification_kind", data.kind);
   if (data.source) params.set("notification_source", data.source);
   if (data.title) params.set("notification_title", data.title);
   if (data.body) params.set("notification_body", data.body);
+  if (action) params.set("notification_action", action);
   const targetUrl = params.toString() ? `/?${params.toString()}` : "/";
   event.notification.close();
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
       for (const client of clients) {
-        client.postMessage({ type: "hira-notification", item: data });
+        client.postMessage(action
+          ? { type: "hira-notification-action", action, item: data }
+          : { type: "hira-notification", item: data });
         if ("focus" in client) return client.focus();
       }
       if (self.clients.openWindow) return self.clients.openWindow(targetUrl);
