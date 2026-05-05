@@ -1,23 +1,23 @@
 {
-  "updated": "2026-05-03",
+  "updated": "2026-05-05",
   "name": "H.I.R.A Growth Log",
   "subtitle": "How Herwanto Interface for Responsive Assistance grew from an installable assistant into a more reliable personal operating system.",
   "summary": {
     "start": "2026-04-28",
-    "current": "2026-05-03",
-    "commitsTracked": 99,
-    "majorPhases": 17,
-    "currentStage": "Proactive intelligence v2"
+    "current": "2026-05-05",
+    "commitsTracked": 163,
+    "majorPhases": 18,
+    "currentStage": "Push reliability and action loop"
   },
   "metrics": [
     {
       "label": "Days of build acceleration",
-      "value": "5",
-      "note": "From first installable PWA commit to governed, self-improving core."
+      "value": "7",
+      "note": "From first installable PWA commit to governed, self-improving proactive core."
     },
     {
       "label": "Tracked upgrade commits",
-      "value": "99",
+      "value": "163",
       "note": "Grouped from git history through the growth-log minisite."
     },
     {
@@ -34,8 +34,8 @@
   "capabilityRings": [
     {
       "name": "Interface",
-      "score": 92,
-      "description": "Installable PWA, mobile cockpit, chat, files, dashboard, notifications, health surfaces."
+      "score": 94,
+      "description": "Installable PWA, mobile cockpit, chat, files, dashboard, action-enabled push notifications, recovery health, and notification controls."
     },
     {
       "name": "Security",
@@ -44,8 +44,8 @@
     },
     {
       "name": "Context",
-      "score": 92,
-      "description": "Timetable, Google Calendar, MTL classlists, checked availability slots, Drive references, file memory, topic profiles, conversation summaries, relevant-memory retrieval, and intent lensing."
+      "score": 93,
+      "description": "Timetable, Google Calendar, reminder-worthy events, rough travel buffers, MTL classlists, checked availability slots, Drive references, file memory, topic profiles, conversation summaries, relevant-memory retrieval, and intent lensing."
     },
     {
       "name": "Live Knowledge",
@@ -54,8 +54,8 @@
     },
     {
       "name": "Self-Improvement",
-      "score": 90,
-      "description": "Priority-weighted memory prompt, relevant recall, intent lens, proactive workload insights, implicit correction detection, weekly consolidation, and conversation summarisation."
+      "score": 91,
+      "description": "Priority-weighted memory prompt, relevant recall, intent lens, proactive workload insights, notification feedback learning, implicit correction detection, weekly consolidation, and conversation summarisation."
     }
   ],
   "chapters": [
@@ -314,6 +314,22 @@
         "Morning digest now gathers multiple live Google News candidates per topic, scores them for quality and personal relevance, keeps topic diversity, and adds a short Why it matters layer."
       ],
       "impact": "H.I.R.A is now less noisy, more selective, and more editorial. It can pull live inputs, rank what matters now, suppress stale or unwanted repeats, and present the best signals in a more curated daily flow."
+    },
+    {
+      "date": "2026-05-05",
+      "era": "Push Reliability",
+      "title": "Hira's notifications become recoverable and actionable",
+      "commit": "d5033e5",
+      "tag": "Push + Actions",
+      "summary": "H.I.R.A's push system was hardened so daily briefings, calendar/task reminders, and notification actions share a more reliable delivery and feedback loop.",
+      "details": [
+        "Evening roundup delivery now mirrors morning briefing behavior: it only marks the day complete after confirmed phone push and can retry during a catch-up window.",
+        "Calendar/task reminders now use the proactive queue, including rough time-to-leave pushes for off-site-looking events without requiring paid routing APIs.",
+        "Reminder confidence levels classify signals as must_remind, probably_remind, digest_only, or ignore before they are allowed to push.",
+        "Notification health now exposes recovery status: last attempt, last success, recent misses, queued count, and likely blocking issue.",
+        "Push notifications gained action buttons: reminders can be marked done or snoozed, while updates/digests can be rated useful or not useful."
+      ],
+      "impact": "H.I.R.A's notifications are now less fire-and-forget. They can retry, explain failures, learn from feedback, and accept lightweight user action straight from the push surface."
     }
   ],
   "currentCapabilities": [
@@ -325,6 +341,9 @@
     "Intent lens with relevant-memory retrieval before answers, including quick PWA replies.",
     "Proactive intelligence scanner for workload pinch points, marking pressure, follow-ups, quiet windows, and upcoming packed days.",
     "Unified Proactive Intelligence v2 queue that ranks nudges, check-ins, follow-ups, prayers, tasks, digest picks, and internal intelligence with suppression and feedback learning.",
+    "Recoverable push notification system with delivery logs, recovery status, confirmed-push completion checks, and catch-up retry behavior for daily briefings.",
+    "Action-enabled push notifications: Done, Snooze 30m, Useful, and Not useful feed back into task/check-in/follow-up completion, proactive nudges, and notification outcome memory.",
+    "Calendar and task reminder push layer with reminder confidence levels and rough time-to-leave estimates from explicit notes, place overrides, or default travel buffers.",
     "Curated live digest that gathers multiple shortlist candidates, ranks them for quality and relevance, and adds a short why-it-matters layer.",
     "Checked availability planner for after-school training slots that combines timetable lessons, calendar conflicts, and CCA-day avoidance.",
     "Priority-weighted memory prompt: corrections and constraints always visible; low-signal buckets trimmed.",
