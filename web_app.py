@@ -317,7 +317,18 @@ def _notification_had_recent_push_attempt(delivery_log: list, item: dict, now: d
         created = _parse_sgt_datetime(log_item.get("created", ""))
         if not created:
             continue
-        return created >= threshold
+        if created < threshold:
+            return False
+        sent = int(log_item.get("sent", 0) or 0)
+        attempted = int(log_item.get("attempted", 0) or 0)
+        errors = log_item.get("errors", {}) if isinstance(log_item.get("errors"), dict) else {}
+        worker_config_failed = any(
+            key in errors
+            for key in ("missing_private_key", "pywebpush_import_failed")
+        )
+        if sent <= 0 and (attempted <= 0 or worker_config_failed):
+            return False
+        return True
     return False
 
 
@@ -330,6 +341,16 @@ def _mark_recovered_daily_briefing(source: str):
         bot.gs.set_config(key, match.group(2))
     except Exception as exc:
         bot.logger.warning(f"Could not mark recovered {match.group(1)} briefing delivered: {exc}")
+
+
+def _mark_recovered_nudge(source: str):
+    match = re.match(r"^nudge:(.+)$", str(source or "").strip())
+    if not match:
+        return
+    try:
+        bot.gs.mark_nudge_sent(match.group(1))
+    except Exception as exc:
+        bot.logger.warning(f"Could not mark recovered nudge delivered: {exc}")
 
 
 def recover_missed_push_notifications(limit: int | None = None) -> dict:
@@ -390,6 +411,7 @@ def recover_missed_push_notifications(limit: int | None = None) -> dict:
         if sent > 0:
             if source.startswith(("task_reminder:", "calendar_reminder:", "calendar_travel:")):
                 bot._mark_action_reminder_delivered(source, current)
+            _mark_recovered_nudge(source)
             _mark_recovered_daily_briefing(source)
 
     return {"attempted": attempted, "sent": sent_total, "skipped": skipped}
@@ -1096,6 +1118,36 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                 bot._log_memory("after pwa quick checkin")
 
         return StreamingResponse(quick_checkin_events(), media_type="text/event-stream")
+
+    delayed_digest_reply = ""
+    try:
+        scheduled_digest = bot.schedule_delayed_digest_push(message)
+        if scheduled_digest:
+            send_at = scheduled_digest["send_at"]
+            delayed_digest_reply = f"Scheduled. I’ll push the digest at {send_at.strftime('%H:%M')} SGT."
+    except Exception as exc:
+        bot.logger.warning(f"Delayed digest push scheduling failed: {exc}")
+
+    if delayed_digest_reply:
+        history.append({"role": "assistant", "content": delayed_digest_reply})
+        bot.save_history(history_key, history[-bot.MAX_TURNS:])
+
+        async def delayed_digest_events():
+            def sse(payload: dict) -> str:
+                return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+            try:
+                yield sse({"type": "route", "name": "quick"})
+                yield sse({"type": "tool", "name": "create_proactive_nudge"})
+                yield sse({"type": "text", "text": delayed_digest_reply})
+                yield sse({"type": "done", "text": delayed_digest_reply})
+                yield sse({"type": "saved"})
+            finally:
+                _CHAT_SEMAPHORE.release()
+                gc.collect()
+                bot._log_memory("after pwa delayed digest schedule")
+
+        return StreamingResponse(delayed_digest_events(), media_type="text/event-stream")
 
     async def events():
         reply_parts: list[str] = []

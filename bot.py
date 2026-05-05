@@ -747,6 +747,7 @@ Rules:
 - If you say you will check, pull, verify, look up, or get the actual result/details, you must call the relevant tool in that same turn before answering. Do not end with "give me a moment" as the final answer.
 - For data lookups, use the user's words as intent: "last 5 emails" means latest 5 Gmail messages; "what's on today" means schedule/context; "anything due" means reminders/tasks; "who do I owe replies/follow-ups to" means Gmail/follow-up/task context as relevant.
 - For timetable or lesson lookups, use get_timetable. TIMETABLE in timetable.py is the source of truth for lessons; Google Calendar is only for events/appointments.
+- If Stored memory says Herwanto's lessons/classes are covered by relief for a date, treat those timetable lessons as covered for workload and overlap warnings. Do not warn that a calendar item clashes with relieved lessons unless newer user/calendar information clearly contradicts the relief memory.
 - For availability planning ("best slots", "free slots", "when can I schedule", "after school", "not during CCA day"), call find_available_training_slots before suggesting times. Do not suggest a slot until timetable lessons and Google Calendar conflicts have been checked.
 - For MTL classlists, student names, scores, marks, WA/weighted assessment, FA/formative assessment, prelim, EOY, assessment columns, progress analysis, or who is in Herwanto's classes, call get_mtl_classlists or analyze_mtl_scores as appropriate. His classlist tabs in the 2026 MTL classlist sheets include CG HERWANTO or CG HERWANTO/CG KADIR.
 - Score-sheet layouts: Sec 1 uses WA1 (40) and WA1 %, plus PreWA2 (20), WA2, WA3, EOY. Sec 2 uses WA1, Pra/Prg-WA2 mock/pre-WA columns, then actual WA2, WA3, EOY; Pra/Prg-WA means pre-WA/mock tests, not the actual WA2 result. Sec 3 uses WA1 (20), WA1 %, then WA2, WA3, EOY. Sec 4 FA layout uses component columns and a total followed by %, e.g. FA1 15/30/45/% and FA2 10/25/35/%; compare the % columns for progress unless the user asks for raw marks.
@@ -771,7 +772,9 @@ Rules:
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
 - When the user mentions marking scripts, papers, compositions, kefahaman, karangan, worksheets, or a marking stack, use marking tools instead of ordinary reminders: add_marking_task for a new stack, update_marking_progress when he says how many scripts are marked, reset_marking_load when he asks to reset/clear the marking load or board, and get_marking_brief when he asks what marking is outstanding. Marking tasks are mission-critical and must persist even at 0 outstanding; only complete one when he explicitly says that marking stack is done, completed, can be closed, reset, or cleared.
-- When the user asks you to nudge, ping, check in, remind him at a specific time, or initiate a chat later — call create_proactive_nudge. Use this for time-specific heads-ups, not ordinary all-day deadlines.
+- PWA Web Push can deliver OS notifications to subscribed Android/browser devices through the service worker even when the app is closed. Scheduled nudges, reminders, digests, and briefings should use the app notification/Web Push path. Do not tell Herwanto the PWA must be open or Telegram must be active for OS push if the device is subscribed; if delivery fails, diagnose Web Push delivery/logging instead.
+- When the user asks you to nudge, ping, notify, push a notification, check in, remind him at a specific time, or initiate a chat later — call create_proactive_nudge. Use this for time-specific heads-ups, not ordinary all-day deadlines.
+- If the user asks for a digest/news/briefing to be pushed or notified later ("in 5 mins", "at 6:30", etc.), schedule a proactive nudge containing the digest/news content for that time. Do not return the digest immediately unless he also asks to see it now.
 - When the user asks for a recurring daily ping/check-in until he replies yes/done — call create_daily_checkin.
 - When the user asks for daily reminders/check-ins to adapt around his schedule, breaks, timetable, lessons, or calendar, call create_break_aware_daily_checkin. This is especially appropriate for selawat, salawat, selawat ke atas Nabi, istighfar, zikr/dhikr, and similar habits he wants during free pockets of the day.
 - Islamic practice is first-class context: use MUIS Singapore prayer times, Hijri context, fasting windows, and his timetable/calendar to help him protect prayer time. If a prayer enters during a lesson, advise praying as soon as the lesson ends.
@@ -1874,6 +1877,12 @@ def build_context_snapshot(days: int = 7) -> str:
     if wt_label:
         lines.append(f"\nToday's lessons ({_week_display(wt_label, today)}):")
         lines.append(tt.format_lessons(lessons).replace("*", ""))
+        relief_note = relief_memory_for_date(today)
+        if relief_note:
+            lines.append(
+                "Relief memory: Herwanto said today's lessons/classes are covered by relief. "
+                "Do not flag timetable-vs-calendar overlaps for those lessons unless newer information contradicts this."
+            )
 
     if not google_ok():
         lines.append("\nGoogle is not connected.")
@@ -2039,6 +2048,7 @@ def build_agenda_structured(days: int = 7) -> dict:
             "date": target.isoformat(),
             "label": target.strftime("%A, %-d %B"),
             "week": _agenda_week_display(target),
+            "relieved": bool(relief_memory_for_date(target)),
             "lessons": [
                 {
                     "time": f"{lesson['start']}-{lesson['end']}",
@@ -2177,7 +2187,7 @@ def _load_days_for_dates(dates: list, today) -> list:
         load_days.append(_daily_load_item(
             target,
             today,
-            len(lessons),
+            _effective_lesson_count(target, lessons),
             event_counts.get(key, 0),
             due_counts.get(key, 0),
             0,
@@ -2216,11 +2226,11 @@ def build_daily_load(days: int = 7) -> dict:
 
     load_days = []
     for index, day in enumerate(agenda.get("days", [])):
-        lesson_count = len(day.get("lessons", []))
         event_count = len(day.get("events", []))
         due_count = len(day.get("due", []))
         scripts_today = marking_scripts if index == 0 else 0
         date_obj = datetime.fromisoformat(day["date"]).date()
+        lesson_count = 0 if day.get("relieved") else len(day.get("lessons", []))
         load_days.append(_daily_load_item(date_obj, today, lesson_count, event_count, due_count, scripts_today))
 
     today_load = load_days[0] if load_days else {
@@ -3564,11 +3574,12 @@ def absorb_ownership_signal(text: str) -> bool:
 
 def absorb_taste_hint(text: str) -> bool:
     ownership_captured = absorb_ownership_signal(text)
+    relief_captured = absorb_relief_context(text)
     if not google_ok():
-        return ownership_captured
+        return ownership_captured or relief_captured
     clean = str(text or "").strip()
     if len(clean) < 12:
-        return ownership_captured
+        return ownership_captured or relief_captured
     lower = clean.lower()
     taste_markers = (
         "i like", "i prefer", "my taste", "my style", "i hate", "i dislike",
@@ -3576,7 +3587,7 @@ def absorb_taste_hint(text: str) -> bool:
         "too noisy", "too cluttered", "not my vibe", "my vibe",
     )
     if not any(marker in lower for marker in taste_markers):
-        return ownership_captured
+        return ownership_captured or relief_captured
     try:
         profile = gs.get_taste_profile()
         field = "quality_bar"
@@ -3594,7 +3605,128 @@ def absorb_taste_hint(text: str) -> bool:
         return True
     except Exception as exc:
         logger.warning(f"Taste hint capture failed: {exc}")
-        return ownership_captured
+        return ownership_captured or relief_captured
+
+
+RELIEF_MEMORY_PREFIX = "relief:"
+
+
+def _date_from_relative_text(text: str, now: datetime | None = None) -> date:
+    current = (now or datetime.now(SGT)).astimezone(SGT)
+    clean = str(text or "").lower()
+    if re.search(r"\btomorrow(?:'s)?\b", clean):
+        return current.date() + timedelta(days=1)
+    if re.search(r"\byesterday(?:'s)?\b", clean):
+        return current.date() - timedelta(days=1)
+    explicit = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", clean)
+    if explicit:
+        try:
+            return date.fromisoformat(explicit.group(1))
+        except Exception:
+            pass
+    return current.date()
+
+
+def absorb_relief_context(text: str, now: datetime | None = None) -> bool:
+    if not google_ok():
+        return False
+    clean = str(text or "").strip()
+    if len(clean) < 10:
+        return False
+    lower = clean.lower()
+    if not re.search(r"\b(relief|covered|cover(?:ed|ing)?|replacement teacher|take(?:n)? over)\b", lower):
+        return False
+    if not re.search(r"\b(lesson|lessons|class|classes|period|periods|teaching)\b", lower):
+        return False
+    if re.search(r"\b(no relief|not relieved|relief cancelled|coverage cancelled|not covered)\b", lower):
+        return False
+    target = _date_from_relative_text(clean, now=now)
+    marker = f"{RELIEF_MEMORY_PREFIX}{target.isoformat()}"
+    try:
+        memory = gs.get_memory()
+        existing = "\n".join(str(item) for item in memory.get("teaching", []) if item)
+        if marker in existing:
+            return True
+        gs.add_memory(
+            "teaching",
+            (
+                f"{marker}: Herwanto said his lessons/classes are covered by relief on {target.isoformat()}. "
+                "Treat timetable lessons on this date as relieved for workload and overlap warnings unless newer user/calendar information contradicts it. "
+                f"Original wording: {_clip_memory_text(clean, 180)}"
+            ),
+        )
+        return True
+    except Exception as exc:
+        logger.warning(f"Relief context capture failed: {exc}")
+        return False
+
+
+def relief_memory_for_date(target: date | datetime | str) -> str:
+    try:
+        if isinstance(target, datetime):
+            day = target.astimezone(SGT).date()
+        elif isinstance(target, date):
+            day = target
+        else:
+            day = date.fromisoformat(str(target)[:10])
+    except Exception:
+        return ""
+    marker = f"{RELIEF_MEMORY_PREFIX}{day.isoformat()}"
+    try:
+        memory = gs.get_memory() if google_ok() else {}
+    except Exception:
+        return ""
+    for item in memory.get("teaching", []) or []:
+        text = str(item or "").strip()
+        if marker in text:
+            return text
+    return ""
+
+
+def _effective_lesson_count(target: date, lessons: list) -> int:
+    return 0 if relief_memory_for_date(target) else len(lessons or [])
+
+
+def parse_delayed_digest_push_request(text: str, now: datetime | None = None) -> dict | None:
+    clean = " ".join(str(text or "").strip().split())
+    if not clean:
+        return None
+    lower = clean.lower()
+    wants_digest = re.search(r"\b(digest|briefing|headlines?|news)\b", lower)
+    wants_push = re.search(r"\b(push|notification|notifications|notify|nudge|ping)\b", lower)
+    if not (wants_digest and wants_push):
+        return None
+    current = (now or datetime.now(SGT)).astimezone(SGT)
+    delay = re.search(r"\bin\s+(\d{1,3})\s*(?:m|min|mins|minute|minutes)\b", lower)
+    if delay:
+        minutes = max(1, min(24 * 60, int(delay.group(1))))
+        return {"send_at": current + timedelta(minutes=minutes), "kind": "digest"}
+    at_time = re.search(r"\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", lower)
+    if at_time:
+        hour = int(at_time.group(1))
+        minute = int(at_time.group(2) or 0)
+        suffix = at_time.group(3)
+        if suffix == "pm" and hour < 12:
+            hour += 12
+        if suffix == "am" and hour == 12:
+            hour = 0
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            send_at = current.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if send_at <= current:
+                send_at += timedelta(days=1)
+            return {"send_at": send_at, "kind": "digest"}
+    return None
+
+
+def schedule_delayed_digest_push(text: str, now: datetime | None = None) -> dict | None:
+    request = parse_delayed_digest_push_request(text, now=now)
+    if not request or not google_ok():
+        return None
+    send_at = request["send_at"].astimezone(SGT)
+    digest = build_news_digest("", max_items=4)
+    message = f"Digest requested for {send_at.strftime('%H:%M')} SGT:\n\n{digest}".strip()
+    nudge = gs.add_nudge(message, send_at.isoformat())
+    return {"nudge": nudge, "send_at": send_at, "message": message}
 
 
 def _insight(key: str, title: str, body: str, score: int, reason: str, actions: list[str] | None = None) -> dict:
@@ -4726,6 +4858,12 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
         "done", "completed", "complete ", "mark as done", "mark done",
         "cancel ", "delete ", "remove ",
     ])
+    if (
+        "create_proactive_nudge" in available
+        and parse_delayed_digest_push_request(text)
+    ):
+        return "create_proactive_nudge"
+
     if (
         "get_gmail_brief" in available
         and gmail_intent
@@ -6209,7 +6347,7 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         add(CONTEXT_TOOL, TASK_BRIEF_TOOL, REMINDER_TOOL, COMPLETE_TASK_TOOL)
     if re.search(r"\b(marking|scripts?|papers?|compositions?|kefahaman|karangan|worksheets?|marked|unmarked)\b", text):
         add(ADD_MARKING_TOOL, UPDATE_MARKING_TOOL, RESET_MARKING_TOOL, MARKING_BRIEF_TOOL)
-    if re.search(r"\b(nudge|ping|check[- ]?in|check in|selawat|salawat|istighfar|zikir|zikr|dhikr)\b", text):
+    if re.search(r"\b(nudge|ping|notify|notification|notifications|push|check[- ]?in|check in|selawat|salawat|istighfar|zikir|zikr|dhikr)\b", text):
         add(NUDGE_TOOL, DAILY_CHECKIN_TOOL, BREAK_AWARE_CHECKIN_TOOL)
     if re.search(r"\b(follow[- ]?up|follow up|owe replies|chase)\b", text):
         add(FOLLOWUP_TOOL, COMPLETE_FOLLOWUP_TOOL, GMAIL_BRIEF_TOOL, TASK_BRIEF_TOOL)
@@ -6221,7 +6359,7 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         r"\b(football|f1|formula 1|liverpool|lfc|man utd|man united|manchester united|premier league|epl|grand prix|mercedes|ferrari|mclaren|red bull)\b",
         combined,
     )
-    if re.search(r"\b(news|latest|current|headline|headlines|search|web|football|f1|liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|apple|ai|singapore education|nothing os)\b", text) or sports_followup or correction_followup:
+    if re.search(r"\b(digest|briefing|news|latest|current|headline|headlines|search|web|football|f1|liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|apple|ai|singapore education|nothing os)\b", text) or sports_followup or correction_followup:
         add(NEWS_TOOL, SOURCE_NOTE_TOOL)
         if re.search(r"\b(liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|man utd|man united|manchester united)\b", combined):
             add(LIVERPOOL_BRIEF_TOOL)
@@ -6312,7 +6450,7 @@ async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
 
 def _looks_tool_heavy(text: str) -> bool:
     return bool(re.search(
-        r"\b(calendar|schedule|meeting|event|remind|nudge|task|due|marking|scripts?|"
+        r"\b(calendar|schedule|meeting|event|remind|nudge|notify|notification|notifications|push|task|due|marking|scripts?|"
         r"email|gmail|inbox|draft|reply|timetable|lesson|news|latest|search|remember|"
         r"classlist|class list|students?|my classes|mtl group|grouping|"
         r"prayer|prayers|pray|solat|salah|subuh|fajr|syuruk|zohor|zuhur|zuhr|dhuhr|asar|asr|maghrib|isyak|isha|muis|religion|religious|islam|islamic|halal|haram|fatwa|zakat|puasa|fasting|ramadan|qibla|wudhu|wudu|ablution|"

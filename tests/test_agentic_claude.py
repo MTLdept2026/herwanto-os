@@ -448,6 +448,64 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(result["attempted"], 0)
         send_push.assert_not_called()
 
+    def test_web_push_recovery_retries_recent_worker_config_failure(self):
+        now = bot.datetime.now(bot.SGT)
+        item = {
+            "id": "33",
+            "kind": "reminder",
+            "title": "HDP remarks due",
+            "body": "Complete on 7 May",
+            "source": "task_reminder:2026-05-06:33",
+            "created": now.isoformat(),
+            "archived": False,
+        }
+        log = [{
+            "created": now.isoformat(),
+            "source": item["source"],
+            "kind": "reminder",
+            "title": item["title"],
+            "attempted": 0,
+            "sent": 0,
+            "errors": {"missing_private_key": 1},
+        }]
+        with (
+            patch.object(web_app.bot.gs, "get_app_notifications", return_value=[item]),
+            patch.object(web_app.bot.gs, "get_web_push_delivery_log", return_value=log),
+            patch.object(web_app.bot.gs, "send_web_push_notification", return_value=1) as send_push,
+            patch.object(web_app.bot, "_should_send_phone_push", return_value=True),
+            patch.object(web_app.bot, "_mark_action_reminder_delivered"),
+            patch.object(web_app.bot, "_record_notification_outcome"),
+        ):
+            result = web_app.recover_missed_push_notifications(limit=1)
+
+        self.assertEqual(result["attempted"], 1)
+        self.assertEqual(result["sent"], 1)
+        send_push.assert_called_once()
+
+    def test_web_push_recovery_marks_recovered_nudge_sent(self):
+        now = bot.datetime.now(bot.SGT)
+        item = {
+            "id": "34",
+            "kind": "reminder",
+            "title": "H.I.R.A nudge",
+            "body": "Digest requested for 06:26 SGT",
+            "source": "nudge:9",
+            "created": now.isoformat(),
+            "archived": False,
+        }
+        with (
+            patch.object(web_app.bot.gs, "get_app_notifications", return_value=[item]),
+            patch.object(web_app.bot.gs, "get_web_push_delivery_log", return_value=[]),
+            patch.object(web_app.bot.gs, "send_web_push_notification", return_value=1),
+            patch.object(web_app.bot.gs, "mark_nudge_sent") as mark_nudge,
+            patch.object(web_app.bot, "_should_send_phone_push", return_value=True),
+            patch.object(web_app.bot, "_record_notification_outcome"),
+        ):
+            result = web_app.recover_missed_push_notifications(limit=1)
+
+        self.assertEqual(result["sent"], 1)
+        mark_nudge.assert_called_once_with("9")
+
     def test_notification_health_diagnostics_survive_subscription_lookup_failure(self):
         with (
             patch.object(web_app.bot.gs, "get_web_push_subscriptions", return_value=[{
@@ -465,6 +523,64 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertIsNone(diagnostics["current_subscription"])
         self.assertIn("sheets down", diagnostics["subscription_error"])
+
+    def test_delayed_digest_push_schedules_nudge_without_immediate_digest_route(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 6, 6, 21))
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot, "build_news_digest", return_value="Digest body") as digest,
+            patch.object(bot.gs, "add_nudge", return_value={"id": "9", "status": "pending"}) as add_nudge,
+        ):
+            scheduled = bot.schedule_delayed_digest_push("Digest. Push notifications in 5 mins", now=now)
+
+        self.assertIsNotNone(scheduled)
+        self.assertEqual(scheduled["send_at"].isoformat(), "2026-05-06T06:26:00+08:00")
+        self.assertIn("Digest body", scheduled["message"])
+        digest.assert_called_once()
+        add_nudge.assert_called_once()
+
+    def test_delayed_digest_push_exposes_nudge_tool_not_just_news(self):
+        tools = bot.pwa_tools_for_message("Digest. Push notifications in 5 mins")
+        names = {tool["name"] for tool in tools}
+
+        self.assertIn("create_proactive_nudge", names)
+        self.assertIn("get_latest_news", names)
+
+    def test_relief_context_becomes_teaching_memory(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 6, 6, 21))
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "get_memory", return_value={"teaching": []}),
+            patch.object(bot.gs, "add_memory") as add_memory,
+        ):
+            captured = bot.absorb_relief_context("I asked for relief for today's lessons.", now=now)
+
+        self.assertTrue(captured)
+        add_memory.assert_called_once()
+        category, text = add_memory.call_args.args
+        self.assertEqual(category, "teaching")
+        self.assertIn("relief:2026-05-06", text)
+
+    def test_daily_load_counts_relieved_lessons_as_zero(self):
+        today_key = bot.datetime.now(bot.SGT).date().isoformat()
+        agenda = {
+            "days": [{
+                "date": today_key,
+                "lessons": [{"subject": "ML"}, {"subject": "ML"}, {"subject": "ML"}, {"subject": "ML"}],
+                "events": [],
+                "due": [],
+                "relieved": True,
+            }]
+        }
+        with (
+            patch.object(bot, "build_agenda_structured", return_value=agenda),
+            patch.object(bot, "google_ok", return_value=False),
+            patch.object(bot, "_load_days_for_dates", return_value=[]),
+        ):
+            load = bot.build_daily_load()
+
+        self.assertEqual(load["today"]["lessons"], 0)
+        self.assertLess(load["today"]["score"], 12)
 
     def test_morning_briefing_waits_for_confirmed_phone_push(self):
         with (
