@@ -1,8 +1,9 @@
-const CACHE_NAME = "hira-os-v66";
+const CACHE_NAME = "hira-os-v67";
+const HIRA_APP_VERSION = "20260506-5";
 const ASSETS = [
   "/",
   "/styles.css?v=20260505-1",
-  "/app.js?v=20260506-4",
+  "/app.js?v=20260506-5",
   "/static/icon.svg",
   "/manifest.webmanifest"
 ];
@@ -16,6 +17,14 @@ self.addEventListener("install", (event) => {
 
 self.addEventListener("message", (event) => {
   if (event.data?.type === "SKIP_WAITING") self.skipWaiting();
+  if (event.data?.type === "GET_HIRA_VERSION") {
+    event.ports?.[0]?.postMessage({
+      type: "HIRA_VERSION",
+      appVersion: HIRA_APP_VERSION,
+      cacheName: CACHE_NAME,
+      assets: ASSETS,
+    });
+  }
   if (event.data?.type === "HIRA_CLIENT_MODE" && event.source?.id) {
     if (event.data.standalone) {
       standaloneClientIds.add(event.source.id);

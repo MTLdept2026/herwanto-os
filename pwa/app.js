@@ -20,6 +20,10 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
+const APP_VERSION = "20260506-5";
+const APP_SCRIPT = "app.js?v=20260506-5";
+const EXPECTED_SW_CACHE = "hira-os-v67";
+
 const state = {
   token: localStorage.getItem("hira_web_token") || "",
   theme: localStorage.getItem("hira_theme") || "light",
@@ -795,6 +799,93 @@ function renderHealth(data) {
     <p class="subtle">${markdownish(outcomeRows || "No notification feedback captured yet.")}</p>
     <p class="subtle">${markdownish(prayerRows || "Prayer status unavailable.")}</p>
   `;
+}
+
+function versionRow(label, value, tone = "") {
+  const cleanTone = tone ? ` class="${tone}"` : "";
+  return `<div class="status-row"><span>${label}</span><strong${cleanTone}>${markdownish(String(value || "--"))}</strong></div>`;
+}
+
+function appDisplayMode() {
+  if (isStandalonePwa()) return "Standalone";
+  return "Browser tab";
+}
+
+function serviceWorkerVersionRequest(worker, timeoutMs = 900) {
+  if (!worker) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    const timer = window.setTimeout(() => resolve(null), timeoutMs);
+    channel.port1.onmessage = (event) => {
+      window.clearTimeout(timer);
+      resolve(event.data || null);
+    };
+    try {
+      worker.postMessage({ type: "GET_HIRA_VERSION" }, [channel.port2]);
+    } catch (_) {
+      window.clearTimeout(timer);
+      resolve(null);
+    }
+  });
+}
+
+async function readAppVersionState() {
+  const stateInfo = {
+    appVersion: APP_VERSION,
+    appScript: APP_SCRIPT,
+    expectedCache: EXPECTED_SW_CACHE,
+    displayMode: appDisplayMode(),
+    controller: navigator.serviceWorker?.controller ? "Controlled" : "No controller",
+    updateState: "Unknown",
+    scope: "--",
+    swAppVersion: "--",
+    swCache: "--",
+    serverCommit: "--",
+    serverTime: "--",
+  };
+  if ("serviceWorker" in navigator) {
+    try {
+      const registration = await navigator.serviceWorker.ready;
+      stateInfo.scope = registration.scope || "--";
+      stateInfo.updateState = registration.waiting ? "Waiting" : registration.installing ? "Installing" : "Active";
+      const worker = registration.active || navigator.serviceWorker.controller;
+      const swInfo = await serviceWorkerVersionRequest(worker);
+      if (swInfo) {
+        stateInfo.swAppVersion = swInfo.appVersion || "--";
+        stateInfo.swCache = swInfo.cacheName || "--";
+      }
+    } catch (_) {
+      stateInfo.updateState = "Unavailable";
+    }
+  } else {
+    stateInfo.updateState = "No service worker";
+  }
+  try {
+    const server = await api("/api/app/version", { headers: headers(false) });
+    stateInfo.serverCommit = server.git_commit || "--";
+    stateInfo.serverTime = server.server_time || "--";
+  } catch (_) {
+    stateInfo.serverCommit = "Unavailable";
+  }
+  return stateInfo;
+}
+
+async function renderAppVersion() {
+  const el = $("#versionOutput");
+  if (!el) return;
+  el.innerHTML = versionRow("App", `${APP_VERSION} · ${APP_SCRIPT}`);
+  const info = await readAppVersionState();
+  const cacheOk = info.swCache === EXPECTED_SW_CACHE;
+  const appOk = info.swAppVersion === APP_VERSION;
+  const updateTone = cacheOk && appOk && info.controller === "Controlled" ? "status-ok" : "status-warn";
+  el.innerHTML = [
+    versionRow("App", `${info.appVersion} · ${info.appScript}`),
+    versionRow("Service worker", `${info.swAppVersion} · ${info.swCache}`, cacheOk && appOk ? "status-ok" : "status-warn"),
+    versionRow("Controller", `${info.controller} · ${info.updateState}`, updateTone),
+    versionRow("Mode", info.displayMode, info.displayMode === "Standalone" ? "status-ok" : "status-warn"),
+    versionRow("Server", info.serverCommit),
+    versionRow("Checked", info.serverTime || new Date().toLocaleTimeString("en-SG", { hour: "2-digit", minute: "2-digit", hour12: false })),
+  ].join("");
 }
 
 async function checkNotificationHealth() {
@@ -1596,9 +1687,11 @@ async function checkForAppUpdate({ silent = false } = {}) {
       return true;
     }
     if (!silent) setStatus("Dashboard refreshed. App shell is up to date.", "ok");
+    await renderAppVersion();
     return false;
   } catch (error) {
     if (!silent) setStatus(`App update check: ${error.message}`, "warn");
+    await renderAppVersion();
     return false;
   }
 }
@@ -1986,6 +2079,7 @@ $("#settingsBtn").addEventListener("click", () => {
   panel.toggleAttribute("hidden");
   $("#settingsBtn").classList.toggle("is-open", !panel.hidden);
   updateNotificationControls();
+  if (!panel.hidden) renderAppVersion();
 });
 $("#notificationsBtn").addEventListener("click", () => {
   const panel = $("#notificationsPanel");
@@ -2015,6 +2109,19 @@ $("#enableNotificationsBtn").addEventListener("click", enableNotifications);
 $("#settingsEnableNotificationsBtn").addEventListener("click", enableNotifications);
 $("#testNotificationsBtn").addEventListener("click", sendTestNotification);
 $("#checkHealthBtn").addEventListener("click", checkNotificationHealth);
+$("#checkAppUpdateBtn").addEventListener("click", async () => {
+  const button = $("#checkAppUpdateBtn");
+  const previousLabel = button.textContent;
+  button.disabled = true;
+  button.textContent = "Checking";
+  try {
+    await checkForAppUpdate({ silent: false });
+    await renderAppVersion();
+  } finally {
+    button.disabled = false;
+    button.textContent = previousLabel;
+  }
+});
 document.querySelectorAll("[data-theme-choice], .theme-btn").forEach((button) => {
   button.dataset.theme = button.dataset.themeChoice || button.id.replace("theme", "").replace("Btn", "").toLowerCase();
   button.addEventListener("click", () => {
@@ -2126,6 +2233,7 @@ if ("serviceWorker" in navigator) {
   let refreshingForServiceWorker = false;
   navigator.serviceWorker.addEventListener("controllerchange", () => {
     reportClientModeToServiceWorker();
+    renderAppVersion();
     if (refreshingForServiceWorker) return;
     refreshingForServiceWorker = true;
     window.location.reload();
@@ -2136,6 +2244,7 @@ if ("serviceWorker" in navigator) {
       registration.update();
       reportClientModeToServiceWorker();
       updateNotificationControls();
+      renderAppVersion();
     })
     .catch(updateNotificationControls);
   navigator.serviceWorker.addEventListener("message", (event) => {
@@ -2172,6 +2281,7 @@ mirrorStoredNotificationsToChat();
 renderNotifications();
 updateNotificationControls();
 updateComposerState();
+renderAppVersion();
 setView("home");
 updateLiveClock();
 setInterval(updateLiveClock, 1000);

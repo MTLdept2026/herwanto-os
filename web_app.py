@@ -7,6 +7,7 @@ import json
 import os
 import re
 import secrets
+import subprocess
 import tempfile
 import time
 import uuid
@@ -32,6 +33,9 @@ PWA_DIR = APP_DIR / "pwa"
 
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
+
+PWA_APP_VERSION = "20260506-5"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v67"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -655,6 +659,41 @@ def _service_status() -> dict:
         "calendar": bot.google_ok(),
         "work_drive": bot.google_ok(),
         "personal_gmail": bot.gs.gmail_ok("personal"),
+    }
+
+
+def _git_commit_sha() -> str:
+    for key in (
+        "RAILWAY_GIT_COMMIT_SHA",
+        "GIT_COMMIT_SHA",
+        "SOURCE_VERSION",
+        "HEROKU_SLUG_COMMIT",
+        "VERCEL_GIT_COMMIT_SHA",
+    ):
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value[:12]
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short=12", "HEAD"],
+            cwd=str(APP_DIR),
+            capture_output=True,
+            text=True,
+            timeout=1,
+            check=False,
+        )
+        return result.stdout.strip()[:12]
+    except Exception:
+        return ""
+
+
+@app.get("/api/app/version")
+def app_version():
+    return {
+        "app_version": PWA_APP_VERSION,
+        "service_worker_cache": PWA_SERVICE_WORKER_CACHE,
+        "git_commit": _git_commit_sha(),
+        "server_time": datetime.now(bot.SGT).isoformat(),
     }
 
 

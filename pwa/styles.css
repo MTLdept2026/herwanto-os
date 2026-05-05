@@ -343,12 +343,19 @@ h3 {
   animation: panel-slide 200ms ease both;
 }
 
-.health-output {
+.health-output,
+.version-output {
   display: grid;
   gap: 8px;
   padding: 10px;
   border: 1px solid var(--border-visible);
   background: var(--surface-muted);
+}
+
+.version-panel {
+  display: grid;
+  gap: 8px;
+  padding-top: 6px;
 }
 
 .notification-btn {

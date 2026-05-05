@@ -553,13 +553,26 @@ class AgenticClaudeTests(unittest.TestCase):
     def test_pwa_notification_click_prefers_standalone_client(self):
         service_worker = (REPO_ROOT / "pwa" / "service-worker.js").read_text()
         app_js = (REPO_ROOT / "pwa" / "app.js").read_text()
+        index_html = (REPO_ROOT / "pwa" / "index.html").read_text()
         manifest = json.loads((REPO_ROOT / "pwa" / "manifest.webmanifest").read_text())
 
         self.assertIn("standaloneClientIds", service_worker)
         self.assertIn("HIRA_CLIENT_MODE", service_worker)
         self.assertIn("standaloneClientIds.has(client.id)", service_worker)
         self.assertIn("reportClientModeToServiceWorker", app_js)
+        self.assertIn("GET_HIRA_VERSION", service_worker)
+        self.assertIn("renderAppVersion", app_js)
+        self.assertIn("versionOutput", index_html)
         self.assertEqual(manifest["id"], "/")
+
+    def test_app_version_endpoint_reports_commit_and_pwa_versions(self):
+        with patch.dict(os.environ, {"RAILWAY_GIT_COMMIT_SHA": "abcdef1234567890"}):
+            data = web_app.app_version()
+
+        self.assertEqual(data["app_version"], "20260506-5")
+        self.assertEqual(data["service_worker_cache"], "hira-os-v67")
+        self.assertEqual(data["git_commit"], "abcdef123456")
+        self.assertIn("server_time", data)
 
     def test_relief_context_becomes_teaching_memory(self):
         now = bot.SGT.localize(bot.datetime(2026, 5, 6, 6, 21))
