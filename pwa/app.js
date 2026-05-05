@@ -9,6 +9,7 @@ const state = {
   chatAttachments: [],
   chatHistory: JSON.parse(localStorage.getItem("hira_pwa_chat") || "[]"),
   notifications: JSON.parse(localStorage.getItem("hira_pwa_notifications") || "[]"),
+  dismissedNotificationIds: JSON.parse(localStorage.getItem("hira_pwa_dismissed_notification_ids") || "[]"),
   chatNotificationIds: JSON.parse(localStorage.getItem("hira_pwa_chat_notification_ids") || "[]"),
   feedback: JSON.parse(localStorage.getItem("hira_pwa_feedback") || "{}"),
   deviceLocation: JSON.parse(localStorage.getItem("hira_pwa_device_location") || "null"),
@@ -152,6 +153,15 @@ function plainNotificationText(text) {
 
 function saveNotifications() {
   localStorage.setItem("hira_pwa_notifications", JSON.stringify(state.notifications.slice(0, 30)));
+}
+
+function saveDismissedNotificationIds() {
+  state.dismissedNotificationIds = [...new Set(state.dismissedNotificationIds.map(String).filter(Boolean))].slice(-120);
+  localStorage.setItem("hira_pwa_dismissed_notification_ids", JSON.stringify(state.dismissedNotificationIds));
+}
+
+function isNotificationDismissed(id) {
+  return state.dismissedNotificationIds.map(String).includes(String(id || ""));
 }
 
 function hapticTap(duration = 8) {
@@ -484,6 +494,7 @@ function mirrorStoredNotificationsToChat() {
 }
 
 function rememberNotification(item) {
+  if (isNotificationDismissed(item?.id)) return false;
   const existingIndex = state.notifications.findIndex((existing) => String(existing.id) === String(item.id));
   if (existingIndex !== -1) {
     const existing = state.notifications[existingIndex];
@@ -558,7 +569,8 @@ async function markNotificationsSeen(ids) {
 async function dismissNotification(id) {
   const notificationId = String(id || "");
   if (!notificationId) return;
-  const previous = state.notifications;
+  state.dismissedNotificationIds.push(notificationId);
+  saveDismissedNotificationIds();
   state.notifications = state.notifications.filter((item) => String(item.id) !== notificationId);
   saveNotifications();
   renderNotifications();
@@ -570,10 +582,7 @@ async function dismissNotification(id) {
     });
     setStatus("Notification dismissed.", "ok");
   } catch (error) {
-    state.notifications = previous;
-    saveNotifications();
-    renderNotifications();
-    setStatus(`Could not dismiss notification: ${error.message}`, "warn");
+    setStatus(`Notification hidden here; server dismiss failed: ${error.message}`, "warn");
   }
 }
 
@@ -603,12 +612,23 @@ async function pollNotifications() {
     const items = data.notifications || [];
     if (!items.length) return;
     const fresh = [];
-    for (const item of items) {
+    const activeItems = items.filter((item) => !isNotificationDismissed(item.id));
+    const dismissedIds = items
+      .filter((item) => isNotificationDismissed(item.id))
+      .map((item) => item.id);
+    if (dismissedIds.length) {
+      api("/api/notifications/archive", {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({ ids: dismissedIds }),
+      }).catch(() => {});
+    }
+    for (const item of activeItems) {
       if (rememberNotification(item)) {
         fresh.push(item);
       }
     }
-    await markNotificationsSeen(items.map((item) => item.id));
+    await markNotificationsSeen(activeItems.map((item) => item.id));
     if (fresh.length) setStatus(`${fresh.length} app notification${fresh.length === 1 ? "" : "s"} received.`, "ok");
   } catch (error) {
     if (!/token/i.test(error.message)) setStatus(`Notifications: ${error.message}`, "warn");
