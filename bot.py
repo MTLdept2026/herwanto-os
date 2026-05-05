@@ -504,7 +504,7 @@ def retrieve_relevant_memory(text: str, limit: int = 6) -> list[dict]:
             ):
                 intent_bonus = 4
             if category in {"topic_profiles", "sports", "source_notes"} and re.search(
-                r"\b(latest|current|track|follow|interest|liverpool|lfc|f1|news|rumou?r)\b",
+                r"\b(latest|current|track|follow|interest|own|owner|bought|purchase|setup|tips|liverpool|lfc|f1|news|rumou?r)\b",
                 text or "",
                 re.I,
             ):
@@ -794,6 +794,7 @@ Rules:
 - Treat Self_Reflections memory as your own learning journal: use it to improve future behaviour, source discipline, and follow-through.
 - Treat Source_Notes as source-backed research memory. Use them as leads and context, but live-check anything marked live_check, rumour, temporary, or time-sensitive.
 - When the user says they have a new interest, are getting into a topic, want H.I.R.A to track/learn/follow something, or asks to build a beginner map for a new topic — call create_topic_profile. Store what to track, preferred angle, which facts should be live-checked, and stable background context. Do not store volatile standings/results/prices as permanent facts; mark those as live_facts.
+- When the user says he bought, ordered, owns, picked up, upgraded to, or is a new owner of an item — treat that as an ownership-aware interest. Create or update a topic profile with category="ownership", kind="ownership", a practical new-owner angle, setup tips, hidden features, maintenance, accessories, firmware/software updates, current issues, community tips, and a 2-4 week high-curiosity window that later tapers to major/useful updates only.
 - When the user gives a project progress update — call update_project_status.
 - When the user asks to follow up with someone later, call create_followup.
 - When the user asks to follow up based on an email, Gmail, inbox, or a recent message, call get_gmail_brief first and use the returned sender, subject, date, snippet/body excerpt to create the follow-up. Do not ask him to paste email details unless Gmail is not connected or the matching email cannot be found.
@@ -1133,6 +1134,8 @@ TOPIC_PROFILE_TOOL = {
         "properties": {
             "topic": {"type": "string", "description": "Topic name, e.g. MotoGP, Japanese city pop, espresso, mechanical keyboards."},
             "category": {"type": "string", "description": "Broad bucket such as sports, music, tech, culture, business, teaching, personal, or faith."},
+            "kind": {"type": "string", "description": "Optional profile type, e.g. ownership, hobby, sports, project, source_preference."},
+            "source_signal": {"type": "string", "description": "Optional reason this profile was created, e.g. bought, owns, getting_into, follow_this."},
             "why": {"type": "string", "description": "Why Herwanto cares or what drew him in, if known."},
             "track": {
                 "type": "array",
@@ -1155,6 +1158,7 @@ TOPIC_PROFILE_TOOL = {
                 "items": {"type": "string"},
                 "description": "Stable background to learn, e.g. rules, history, terminology, key people, beginner map."
             },
+            "interest_phase": {"type": "string", "description": "Optional lifecycle note, e.g. new-owner high curiosity for 2-4 weeks, then major updates only."},
             "update_cadence": {"type": "string", "description": "Optional cadence, e.g. race weekends, weekly, when I ask, major news only."}
         },
         "required": ["topic"]
@@ -2757,10 +2761,68 @@ async def _dispatch_proactive_candidates(context, candidates: list[dict], limit:
         sent_count += 1
     return sent_count
 
-def _news_topics():
+def _parse_profile_datetime(value: str) -> datetime | None:
+    clean = str(value or "").strip()
+    if not clean:
+        return None
+    try:
+        return datetime.fromisoformat(clean)
+    except Exception:
+        return None
+
+
+def _ownership_topic_profiles(now: datetime | None = None, max_age_days: int = 45) -> list[dict]:
+    if not google_ok():
+        return []
+    current = now or datetime.now(SGT)
+    try:
+        memory = gs.get_memory()
+    except Exception:
+        return []
+    profiles = []
+    for raw in memory.get("topic_profiles", []):
+        try:
+            profile = json.loads(raw)
+        except Exception:
+            continue
+        if not isinstance(profile, dict):
+            continue
+        marker = " ".join(
+            str(profile.get(key, "") or "").lower()
+            for key in ("category", "kind", "source_signal", "interest_phase")
+        )
+        if "ownership" not in marker and "bought" not in marker and "owns" not in marker:
+            continue
+        created = _parse_profile_datetime(profile.get("created", ""))
+        if created:
+            if created.tzinfo is None:
+                created = SGT.localize(created) if hasattr(SGT, "localize") else created.replace(tzinfo=SGT)
+            age_days = (current - created.astimezone(SGT)).days
+            if age_days > max(1, int(max_age_days or 45)):
+                continue
+        if str(profile.get("topic", "")).strip():
+            profiles.append(profile)
+    return profiles[-3:]
+
+
+def _ownership_news_topics(now: datetime | None = None) -> list[tuple[str, str]]:
+    topics = []
+    for profile in _ownership_topic_profiles(now=now):
+        topic = str(profile.get("topic", "")).strip()
+        if not topic:
+            continue
+        topics.append((
+            f"Owner: {topic}",
+            f"{topic} setup tips firmware update accessories owner guide issues hidden features",
+        ))
+    return topics
+
+
+def _news_topics(now: datetime | None = None):
     if google_ok():
         try:
-            return [(t["label"], t["query"]) for t in gs.get_news_topics()]
+            configured = [(t["label"], t["query"]) for t in gs.get_news_topics()]
+            return configured + _ownership_news_topics(now=now)
         except Exception:
             pass
     return [(label, query) for label, query in ss.DIGEST_TOPICS]
@@ -2776,6 +2838,8 @@ def _is_required_digest_label(label: str) -> bool:
 
 def _digest_label_lens(label: str) -> tuple[str, int]:
     clean = str(label or "").lower()
+    if clean.startswith("owner:"):
+        return ("new-owner relevance", 9)
     if any(term in clean for term in ("education", "moe", "sg education")):
         return ("school relevance", 10)
     if any(term in clean for term in ("ai", "developer", "app dev", "android", "ios", "macos", "design", "ui/ux", "nothing")):
@@ -2793,6 +2857,11 @@ def _curated_digest_score(label: str, item: dict, slot_index: int = 0) -> tuple[
     title_text = str(item.get("title", "")).lower()
     if any(term in title_text for term in ("today", "new", "launch", "update", "policy", "developer", "release", "security")):
         score += 4
+    if str(label or "").lower().startswith("owner:") and any(
+        term in title_text
+        for term in ("setup", "guide", "tips", "hidden", "firmware", "update", "accessory", "accessories", "issue", "review")
+    ):
+        score += 8
     score -= max(0, int(slot_index or 0)) * 2
     return min(100, score), lens
 
@@ -2803,7 +2872,7 @@ def build_curated_digest_entries(now: datetime | None = None, limit: int = 4, fe
     candidates = []
     seen_candidates = []
     used_keys = set()
-    topics = _news_topics()
+    topics = _news_topics(now=current)
     for label, query in topics:
         items = ss.google_news(query, max_items=max(2, int(fetch_limit or 4)))
         for index, item in enumerate(items):
@@ -2879,7 +2948,7 @@ def build_curated_digest_entries(now: datetime | None = None, limit: int = 4, fe
 
     if not chosen:
         fallback = ss.pick_fresh_morning_digest_entries(
-            topics=_news_topics(),
+            topics=_news_topics(now=current),
             seen_keys=seen,
             max_items_per_topic=1,
             fetch_limit=1,
@@ -2901,10 +2970,11 @@ def format_curated_digest(entries: list[dict]) -> str:
         item = entry.get("item") if isinstance(entry.get("item"), dict) else {}
         title = str(item.get("title", "")).strip()
         source = str(item.get("source", "")).strip()
+        published = str(item.get("published", "")).strip()
         why = str(entry.get("why", "")).strip()
         if not title:
             continue
-        meta = " · ".join(part for part in [label, source] if part)
+        meta = " · ".join(part for part in [label, source, published] if part)
         lines.append(f"- *{title}*{f' ({meta})' if meta else ''}")
         if why:
             lines.append(f"  Why it matters: {why}.")
@@ -3000,12 +3070,106 @@ def save_taste_profile(answers: dict) -> dict:
     return gs.set_taste_profile(next_profile)
 
 
-def absorb_taste_hint(text: str) -> bool:
+OWNERSHIP_REJECT_ITEMS = {
+    "item", "certain item", "something", "stuff", "things", "a thing", "a certain item",
+}
+
+
+def _clean_owned_item(value: str) -> str:
+    item = " ".join(str(value or "").strip().split())
+    item = item.strip(" \"'`*_")
+    item = re.split(r"\s+(?:and then|but|so|because|which|that|when|if)\b", item, maxsplit=1, flags=re.I)[0]
+    item = re.sub(r"\s+\b(?:today|yesterday|last night|last week|this week|over the weekend)\b.*$", "", item, flags=re.I)
+    item = re.sub(r"\s+\bfor\s+(?:my\s+)?(?:runs?|running|school|work|teaching|travel|gym|fitness|daily use|use)\b.*$", "", item, flags=re.I)
+    item = re.sub(r"^(?:(?:a|an|the|my|new)\s+)+", "", item, flags=re.I).strip()
+    item = item.strip(" .,!?:;\"'`*_")
+    if not item or item.lower() in OWNERSHIP_REJECT_ITEMS:
+        return ""
+    if len(item) < 2 or len(item) > 80:
+        return ""
+    if len(item.split()) > 10:
+        return ""
+    if re.search(r"\b(?:meeting|appointment|lesson|class|deadline|task|reminder|email)\b", item, re.I):
+        return ""
+    return item
+
+
+def extract_owned_item(text: str) -> str:
+    clean = " ".join(str(text or "").strip().split())
+    if len(clean) < 8:
+        return ""
+    patterns = [
+        r"\bi(?:'ve| have)?\s+(?:just\s+)?(?:bought|purchased|ordered|pre-ordered|preordered|picked up)\s+(?P<item>[^.!?\n]{2,90})",
+        r"\bi\s+(?:just\s+)?got\s+(?:myself\s+)?(?:a|an|the|my)\s+(?P<item>[^.!?\n]{2,90})",
+        r"\bi(?:'ve| have)\s+(?:just\s+)?upgraded\s+to\s+(?P<item>[^.!?\n]{2,90})",
+        r"\bi(?:'m| am)\s+(?:now\s+)?(?:a\s+)?new owner of\s+(?P<item>[^.!?\n]{2,90})",
+        r"\bi\s+(?:now\s+)?own\s+(?P<item>[^.!?\n]{2,90})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, clean, re.I)
+        if not match:
+            continue
+        item = _clean_owned_item(match.group("item"))
+        if item:
+            return item
+    return ""
+
+
+def ownership_topic_profile(item: str, source_text: str = "", now: datetime | None = None) -> dict:
+    current = now or datetime.now(SGT)
+    topic = _clean_owned_item(item)
+    if not topic:
+        raise ValueError("Ownership topic needs an item")
+    date_label = current.strftime("%Y-%m-%d")
+    return {
+        "topic": topic,
+        "category": "ownership",
+        "kind": "ownership",
+        "source_signal": "bought_or_owns",
+        "why": "Herwanto mentioned buying or owning this, so it should shape useful recommendations as a new-owner context.",
+        "track": [
+            "first-week setup and calibration tips",
+            "hidden features and practical workflows",
+            "maintenance, care, warranty, and common mistakes",
+            "worthwhile accessories and add-ons",
+            "firmware, app, software, recall, and compatibility updates",
+            "current owner issues, community tips, and genuinely interesting stories",
+        ],
+        "preferred_angle": "New-owner lens: practical setup first, then high-signal tips and interesting context. Avoid buyer's-remorse content unless there is a safety, recall, warranty, or serious quality issue.",
+        "live_facts": [
+            "firmware, app, software, recall, compatibility, price, accessory availability, and current owner reports",
+        ],
+        "stable_context": [
+            f"Ownership signal captured on {date_label} SGT.",
+            "Treat this as high-curiosity for 2-4 weeks, then taper to major or clearly useful updates only.",
+            f"Original mention: {_clip_memory_text(source_text, 180)}" if source_text else "",
+        ],
+        "interest_phase": "new-owner high curiosity for 2-4 weeks, then major/useful updates only",
+        "update_cadence": "During new-owner window include occasional useful finds; afterwards surface only major updates, fixes, accessories, or standout tips.",
+    }
+
+
+def absorb_ownership_signal(text: str) -> bool:
     if not google_ok():
         return False
+    item = extract_owned_item(text)
+    if not item:
+        return False
+    try:
+        gs.add_topic_profile(ownership_topic_profile(item, source_text=text))
+        return True
+    except Exception as exc:
+        logger.warning(f"Ownership signal capture failed: {exc}")
+        return False
+
+
+def absorb_taste_hint(text: str) -> bool:
+    ownership_captured = absorb_ownership_signal(text)
+    if not google_ok():
+        return ownership_captured
     clean = str(text or "").strip()
     if len(clean) < 12:
-        return False
+        return ownership_captured
     lower = clean.lower()
     taste_markers = (
         "i like", "i prefer", "my taste", "my style", "i hate", "i dislike",
@@ -3013,7 +3177,7 @@ def absorb_taste_hint(text: str) -> bool:
         "too noisy", "too cluttered", "not my vibe", "my vibe",
     )
     if not any(marker in lower for marker in taste_markers):
-        return False
+        return ownership_captured
     try:
         profile = gs.get_taste_profile()
         field = "quality_bar"
@@ -3025,13 +3189,13 @@ def absorb_taste_hint(text: str) -> bool:
         existing_text = ", ".join(existing) if isinstance(existing, list) else str(existing or "").strip()
         hint = clean[:240]
         if hint.lower() in existing_text.lower():
-            return False
+            return ownership_captured
         profile[field] = f"{existing_text}\n- {hint}".strip() if existing_text else f"- {hint}"
         gs.set_taste_profile(profile)
         return True
     except Exception as exc:
         logger.warning(f"Taste hint capture failed: {exc}")
-        return False
+        return ownership_captured
 
 
 def _insight(key: str, title: str, body: str, score: int, reason: str, actions: list[str] | None = None) -> dict:

@@ -219,6 +219,34 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(forced, "get_liverpool_brief")
 
+    def test_extract_owned_item_from_purchase_signal(self):
+        self.assertEqual(
+            bot.extract_owned_item("I've just bought a new Garmin Forerunner 265 for runs."),
+            "Garmin Forerunner 265",
+        )
+        self.assertEqual(
+            bot.extract_owned_item("I am now a new owner of the Nothing Phone 3."),
+            "Nothing Phone 3",
+        )
+
+    def test_extract_owned_item_ignores_interest_phrase(self):
+        self.assertEqual(bot.extract_owned_item("I got into F1 this season."), "")
+        self.assertEqual(bot.extract_owned_item("I just bought a certain item."), "")
+
+    def test_absorb_ownership_signal_stores_topic_profile(self):
+        calls = []
+        fake_gs = SimpleNamespace(add_topic_profile=lambda profile: calls.append(profile))
+
+        with patch.object(bot, "google_ok", return_value=True), patch.object(bot, "gs", fake_gs):
+            self.assertTrue(bot.absorb_ownership_signal("I've just bought a Garmin Forerunner 265."))
+
+        self.assertEqual(len(calls), 1)
+        profile = calls[0]
+        self.assertEqual(profile["topic"], "Garmin Forerunner 265")
+        self.assertEqual(profile["category"], "ownership")
+        self.assertEqual(profile["kind"], "ownership")
+        self.assertIn("firmware", " ".join(profile["track"]).lower())
+
     def test_news_item_key_prefers_url_for_stable_deduping(self):
         item_a = {"title": "Same story title", "url": "https://example.com/story"}
         item_b = {"title": "Same story title updated", "url": "https://example.com/story"}

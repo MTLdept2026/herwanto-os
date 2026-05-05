@@ -2471,9 +2471,22 @@ def add_topic_profile(profile: dict) -> dict:
     topic = str(profile.get("topic", "")).strip()
     if not topic:
         raise ValueError("Topic profile needs a topic name")
+    existing = memory.get("topic_profiles", [])
+    previous = {}
+    for item in existing:
+        try:
+            parsed = json.loads(item)
+        except Exception:
+            parsed = {}
+        if str(parsed.get("topic", "")).strip().lower() == topic.lower():
+            previous = parsed
+            break
+    now = datetime.now(SGT).isoformat()
     clean = {
         "topic": topic,
         "category": str(profile.get("category", "") or "interests").strip(),
+        "kind": str(profile.get("kind", previous.get("kind", "")) or "").strip(),
+        "source_signal": str(profile.get("source_signal", previous.get("source_signal", "")) or "").strip(),
         "why": str(profile.get("why", "")).strip(),
         "track": [str(item).strip() for item in profile.get("track", []) if str(item).strip()],
         "preferred_angle": str(profile.get("preferred_angle", "")).strip(),
@@ -2481,9 +2494,11 @@ def add_topic_profile(profile: dict) -> dict:
         "live_facts": [str(item).strip() for item in profile.get("live_facts", []) if str(item).strip()],
         "stable_context": [str(item).strip() for item in profile.get("stable_context", []) if str(item).strip()],
         "update_cadence": str(profile.get("update_cadence", "")).strip(),
+        "interest_phase": str(profile.get("interest_phase", previous.get("interest_phase", "")) or "").strip(),
+        "created": str(profile.get("created", previous.get("created", "")) or now).strip(),
+        "updated": now,
     }
     encoded = json.dumps(clean, ensure_ascii=False, sort_keys=True)
-    existing = memory.get("topic_profiles", [])
     next_profiles = []
     replaced = False
     for item in existing:
