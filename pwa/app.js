@@ -514,6 +514,22 @@ function mirrorStoredNotificationsToChat() {
   }
 }
 
+function isStandalonePwa() {
+  return Boolean(
+    window.matchMedia?.("(display-mode: standalone)")?.matches ||
+    window.matchMedia?.("(display-mode: fullscreen)")?.matches ||
+    window.navigator.standalone
+  );
+}
+
+function reportClientModeToServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+  navigator.serviceWorker.controller?.postMessage({
+    type: "HIRA_CLIENT_MODE",
+    standalone: isStandalonePwa(),
+  });
+}
+
 function rememberNotification(item) {
   if (isNotificationDismissed(item?.id)) return false;
   const existingIndex = state.notifications.findIndex((existing) => String(existing.id) === String(item.id));
@@ -2109,6 +2125,7 @@ document.addEventListener("change", (event) => {
 if ("serviceWorker" in navigator) {
   let refreshingForServiceWorker = false;
   navigator.serviceWorker.addEventListener("controllerchange", () => {
+    reportClientModeToServiceWorker();
     if (refreshingForServiceWorker) return;
     refreshingForServiceWorker = true;
     window.location.reload();
@@ -2117,6 +2134,7 @@ if ("serviceWorker" in navigator) {
     .register("/service-worker.js", { updateViaCache: "none" })
     .then((registration) => {
       registration.update();
+      reportClientModeToServiceWorker();
       updateNotificationControls();
     })
     .catch(updateNotificationControls);
@@ -2129,10 +2147,14 @@ if ("serviceWorker" in navigator) {
       performNotificationAction(event.data.action, event.data.item || {});
     }
   });
+  navigator.serviceWorker.ready.then(reportClientModeToServiceWorker).catch(() => {});
 }
 
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) updateNotificationControls();
+  if (!document.hidden) {
+    reportClientModeToServiceWorker();
+    updateNotificationControls();
+  }
 });
 
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => {

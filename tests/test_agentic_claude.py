@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import unittest
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import ANY, patch
 
@@ -13,6 +14,9 @@ import pdf_service
 import search_service
 import weather_service
 import web_app
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class FakeMessages:
@@ -545,6 +549,17 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertIn("create_proactive_nudge", names)
         self.assertIn("get_latest_news", names)
+
+    def test_pwa_notification_click_prefers_standalone_client(self):
+        service_worker = (REPO_ROOT / "pwa" / "service-worker.js").read_text()
+        app_js = (REPO_ROOT / "pwa" / "app.js").read_text()
+        manifest = json.loads((REPO_ROOT / "pwa" / "manifest.webmanifest").read_text())
+
+        self.assertIn("standaloneClientIds", service_worker)
+        self.assertIn("HIRA_CLIENT_MODE", service_worker)
+        self.assertIn("standaloneClientIds.has(client.id)", service_worker)
+        self.assertIn("reportClientModeToServiceWorker", app_js)
+        self.assertEqual(manifest["id"], "/")
 
     def test_relief_context_becomes_teaching_memory(self):
         now = bot.SGT.localize(bot.datetime(2026, 5, 6, 6, 21))

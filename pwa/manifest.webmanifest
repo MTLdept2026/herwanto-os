@@ -2,6 +2,7 @@
   "name": "H.I.R.A",
   "short_name": "H.I.R.A",
   "description": "Herwanto interface for responsive assistance.",
+  "id": "/",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

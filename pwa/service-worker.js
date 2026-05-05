@@ -1,11 +1,13 @@
-const CACHE_NAME = "hira-os-v65";
+const CACHE_NAME = "hira-os-v66";
 const ASSETS = [
   "/",
   "/styles.css?v=20260505-1",
-  "/app.js?v=20260506-3",
+  "/app.js?v=20260506-4",
   "/static/icon.svg",
   "/manifest.webmanifest"
 ];
+
+const standaloneClientIds = new Set();
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)));
@@ -14,6 +16,13 @@ self.addEventListener("install", (event) => {
 
 self.addEventListener("message", (event) => {
   if (event.data?.type === "SKIP_WAITING") self.skipWaiting();
+  if (event.data?.type === "HIRA_CLIENT_MODE" && event.source?.id) {
+    if (event.data.standalone) {
+      standaloneClientIds.add(event.source.id);
+    } else {
+      standaloneClientIds.delete(event.source.id);
+    }
+  }
 });
 
 self.addEventListener("activate", (event) => {
@@ -99,11 +108,16 @@ self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+      const message = action
+        ? { type: "hira-notification-action", action, item: data }
+        : { type: "hira-notification", item: data };
       for (const client of clients) {
-        client.postMessage(action
-          ? { type: "hira-notification-action", action, item: data }
-          : { type: "hira-notification", item: data });
-        if ("focus" in client) return client.focus();
+        client.postMessage(message);
+      }
+      for (const client of clients) {
+        if (standaloneClientIds.has(client.id) && "focus" in client) {
+          return client.focus();
+        }
       }
       if (self.clients.openWindow) return self.clients.openWindow(targetUrl);
       return undefined;
