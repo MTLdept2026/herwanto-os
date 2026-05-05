@@ -1206,7 +1206,7 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(len(fake_messages.calls), 2)
 
     def test_email_followup_forces_gmail_before_action(self):
-        messages = [{"role": "user", "content": "read my latest work email and note the meeting details for follow up"}]
+        messages = [{"role": "user", "content": "read my latest personal email and note the meeting details for follow up"}]
         tools = [{"name": "get_gmail_brief"}, {"name": "create_followup"}]
 
         self.assertEqual(bot._forced_tool_for_current_turn(messages, tools), "get_gmail_brief")
@@ -1787,13 +1787,14 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIsNone(event)
         self.assertEqual(score, 0)
 
-    def test_gmail_account_extraction_detects_work_email(self):
+    def test_work_gmail_request_is_removed(self):
         account, query = bot._extract_gmail_account_from_text("show my last 5 work emails")
 
-        self.assertEqual(account, "work")
-        self.assertEqual(query, "show my last 5")
+        self.assertEqual(account, "personal")
+        self.assertEqual(query, "show my last 5 work emails")
+        self.assertTrue(bot.is_removed_work_gmail_request("show my last 5 work emails"))
 
-    def test_work_gmail_can_reuse_personal_oauth_client(self):
+    def test_work_gmail_env_can_exist_but_request_is_blocked_above_service_layer(self):
         env = {
             "GOOGLE_GMAIL_CLIENT_ID": "client",
             "GOOGLE_GMAIL_CLIENT_SECRET": "secret",
@@ -1803,6 +1804,7 @@ class AgenticClaudeTests(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True):
             self.assertTrue(bot.gs.gmail_ok("work"))
             self.assertFalse(bot.gs.gmail_ok("personal"))
+            self.assertEqual(bot._normalise_gmail_account("work"), "work")
 
     def test_prayer_reminder_has_catchup_window(self):
         now = bot.SGT.localize(bot.datetime(2026, 5, 1, 13, 18))

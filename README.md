@@ -263,11 +263,8 @@ Voice notes require `OPENAI_API_KEY`. H.I.R.A transcribes the note and then trea
 **Gmail:**
 ```
 /gmail
-/gmail work
 /gmail is:unread newer_than:7d
-/gmail work is:unread newer_than:7d
 /gmaildraft recipient@example.com | Subject | Email body
-/gmaildraft work recipient@example.com | Subject | Email body
 ```
 
 **NEA weather:**
@@ -307,19 +304,10 @@ GOOGLE_GMAIL_CLIENT_ID=...
 GOOGLE_GMAIL_CLIENT_SECRET=...
 GOOGLE_GMAIL_REFRESH_TOKEN=...
 ```
-11. For a second work/MOE Gmail inbox, run the token script again and sign in with the work account. Add the work token separately:
-```env
-GOOGLE_WORK_GMAIL_REFRESH_TOKEN=...
-```
-If you are using the same OAuth app, you do not need separate work client ID/secret. H.I.R.A will reuse `GOOGLE_GMAIL_CLIENT_ID` and `GOOGLE_GMAIL_CLIENT_SECRET`. If you create a separate OAuth app for work, set:
-```env
-GOOGLE_WORK_GMAIL_CLIENT_ID=...
-GOOGLE_WORK_GMAIL_CLIENT_SECRET=...
-```
-12. Redeploy Railway and test:
+Work/MOE Gmail is no longer exposed in H.I.R.A because the workspace blocks the Gmail OAuth flow. Use personal Gmail only.
+11. Redeploy Railway and test:
 ```text
 /gmail is:unread newer_than:7d
-/gmail work is:unread newer_than:7d
 /gmaildraft someone@example.com | Test from H.I.R.A | Hello, this is a draft created by H.I.R.A.
 ```
 
@@ -362,8 +350,8 @@ Current PWA surfaces:
 - Chat with H.I.R.A
 - Agenda
 - Tasks
-- Personal/work Gmail fetch
-- Personal/work Gmail draft creation
+- Personal Gmail fetch
+- Personal Gmail draft creation
 - Latest NEA weather lookup
 - PDF/DOCX/PPTX/image upload analysis
 - Voice-note upload/transcription when `OPENAI_API_KEY` is configured

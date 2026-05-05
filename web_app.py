@@ -449,7 +449,6 @@ def _parallel_home_data(days: int) -> dict:
             "calendar": False,
             "work_drive": False,
             "personal_gmail": False,
-            "work_gmail": False,
         },
         "marking": {
             "active_stacks": 0,
@@ -480,7 +479,6 @@ def _service_status() -> dict:
         "calendar": bot.google_ok(),
         "work_drive": bot.google_ok(),
         "personal_gmail": bot.gs.gmail_ok("personal"),
-        "work_gmail": bot.gs.gmail_ok("work"),
     }
 
 
@@ -880,8 +878,27 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
     history_key = _history_key(x_hira_client)
     history = bot.get_history(history_key)
     bot.absorb_taste_hint(message)
+    if bot.is_removed_work_gmail_request(message):
+        reply = bot.WORK_GMAIL_REMOVED_MESSAGE
+        history.append({"role": "user", "content": message})
+        history.append({"role": "assistant", "content": reply})
+        bot.save_history(history_key, history[-bot.MAX_TURNS:])
+
+        async def removed_work_gmail_events():
+            def sse(payload: dict) -> str:
+                return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+            try:
+                yield sse({"type": "route", "name": "quick"})
+                yield sse({"type": "text", "text": reply})
+                yield sse({"type": "done", "text": reply})
+                yield sse({"type": "saved"})
+            finally:
+                _CHAT_SEMAPHORE.release()
+
+        return StreamingResponse(removed_work_gmail_events(), media_type="text/event-stream")
     user_content = message
-    if bot.re.search(r"\b(?:work|moe|school|personal)\s+(?:gmail|email|emails|mail)\b", message, bot.re.I):
+    if bot.re.search(r"\bpersonal\s+(?:gmail|email|emails|mail)\b", message, bot.re.I):
         account_hint, _ = bot._extract_gmail_account_from_text(message)
         user_content = f"{message}\n\n[Email account hint: use account=\"{account_hint}\" for Gmail tools.]"
     user_content = f"{user_content}{bot.intent_lens_hint(message)}{bot.source_discipline_hint(message)}"
@@ -1329,6 +1346,8 @@ def gmail(req: GmailRequest, x_hira_token: Optional[str] = Header(default=None))
     _require_token(x_hira_token)
     req.max_items = max(1, min(20, req.max_items))
     account = bot._normalise_gmail_account(req.account)
+    if account != "personal":
+        raise HTTPException(status_code=410, detail=bot.WORK_GMAIL_REMOVED_MESSAGE)
     if not bot.gs.gmail_ok(account):
         raise HTTPException(status_code=400, detail=f"{bot.gs.gmail_label(account).title()} is not connected")
     try:
@@ -1343,6 +1362,8 @@ def gmail(req: GmailRequest, x_hira_token: Optional[str] = Header(default=None))
 def gmail_draft(req: DraftRequest, x_hira_token: Optional[str] = Header(default=None)):
     _require_token(x_hira_token)
     account = bot._normalise_gmail_account(req.account)
+    if account != "personal":
+        raise HTTPException(status_code=410, detail=bot.WORK_GMAIL_REMOVED_MESSAGE)
     if not bot.gs.gmail_ok(account):
         raise HTTPException(status_code=400, detail=f"{bot.gs.gmail_label(account).title()} is not connected")
     try:

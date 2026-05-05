@@ -36,7 +36,6 @@ const CONNECTIONS = [
   { key: "calendar", label: "Calendar", icon: "calendar" },
   { key: "google", label: "Google", icon: "sparkles" },
   { key: "work_drive", label: "Work Google Drive", icon: "folder" },
-  { key: "work_gmail", label: "Work Gmail", icon: "briefcase" },
   { key: "personal_gmail", label: "Personal Gmail", icon: "mail" },
 ];
 
