@@ -750,7 +750,8 @@ function renderHealth(data) {
     <div class="status-row"><span>This device</span><strong>${data.current_client_subscribed ? "Connected" : "Not connected"}</strong></div>
     <div class="status-row"><span>Stale subs</span><strong>${data.stale_subscription_count || 0}</strong></div>
     <div class="status-row"><span>Queued</span><strong>${data.queued_notification_count || 0}</strong></div>
-    <div class="status-row"><span>Recovery</span><strong>${recovery.status || "unknown"}</strong></div>
+    <div class="status-row"><span>Recovery</span><strong>${data.push_recovery_enabled ? "On" : "Off"}</strong></div>
+    <div class="status-row"><span>Delivery</span><strong>${recovery.status || "unknown"}</strong></div>
     <p class="subtle">${markdownish(recoveryText || "No recovery data yet.")}</p>
     <p class="subtle">${markdownish(deliveryRows || "No recent push delivery attempts logged.")}</p>
     <p class="subtle">${markdownish(outcomeRows || "No notification feedback captured yet.")}</p>
@@ -1953,7 +1954,14 @@ $("#notificationsBtn").addEventListener("click", () => {
 $("#notificationsList").addEventListener("click", (event) => {
   const feedback = event.target.closest("[data-feedback-rating]");
   if (feedback) {
-    sendInsightFeedback(feedback.dataset.feedbackTarget, feedback.dataset.feedbackRating);
+    const id = feedback.dataset.feedbackTarget;
+    const rating = feedback.dataset.feedbackRating;
+    if (rating === "not_now") {
+      const item = state.notifications.find((notification) => String(notification.id) === String(id)) || { id };
+      performNotificationAction("not_now", item);
+    } else {
+      sendInsightFeedback(id, rating);
+    }
     return;
   }
   const dismiss = event.target.closest("[data-notification-dismiss]");

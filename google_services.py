@@ -2045,13 +2045,13 @@ def get_notification_outcome_summary(days: int = 14) -> dict:
         summary["actions"][action] = summary["actions"].get(action, 0) + 1
         group_bucket = summary["groups"].setdefault(group, {"count": 0, "negative": 0, "positive": 0})
         group_bucket["count"] += 1
-        if action in {"dismissed", "not_now"}:
+        if action in {"dismissed", "not_now", "not_useful"}:
             group_bucket["negative"] += 1
         if action == "useful":
             group_bucket["positive"] += 1
         source_bucket = summary["sources"].setdefault(source, {"count": 0, "negative": 0, "positive": 0})
         source_bucket["count"] += 1
-        if action in {"dismissed", "not_now"}:
+        if action in {"dismissed", "not_now", "not_useful"}:
             source_bucket["negative"] += 1
         if action == "useful":
             source_bucket["positive"] += 1

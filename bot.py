@@ -7288,11 +7288,11 @@ MORNING_BRIEFING_SENT_KEY = "last_morning_briefing_date"
 EVENING_BRIEFING_SENT_KEY = "last_evening_briefing_date"
 NEWS_DIGEST_HISTORY_KEY = "news_digest_history"
 NEWS_DIGEST_FRESHNESS_HOURS = 48
-NOTIFICATION_NEGATIVE_ACTIONS = {"dismissed", "not_now"}
+NOTIFICATION_NEGATIVE_ACTIONS = {"dismissed", "not_now", "not_useful"}
 NOTIFICATION_COOLDOWN_HOURS = {
     "checkin": 8,
     "followup": 18,
-    "task_reminder": 36,
+    "task_reminder": 168,
     "proactive_intelligence": 24,
     "friday_checkin": 36,
     "weekly_planning": 24,
@@ -7306,6 +7306,28 @@ def _notification_source_group(source: str, kind: str = "") -> str:
     if clean_source:
         return clean_source.split(":", 1)[0]
     return str(kind or "notice").strip() or "notice"
+
+
+def _notification_source_keys(source: str, kind: str = "") -> set[str]:
+    clean_source = str(source or "").strip()
+    group = _notification_source_group(clean_source, kind)
+    keys = {f"group:{group}"}
+    if clean_source:
+        keys.add(f"source:{clean_source}")
+    dated_match = re.match(r"^(task_reminder|calendar_reminder|calendar_travel):(\d{4}-\d{2}-\d{2}):(.+)$", clean_source)
+    if dated_match:
+        keys.add(f"stable:{dated_match.group(1)}:{dated_match.group(3)}")
+    return keys
+
+
+def _notification_sources_match(candidate_source: str, candidate_kind: str, item_source: str, item_kind: str = "") -> bool:
+    candidate_group = _notification_source_group(candidate_source, candidate_kind)
+    item_group = _notification_source_group(item_source, item_kind or candidate_kind)
+    candidate_keys = _notification_source_keys(candidate_source, candidate_kind)
+    item_keys = _notification_source_keys(item_source, item_kind or candidate_kind)
+    if candidate_group in {"task_reminder", "calendar_reminder", "calendar_travel"}:
+        return bool((candidate_keys - {f"group:{candidate_group}"}) & (item_keys - {f"group:{item_group}"}))
+    return bool(candidate_keys & item_keys)
 
 
 def _record_notification_outcome(
@@ -7351,9 +7373,9 @@ def _notification_feedback_bias(source: str, kind: str, now: datetime | None = N
         action = str(item.get("action", "")).strip()
         item_source = str(item.get("source", "")).strip()
         item_group = str(item.get("group", "")).strip() or _notification_source_group(item_source, item.get("kind", ""))
-        if item_source != exact and item_group != group:
+        if not _notification_sources_match(exact, kind, item_source, item.get("kind", "")):
             continue
-        weight = 2 if item_source == exact else 1
+        weight = 2 if item_source == exact or item_group != group else 1
         if action == "useful":
             score += 2 * weight
         elif action in NOTIFICATION_NEGATIVE_ACTIONS:
@@ -7384,8 +7406,7 @@ def _should_suppress_notification(source: str, kind: str, now: datetime | None =
         if action not in NOTIFICATION_NEGATIVE_ACTIONS:
             continue
         item_source = str(item.get("source", "")).strip()
-        item_group = str(item.get("group", "")).strip() or _notification_source_group(item_source, item.get("kind", ""))
-        if item_source == exact or item_group == group:
+        if _notification_sources_match(exact, kind, item_source, item.get("kind", "")):
             return True
     return False
 

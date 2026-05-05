@@ -3,7 +3,7 @@ import json
 import os
 import unittest
 from types import ModuleType, SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
@@ -303,6 +303,23 @@ class AgenticClaudeTests(unittest.TestCase):
         with patch("bot.gs.get_notification_outcomes", return_value=outcomes):
             self.assertTrue(bot._should_suppress_notification(source, "reminder", now=now))
 
+    def test_dismissed_task_reminder_suppresses_same_task_on_later_date(self):
+        dismissed_at = bot.SGT.localize(bot.datetime(2026, 5, 5, 22, 30))
+        now = bot.SGT.localize(bot.datetime(2026, 5, 6, 9, 0))
+        outcomes = [
+            {
+                "created": dismissed_at.isoformat(),
+                "source": "task_reminder:2026-05-05:31",
+                "group": "task_reminder",
+                "kind": "reminder",
+                "action": "dismissed",
+            }
+        ]
+
+        with patch("bot.gs.get_notification_outcomes", return_value=outcomes):
+            self.assertTrue(bot._should_suppress_notification("task_reminder:2026-05-06:31", "reminder", now=now))
+            self.assertFalse(bot._should_suppress_notification("task_reminder:2026-05-06:32", "reminder", now=now))
+
     def test_web_push_payload_uses_phone_sized_preview(self):
         payloads = []
         fake_pywebpush = ModuleType("pywebpush")
@@ -359,6 +376,53 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(sent, 0)
         self.assertEqual(entry["errors"], {"http_401": 1})
         self.assertIn("Unauthorized registration", entry["last_error"])
+
+    def test_web_push_recovery_sends_active_notification_without_confirmed_delivery(self):
+        item = {
+            "id": "31",
+            "kind": "reminder",
+            "title": "HDP remarks due",
+            "body": "Complete on 7 May",
+            "source": "task_reminder:2026-05-06:31",
+            "created": bot.datetime.now(bot.SGT).isoformat(),
+            "archived": False,
+        }
+        with (
+            patch.object(web_app.bot.gs, "get_app_notifications", return_value=[item]),
+            patch.object(web_app.bot.gs, "get_web_push_delivery_log", return_value=[]),
+            patch.object(web_app.bot.gs, "send_web_push_notification", return_value=1) as send_push,
+            patch.object(web_app.bot, "_should_send_phone_push", return_value=True),
+            patch.object(web_app.bot, "_mark_action_reminder_delivered") as mark_delivered,
+            patch.object(web_app.bot, "_record_notification_outcome"),
+        ):
+            result = web_app.recover_missed_push_notifications(limit=1)
+
+        self.assertEqual(result["attempted"], 1)
+        self.assertEqual(result["sent"], 1)
+        send_push.assert_called_once()
+        mark_delivered.assert_called_once_with("task_reminder:2026-05-06:31", ANY)
+
+    def test_web_push_recovery_skips_already_confirmed_delivery(self):
+        item = {
+            "id": "8",
+            "kind": "briefing",
+            "title": "Evening roundup",
+            "body": "Roundup body",
+            "source": "evening_briefing:2026-05-06",
+            "created": bot.datetime.now(bot.SGT).isoformat(),
+            "archived": False,
+        }
+        log = [{"source": item["source"], "created": item["created"], "sent": 1}]
+        with (
+            patch.object(web_app.bot.gs, "get_app_notifications", return_value=[item]),
+            patch.object(web_app.bot.gs, "get_web_push_delivery_log", return_value=log),
+            patch.object(web_app.bot, "_should_send_phone_push", return_value=True),
+            patch.object(web_app.bot.gs, "send_web_push_notification") as send_push,
+        ):
+            result = web_app.recover_missed_push_notifications(limit=1)
+
+        self.assertEqual(result["attempted"], 0)
+        send_push.assert_not_called()
 
     def test_morning_briefing_waits_for_confirmed_phone_push(self):
         with (

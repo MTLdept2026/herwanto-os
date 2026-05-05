@@ -41,6 +41,7 @@ _HOME_EXECUTOR_WORKERS = max(1, min(4, _HOME_EXECUTOR_WORKERS))
 _HOME_EXECUTOR = ThreadPoolExecutor(max_workers=_HOME_EXECUTOR_WORKERS)
 _WEB_SCHEDULER_TASKS: list[asyncio.Task] = []
 _WEB_MEMORY_WATCHDOG_TASK: asyncio.Task | None = None
+_WEB_PUSH_RECOVERY_TASK: asyncio.Task | None = None
 
 
 def _env_int(name: str, default: int, minimum: int = 1) -> int:
@@ -78,6 +79,11 @@ _MEMORY_WATCHDOG_SECONDS = _env_int("HIRA_WEB_MEMORY_WATCHDOG_SECONDS", 45, mini
 _CHAT_MAX_TOKENS = _env_int("HIRA_WEB_CHAT_MAX_TOKENS", 3200, minimum=650)
 _AUTH_RATE_LIMIT = _env_int("HIRA_WEB_AUTH_RATE_LIMIT", 8)
 _WEB_INLINE_SCHEDULER = _env_bool("HIRA_WEB_INLINE_SCHEDULER", False)
+_WEB_PUSH_RECOVERY_ENABLED = _env_bool("HIRA_WEB_PUSH_RECOVERY_ENABLED", True)
+_WEB_PUSH_RECOVERY_INTERVAL = _env_int("HIRA_WEB_PUSH_RECOVERY_SECONDS", 90, minimum=30)
+_WEB_PUSH_RECOVERY_COOLDOWN = _env_int("HIRA_WEB_PUSH_RECOVERY_COOLDOWN_SECONDS", 300, minimum=60)
+_WEB_PUSH_RECOVERY_MAX_AGE_HOURS = _env_int("HIRA_WEB_PUSH_RECOVERY_MAX_AGE_HOURS", 36, minimum=1)
+_WEB_PUSH_RECOVERY_LIMIT = _env_int("HIRA_WEB_PUSH_RECOVERY_LIMIT", 3, minimum=1)
 _STATIC_PATHS = {
     "/",
     "/growth",
@@ -272,9 +278,145 @@ async def _web_friday_khutbah_loop():
             await asyncio.sleep(300)
 
 
+def _parse_sgt_datetime(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value or "").strip())
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        return bot.SGT.localize(parsed)
+    return parsed.astimezone(bot.SGT)
+
+
+def _notification_push_source(item: dict) -> str:
+    source = str(item.get("source", "") or "").strip()
+    if source:
+        return source
+    item_id = str(item.get("id", "") or "").strip()
+    return f"notification:{item_id}" if item_id else ""
+
+
+def _delivery_matches_notification(log_item: dict, item: dict) -> bool:
+    return str(log_item.get("source", "") or "").strip() == _notification_push_source(item)
+
+
+def _notification_has_confirmed_push(delivery_log: list, item: dict) -> bool:
+    for log_item in reversed(delivery_log):
+        if not _delivery_matches_notification(log_item, item):
+            continue
+        if int(log_item.get("sent", 0) or 0) > 0:
+            return True
+    return False
+
+
+def _notification_had_recent_push_attempt(delivery_log: list, item: dict, now: datetime) -> bool:
+    threshold = now - bot.timedelta(seconds=_WEB_PUSH_RECOVERY_COOLDOWN)
+    for log_item in reversed(delivery_log):
+        if not _delivery_matches_notification(log_item, item):
+            continue
+        created = _parse_sgt_datetime(log_item.get("created", ""))
+        if not created:
+            continue
+        return created >= threshold
+    return False
+
+
+def _mark_recovered_daily_briefing(source: str):
+    match = re.match(r"^(?:web_)?(morning|evening)_briefing:(\d{4}-\d{2}-\d{2})$", source)
+    if not match:
+        return
+    key = bot.MORNING_BRIEFING_SENT_KEY if match.group(1) == "morning" else bot.EVENING_BRIEFING_SENT_KEY
+    try:
+        bot.gs.set_config(key, match.group(2))
+    except Exception as exc:
+        bot.logger.warning(f"Could not mark recovered {match.group(1)} briefing delivered: {exc}")
+
+
+def recover_missed_push_notifications(limit: int | None = None) -> dict:
+    current = datetime.now(bot.SGT)
+    max_age = current - bot.timedelta(hours=_WEB_PUSH_RECOVERY_MAX_AGE_HOURS)
+    try:
+        queued = bot.gs.get_app_notifications(include_archived=False)
+        delivery_log = bot.gs.get_web_push_delivery_log()
+    except Exception as exc:
+        bot.logger.warning(f"Web push recovery storage error: {exc}")
+        return {"attempted": 0, "sent": 0, "error": str(exc)}
+
+    attempted = 0
+    sent_total = 0
+    skipped = 0
+    for item in reversed(queued):
+        if attempted >= max(1, int(limit or _WEB_PUSH_RECOVERY_LIMIT)):
+            break
+        source = _notification_push_source(item)
+        kind = str(item.get("kind", "") or "").strip()
+        title = str(item.get("title", "H.I.R.A") or "H.I.R.A").strip()
+        body = str(item.get("body", "") or "").strip()
+        if not source or not body:
+            skipped += 1
+            continue
+        created = _parse_sgt_datetime(item.get("created", ""))
+        if created and created < max_age:
+            skipped += 1
+            continue
+        if _notification_has_confirmed_push(delivery_log, item):
+            skipped += 1
+            continue
+        if _notification_had_recent_push_attempt(delivery_log, item, current):
+            skipped += 1
+            continue
+        if not bot._should_send_phone_push(kind, source, now=current):
+            skipped += 1
+            continue
+        sent = bot.gs.send_web_push_notification(
+            title,
+            body,
+            data={
+                "id": str(item.get("id", "") or "").strip(),
+                "kind": kind,
+                "source": source,
+                "created": str(item.get("created", "") or "").strip(),
+            },
+        )
+        attempted += 1
+        sent_total += sent
+        bot._record_notification_outcome(
+            "recovery_pushed" if sent else "recovery_missed",
+            notification_id=str(item.get("id", "") or "").strip(),
+            source=source,
+            kind=kind,
+            title=title,
+        )
+        if sent > 0:
+            if source.startswith(("task_reminder:", "calendar_reminder:", "calendar_travel:")):
+                bot._mark_action_reminder_delivered(source, current)
+            _mark_recovered_daily_briefing(source)
+
+    return {"attempted": attempted, "sent": sent_total, "skipped": skipped}
+
+
+async def _web_push_recovery_loop():
+    while True:
+        try:
+            result = recover_missed_push_notifications()
+            if result.get("attempted"):
+                bot.logger.info(
+                    "Web push recovery attempted=%s sent=%s skipped=%s",
+                    result.get("attempted", 0),
+                    result.get("sent", 0),
+                    result.get("skipped", 0),
+                )
+            await asyncio.sleep(_WEB_PUSH_RECOVERY_INTERVAL)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            bot.logger.warning(f"Web push recovery error: {exc}")
+            await asyncio.sleep(max(60, _WEB_PUSH_RECOVERY_INTERVAL))
+
+
 @app.on_event("startup")
 async def start_web_scheduler():
-    global _WEB_SCHEDULER_TASKS, _WEB_MEMORY_WATCHDOG_TASK, _UPLOAD_QUEUE, _UPLOAD_QUEUE_TASKS
+    global _WEB_SCHEDULER_TASKS, _WEB_MEMORY_WATCHDOG_TASK, _WEB_PUSH_RECOVERY_TASK, _UPLOAD_QUEUE, _UPLOAD_QUEUE_TASKS
     if not bot.require_redis_for_service("H.I.R.A PWA web service"):
         raise RuntimeError("Redis required but unavailable")
     bot._log_memory("web startup", force=True)
@@ -285,6 +427,8 @@ async def start_web_scheduler():
     if not _UPLOAD_QUEUE_TASKS:
         for index in range(_UPLOAD_QUEUE_WORKER_COUNT):
             _UPLOAD_QUEUE_TASKS.append(asyncio.create_task(_upload_queue_worker(index + 1)))
+    if _WEB_PUSH_RECOVERY_ENABLED and _WEB_PUSH_RECOVERY_TASK is None:
+        _WEB_PUSH_RECOVERY_TASK = asyncio.create_task(_web_push_recovery_loop())
     if not _WEB_INLINE_SCHEDULER:
         bot.logger.info("Web inline scheduler disabled; use HIRA_SERVICE_MODE=pwa_worker for proactive jobs.")
         return
@@ -312,7 +456,7 @@ async def start_web_scheduler():
 
 @app.on_event("shutdown")
 async def stop_web_scheduler():
-    global _WEB_SCHEDULER_TASKS, _WEB_MEMORY_WATCHDOG_TASK, _UPLOAD_QUEUE_TASKS
+    global _WEB_SCHEDULER_TASKS, _WEB_MEMORY_WATCHDOG_TASK, _WEB_PUSH_RECOVERY_TASK, _UPLOAD_QUEUE_TASKS
     for task in _WEB_SCHEDULER_TASKS:
         task.cancel()
     _WEB_SCHEDULER_TASKS = []
@@ -322,6 +466,9 @@ async def stop_web_scheduler():
     if _WEB_MEMORY_WATCHDOG_TASK is not None:
         _WEB_MEMORY_WATCHDOG_TASK.cancel()
         _WEB_MEMORY_WATCHDOG_TASK = None
+    if _WEB_PUSH_RECOVERY_TASK is not None:
+        _WEB_PUSH_RECOVERY_TASK.cancel()
+        _WEB_PUSH_RECOVERY_TASK = None
 
 
 class DeviceLocation(BaseModel):
@@ -1217,6 +1364,7 @@ def notifications_health(
         "subscription_error": subscription_error,
         "queued_notification_count": len(queued),
         "queue_error": queue_error,
+        "push_recovery_enabled": _WEB_PUSH_RECOVERY_ENABLED,
         "current_client_id": client_key,
         "current_client_subscribed": bool(current_subscription),
         "current_client_last_seen": current_subscription.get("last_seen", "") if current_subscription else "",
@@ -1264,6 +1412,7 @@ def admin_status(x_hira_token: Optional[str] = Header(default=None)):
             "subscription_error": subscription_error,
             "queued_notification_count": len(queued),
             "queue_error": queue_error,
+            "push_recovery_enabled": _WEB_PUSH_RECOVERY_ENABLED,
             "recent_delivery_log": delivery_log[-5:],
             "push_recovery": _push_recovery_summary(delivery_log, queued, subscriptions, subscription_error, queue_error),
             "prayers": bot.prayer_notification_status(),
@@ -1454,6 +1603,8 @@ def insight_feedback(
                     client_id=_client_key(x_hira_client),
                     title=item.get("title", ""),
                 )
+                if str(req.rating or "").strip() in bot.NOTIFICATION_NEGATIVE_ACTIONS:
+                    bot.gs.archive_app_notifications([req.target])
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Could not save feedback: {exc}") from exc
     return {"ok": True, "count": len(feedback)}
