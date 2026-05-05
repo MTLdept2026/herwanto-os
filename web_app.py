@@ -116,6 +116,28 @@ def _is_supported_document(mime: str, filename: str) -> bool:
     )
 
 
+def _gmail_http_error(exc: Exception, account: str) -> HTTPException:
+    """Turn Gmail provider failures into useful PWA errors instead of 500s."""
+    label = bot.gs.gmail_label(account).title()
+    raw = str(exc or "").strip()
+    lower = raw.lower()
+    status = 502
+    hint = raw or "Gmail request failed."
+    if any(term in lower for term in ("invalid_grant", "expired", "revoked", "unauthorized", "invalid credentials")):
+        status = 401
+        hint = f"{label} OAuth token is expired or revoked. Reconnect Gmail and update the refresh token."
+    elif any(term in lower for term in ("access not configured", "gmail api has not been used", "api has not been enabled")):
+        status = 400
+        hint = "Gmail API is not enabled for this Google Cloud project."
+    elif any(term in lower for term in ("insufficient permission", "insufficient authentication scopes", "forbidden")):
+        status = 403
+        hint = f"{label} is connected but does not have the required Gmail read/compose scope."
+    elif "not configured" in lower:
+        status = 400
+        hint = f"{label} is not configured."
+    return HTTPException(status_code=status, detail=hint[:600])
+
+
 async def _web_memory_watchdog():
     _prune_tick = 0
     while True:
@@ -1309,7 +1331,11 @@ def gmail(req: GmailRequest, x_hira_token: Optional[str] = Header(default=None))
     account = bot._normalise_gmail_account(req.account)
     if not bot.gs.gmail_ok(account):
         raise HTTPException(status_code=400, detail=f"{bot.gs.gmail_label(account).title()} is not connected")
-    messages = bot.gs.list_gmail_messages(req.query, req.max_items, account=account)
+    try:
+        messages = bot.gs.list_gmail_messages(req.query, req.max_items, account=account)
+    except Exception as exc:
+        bot.logger.warning("PWA Gmail fetch failed for account=%s query=%r: %s", account, req.query, exc)
+        raise _gmail_http_error(exc, account) from exc
     return {"account": account, "messages": messages}
 
 
@@ -1319,7 +1345,11 @@ def gmail_draft(req: DraftRequest, x_hira_token: Optional[str] = Header(default=
     account = bot._normalise_gmail_account(req.account)
     if not bot.gs.gmail_ok(account):
         raise HTTPException(status_code=400, detail=f"{bot.gs.gmail_label(account).title()} is not connected")
-    draft = bot.gs.create_gmail_draft(req.to, req.subject, req.body, req.cc, account=account)
+    try:
+        draft = bot.gs.create_gmail_draft(req.to, req.subject, req.body, req.cc, account=account)
+    except Exception as exc:
+        bot.logger.warning("PWA Gmail draft failed for account=%s to=%r: %s", account, req.to, exc)
+        raise _gmail_http_error(exc, account) from exc
     return {"account": account, "draft_id": draft.get("id", "")}
 
 
