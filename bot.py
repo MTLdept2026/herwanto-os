@@ -7510,13 +7510,14 @@ async def send_morning_briefing_once(context=None, force: bool = False, source: 
         logger.warning("Morning briefing skipped: Google services are not connected")
         return False
     today_key = datetime.now(SGT).strftime("%Y-%m-%d")
+    source_key = f"{source}:{today_key}"
     try:
-        if not force and gs.get_config(MORNING_BRIEFING_SENT_KEY) == today_key:
+        if not force and gs.get_config(MORNING_BRIEFING_SENT_KEY) == today_key and _web_push_delivered_for_source(source_key):
             return True
         text = build_briefing(record_news_digest=True)
         if context is not None:
             await _send_telegram_notification(context, text)
-        item = _queue_app_notification("briefing", "Morning briefing", text, source=f"{source}:{today_key}")
+        item = _queue_app_notification("briefing", "Morning briefing", text, source=source_key)
         if not item:
             logger.warning("Morning briefing queued no app notification; will retry during catch-up window")
             return False

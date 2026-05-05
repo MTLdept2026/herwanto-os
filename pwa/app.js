@@ -10,6 +10,16 @@ function safeJsonParse(key, fallback) {
   }
 }
 
+function safeJsonArray(key) {
+  const value = safeJsonParse(key, []);
+  return Array.isArray(value) ? value : [];
+}
+
+function safeJsonObject(key) {
+  const value = safeJsonParse(key, {});
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
 const state = {
   token: localStorage.getItem("hira_web_token") || "",
   theme: localStorage.getItem("hira_theme") || "light",
@@ -19,11 +29,11 @@ const state = {
   homeDays: 7,
   chatBusy: false,
   chatAttachments: [],
-  chatHistory: safeJsonParse("hira_pwa_chat", []),
-  notifications: safeJsonParse("hira_pwa_notifications", []),
-  dismissedNotificationIds: safeJsonParse("hira_pwa_dismissed_notification_ids", []),
-  chatNotificationIds: safeJsonParse("hira_pwa_chat_notification_ids", []),
-  feedback: safeJsonParse("hira_pwa_feedback", {}),
+  chatHistory: safeJsonArray("hira_pwa_chat"),
+  notifications: safeJsonArray("hira_pwa_notifications"),
+  dismissedNotificationIds: safeJsonArray("hira_pwa_dismissed_notification_ids"),
+  chatNotificationIds: safeJsonArray("hira_pwa_chat_notification_ids"),
+  feedback: safeJsonObject("hira_pwa_feedback"),
   deviceLocation: safeJsonParse("hira_pwa_device_location", null),
   notificationPoll: null,
   lastPushSyncAt: Number(localStorage.getItem("hira_pwa_last_push_sync_at") || "0"),
@@ -1427,7 +1437,12 @@ async function streamChatResponse(message, onEvent) {
     for (const raw of events) {
       const line = raw.split("\n").find((item) => item.startsWith("data: "));
       if (!line) continue;
-      const event = JSON.parse(line.slice(6));
+      let event;
+      try {
+        event = JSON.parse(line.slice(6));
+      } catch (_) {
+        continue;
+      }
       if (event.type === "text") streamedText += event.text || "";
       if (event.type === "replace") streamedText = event.text || "";
       if (event.type === "done") finalText = event.text || streamedText;

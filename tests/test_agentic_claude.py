@@ -506,6 +506,50 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertTrue(sent)
         set_config.assert_called_once()
 
+    def test_morning_briefing_retries_stale_sent_flag_without_push_log(self):
+        today_key = bot.datetime.now(bot.SGT).strftime("%Y-%m-%d")
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot, "_acquire_job_lock", return_value=True),
+            patch.object(bot.gs, "get_config", return_value=today_key),
+            patch.object(bot.gs, "get_web_push_delivery_log", return_value=[{
+                "created": bot.datetime.now(bot.SGT).isoformat(),
+                "source": f"morning_briefing:{today_key}",
+                "sent": 0,
+            }]),
+            patch.object(bot, "build_briefing", return_value="Morning digest body"),
+            patch.object(bot, "_queue_app_notification", return_value={
+                "id": "1",
+                "kind": "briefing",
+                "title": "Morning briefing",
+                "body": "Morning digest body",
+                "_push_sent": 1,
+            }),
+            patch.object(bot.gs, "set_config") as set_config,
+        ):
+            sent = asyncio.run(bot.send_morning_briefing_once())
+
+        self.assertTrue(sent)
+        set_config.assert_called_once()
+
+    def test_morning_briefing_skips_when_today_push_was_confirmed(self):
+        today_key = bot.datetime.now(bot.SGT).strftime("%Y-%m-%d")
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot, "_acquire_job_lock", return_value=True),
+            patch.object(bot.gs, "get_config", return_value=today_key),
+            patch.object(bot.gs, "get_web_push_delivery_log", return_value=[{
+                "created": bot.datetime.now(bot.SGT).isoformat(),
+                "source": f"morning_briefing:{today_key}",
+                "sent": 1,
+            }]),
+            patch.object(bot, "build_briefing") as build_briefing,
+        ):
+            sent = asyncio.run(bot.send_morning_briefing_once())
+
+        self.assertTrue(sent)
+        build_briefing.assert_not_called()
+
     def test_evening_briefing_waits_for_confirmed_phone_push(self):
         with (
             patch.object(bot, "google_ok", return_value=True),
