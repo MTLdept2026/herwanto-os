@@ -1068,6 +1068,82 @@ async def home(days: int = 7, x_hira_token: Optional[str] = Header(default=None)
     }
 
 
+def _briefing_replay_slot(message: str) -> str:
+    clean = " ".join((message or "").lower().split())
+    if not clean:
+        return ""
+    wants_digest = re.search(r"\b(digest|briefing|brief|roundup)\b", clean)
+    wants_replay = re.search(r"\b(give|show|send|replay|open|missed|earlier|today|this morning|this evening)\b", clean)
+    if not wants_digest or not wants_replay:
+        return ""
+    if re.search(r"\b(evening|roundup|tonight)\b", clean):
+        return "evening"
+    if re.search(r"\b(morning|today|digest|briefing|brief)\b", clean):
+        return "morning"
+    return ""
+
+
+def _notification_matches_briefing_slot(item: dict, slot: str) -> bool:
+    haystack = " ".join(
+        str(item.get(key, "") or "").lower()
+        for key in ("kind", "title", "source", "body")
+    )
+    if "briefing" not in haystack and "digest" not in haystack and "roundup" not in haystack:
+        return False
+    if slot == "evening":
+        return "evening" in haystack or "roundup" in haystack
+    return "morning" in haystack or "morning digest" in haystack
+
+
+def _latest_stored_briefing(slot: str) -> dict | None:
+    try:
+        notifications = bot.gs.get_app_notifications(include_archived=True)
+    except Exception as exc:
+        bot.logger.warning(f"Briefing replay notification lookup failed: {exc}")
+        return None
+    for item in reversed(notifications):
+        if isinstance(item, dict) and _notification_matches_briefing_slot(item, slot):
+            return item
+    return None
+
+
+def _briefing_replay_text(slot: str) -> str:
+    item = _latest_stored_briefing(slot)
+    if item and str(item.get("body", "") or "").strip():
+        return str(item.get("body", "")).strip()
+    try:
+        if slot == "evening":
+            return bot.build_evening_briefing()
+        return bot.build_briefing(record_news_digest=False)
+    except Exception as exc:
+        bot.logger.warning(f"Briefing replay rebuild failed: {exc}")
+        label = "evening roundup" if slot == "evening" else "morning briefing"
+        return f"I could not replay the stored {label} or rebuild it right now. The notification is saved in the bell panel if it reached this device."
+
+
+def _quick_sse_response(reply: str, history_key: str, history: list, route_name: str = "quick", tool_name: str = ""):
+    history.append({"role": "assistant", "content": reply})
+    bot.save_history(history_key, history[-bot.MAX_TURNS:])
+
+    async def events():
+        def sse(payload: dict) -> str:
+            return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+        try:
+            yield sse({"type": "route", "name": route_name})
+            if tool_name:
+                yield sse({"type": "tool", "name": tool_name})
+            yield sse({"type": "text", "text": reply})
+            yield sse({"type": "done", "text": reply})
+            yield sse({"type": "saved"})
+        finally:
+            _CHAT_SEMAPHORE.release()
+            gc.collect()
+            bot._log_memory(f"after pwa {route_name}")
+
+    return StreamingResponse(events(), media_type="text/event-stream")
+
+
 @app.post("/api/chat")
 async def chat(
     request: Request,
@@ -1125,6 +1201,11 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
         user_content = f"{user_content}{location_context}"
     history.append({"role": "user", "content": user_content})
     history = history[-bot.MAX_TURNS:]
+
+    briefing_slot = _briefing_replay_slot(message)
+    if briefing_slot:
+        reply = _briefing_replay_text(briefing_slot)
+        return _quick_sse_response(reply, history_key, history, route_name="briefing_replay", tool_name=f"{briefing_slot}_briefing")
 
     quick_checkin_reply = ""
     if bot.google_ok() and bot._is_affirmative(message):
