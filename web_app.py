@@ -34,8 +34,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260506-5"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v67"
+PWA_APP_VERSION = "20260507-1"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v68"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -1506,6 +1506,34 @@ def notifications_health(
         "outcome_actions": outcome_summary.get("actions", {}),
         "prayers": bot.prayer_notification_status(),
     }
+
+
+@app.get("/api/notifications/{notification_id}")
+def notification_detail(
+    notification_id: str,
+    x_hira_token: Optional[str] = Header(default=None),
+    x_hira_client: Optional[str] = Header(default=None),
+):
+    _require_token(x_hira_token)
+    try:
+        item = bot.gs.get_app_notification(notification_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Notification unavailable: {exc}") from exc
+    if not item:
+        raise HTTPException(status_code=404, detail=f"Notification #{notification_id} not found")
+    client_key = _client_key(x_hira_client)
+    try:
+        bot._record_notification_outcome(
+            "opened",
+            notification_id=item.get("id", ""),
+            source=item.get("source", ""),
+            kind=item.get("kind", ""),
+            client_id=client_key,
+            title=item.get("title", ""),
+        )
+    except Exception:
+        pass
+    return {"notification": item}
 
 
 @app.get("/api/admin/status")

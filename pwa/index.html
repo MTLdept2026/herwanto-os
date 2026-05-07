@@ -13,7 +13,7 @@
     />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/static/icon.svg?v=20260503-2" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260505-1" />
+    <link rel="stylesheet" href="./styles.css?v=20260507-1" />
   </head>
   <body>
     <main class="shell">
@@ -59,6 +59,32 @@
         <div id="notificationsList" class="notification-list">
         </div>
       </aside>
+
+      <section id="notificationReader" class="notification-reader" hidden role="dialog" aria-modal="true" aria-labelledby="notificationReaderTitle">
+        <div class="notification-reader-backdrop" data-reader-close></div>
+        <article class="notification-reader-sheet">
+          <header class="notification-reader-head">
+            <div>
+              <p id="notificationReaderMeta" class="eyebrow"></p>
+              <h2 id="notificationReaderTitle">Notification</h2>
+            </div>
+            <button type="button" class="icon-btn compact" data-reader-close title="Close" aria-label="Close notification">
+              <span data-lucide="x" aria-hidden="true"></span>
+            </button>
+          </header>
+          <div id="notificationReaderBody" class="notification-reader-body rich-output"></div>
+          <footer class="notification-reader-actions">
+            <button id="notificationReaderDismissBtn" type="button" class="ghost-btn">
+              <span data-lucide="archive" aria-hidden="true"></span>
+              Dismiss
+            </button>
+            <button type="button" class="ghost-btn" data-reader-close>
+              <span data-lucide="check" aria-hidden="true"></span>
+              Done
+            </button>
+          </footer>
+        </article>
+      </section>
 
       <aside id="settingsPanel" class="settings-panel" hidden>
         <label class="stacked-field">
@@ -528,6 +554,6 @@
       </section>
     </main>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-    <script src="./app.js?v=20260506-5" type="module"></script>
+    <script src="./app.js?v=20260507-1" type="module"></script>
   </body>
 </html>

@@ -1,9 +1,9 @@
-const CACHE_NAME = "hira-os-v67";
-const HIRA_APP_VERSION = "20260506-5";
+const CACHE_NAME = "hira-os-v68";
+const HIRA_APP_VERSION = "20260507-1";
 const ASSETS = [
   "/",
-  "/styles.css?v=20260505-1",
-  "/app.js?v=20260506-5",
+  "/styles.css?v=20260507-1",
+  "/app.js?v=20260507-1",
   "/static/icon.svg",
   "/manifest.webmanifest"
 ];
@@ -116,15 +116,28 @@ self.addEventListener("notificationclick", (event) => {
   const targetUrl = params.toString() ? `/?${params.toString()}` : "/";
   event.notification.close();
   event.waitUntil(
-    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(async (clients) => {
       const message = action
         ? { type: "hira-notification-action", action, item: data }
-        : { type: "hira-notification", item: data };
+        : { type: "hira-notification-open", item: data };
       for (const client of clients) {
         client.postMessage(message);
       }
       for (const client of clients) {
         if (standaloneClientIds.has(client.id) && "focus" in client) {
+          if (!action && targetUrl !== "/" && "navigate" in client) {
+            try {
+              const navigated = await client.navigate(targetUrl);
+              if (navigated && "focus" in navigated) return navigated.focus();
+            } catch (_) {
+              // Focus below still brings the installed app forward.
+            }
+          }
+          return client.focus();
+        }
+      }
+      for (const client of clients) {
+        if ("focus" in client) {
           return client.focus();
         }
       }

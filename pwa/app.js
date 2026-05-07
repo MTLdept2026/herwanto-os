@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260506-5";
-const APP_SCRIPT = "app.js?v=20260506-5";
-const EXPECTED_SW_CACHE = "hira-os-v67";
+const APP_VERSION = "20260507-1";
+const APP_SCRIPT = "app.js?v=20260507-1";
+const EXPECTED_SW_CACHE = "hira-os-v68";
 
 const state = {
   token: localStorage.getItem("hira_web_token") || "",
@@ -40,6 +40,7 @@ const state = {
   feedback: safeJsonObject("hira_pwa_feedback"),
   deviceLocation: safeJsonParse("hira_pwa_device_location", null),
   notificationPoll: null,
+  activeNotificationId: "",
   lastPushSyncAt: Number(localStorage.getItem("hira_pwa_last_push_sync_at") || "0"),
   lastInputPulseAt: 0,
 };
@@ -176,6 +177,12 @@ function plainNotificationText(text) {
     .trim();
 }
 
+function notificationPreviewText(text) {
+  const clean = plainNotificationText(text || "");
+  if (clean.length <= 420) return clean;
+  return `${clean.slice(0, 380).trim()}...`;
+}
+
 function saveNotifications() {
   localStorage.setItem("hira_pwa_notifications", JSON.stringify(state.notifications.slice(0, 30)));
 }
@@ -234,17 +241,24 @@ function renderNotifications() {
       const created = item.created ? new Date(item.created).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
       const id = escapeHtml(String(item.id || ""));
       const kind = notificationKindClass(item.kind);
+      const preview = notificationPreviewText(item.body || "");
       return `
         <article class="notification-item ${kind}" data-notification-id="${id}">
           <div class="notification-item-head">
             <strong>${markdownish(item.title || "H.I.R.A")}</strong>
             ${created ? `<small>${markdownish(created)}</small>` : ""}
           </div>
-          <p>${markdownish(plainNotificationText(item.body || ""))}</p>
-          <button type="button" class="ghost-btn notification-dismiss" data-notification-dismiss="${id}">
-            <span data-lucide="x" aria-hidden="true"></span>
-            Dismiss
-          </button>
+          <p>${markdownish(preview)}</p>
+          <div class="notification-actions">
+            <button type="button" class="ghost-btn notification-open" data-notification-open="${id}">
+              <span data-lucide="book-open" aria-hidden="true"></span>
+              Read full
+            </button>
+            <button type="button" class="ghost-btn notification-dismiss" data-notification-dismiss="${id}">
+              <span data-lucide="x" aria-hidden="true"></span>
+              Dismiss
+            </button>
+          </div>
           <div class="notification-feedback">
             <button type="button" class="ghost-btn ${state.feedback[id] === "useful" ? "is-selected" : ""}" data-feedback-rating="useful" data-feedback-target="${id}">Useful</button>
             <button type="button" class="ghost-btn ${state.feedback[id] === "not_now" ? "is-selected" : ""}" data-feedback-rating="not_now" data-feedback-target="${id}">Not now</button>
@@ -579,6 +593,79 @@ function rememberPushedNotification(item) {
   return rememberNotification(notification);
 }
 
+function notificationMetaText(item) {
+  const parts = [];
+  if (item?.created) {
+    try {
+      parts.push(new Date(item.created).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }));
+    } catch (_) {
+      parts.push(String(item.created));
+    }
+  }
+  if (item?.kind) parts.push(String(item.kind).replace(/_/g, " "));
+  return parts.join(" · ");
+}
+
+function renderNotificationReader(item, loading = false) {
+  const reader = $("#notificationReader");
+  const title = $("#notificationReaderTitle");
+  const meta = $("#notificationReaderMeta");
+  const body = $("#notificationReaderBody");
+  const dismiss = $("#notificationReaderDismissBtn");
+  const cleanTitle = item?.title || "H.I.R.A";
+  title.innerHTML = markdownish(cleanTitle);
+  meta.textContent = loading ? "Loading full briefing..." : notificationMetaText(item);
+  body.innerHTML = loading ? "<div>Loading full briefing...</div>" : renderTextBlock(item?.body || "No briefing text was saved for this notification.");
+  dismiss.dataset.notificationDismiss = item?.id || "";
+  reader.hidden = false;
+  document.body.classList.add("notification-reader-open");
+  refreshIcons(reader);
+}
+
+function closeNotificationReader() {
+  $("#notificationReader").hidden = true;
+  state.activeNotificationId = "";
+  document.body.classList.remove("notification-reader-open");
+}
+
+async function fetchNotificationDetail(id) {
+  const data = await api(`/api/notifications/${encodeURIComponent(id)}`, { headers: headers(false) });
+  return data.notification || null;
+}
+
+async function openNotificationReader(item = {}) {
+  const notification = {
+    id: String(item?.id || ""),
+    kind: String(item?.kind || "notice"),
+    title: String(item?.title || "H.I.R.A"),
+    body: String(item?.body || ""),
+    source: String(item?.source || ""),
+    created: item?.created || new Date().toISOString(),
+  };
+  if (!notification.id && !notification.body) return;
+  state.activeNotificationId = notification.id;
+  if (notification.body) rememberPushedNotification(notification);
+  renderNotificationReader(notification, Boolean(notification.id));
+  let fullNotification = notification;
+  if (notification.id) {
+    try {
+      const fetched = await fetchNotificationDetail(notification.id);
+      if (fetched && state.activeNotificationId === notification.id) {
+        fullNotification = fetched;
+        rememberNotification(fetched);
+        renderNotificationReader(fetched, false);
+        await markNotificationsSeen([notification.id]);
+      }
+    } catch (error) {
+      renderNotificationReader(notification, false);
+      setStatus(`Could not load the full notification: ${error.message}`, "warn");
+      return;
+    }
+  }
+  const title = plainNotificationText(fullNotification.title || "Notification");
+  setStatus(title ? `Opened ${title}.` : "Opened notification.", "ok");
+}
+
 function rememberNotificationFromUrl() {
   const params = new URLSearchParams(window.location.search);
   if (!params.has("notification_id")) return;
@@ -602,7 +689,11 @@ function rememberNotificationFromUrl() {
   const query = params.toString();
   const nextUrl = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
   window.history.replaceState({}, "", nextUrl);
-  if (action) performNotificationAction(action, item);
+  if (action) {
+    performNotificationAction(action, item);
+  } else {
+    openNotificationReader(item);
+  }
 }
 
 async function markNotificationsSeen(ids) {
@@ -2096,6 +2187,13 @@ $("#notificationsBtn").addEventListener("click", () => {
   updateNotificationControls();
 });
 $("#notificationsList").addEventListener("click", (event) => {
+  const open = event.target.closest("[data-notification-open]");
+  if (open) {
+    const id = open.dataset.notificationOpen;
+    const item = state.notifications.find((notification) => String(notification.id) === String(id)) || { id };
+    openNotificationReader(item);
+    return;
+  }
   const feedback = event.target.closest("[data-feedback-rating]");
   if (feedback) {
     const id = feedback.dataset.feedbackTarget;
@@ -2111,6 +2209,21 @@ $("#notificationsList").addEventListener("click", (event) => {
   const dismiss = event.target.closest("[data-notification-dismiss]");
   if (!dismiss) return;
   dismissNotification(dismiss.dataset.notificationDismiss);
+});
+$("#notificationReader").addEventListener("click", (event) => {
+  const close = event.target.closest("[data-reader-close]");
+  if (close) {
+    closeNotificationReader();
+    return;
+  }
+  const dismiss = event.target.closest("#notificationReaderDismissBtn");
+  if (dismiss) {
+    dismissNotification(dismiss.dataset.notificationDismiss);
+    closeNotificationReader();
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !$("#notificationReader").hidden) closeNotificationReader();
 });
 $("#enableNotificationsBtn").addEventListener("click", enableNotifications);
 $("#settingsEnableNotificationsBtn").addEventListener("click", enableNotifications);
@@ -2257,6 +2370,10 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.addEventListener("message", (event) => {
     if (event.data?.type === "hira-notification") {
       rememberPushedNotification(event.data.item || {});
+      return;
+    }
+    if (event.data?.type === "hira-notification-open") {
+      openNotificationReader(event.data.item || {});
       return;
     }
     if (event.data?.type === "hira-notification-action") {

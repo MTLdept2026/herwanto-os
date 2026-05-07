@@ -603,6 +603,97 @@ h3 {
   white-space: pre-line;
 }
 
+.notification-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.notification-open,
+.notification-reader-actions .ghost-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+}
+
+.notification-open svg,
+.notification-reader-actions svg {
+  width: 15px;
+  height: 15px;
+}
+
+.notification-reader {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  align-items: end;
+}
+
+.notification-reader[hidden] {
+  display: none;
+}
+
+.notification-reader-backdrop {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, #000000 46%, transparent);
+  backdrop-filter: blur(10px);
+}
+
+.notification-reader-sheet {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: var(--space-md);
+  width: min(920px, calc(100vw - 24px));
+  max-height: min(82vh, 820px);
+  margin: 0 auto max(12px, env(safe-area-inset-bottom));
+  padding: var(--space-lg);
+  overflow: hidden;
+  border: 1px solid var(--border-visible);
+  border-radius: 6px;
+  background: var(--surface);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.28);
+  animation: panel-rise 180ms ease both;
+}
+
+.notification-reader-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: var(--space-md);
+}
+
+.notification-reader-head h2 {
+  margin: 4px 0 0;
+  color: var(--text-display);
+  font-size: clamp(1.4rem, 2.5vw, 2.2rem);
+  line-height: 1.05;
+}
+
+.notification-reader-body {
+  min-height: 160px;
+  max-height: 58vh;
+  overflow: auto;
+  padding: var(--space-md);
+  border-color: var(--border-visible);
+  box-shadow: none;
+  line-height: 1.55;
+}
+
+.notification-reader-body div {
+  overflow-wrap: anywhere;
+}
+
+.notification-reader-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .status-bar {
   display: flex;
   align-items: start;
