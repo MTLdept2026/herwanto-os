@@ -13,7 +13,7 @@
     />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/static/icon.svg?v=20260503-2" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260508-3" />
+    <link rel="stylesheet" href="./styles.css?v=20260508-5" />
   </head>
   <body>
     <main class="shell">
@@ -266,6 +266,10 @@
             <span data-lucide="settings" aria-hidden="true"></span>
             Settings
           </button>
+          <button id="restoreBriefingsBtn" type="button" class="home-action-btn home-action-secondary" hidden>
+            <span data-lucide="eye" aria-hidden="true"></span>
+            Show Briefings
+          </button>
         </div>
         <div id="homeChatMount" class="home-chat-mount"></div>
         <div class="ops-grid">
@@ -342,43 +346,76 @@
             <div id="homeFocusLabel" class="metric-label">LOAD GUIDANCE</div>
           </section>
 
-          <section class="panel ops-panel ops-card-wide">
-            <div class="section-head compact">
-              <h3>Priority Queue</h3>
+          <section class="ops-card ops-card-wide living-timeline-card">
+            <div class="timeline-head">
+              <div>
+                <p class="eyebrow">Living Timeline</p>
+                <h3>Today Flow</h3>
+              </div>
+              <button id="timelineAgendaBtn" type="button" class="ghost-btn icon-label-btn">
+                <span data-lucide="calendar-days" aria-hidden="true"></span>
+                Full Agenda
+              </button>
             </div>
+            <div id="homeLivingTimeline" class="living-timeline"></div>
+          </section>
+
+          <details class="home-drawer ops-card-wide" data-home-section="priority">
+            <summary>
+              <span>
+                <span class="eyebrow">Briefing</span>
+                <strong>Priority Queue</strong>
+              </span>
+              <span class="drawer-actions">
+                <button type="button" class="icon-btn compact drawer-close" data-home-dismiss="priority" title="Close priority queue" aria-label="Close priority queue">
+                  <span data-lucide="x" aria-hidden="true"></span>
+                </button>
+                <span data-lucide="chevron-down" aria-hidden="true"></span>
+              </span>
+            </summary>
             <div id="homeProactive" class="rich-output"></div>
-          </section>
+          </details>
 
-          <section class="panel ops-panel ops-card-wide">
-            <div class="section-head compact">
-              <h3>Morning Digest</h3>
-            </div>
+          <details class="home-drawer ops-card-wide" data-home-section="digest">
+            <summary>
+              <span>
+                <span class="eyebrow">Briefing</span>
+                <strong>Morning Digest</strong>
+              </span>
+              <span class="drawer-actions">
+                <button type="button" class="icon-btn compact drawer-close" data-home-dismiss="digest" title="Close morning digest" aria-label="Close morning digest">
+                  <span data-lucide="x" aria-hidden="true"></span>
+                </button>
+                <span data-lucide="chevron-down" aria-hidden="true"></span>
+              </span>
+            </summary>
             <div id="homeDigest" class="rich-output"></div>
-          </section>
+          </details>
 
-          <section class="panel ops-panel ops-card-wide">
-            <div class="section-head compact">
-              <h3>Islamic Rhythm</h3>
-            </div>
+          <details class="home-drawer ops-card-wide" data-home-section="islamic">
+            <summary>
+              <span>
+                <span class="eyebrow">Briefing</span>
+                <strong>Islamic Rhythm</strong>
+              </span>
+              <span class="drawer-actions">
+                <button type="button" class="icon-btn compact drawer-close" data-home-dismiss="islamic" title="Close Islamic rhythm" aria-label="Close Islamic rhythm">
+                  <span data-lucide="x" aria-hidden="true"></span>
+                </button>
+                <span data-lucide="chevron-down" aria-hidden="true"></span>
+              </span>
+            </summary>
             <div id="homeIslamic" class="rich-output"></div>
-          </section>
+          </details>
 
-          <section class="ops-card">
-            <p class="eyebrow">Agenda Load</p>
-            <div id="homeAgendaCount" class="metric-value">0</div>
-            <div class="metric-label">ITEMS IN VIEW</div>
-            <div id="homeAgendaBar" class="segment-bar" aria-hidden="true"></div>
-          </section>
-
-          <section class="ops-card">
-            <p class="eyebrow">Task Load</p>
-            <div id="homeTaskCount" class="metric-value">0</div>
-            <div class="metric-label">TASKS IN WINDOW</div>
-            <div id="homeTaskBar" class="segment-bar" aria-hidden="true"></div>
-          </section>
-
-          <section class="ops-card ops-card-wide">
-            <p class="eyebrow">Marking Load</p>
+          <details class="home-drawer ops-card-wide">
+            <summary>
+              <span>
+                <span class="eyebrow">Workload</span>
+                <strong>Marking Load</strong>
+              </span>
+              <span data-lucide="chevron-down" aria-hidden="true"></span>
+            </summary>
             <div class="marking-summary">
               <div class="marking-metric">
                 <div id="markingUnmarkedValueHome" class="metric-value">0</div>
@@ -402,20 +439,8 @@
                 <div id="markingSetsList" class="marking-sets"></div>
               </div>
             </div>
-          </section>
+          </details>
 
-          <section class="panel ops-panel">
-            <div class="section-head compact">
-              <h3>Agenda</h3>
-            </div>
-            <div id="homeAgenda" class="rich-output"></div>
-          </section>
-          <section class="panel ops-panel">
-            <div class="section-head compact">
-              <h3>Tasks</h3>
-            </div>
-            <div id="homeTasks" class="rich-output"></div>
-          </section>
           <section class="ops-card file-memory-dial">
             <p class="eyebrow">File Memory</p>
             <div id="fileMemoryValueHome" class="metric-value">0</div>
@@ -554,6 +579,6 @@
       </section>
     </main>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-    <script src="./app.js?v=20260508-3" type="module"></script>
+    <script src="./app.js?v=20260508-5" type="module"></script>
   </body>
 </html>

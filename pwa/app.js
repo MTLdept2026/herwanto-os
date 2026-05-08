@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260508-3";
-const APP_SCRIPT = "app.js?v=20260508-3";
-const EXPECTED_SW_CACHE = "hira-os-v71";
+const APP_VERSION = "20260508-5";
+const APP_SCRIPT = "app.js?v=20260508-5";
+const EXPECTED_SW_CACHE = "hira-os-v73";
 
 const state = {
   token: localStorage.getItem("hira_web_token") || "",
@@ -36,6 +36,7 @@ const state = {
   chatHistory: safeJsonArray("hira_pwa_chat"),
   notifications: safeJsonArray("hira_pwa_notifications"),
   dismissedNotificationIds: safeJsonArray("hira_pwa_dismissed_notification_ids"),
+  dismissedHomeSections: safeJsonArray("hira_pwa_dismissed_home_sections"),
   chatNotificationIds: safeJsonArray("hira_pwa_chat_notification_ids"),
   feedback: safeJsonObject("hira_pwa_feedback"),
   deviceLocation: safeJsonParse("hira_pwa_device_location", null),
@@ -1082,12 +1083,14 @@ function renderProactiveQueue(data = {}) {
   return `${cards}${changedNote}`;
 }
 
-function renderMorningDigest(data = {}) {
+function renderMorningDigest(data = {}, { limit = 0 } = {}) {
   const items = Array.isArray(data.items) ? data.items : [];
   if (!items.length) {
     return `<div class="empty-state compact">No digest items returned yet.</div>`;
   }
-  return items.map((item, index) => {
+  const visible = limit > 0 ? items.slice(0, limit) : items;
+  const extra = limit > 0 ? Math.max(0, items.length - visible.length) : 0;
+  const cards = visible.map((item, index) => {
     const meta = [item.label, item.source].filter(Boolean).join(" · ");
     const why = item.why ? `<p><strong>Why:</strong> ${markdownish(item.why)}</p>` : "";
     const title = markdownish(item.title || "Digest item");
@@ -1105,6 +1108,122 @@ function renderMorningDigest(data = {}) {
       </article>
     `;
   }).join("");
+  const more = extra ? `<div class="preview-more">+${extra} more in the full digest.</div>` : "";
+  return `${cards}${more}`;
+}
+
+function minutesFromTime(value = "") {
+  const match = String(value || "").match(/\b(\d{1,2}):(\d{2})\b/);
+  if (!match) return null;
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
+function minutesToTime(total) {
+  const clean = Math.max(0, Math.min(23 * 60 + 59, Number(total || 0)));
+  const hours = Math.floor(clean / 60);
+  const minutes = clean % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+function timelineRelativeLabel(start, now) {
+  if (!Number.isFinite(start) || !Number.isFinite(now)) return "";
+  const diff = start - now;
+  const abs = Math.abs(diff);
+  const hours = Math.floor(abs / 60);
+  const minutes = abs % 60;
+  const text = hours ? `${hours}h ${minutes ? `${minutes}m` : ""}`.trim() : `${minutes}m`;
+  if (diff > 0) return `In ${text}`;
+  if (diff > -20) return "Now";
+  return `${text} ago`;
+}
+
+function agendaTimelineItems(structured = {}) {
+  const today = Array.isArray(structured.days) ? structured.days[0] : null;
+  if (!today) return [];
+  return [
+    ...(today.lessons || []).map((item) => ({
+      kind: "lesson",
+      time: item.time || "Anytime",
+      title: item.title || item.subject || "Lesson",
+      meta: [item.subject, item.room].filter(Boolean).join(" · "),
+      start: minutesFromTime(item.time),
+    })),
+    ...(today.events || []).map((item) => ({
+      kind: "event",
+      time: item.time || "Anytime",
+      title: item.title || "Event",
+      meta: item.meta || "",
+      start: minutesFromTime(item.time),
+    })),
+    ...(today.due || []).map((item) => ({
+      kind: "due",
+      time: "Due",
+      title: item.title || item.category || "Task due",
+      meta: item.id ? `#${item.id}` : item.category || "",
+      start: 23 * 60 + 30,
+    })),
+  ];
+}
+
+function prayerTimelineItems(prayers = {}) {
+  const windowMinutes = Number(prayers.window_minutes || 20);
+  return (prayers.prayers || [])
+    .filter((item) => ["zohor", "asar", "maghrib", "isyak"].includes(item.key))
+    .map((item) => {
+      const start = minutesFromTime(item.time);
+      const due = minutesFromTime(item.due_time);
+      const end = Number.isFinite(due) && due > start ? due : start + windowMinutes;
+      return {
+        kind: "prayer",
+        time: item.time || "--:--",
+        title: `${item.label || "Prayer"} Window`,
+        meta: `${item.time || "--:--"} - ${minutesToTime(end)}`,
+        start,
+        end,
+      };
+    });
+}
+
+function renderLivingTimeline(structured = {}, prayers = {}) {
+  const now = minutesFromTime(prayers.now) ?? (new Date().getHours() * 60 + new Date().getMinutes());
+  const allItems = [...agendaTimelineItems(structured), ...prayerTimelineItems(prayers)]
+    .filter((item) => Number.isFinite(item.start))
+    .sort((a, b) => a.start - b.start);
+  const visible = allItems
+    .filter((item) => item.start >= now - 90)
+    .slice(0, 7);
+  const items = visible.length ? visible : allItems.slice(-3);
+  if (!items.length) {
+    return `<div class="empty-state compact">No timeline items for today yet.</div>`;
+  }
+  const iconMap = {
+    due: "check-square",
+    event: "calendar",
+    lesson: "book-open",
+    prayer: "sun",
+  };
+  return items
+    .map((item) => {
+      const relative = timelineRelativeLabel(item.start, now);
+      const isNow = item.start <= now && (item.end || item.start + 20) >= now;
+      return `
+        <article class="timeline-item ${item.kind} ${isNow ? "is-now" : ""}">
+          <div class="timeline-time">
+            <strong>${markdownish(item.time)}</strong>
+            ${relative ? `<span>${markdownish(relative)}</span>` : ""}
+          </div>
+          <div class="timeline-pin" aria-hidden="true"></div>
+          <div class="timeline-copy">
+            <span data-lucide="${iconMap[item.kind] || "circle"}" aria-hidden="true"></span>
+            <div>
+              <strong>${markdownish(item.title)}</strong>
+              ${item.meta ? `<p>${markdownish(item.meta)}</p>` : ""}
+            </div>
+          </div>
+        </article>
+      `;
+    })
+    .join("");
 }
 
 function fileMemorySegments(text) {
@@ -1341,7 +1460,7 @@ function renderChatText(text) {
   return blocks.join("");
 }
 
-function renderAgendaCards(text) {
+function renderAgendaCards(text, { limit = 0 } = {}) {
   const lines = (text || "")
     .split("\n")
     .map((line) => line.trim())
@@ -1378,7 +1497,10 @@ function renderAgendaCards(text) {
   }
 
   if (!cards.length) return renderTextBlock(text);
-  return `<div class="agenda-list">${cards.join("")}</div>`;
+  const visible = limit > 0 ? cards.slice(0, limit) : cards;
+  const extra = limit > 0 ? Math.max(0, cards.length - visible.length) : 0;
+  const more = extra ? `<div class="preview-more">+${extra} more in Agenda.</div>` : "";
+  return `<div class="agenda-list">${visible.join("")}${more}</div>`;
 }
 
 function renderAgendaStructured(data) {
@@ -1429,14 +1551,16 @@ function renderAgendaStructured(data) {
   `;
 }
 
-function renderTaskList(data, heading = "Task Brief · Now to 7 May") {
+function renderTaskList(data, heading = "Task Brief · Now to 7 May", { limit = 0 } = {}) {
   const items = data?.items || [];
   if (!items.length) return "<div class='empty-state'>No active tasks in that window.</div>";
+  const visible = limit > 0 ? items.slice(0, limit) : items;
+  const extra = limit > 0 ? Math.max(0, items.length - visible.length) : 0;
   return `
     <div class="task-brief-card">
       <div class="task-brief-head">${markdownish(heading)}</div>
       <div class="task-list">
-      ${items
+      ${visible
         .map((item) => {
           const due = item.due || item.weekday || "No due date";
           const meta = [item.category, item.priority, item.effort].filter(Boolean).join(" / ");
@@ -1456,12 +1580,13 @@ function renderTaskList(data, heading = "Task Brief · Now to 7 May") {
           `;
         })
         .join("")}
+        ${extra ? `<div class="preview-more">+${extra} more in Tasks.</div>` : ""}
       </div>
     </div>
   `;
 }
 
-function renderTaskBriefFromText(text) {
+function renderTaskBriefFromText(text, options = {}) {
   const lines = (text || "")
     .split("\n")
     .map((line) => line.replace(/^[•\-*]\s*/, "").trim())
@@ -1475,7 +1600,7 @@ function renderTaskBriefFromText(text) {
     items.push({ id: match[1], due: match[2] || "", description: match[3] || "" });
   }
   if (!items.length) return renderTextBlock(text);
-  return renderTaskList({ items });
+  return renderTaskList({ items }, "Task Brief · Now to 7 May", options);
 }
 
 async function completeTask(taskId, checkbox) {
@@ -1694,6 +1819,30 @@ function mountChatInHome() {
   if (mount && chat && chat.parentElement !== mount) mount.appendChild(chat);
 }
 
+function applyHomeSectionDismissals() {
+  const dismissed = new Set(state.dismissedHomeSections.map(String));
+  document.querySelectorAll("[data-home-section]").forEach((section) => {
+    section.hidden = dismissed.has(section.dataset.homeSection);
+  });
+  const restoreButton = $("#restoreBriefingsBtn");
+  if (restoreButton) restoreButton.hidden = dismissed.size === 0;
+}
+
+function dismissHomeSection(sectionId) {
+  if (!sectionId) return;
+  state.dismissedHomeSections = [...new Set([...state.dismissedHomeSections, sectionId])];
+  localStorage.setItem("hira_pwa_dismissed_home_sections", JSON.stringify(state.dismissedHomeSections));
+  applyHomeSectionDismissals();
+  setStatus("Briefing closed.", "ok");
+}
+
+function restoreHomeSections() {
+  state.dismissedHomeSections = [];
+  localStorage.removeItem("hira_pwa_dismissed_home_sections");
+  applyHomeSectionDismissals();
+  setStatus("Briefings restored.", "ok");
+}
+
 function setView(name) {
   state.currentView = name;
   document.querySelectorAll(".nav-tab").forEach((tab) => {
@@ -1711,17 +1860,17 @@ async function loadHome() {
     refreshButton.textContent = "Refreshing";
     refreshButton.classList.remove("is-updated");
   }
-  $("#homeAgenda").innerHTML = "<div>Loading...</div>";
+  $("#homeLivingTimeline").innerHTML = "<div>Loading...</div>";
   $("#homeProactive").innerHTML = "<div>Loading...</div>";
-  $("#homeTasks").innerHTML = "<div>Loading...</div>";
+  $("#homeDigest").innerHTML = "<div>Loading...</div>";
   $("#homeIslamic").innerHTML = "<div>Loading...</div>";
   try {
     const data = await api(`/api/home?days=${state.homeDays}`, { headers: headers(false) });
     updateLiveClock();
-    $("#homeAgenda").innerHTML = renderAgendaCards(data.agenda);
+    $("#homeLivingTimeline").innerHTML = renderLivingTimeline(data.agenda_structured || {}, data.prayers || {});
+    refreshIcons($("#homeLivingTimeline"));
     $("#homeProactive").innerHTML = renderProactiveQueue(data.proactive || {});
-    $("#homeDigest").innerHTML = renderMorningDigest(data.digest || {});
-    $("#homeTasks").innerHTML = renderTaskBriefFromText(data.tasks);
+    $("#homeDigest").innerHTML = renderMorningDigest(data.digest || {}, { limit: 3 });
     $("#homeIslamic").innerHTML = renderTextBlock(data.islamic || "Islamic rhythm unavailable right now.");
     const fileLines = countMeaningfulLines(data.files);
     $("#fileMemoryValue").textContent = String(fileLines);
@@ -1736,14 +1885,8 @@ async function loadHome() {
     renderSegmentsAll(".services-segments", Math.round((connectedCount / CONNECTIONS.length) * 12), 12, connectedCount ? "accent" : "muted");
     renderConnections(services);
     renderDailyLoad(data.daily_load || {});
-    const agendaCount = countMeaningfulLines(data.agenda);
-    const taskCount = countMeaningfulLines(data.tasks);
     const proactiveTop = Array.isArray(data.proactive?.top) ? data.proactive.top : [];
     const lead = proactiveTop[0] || null;
-    $("#homeAgendaCount").textContent = String(agendaCount);
-    $("#homeTaskCount").textContent = String(taskCount);
-    renderSegments("#homeAgendaBar", Math.min(12, Math.max(1, agendaCount)), 12, "accent");
-    renderSegments("#homeTaskBar", Math.min(12, Math.max(1, taskCount)), 12, taskCount > 6 ? "warning" : "accent");
     if (lead) {
       $("#homeFocusValue").textContent = lead.title || "Priority";
       $("#homeFocusLabel").textContent = `${String(lead.priority || "medium").toUpperCase()} PRIORITY · ${String(lead.score || 0)}`;
@@ -1773,10 +1916,9 @@ async function loadHome() {
       }, 1400);
     }
   } catch (error) {
-    $("#homeAgenda").textContent = `Error: ${error.message}`;
+    $("#homeLivingTimeline").textContent = `Error: ${error.message}`;
     $("#homeProactive").textContent = `Error: ${error.message}`;
     $("#homeDigest").textContent = `Error: ${error.message}`;
-    $("#homeTasks").textContent = `Error: ${error.message}`;
     $("#homeIslamic").textContent = `Error: ${error.message}`;
     $("#fileMemoryValue").textContent = "--";
     $("#fileMemoryLabel").textContent = "MEMORY CHECK FAILED";
@@ -2357,6 +2499,10 @@ $("#viewAgendaBtn").addEventListener("click", async () => {
   setView("agenda");
   await loadAgenda(currentAgendaDays());
 });
+$("#timelineAgendaBtn").addEventListener("click", async () => {
+  setView("agenda");
+  await loadAgenda(currentAgendaDays());
+});
 $("#homeSettingsBtn").addEventListener("click", () => {
   const panel = $("#settingsPanel");
   panel.hidden = false;
@@ -2364,12 +2510,20 @@ $("#homeSettingsBtn").addEventListener("click", () => {
   updateNotificationControls();
   panel.scrollIntoView({ block: "start" });
 });
+$("#restoreBriefingsBtn").addEventListener("click", restoreHomeSections);
+document.querySelectorAll("[data-home-dismiss]").forEach((button) => {
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    dismissHomeSection(button.dataset.homeDismiss);
+  });
+});
 $("#refreshAgendaBtn").addEventListener("click", () => loadAgenda(currentAgendaDays()));
 $("#agendaDays").addEventListener("change", () => loadAgenda(currentAgendaDays()));
 $("#refreshTasksBtn").addEventListener("click", () => loadTasks(Number($("#tasksDays").value || 7)));
 $("#tasksDays").addEventListener("change", () => loadTasks(Number($("#tasksDays").value || 7)));
 $("#refreshFilesBtn").addEventListener("click", () => setStatus("File upload is ready.", "ok"));
-// Covers both #tasksOutput (Tasks tab) and #homeTasks (Home panel)
+// Covers task checkboxes wherever task cards are rendered.
 document.addEventListener("change", (event) => {
   const checkbox = event.target.closest("[data-task-done]");
   if (!checkbox || !checkbox.checked) return;
@@ -2426,6 +2580,7 @@ localStorage.setItem("hira_client_id", state.clientId);
 applyTheme();
 refreshIcons();
 mountChatInHome();
+applyHomeSectionDismissals();
 renderStoredChat();
 rememberNotificationFromUrl();
 mirrorStoredNotificationsToChat();

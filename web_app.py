@@ -34,8 +34,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260508-3"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v71"
+PWA_APP_VERSION = "20260508-5"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v73"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -803,17 +803,24 @@ def _working_memory_summary(memory: dict) -> dict:
 def _parallel_home_data(days: int) -> dict:
     jobs = {
         "agenda": lambda: bot.build_agenda(days),
+        "agenda_structured": lambda: bot.build_agenda_structured(days),
         "daily_load": lambda: bot.build_daily_load(days),
         "digest": bot.build_curated_digest_snapshot,
         "proactive": lambda: bot.build_proactive_v2_snapshot(days=days),
         "tasks": lambda: bot.build_task_brief(days),
         "islamic": lambda: bot.build_islamic_brief(),
+        "prayers": bot.prayer_notification_status,
         "files": bot.build_files_index,
         "services": _service_status,
         "marking": _marking_summary,
     }
     fallbacks = {
         "agenda": "Agenda unavailable right now.",
+        "agenda_structured": {
+            "generated_at": "",
+            "days": [],
+            "services": {"google": False},
+        },
         "daily_load": {
             "today": {
                 "score": 0,
@@ -844,6 +851,13 @@ def _parallel_home_data(days: int) -> dict:
         },
         "tasks": "Task brief unavailable until Google is connected.",
         "islamic": "Islamic rhythm unavailable right now.",
+        "prayers": {
+            "ok": False,
+            "today": "",
+            "now": "",
+            "window_minutes": 20,
+            "prayers": [],
+        },
         "files": "File memory unavailable until Google is connected.",
         "services": {
             "google": False,
