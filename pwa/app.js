@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260508-1";
-const APP_SCRIPT = "app.js?v=20260508-1";
-const EXPECTED_SW_CACHE = "hira-os-v69";
+const APP_VERSION = "20260508-2";
+const APP_SCRIPT = "app.js?v=20260508-2";
+const EXPECTED_SW_CACHE = "hira-os-v70";
 
 const state = {
   token: localStorage.getItem("hira_web_token") || "",
@@ -72,6 +72,19 @@ function updateLiveClock() {
   const date = dateFormatter.format(now).replace(",", "").toUpperCase();
   $("#greetingTime").textContent = time;
   $("#greetingDate").textContent = date;
+  updateHomeGreeting(now);
+}
+
+function updateHomeGreeting(now = new Date()) {
+  const hour = Number(new Intl.DateTimeFormat("en-SG", {
+    hour: "numeric",
+    hour12: false,
+    timeZone: "Asia/Singapore",
+  }).format(now).replace(/^24$/, "0"));
+  const title = $("#homeGreetingTitle");
+  if (!title) return;
+  const slot = hour < 12 ? "morning" : hour < 18 ? "afternoon" : "evening";
+  title.textContent = `Good ${slot}, Herwanto.`;
 }
 
 function resolvedTheme() {
@@ -1120,10 +1133,15 @@ function loadToneClass(tone) {
 function renderDailyLoad(load = {}) {
   const today = load.today || {};
   const toneClass = loadToneClass(today.tone);
-  $("#dailyLoadTitle").textContent = today.label || "Today";
-  $("#dailyLoadBadge").textContent = today.load || "Pretty chill";
-  $("#dailyLoadBadge").className = `load-badge ${toneClass}`;
   const score = Number(today.score ?? 0);
+  const loadLabel = today.load || "Pretty chill";
+  const subtitle = $("#homeGreetingSubtitle");
+  if (subtitle) {
+    subtitle.textContent = `You’re ${score}% into a ${String(loadLabel).toLowerCase()} day.`;
+  }
+  $("#dailyLoadTitle").textContent = today.label || "Today";
+  $("#dailyLoadBadge").textContent = loadLabel;
+  $("#dailyLoadBadge").className = `load-badge ${toneClass}`;
   const scorePct = Math.max(0, Math.min(100, score));
   $("#dailyLoadScore").closest(".daily-load-score").className = `daily-load-score score-${String(today.tone || "green").toLowerCase()}`;
   $("#dailyLoadScore").closest(".daily-load-score").style.setProperty("--score-arc", `${scorePct * 2.7}deg`);
@@ -1708,7 +1726,8 @@ async function loadHome() {
   const refreshButton = $("#refreshHomeBtn");
   if (refreshButton) {
     refreshButton.disabled = true;
-    refreshButton.textContent = "Refreshing";
+    refreshButton.innerHTML = `<span data-lucide="loader-2" aria-hidden="true"></span>Refreshing`;
+    refreshIcons(refreshButton);
     refreshButton.classList.remove("is-updated");
   }
   $("#homeAgenda").innerHTML = "<div>Loading...</div>";
@@ -1764,10 +1783,11 @@ async function loadHome() {
     renderSegmentsAll(".unmarked-segments", markingSegments(unmarkedScripts, totalScripts), 12, unmarkedScripts > markedScripts ? "warning" : "accent");
     setStatus(`Loaded ${state.homeDays}-day view.`, "ok");
     if (refreshButton) {
-      refreshButton.textContent = "Updated";
+      refreshButton.innerHTML = `<span data-lucide="check" aria-hidden="true"></span>Updated`;
+      refreshIcons(refreshButton);
       refreshButton.classList.add("is-updated");
       window.setTimeout(() => {
-        refreshButton.innerHTML = `<span data-lucide="rotate-ccw" aria-hidden="true"></span>Refresh System`;
+        refreshButton.innerHTML = `<span data-lucide="rotate-ccw" aria-hidden="true"></span>Refresh`;
         refreshIcons(refreshButton);
         refreshButton.classList.remove("is-updated");
       }, 1400);
@@ -1784,7 +1804,10 @@ async function loadHome() {
     $("#fileMemoryLabelHome").textContent = "MEMORY CHECK FAILED";
     renderSegmentsAll(".file-memory-segments", 1, 12, "warning");
     setStatus(error.message, "error");
-    if (refreshButton) refreshButton.textContent = "Try again";
+    if (refreshButton) {
+      refreshButton.innerHTML = `<span data-lucide="rotate-ccw" aria-hidden="true"></span>Try again`;
+      refreshIcons(refreshButton);
+    }
   } finally {
     if (refreshButton) refreshButton.disabled = false;
   }
@@ -2298,6 +2321,15 @@ document.querySelectorAll(".nav-tab").forEach((tab) => {
     const view = tab.dataset.view;
     setView(view);
     if (view === "home") await loadHome();
+    if (view === "agenda") await loadAgenda(currentAgendaDays());
+    if (view === "tasks") await loadTasks(7);
+  });
+});
+
+document.querySelectorAll("[data-view-shortcut]").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const view = button.dataset.viewShortcut;
+    setView(view);
     if (view === "agenda") await loadAgenda(currentAgendaDays());
     if (view === "tasks") await loadTasks(7);
   });

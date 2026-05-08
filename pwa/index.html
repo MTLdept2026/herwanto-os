@@ -13,7 +13,7 @@
     />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/static/icon.svg?v=20260503-2" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260508-1" />
+    <link rel="stylesheet" href="./styles.css?v=20260508-2" />
   </head>
   <body>
     <main class="shell">
@@ -255,173 +255,212 @@
         </div>
       </section>
 
-      <section id="homeView" class="view active">
-        <div class="home-actions">
-          <button id="refreshHomeBtn" type="button" class="home-action-btn home-action-primary">
-            <span data-lucide="rotate-ccw" aria-hidden="true"></span>
-            Refresh System
-          </button>
-          <button id="viewAgendaBtn" type="button" class="home-action-btn home-action-secondary">View All Agenda</button>
-          <button id="homeSettingsBtn" type="button" class="home-action-btn home-action-dark">
-            <span data-lucide="settings" aria-hidden="true"></span>
-            Settings
-          </button>
-        </div>
-        <div id="homeChatMount" class="home-chat-mount"></div>
-        <div class="ops-grid">
-          <section class="ops-card daily-load-card ops-card-wide">
-            <div class="daily-load-head">
-              <div class="daily-load-title-block">
-                <p class="eyebrow">Daily Load</p>
-                <h3 id="dailyLoadTitle">Today</h3>
-                <strong id="dailyLoadBadge" class="load-badge load-green">Pretty chill</strong>
+      <section id="homeView" class="view active premium-home">
+        <div class="home-os-shell">
+          <header class="home-os-header">
+            <div class="home-os-title">
+              <div class="home-brandline">
+                <span>H.I.R.A</span>
+                <i aria-hidden="true"></i>
               </div>
-              <div class="daily-load-score" aria-label="Daily load score">
-                <div class="daily-load-gauge">
-                  <div id="dailyLoadScore" class="metric-value">0</div>
-                </div>
-                <div id="dailyLoadScoreLabel" class="metric-label">LOAD SCORE</div>
-              </div>
+              <p class="eyebrow">Living Daily OS</p>
+              <h2 id="homeGreetingTitle">Good morning, Herwanto.</h2>
+              <p id="homeGreetingSubtitle">You’re loading the day.</p>
             </div>
-            <div id="dailyLoadStrip" class="load-strip" aria-label="Daily load for the selected window"></div>
-            <div class="daily-load-body">
-              <div class="load-stats">
-                <div class="load-stat">
-                  <span>Lessons</span>
-                  <strong id="dailyLoadLessons">0</strong>
-                </div>
-                <div class="load-stat">
-                  <span>Events</span>
-                  <strong id="dailyLoadEvents">0</strong>
-                </div>
-                <div class="load-stat">
-                  <span>Due</span>
-                  <strong id="dailyLoadDue">0</strong>
-                </div>
-                <div class="load-stat">
-                  <span>Marking</span>
-                  <strong id="dailyLoadMarking">0</strong>
-                </div>
-              </div>
+            <div class="home-actions">
+              <button id="refreshHomeBtn" type="button" class="home-action-btn home-action-primary" title="Refresh system">
+                <span data-lucide="rotate-ccw" aria-hidden="true"></span>
+                Refresh
+              </button>
+              <button id="viewAgendaBtn" type="button" class="home-action-btn home-action-secondary">
+                <span data-lucide="calendar-days" aria-hidden="true"></span>
+                Agenda
+              </button>
+              <button id="homeSettingsBtn" type="button" class="home-action-btn home-action-dark" title="Settings">
+                <span data-lucide="settings" aria-hidden="true"></span>
+                Settings
+              </button>
             </div>
-            <div class="load-note">
-              <span class="load-note-icon" aria-hidden="true">H</span>
-              <p id="dailyLoadNote">Daily load will appear here.</p>
-            </div>
-            <div class="workload-preview">
-              <div class="workload-preview-head">
-                <p class="eyebrow">Workload Trend</p>
+          </header>
+
+          <div class="home-command-layout">
+            <main class="home-command-main">
+              <section class="ops-card premium-panel priority-panel">
+                <div class="section-head compact">
+                  <div>
+                    <p class="eyebrow">Top 3 Priorities</p>
+                    <h3>Next Best Moves</h3>
+                  </div>
+                  <span class="premium-status-pill">Live ranked</span>
+                </div>
+                <div id="homeProactive" class="rich-output priority-output"></div>
+              </section>
+
+              <section class="ops-card premium-panel timeline-panel">
+                <div class="section-head compact">
+                  <div>
+                    <p class="eyebrow">Living Timeline</p>
+                    <h3>Today’s Agenda</h3>
+                  </div>
+                  <button type="button" class="ghost-btn compact home-mini-link" data-view-shortcut="agenda">
+                    View full
+                    <span data-lucide="arrow-right" aria-hidden="true"></span>
+                  </button>
+                </div>
+                <div id="homeAgenda" class="rich-output timeline-output"></div>
+              </section>
+
+              <section class="home-action-strip">
+                <article class="ops-card premium-panel next-action-card">
+                  <p class="eyebrow">Next Best Action</p>
+                  <div id="homeFocusValue" class="focus-value">Standby</div>
+                  <div id="homeFocusLabel" class="metric-label">LOAD GUIDANCE</div>
+                </article>
+                <article class="ops-card premium-panel compact-metric-card">
+                  <p class="eyebrow">Protected Time</p>
+                  <div id="homeNextCount" class="metric-value">0</div>
+                  <div id="homeNextLabel" class="metric-label">LESSONS TODAY</div>
+                  <div id="homeNextBar" class="segment-bar" aria-hidden="true"></div>
+                </article>
+                <article class="ops-card premium-panel compact-metric-card">
+                  <p class="eyebrow">Today’s Score</p>
+                  <div id="homeAgendaCount" class="metric-value">0</div>
+                  <div class="metric-label">ITEMS IN VIEW</div>
+                  <div id="homeAgendaBar" class="segment-bar" aria-hidden="true"></div>
+                </article>
+              </section>
+            </main>
+
+            <aside class="home-command-side">
+              <section class="ops-card premium-panel daily-load-card">
+                <div class="daily-load-head">
+                  <div class="daily-load-title-block">
+                    <p class="eyebrow">Daily Load</p>
+                    <h3 id="dailyLoadTitle">Today</h3>
+                    <strong id="dailyLoadBadge" class="load-badge load-green">Pretty chill</strong>
+                  </div>
+                  <div class="daily-load-score" aria-label="Daily load score">
+                    <div class="daily-load-gauge">
+                      <div id="dailyLoadScore" class="metric-value">0</div>
+                    </div>
+                    <div id="dailyLoadScoreLabel" class="metric-label">LOAD SCORE</div>
+                  </div>
+                </div>
+                <div id="dailyLoadStrip" class="load-strip" aria-label="Daily load for the selected window"></div>
+                <div class="daily-load-body">
+                  <div class="load-stats">
+                    <div class="load-stat">
+                      <span>Lessons</span>
+                      <strong id="dailyLoadLessons">0</strong>
+                    </div>
+                    <div class="load-stat">
+                      <span>Events</span>
+                      <strong id="dailyLoadEvents">0</strong>
+                    </div>
+                    <div class="load-stat">
+                      <span>Due</span>
+                      <strong id="dailyLoadDue">0</strong>
+                    </div>
+                    <div class="load-stat">
+                      <span>Marking</span>
+                      <strong id="dailyLoadMarking">0</strong>
+                    </div>
+                  </div>
+                </div>
+                <div class="load-note">
+                  <span class="load-note-icon" aria-hidden="true">H</span>
+                  <p id="dailyLoadNote">Daily load will appear here.</p>
+                </div>
+              </section>
+
+              <section class="ops-card premium-panel risk-panel">
+                <div class="section-head compact">
+                  <div>
+                    <p class="eyebrow">Risk Radar</p>
+                    <h3>1 Active</h3>
+                  </div>
+                  <span class="status-warn">Watch</span>
+                </div>
+                <div class="risk-radar" aria-hidden="true">
+                  <span></span><span></span><span></span><span></span>
+                </div>
                 <p id="dailyLoadRestNote">Rest guidance will appear here.</p>
+              </section>
+
+              <section class="ops-card premium-panel calendar-pressure-card">
+                <p class="eyebrow">Calendar Pressure</p>
+                <div id="homeTaskCount" class="metric-value">0</div>
+                <div class="metric-label">TASKS IN WINDOW</div>
+                <div id="homeTaskBar" class="segment-bar" aria-hidden="true"></div>
+                <div id="workloadTrendChart" class="workload-trend-card"></div>
+              </section>
+
+              <section class="ops-card premium-panel">
+                <p class="eyebrow">Prayer / Window</p>
+                <div id="homeIslamic" class="rich-output compact-output"></div>
+              </section>
+            </aside>
+          </div>
+
+          <section class="home-operations-drawer">
+            <section class="ops-card premium-panel">
+              <div class="section-head compact">
+                <h3>Morning Digest</h3>
               </div>
-              <div id="workloadTrendChart" class="workload-trend-card"></div>
-            </div>
-          </section>
+              <div id="homeDigest" class="rich-output"></div>
+            </section>
 
-          <section class="ops-card">
-            <p class="eyebrow">Next Up</p>
-            <div id="homeNextCount" class="metric-value">0</div>
-            <div id="homeNextLabel" class="metric-label">LESSONS TODAY</div>
-            <div id="homeNextBar" class="segment-bar" aria-hidden="true"></div>
-          </section>
-
-          <section class="ops-card">
-            <p class="eyebrow">System Status</p>
-            <div id="homeServicesSummary" class="metric-value">0/5</div>
-            <div id="homeServicesLabel" class="metric-label">SERVICES CONNECTED</div>
-            <div class="segment-bar services-segments" aria-hidden="true"></div>
-          </section>
-
-          <section class="ops-card">
-            <p class="eyebrow">Connections</p>
-            <div id="homeConnectionsList" class="status-list"></div>
-          </section>
-
-          <section class="ops-card ops-card-wide focus-card">
-            <p class="eyebrow">Focus Window</p>
-            <div id="homeFocusValue" class="focus-value">Standby</div>
-            <div id="homeFocusLabel" class="metric-label">LOAD GUIDANCE</div>
-          </section>
-
-          <section class="panel ops-panel ops-card-wide">
-            <div class="section-head compact">
-              <h3>Priority Queue</h3>
-            </div>
-            <div id="homeProactive" class="rich-output"></div>
-          </section>
-
-          <section class="panel ops-panel ops-card-wide">
-            <div class="section-head compact">
-              <h3>Morning Digest</h3>
-            </div>
-            <div id="homeDigest" class="rich-output"></div>
-          </section>
-
-          <section class="panel ops-panel ops-card-wide">
-            <div class="section-head compact">
-              <h3>Islamic Rhythm</h3>
-            </div>
-            <div id="homeIslamic" class="rich-output"></div>
-          </section>
-
-          <section class="ops-card">
-            <p class="eyebrow">Agenda Load</p>
-            <div id="homeAgendaCount" class="metric-value">0</div>
-            <div class="metric-label">ITEMS IN VIEW</div>
-            <div id="homeAgendaBar" class="segment-bar" aria-hidden="true"></div>
-          </section>
-
-          <section class="ops-card">
-            <p class="eyebrow">Task Load</p>
-            <div id="homeTaskCount" class="metric-value">0</div>
-            <div class="metric-label">TASKS IN WINDOW</div>
-            <div id="homeTaskBar" class="segment-bar" aria-hidden="true"></div>
-          </section>
-
-          <section class="ops-card ops-card-wide">
-            <p class="eyebrow">Marking Load</p>
-            <div class="marking-summary">
-              <div class="marking-metric">
-                <div id="markingUnmarkedValueHome" class="metric-value">0</div>
-                <div class="metric-label">UNMARKED SCRIPTS</div>
-                <div id="markingUnmarkedBarHome" class="segment-bar unmarked-segments" aria-hidden="true"></div>
+            <section class="ops-card premium-panel">
+              <div class="section-head compact">
+                <h3>Tasks</h3>
               </div>
-              <div class="marking-metric">
-                <div id="markingMarkedValueHome" class="metric-value">0</div>
-                <div class="metric-label">MARKED SCRIPTS</div>
-                <div id="markingMarkedBarHome" class="segment-bar marked-segments" aria-hidden="true"></div>
-              </div>
-              <div class="marking-meta">
-                <div class="status-row">
-                  <span>Active Stacks</span>
-                  <strong id="markingStackCount" class="status-ok">0</strong>
+              <div id="homeTasks" class="rich-output"></div>
+            </section>
+
+            <section class="ops-card premium-panel">
+              <p class="eyebrow">System Status</p>
+              <div id="homeServicesSummary" class="metric-value">0/5</div>
+              <div id="homeServicesLabel" class="metric-label">SERVICES CONNECTED</div>
+              <div class="segment-bar services-segments" aria-hidden="true"></div>
+              <div id="homeConnectionsList" class="status-list"></div>
+            </section>
+
+            <section class="ops-card premium-panel">
+              <p class="eyebrow">Marking Load</p>
+              <div class="marking-summary">
+                <div class="marking-metric">
+                  <div id="markingUnmarkedValueHome" class="metric-value">0</div>
+                  <div class="metric-label">UNMARKED</div>
+                  <div id="markingUnmarkedBarHome" class="segment-bar unmarked-segments" aria-hidden="true"></div>
                 </div>
-                <div class="status-row">
-                  <span>Total Scripts</span>
-                  <strong id="markingTotalValue" class="status-off">0</strong>
+                <div class="marking-metric">
+                  <div id="markingMarkedValueHome" class="metric-value">0</div>
+                  <div class="metric-label">MARKED</div>
+                  <div id="markingMarkedBarHome" class="segment-bar marked-segments" aria-hidden="true"></div>
                 </div>
-                <div id="markingSetsList" class="marking-sets"></div>
+                <div class="marking-meta">
+                  <div class="status-row">
+                    <span>Active Stacks</span>
+                    <strong id="markingStackCount" class="status-ok">0</strong>
+                  </div>
+                  <div class="status-row">
+                    <span>Total Scripts</span>
+                    <strong id="markingTotalValue" class="status-off">0</strong>
+                  </div>
+                  <div id="markingSetsList" class="marking-sets"></div>
+                </div>
               </div>
-            </div>
+            </section>
+
+            <section class="ops-card premium-panel file-memory-dial">
+              <p class="eyebrow">File Memory</p>
+              <div id="fileMemoryValueHome" class="metric-value">0</div>
+              <div id="fileMemoryLabelHome" class="metric-label">MEMORY STANDBY</div>
+              <div id="fileMemoryBarHome" class="segment-bar file-memory-segments" aria-hidden="true"></div>
+            </section>
           </section>
 
-          <section class="panel ops-panel">
-            <div class="section-head compact">
-              <h3>Agenda</h3>
-            </div>
-            <div id="homeAgenda" class="rich-output"></div>
-          </section>
-          <section class="panel ops-panel">
-            <div class="section-head compact">
-              <h3>Tasks</h3>
-            </div>
-            <div id="homeTasks" class="rich-output"></div>
-          </section>
-          <section class="ops-card file-memory-dial">
-            <p class="eyebrow">File Memory</p>
-            <div id="fileMemoryValueHome" class="metric-value">0</div>
-            <div id="fileMemoryLabelHome" class="metric-label">MEMORY STANDBY</div>
-            <div id="fileMemoryBarHome" class="segment-bar file-memory-segments" aria-hidden="true"></div>
-          </section>
+          <div id="homeChatMount" class="home-chat-mount"></div>
         </div>
       </section>
 
@@ -554,6 +593,6 @@
       </section>
     </main>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-    <script src="./app.js?v=20260508-1" type="module"></script>
+    <script src="./app.js?v=20260508-2" type="module"></script>
   </body>
 </html>
