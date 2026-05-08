@@ -60,11 +60,16 @@ SCHOOL_CLOSURE_DATES_2026 = {
     date(2026, 11, 9),  # Deepavali public holiday
 }
 
+# NBSS HBL dates are school-specific and must be explicit. Do not infer HBL
+# from a Friday, an Even-week free day, or the absence of timetabled lessons.
+HBL_DATES_2026: set[date] = set()
+
 SCHOOL_CALENDAR_MEMORY_2026 = (
     "MOE 2026 MK/Primary/Secondary calendar: Term I 2 Jan-13 Mar; "
     "Term II 23 Mar-29 May; Term III 29 Jun-4 Sep; Term IV 14 Sep-20 Nov. "
     "Timetable week numbers reset at each term start; odd-numbered weeks use Odd timetable, "
-    "even-numbered weeks use Even timetable."
+    "even-numbered weeks use Even timetable. HBL is not inferred from Friday/free-day timetable; "
+    "only explicit HBL dates count."
 )
 
 TIMETABLE_MEMORY_2026 = (
@@ -219,6 +224,7 @@ def get_school_week_info(query_date: date) -> dict | None:
                 "week_number": week_number,
                 "week_type": week_type,
                 "is_school_holiday": query_date in SCHOOL_CLOSURE_DATES_2026,
+                "is_hbl": query_date in HBL_DATES_2026,
             }
     return None
 

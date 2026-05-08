@@ -747,6 +747,7 @@ Rules:
 - If you say you will check, pull, verify, look up, or get the actual result/details, you must call the relevant tool in that same turn before answering. Do not end with "give me a moment" as the final answer.
 - For data lookups, use the user's words as intent: "last 5 emails" means latest 5 Gmail messages; "what's on today" means schedule/context; "anything due" means reminders/tasks; "who do I owe replies/follow-ups to" means Gmail/follow-up/task context as relevant.
 - For timetable or lesson lookups, use get_timetable. TIMETABLE in timetable.py is the source of truth for lessons; Google Calendar is only for events/appointments.
+- HBL guardrail: Never infer HBL from Friday, Even-week Friday, a free day, or "no timetabled lessons". Say it is HBL only when a dated source explicitly marks that date as HBL. If the assistant context says "HBL status: Not HBL", treat that as authoritative over stale/general HBL memories or generic recurring labels.
 - If Stored memory says Herwanto's lessons/classes are covered by relief for a date, treat those timetable lessons as covered for workload and overlap warnings. Do not warn that a calendar item clashes with relieved lessons unless newer user/calendar information clearly contradicts the relief memory.
 - For availability planning ("best slots", "free slots", "when can I schedule", "after school", "not during CCA day"), call find_available_training_slots before suggesting times. Do not suggest a slot until timetable lessons and Google Calendar conflicts have been checked.
 - For MTL classlists, student names, scores, marks, WA/weighted assessment, FA/formative assessment, prelim, EOY, assessment columns, progress analysis, or who is in Herwanto's classes, call get_mtl_classlists or analyze_mtl_scores as appropriate. His classlist tabs in the 2026 MTL classlist sheets include CG HERWANTO or CG HERWANTO/CG KADIR.
@@ -1646,6 +1647,17 @@ def _agenda_week_display(target: date) -> str:
         return f"School holiday, {base}"
     return f"{tt.week_type_label(official_week['week_type'])} week, {base}"
 
+def _hbl_status_line(target: date) -> str:
+    official_week = tt.get_school_week_info(target)
+    if not official_week or target.weekday() > 4 or official_week.get("is_school_holiday"):
+        return ""
+    if official_week.get("is_hbl"):
+        return "HBL status: HBL is explicitly marked for this date."
+    return (
+        "HBL status: Not HBL. Do not infer HBL from Friday, an Even-week free day, "
+        "or no timetabled lessons."
+    )
+
 def _format_memory(memory: dict) -> str:
     lines = [
         "*Persistent School Calendar*",
@@ -1877,6 +1889,9 @@ def build_context_snapshot(days: int = 7) -> str:
     if wt_label:
         lines.append(f"\nToday's lessons ({_week_display(wt_label, today)}):")
         lines.append(tt.format_lessons(lessons).replace("*", ""))
+        hbl_line = _hbl_status_line(today)
+        if hbl_line:
+            lines.append(hbl_line)
         relief_note = relief_memory_for_date(today)
         if relief_note:
             lines.append(

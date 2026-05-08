@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import unittest
+from datetime import date
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import ANY, patch
@@ -142,6 +143,16 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("9:40–10:50", thursday_odd)
         self.assertIn("11:25–12:30", thursday_even)
         self.assertIn("11:25–12:30", friday_odd)
+
+    def test_non_hbl_friday_is_explicitly_guarded(self):
+        target = date(2026, 5, 8)
+        info = bot.tt.get_school_week_info(target)
+
+        self.assertEqual(target.weekday(), 4)
+        self.assertFalse(info["is_school_holiday"])
+        self.assertFalse(info["is_hbl"])
+        self.assertEqual(info["week_type"], "O")
+        self.assertIn("HBL status: Not HBL", bot._hbl_status_line(target))
 
     def test_timetable_question_forces_timetable_tool(self):
         forced = bot._forced_tool_for_text(
