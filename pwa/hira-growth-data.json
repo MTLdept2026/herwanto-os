@@ -5,19 +5,19 @@
   "summary": {
     "start": "2026-04-28",
     "current": "2026-05-08",
-    "commitsTracked": 165,
-    "majorPhases": 20,
-    "currentStage": "Premium Daily OS and trust rails"
+    "commitsTracked": 167,
+    "majorPhases": 21,
+    "currentStage": "Restored cockpit interface and trust rails"
   },
   "metrics": [
     {
       "label": "Days of build acceleration",
       "value": "10",
-      "note": "From first installable PWA commit to a premium Daily OS with explicit trust rails."
+      "note": "From first installable PWA commit to a restored cockpit interface with explicit trust rails."
     },
     {
       "label": "Tracked upgrade commits",
-      "value": "165",
+      "value": "167",
       "note": "Grouped from git history through the growth-log minisite."
     },
     {
@@ -34,8 +34,8 @@
   "capabilityRings": [
     {
       "name": "Interface",
-      "score": 97,
-      "description": "Installable PWA, premium Daily OS home, mobile cockpit, chat, files, dashboard, action-enabled push notifications, recovery health, and notification controls."
+      "score": 94,
+      "description": "Installable PWA, restored cockpit home, mobile dashboard, chat, files, action-enabled push notifications, recovery health, and notification controls."
     },
     {
       "name": "Security",
@@ -350,20 +350,35 @@
     },
     {
       "date": "2026-05-08",
-      "era": "Premium Daily OS",
-      "title": "The home screen becomes a daily command surface",
+      "era": "Premium UI Experiment",
+      "title": "A premium home screen experiment is tested",
       "commit": "5a77916",
       "tag": "Premium UI",
-      "summary": "The PWA home screen was redesigned around a premium Living Daily OS concept while preserving H.I.R.A's Nothing-style dotted headings and numbers.",
+      "summary": "The PWA home screen was redesigned around a premium Living Daily OS concept while preserving H.I.R.A's Nothing-style dotted headings and numbers, then judged too heavy in the installed mobile app.",
       "details": [
         "Home now opens with a premium greeting, live day subtitle, and compact command controls.",
         "The main surface now prioritises Top 3 priorities, Living Timeline, next best action, protected time, and today's score.",
         "The side rail now carries Daily Load, Risk Radar, Calendar Pressure, and Prayer/Window context.",
         "Lower operations drawers keep Digest, Tasks, System Status, Marking Load, and File Memory available without dominating the first scan.",
         "Light and dark palettes were upgraded toward ivory/graphite premium software while retaining dotted H.I.R.A display typography.",
-        "PWA app version moved to 20260508-2 with service worker cache hira-os-v70 so devices refresh into the new interface."
+        "PWA app version moved to 20260508-2 with service worker cache hira-os-v70 for field testing."
       ],
-      "impact": "H.I.R.A's first screen now feels more like a paid personal operating system: less developer dashboard, more calm command surface for what matters today."
+      "impact": "This became a useful design test rather than the final direction: the mobile app exposed oversized panels and poor bottom behavior, so the previous look was restored."
+    },
+    {
+      "date": "2026-05-08",
+      "era": "Interface Recovery",
+      "title": "The previous cockpit look is restored",
+      "commit": "c6251cb",
+      "tag": "Rollback",
+      "summary": "After real phone screenshots showed the premium redesign did not translate well inside the installed app, H.I.R.A returned to the earlier cockpit-style interface.",
+      "details": [
+        "The premium Daily OS layout was reverted without removing the working-memory and trust-rail upgrades.",
+        "The previous topbar, local time block, tab rail, dashboard sections, and chat layout were restored.",
+        "The PWA app version moved to 20260508-3 with service worker cache hira-os-v71 so installed devices receive the restored look as a fresh update.",
+        "The growth log now marks the premium redesign as an experiment, not the current interface."
+      ],
+      "impact": "H.I.R.A should look familiar again in the app while keeping the newer reliability behavior underneath."
     }
   ],
   "currentCapabilities": [
@@ -377,7 +392,7 @@
     "Unified Proactive Intelligence v2 queue that ranks nudges, check-ins, follow-ups, prayers, tasks, digest picks, and internal intelligence with suppression and feedback learning.",
     "Short-lived PWA working memory that tracks the current subject, latest correction, pending action, and older competing subjects during follow-up chats.",
     "Action validation and audit receipts for state-changing tools so vague calendar/reminder/nudge/follow-up saves are blocked or reviewable.",
-    "Premium Daily OS home surface with priority queue, living timeline, load/risk context, prayer window, marking, file memory, and preserved dotted H.I.R.A display typography.",
+    "Restored cockpit-style home surface with local time, tabs, dashboard panels, workload context, marking, file memory, chat, and preserved dotted H.I.R.A display typography.",
     "Recoverable push notification system with delivery logs, recovery status, confirmed-push completion checks, and catch-up retry behavior for daily briefings.",
     "Action-enabled push notifications: Done, Snooze 30m, Useful, and Not useful feed back into task/check-in/follow-up completion, proactive nudges, and notification outcome memory.",
     "Calendar and task reminder push layer with reminder confidence levels and rough time-to-leave estimates from explicit notes, place overrides, or default travel buffers.",
