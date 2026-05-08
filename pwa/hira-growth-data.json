@@ -1,23 +1,23 @@
 {
-  "updated": "2026-05-05",
+  "updated": "2026-05-08",
   "name": "H.I.R.A Growth Log",
   "subtitle": "How Herwanto Interface for Responsive Assistance grew from an installable assistant into a more reliable personal operating system.",
   "summary": {
     "start": "2026-04-28",
-    "current": "2026-05-05",
-    "commitsTracked": 163,
-    "majorPhases": 18,
-    "currentStage": "Push reliability and action loop"
+    "current": "2026-05-08",
+    "commitsTracked": 165,
+    "majorPhases": 20,
+    "currentStage": "Premium Daily OS and trust rails"
   },
   "metrics": [
     {
       "label": "Days of build acceleration",
-      "value": "7",
-      "note": "From first installable PWA commit to governed, self-improving proactive core."
+      "value": "10",
+      "note": "From first installable PWA commit to a premium Daily OS with explicit trust rails."
     },
     {
       "label": "Tracked upgrade commits",
-      "value": "163",
+      "value": "165",
       "note": "Grouped from git history through the growth-log minisite."
     },
     {
@@ -34,8 +34,8 @@
   "capabilityRings": [
     {
       "name": "Interface",
-      "score": 94,
-      "description": "Installable PWA, mobile cockpit, chat, files, dashboard, action-enabled push notifications, recovery health, and notification controls."
+      "score": 97,
+      "description": "Installable PWA, premium Daily OS home, mobile cockpit, chat, files, dashboard, action-enabled push notifications, recovery health, and notification controls."
     },
     {
       "name": "Security",
@@ -44,8 +44,8 @@
     },
     {
       "name": "Context",
-      "score": 93,
-      "description": "Timetable, Google Calendar, reminder-worthy events, rough travel buffers, MTL classlists, checked availability slots, Drive references, file memory, topic profiles, conversation summaries, relevant-memory retrieval, and intent lensing."
+      "score": 95,
+      "description": "Timetable, Google Calendar, reminder-worthy events, rough travel buffers, MTL classlists, checked availability slots, Drive references, file memory, topic profiles, conversation summaries, relevant-memory retrieval, intent lensing, and short-lived working memory."
     },
     {
       "name": "Live Knowledge",
@@ -54,8 +54,8 @@
     },
     {
       "name": "Self-Improvement",
-      "score": 91,
-      "description": "Priority-weighted memory prompt, relevant recall, intent lens, proactive workload insights, notification feedback learning, implicit correction detection, weekly consolidation, and conversation summarisation."
+      "score": 94,
+      "description": "Priority-weighted memory prompt, relevant recall, working memory, action validation/audits, intent lens, proactive workload insights, notification feedback learning, implicit correction detection, weekly consolidation, and conversation summarisation."
     }
   ],
   "chapters": [
@@ -330,6 +330,40 @@
         "Push notifications gained action buttons: reminders can be marked done or snoozed, while updates/digests can be rated useful or not useful."
       ],
       "impact": "H.I.R.A's notifications are now less fire-and-forget. They can retry, explain failures, learn from feedback, and accept lightweight user action straight from the push surface."
+    },
+    {
+      "date": "2026-05-08",
+      "era": "Trust Rails",
+      "title": "Hira stops losing the thread",
+      "commit": "236667e",
+      "tag": "Working Memory",
+      "summary": "H.I.R.A gained a short-term working memory and action validation layer after a real Rhino/Sahibba follow-up drift exposed weak pronoun grounding.",
+      "details": [
+        "PWA chat now keeps short-lived working memory per client: current subject, latest correction, pending action, and older competing subjects.",
+        "Vague follow-ups such as it, that day, and remind me again now receive recent-turn grounding before the model answers.",
+        "The chat can show an inline understanding cue such as Tracking Rhino Emergency Exercise and Action Morning Briefing Reminder.",
+        "State-changing tools now validate calendar events, reminders, nudges, check-ins, and follow-ups before saving.",
+        "Saved or blocked actions include internal action audits so reviewers can inspect what H.I.R.A thought it was doing.",
+        "Redis production guardrail warnings now appear in admin status when deployment state could fall back to one-process memory."
+      ],
+      "impact": "H.I.R.A became safer for natural follow-up language: newer user corrections now beat older assistant guesses, and vague actions are blocked before they can save the wrong thing."
+    },
+    {
+      "date": "2026-05-08",
+      "era": "Premium Daily OS",
+      "title": "The home screen becomes a daily command surface",
+      "commit": "5a77916",
+      "tag": "Premium UI",
+      "summary": "The PWA home screen was redesigned around a premium Living Daily OS concept while preserving H.I.R.A's Nothing-style dotted headings and numbers.",
+      "details": [
+        "Home now opens with a premium greeting, live day subtitle, and compact command controls.",
+        "The main surface now prioritises Top 3 priorities, Living Timeline, next best action, protected time, and today's score.",
+        "The side rail now carries Daily Load, Risk Radar, Calendar Pressure, and Prayer/Window context.",
+        "Lower operations drawers keep Digest, Tasks, System Status, Marking Load, and File Memory available without dominating the first scan.",
+        "Light and dark palettes were upgraded toward ivory/graphite premium software while retaining dotted H.I.R.A display typography.",
+        "PWA app version moved to 20260508-2 with service worker cache hira-os-v70 so devices refresh into the new interface."
+      ],
+      "impact": "H.I.R.A's first screen now feels more like a paid personal operating system: less developer dashboard, more calm command surface for what matters today."
     }
   ],
   "currentCapabilities": [
@@ -341,6 +375,9 @@
     "Intent lens with relevant-memory retrieval before answers, including quick PWA replies.",
     "Proactive intelligence scanner for workload pinch points, marking pressure, follow-ups, quiet windows, and upcoming packed days.",
     "Unified Proactive Intelligence v2 queue that ranks nudges, check-ins, follow-ups, prayers, tasks, digest picks, and internal intelligence with suppression and feedback learning.",
+    "Short-lived PWA working memory that tracks the current subject, latest correction, pending action, and older competing subjects during follow-up chats.",
+    "Action validation and audit receipts for state-changing tools so vague calendar/reminder/nudge/follow-up saves are blocked or reviewable.",
+    "Premium Daily OS home surface with priority queue, living timeline, load/risk context, prayer window, marking, file memory, and preserved dotted H.I.R.A display typography.",
     "Recoverable push notification system with delivery logs, recovery status, confirmed-push completion checks, and catch-up retry behavior for daily briefings.",
     "Action-enabled push notifications: Done, Snooze 30m, Useful, and Not useful feed back into task/check-in/follow-up completion, proactive nudges, and notification outcome memory.",
     "Calendar and task reminder push layer with reminder confidence levels and rough time-to-leave estimates from explicit notes, place overrides, or default travel buffers.",
