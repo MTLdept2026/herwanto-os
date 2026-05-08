@@ -173,6 +173,27 @@ def require_redis_for_service(service: str) -> bool:
     return False
 
 
+def redis_guardrail_status() -> dict:
+    redis_url = bool(os.environ.get("REDIS_URL", "").strip())
+    railway_env = bool(os.environ.get("RAILWAY_ENVIRONMENT", "").strip() or os.environ.get("RAILWAY_SERVICE_NAME", "").strip())
+    required = redis_required()
+    connected = _get_redis() is not None
+    warnings = []
+    if railway_env and not required:
+        warnings.append("Set HIRA_REQUIRE_REDIS=1 in production so chat history and queues fail loudly instead of falling back to one-process memory.")
+    if required and not connected:
+        warnings.append("Redis is required but not connected; stateful services should not be trusted until REDIS_URL works.")
+    elif railway_env and not redis_url:
+        warnings.append("REDIS_URL is missing in production; chat history, working memory, upload jobs, and scheduler locks can degrade after restarts.")
+    return {
+        "redis_connected": connected,
+        "redis_required": required,
+        "redis_url_configured": redis_url,
+        "production_detected": railway_env,
+        "warnings": warnings,
+    }
+
+
 def _message_text_for_routing(messages: list[dict]) -> str:
     if not messages:
         return ""
@@ -279,6 +300,7 @@ def build_runtime_status() -> dict:
     delivery_log = []
     memory_error = ""
     google_connected = google_ok()
+    redis_guardrail = redis_guardrail_status()
     def safe_config(key: str) -> str:
         if not google_connected:
             return ""
@@ -328,6 +350,13 @@ def build_runtime_status() -> dict:
             "google_connected": google_connected,
             "personal_gmail": gs.gmail_ok("personal"),
             "search_enabled": ss.search_enabled(),
+        },
+        "state_guardrails": {
+            "redis": redis_guardrail,
+            "working_memory": {
+                "backend": "redis" if redis is not None else "local_memory",
+                "ttl_hours": 48,
+            },
         },
         "models": {
             "agentic": AGENTIC_MODEL,
@@ -723,6 +752,7 @@ Personality:
 - Protect his attention: summarise, prioritise, and make the next action obvious.
 - Notice patterns across school, CCA, projects, deadlines, and personal preferences.
 - Use the intent lens and relevant memory context to infer what Herwanto likely means, not only the literal words.
+- In follow-up turns, resolve pronouns/vague references ("it", "that", "that day", "again") against the newest relevant user turn first. If Herwanto corrected or clarified the subject, that newer correction overrides older assistant guesses and older named events in the same chat.
 - When he is stressed or overloaded, steady the room first, then give a short practical plan.
 - When he is building something, be direct and product-minded.
 - When he is teaching, be precise, culturally aware, and DBP-clean for Bahasa Melayu.
@@ -4850,6 +4880,105 @@ def _artifact_result_text(kind: str, path, drive_file: dict | None = None) -> st
         text += f"\nEditable Google link: {drive_file['webViewLink']}"
     return text
 
+
+_STATE_CHANGING_ACTIONS = {
+    "create_calendar_event",
+    "delete_calendar_event_by_text",
+    "add_reminder",
+    "create_proactive_nudge",
+    "create_daily_checkin",
+    "create_break_aware_daily_checkin",
+    "create_followup",
+}
+_VAGUE_ACTION_REF_RE = re.compile(r"\b(this|that|it|that day|the day|same day|there|then)\b", re.I)
+
+
+def _action_field_text(inp: dict, *fields: str) -> str:
+    return " ".join(str(inp.get(field, "") or "") for field in fields)
+
+
+def _action_subject_for_audit(name: str, inp: dict) -> str:
+    if name == "create_calendar_event":
+        return str(inp.get("title", "") or "")
+    if name == "delete_calendar_event_by_text":
+        return str(inp.get("query", "") or "")
+    if name == "add_reminder":
+        return str(inp.get("description", "") or "")
+    if name == "create_proactive_nudge":
+        return str(inp.get("message", "") or "")
+    if name in {"create_daily_checkin", "create_break_aware_daily_checkin"}:
+        return str(inp.get("name", "") or "")
+    if name == "create_followup":
+        return str(inp.get("topic", "") or "")
+    return ""
+
+
+def _validate_state_changing_action(name: str, inp: dict) -> tuple[bool, str]:
+    if name not in _STATE_CHANGING_ACTIONS:
+        return True, ""
+    subject = _action_subject_for_audit(name, inp).strip()
+    if len(subject) < 3:
+        return False, "The action subject is missing or too vague."
+    if _VAGUE_ACTION_REF_RE.fullmatch(subject.lower()):
+        return False, "The action subject is only a vague reference."
+    if re.search(r"\b(that day|the day|same day)\b", subject, re.I):
+        return False, "The action still contains unresolved vague references; ask for or infer the concrete subject before saving."
+    if name == "create_calendar_event":
+        required = ("title", "date", "start_time", "end_time")
+        if any(not str(inp.get(field, "") or "").strip() for field in required):
+            return False, "Calendar event needs title, date, start time, and end time."
+    elif name == "add_reminder":
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(inp.get("due_date", "") or "")):
+            return False, "Reminder needs a concrete YYYY-MM-DD due date."
+    elif name == "create_proactive_nudge":
+        if not str(inp.get("send_at", "") or "").strip():
+            return False, "Nudge needs a concrete send_at datetime."
+    elif name in {"create_daily_checkin", "create_break_aware_daily_checkin"}:
+        if not str(inp.get("question", "") or "").strip():
+            return False, "Check-in needs a concrete question."
+    elif name == "create_followup":
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(inp.get("due_date", "") or "")):
+            return False, "Follow-up needs a concrete YYYY-MM-DD due date."
+    detail_text = _action_field_text(
+        inp,
+        "title",
+        "description",
+        "message",
+        "topic",
+        "query",
+        "notes",
+    )
+    if (
+        name in {"create_calendar_event", "delete_calendar_event_by_text", "add_reminder", "create_proactive_nudge", "create_followup"}
+        and _VAGUE_ACTION_REF_RE.search(detail_text)
+        and not re.search(r"\b[A-Z][A-Za-z0-9&/-]{2,}\b", detail_text)
+    ):
+        return False, "The action still contains unresolved vague references; ask for or infer the concrete subject before saving."
+    return True, ""
+
+
+def _action_audit_text(name: str, inp: dict, result: str) -> str:
+    subject = _clip_memory_text(_action_subject_for_audit(name, inp), 140)
+    date_value = inp.get("date") or inp.get("due_date") or inp.get("send_at") or ""
+    status = "failed" if str(result).lower().startswith("failed") else "saved"
+    pieces = [f"action={name}", f"status={status}"]
+    if subject:
+        pieces.append(f"subject={subject}")
+    if date_value:
+        pieces.append(f"date={date_value}")
+    audit = "Action audit: " + " | ".join(pieces)
+    logger.info(audit)
+    return audit
+
+
+def _validated_action_failure(name: str, inp: dict) -> str | None:
+    ok, reason = _validate_state_changing_action(name, inp)
+    if ok:
+        return None
+    audit = f"Action audit: action={name} | status=blocked | reason={reason}"
+    logger.warning(audit)
+    return f"Action validation blocked this save: {reason} Ask Herwanto for the missing concrete detail instead of guessing.\n\n{audit}"
+
 def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     available = {tool["name"] for tool in tools}
     clean = " ".join((text or "").lower().split())
@@ -6360,6 +6489,11 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         add(CONTEXT_TOOL, CALENDAR_TOOL, DELETE_CALENDAR_TOOL, AVAILABILITY_SLOT_TOOL, REMINDER_TOOL, TIMETABLE_TOOL)
     if re.search(r"\b(task|tasks|due|deadline|remind|reminder|prepare|submit|complete|done|priority|prioritise|prioritize|focus)\b", text):
         add(CONTEXT_TOOL, TASK_BRIEF_TOOL, REMINDER_TOOL, COMPLETE_TASK_TOOL)
+        if re.search(r"\bremind(?: me)?\b", text) and re.search(
+            r"\b(at|by|before|after|during|morning|evening|tonight|tomorrow|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b",
+            text,
+        ):
+            add(NUDGE_TOOL)
     if re.search(r"\b(marking|scripts?|papers?|compositions?|kefahaman|karangan|worksheets?|marked|unmarked)\b", text):
         add(ADD_MARKING_TOOL, UPDATE_MARKING_TOOL, RESET_MARKING_TOOL, MARKING_BRIEF_TOOL)
     if re.search(r"\b(nudge|ping|notify|notification|notifications|push|check[- ]?in|check in|selawat|salawat|istighfar|zikir|zikr|dhikr)\b", text):
@@ -6959,16 +7093,23 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "create_calendar_event":
         try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
             start_dt = SGT.localize(datetime.strptime(f"{inp['date']} {inp['start_time']}", "%Y-%m-%d %H:%M"))
             end_dt   = SGT.localize(datetime.strptime(f"{inp['date']} {inp['end_time']}",   "%Y-%m-%d %H:%M"))
             gs.create_event(inp["title"], start_dt, end_dt,
                             inp.get("location", ""), inp.get("description", ""))
-            return f"Created: {inp['title']} on {inp['date']} {inp['start_time']}–{inp['end_time']}"
+            result = f"Created: {inp['title']} on {inp['date']} {inp['start_time']}–{inp['end_time']}"
+            return f"{result}\n\n{_action_audit_text(name, inp, result)}"
         except Exception as e:
             return f"Failed to create event: {e}"
 
     elif name == "delete_calendar_event_by_text":
         try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
             event, score = _resolve_calendar_event_for_deletion(
                 inp["query"],
                 days_back=inp.get("days_back", 7),
@@ -6977,21 +7118,30 @@ async def _execute_tool(name: str, inp: dict) -> str:
             if not event or score < 0.45:
                 return "No confident calendar event match found. Ask with the event title/date so I do not delete the wrong thing."
             gs.delete_event(event["id"], event.get("_calendar_id", ""))
-            return f"Deleted calendar event: {event.get('summary', '(No title)')} ({_event_when_text(event)})"
+            result = f"Deleted calendar event: {event.get('summary', '(No title)')} ({_event_when_text(event)})"
+            return f"{result}\n\n{_action_audit_text(name, inp, result)}"
         except Exception as e:
             return f"Failed to delete calendar event: {e}"
 
     elif name == "add_reminder":
         try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
             rid = gs.add_reminder(inp["description"], inp["due_date"], inp.get("category", "General"))
-            return f"Added reminder #{rid}: {inp['description']} by {inp['due_date']}"
+            result = f"Added reminder #{rid}: {inp['description']} by {inp['due_date']}"
+            return f"{result}\n\n{_action_audit_text(name, inp, result)}"
         except Exception as e:
             return f"Failed to add reminder: {e}"
 
     elif name == "create_proactive_nudge":
         try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
             nudge = _create_nudge(inp["message"], inp["send_at"])
-            return f"Scheduled nudge #{nudge['id']} for {nudge['send_at']}: {nudge['message']}"
+            result = f"Scheduled nudge #{nudge['id']} for {nudge['send_at']}: {nudge['message']}"
+            return f"{result}\n\n{_action_audit_text(name, inp, result)}"
         except Exception as e:
             return f"Failed to schedule nudge: {e}"
 
@@ -7041,14 +7191,21 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "create_daily_checkin":
         try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
             times = _parse_checkin_times(",".join(inp.get("times", [])))
             checkin = gs.add_checkin(inp["name"], inp["question"], times)
-            return f"Created daily check-in #{checkin['id']}: {checkin['name']} at {', '.join(checkin['times'])}"
+            result = f"Created daily check-in #{checkin['id']}: {checkin['name']} at {', '.join(checkin['times'])}"
+            return f"{result}\n\n{_action_audit_text(name, inp, result)}"
         except Exception as e:
             return f"Failed to create daily check-in: {e}"
 
     elif name == "create_break_aware_daily_checkin":
         try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
             checkin = gs.add_checkin(
                 inp["name"],
                 inp["question"],
@@ -7061,7 +7218,8 @@ async def _execute_tool(name: str, inp: dict) -> str:
             )
             slots = _break_aware_slots(checkin, datetime.now(SGT).date())
             today_note = f" Today's planned slots: {', '.join(slots)}." if slots else " No clear break slots found for today yet."
-            return f"Created break-aware daily check-in #{checkin['id']}: {checkin['name']}.{today_note}"
+            result = f"Created break-aware daily check-in #{checkin['id']}: {checkin['name']}.{today_note}"
+            return f"{result}\n\n{_action_audit_text(name, inp, result)}"
         except Exception as e:
             return f"Failed to create break-aware daily check-in: {e}"
 
@@ -7110,6 +7268,9 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "create_followup":
         try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
             followup = gs.add_followup(
                 inp.get("person", ""),
                 inp["topic"],
@@ -7117,7 +7278,8 @@ async def _execute_tool(name: str, inp: dict) -> str:
                 inp.get("channel", ""),
                 inp.get("notes", ""),
             )
-            return f"Created follow-up: {_format_followup(followup)}"
+            result = f"Created follow-up: {_format_followup(followup)}"
+            return f"{result}\n\n{_action_audit_text(name, inp, result)}"
         except Exception as e:
             return f"Failed to create follow-up: {e}"
 

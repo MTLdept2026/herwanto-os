@@ -1983,6 +1983,17 @@ html[data-theme="dark"] .load-badge.load-green {
   animation: spin 900ms linear infinite;
 }
 
+.understanding-cue {
+  display: block;
+  margin-top: 10px;
+  color: var(--text-secondary);
+  font-family: var(--font-ui);
+  font-size: var(--caption);
+  line-height: 1.4;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .message-body p {
   margin: 0 0 12px;
 }

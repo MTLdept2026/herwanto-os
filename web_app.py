@@ -34,8 +34,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260507-1"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v68"
+PWA_APP_VERSION = "20260508-1"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v69"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -553,11 +553,17 @@ class TasteProfileRequest(BaseModel):
 
 _UPLOAD_JOBS: OrderedDict[str, dict] = OrderedDict()
 _MAX_LOCAL_UPLOAD_JOBS = _env_int("HIRA_WEB_MAX_LOCAL_UPLOAD_JOBS", 100)
+_WEB_WORKING_MEMORY: OrderedDict[str, dict] = OrderedDict()
+_MAX_LOCAL_WORKING_MEMORIES = _env_int("HIRA_WEB_MAX_LOCAL_WORKING_MEMORIES", 100)
 
 
 def _history_key(client_id: str | None) -> str:
     clean = (client_id or "").strip()
     return f"pwa:{clean}" if clean else "pwa"
+
+
+def _working_memory_storage_key(history_key: str) -> str:
+    return f"workmem:{history_key}"
 
 
 def _safe_text(builder, fallback: str) -> str:
@@ -580,6 +586,218 @@ def _device_location_context(location: DeviceLocation | None) -> str:
         "Use this as Herwanto's current origin for nearby-place and journey-time estimates. "
         "Do not invent a street address from coordinates; if exact routing/place verification is unavailable, say the estimate is rough.]"
     )
+
+
+_FOLLOWUP_GROUNDING_RE = re.compile(
+    r"\b("
+    r"this|that|it|its|they|them|there|then|again|earlier|"
+    r"that day|the day|for the day|for that day|"
+    r"i meant|you meant|not regular|not coursework|"
+    r"remind me|reminder|during the morning briefing|morning briefing"
+    r")\b",
+    re.I,
+)
+
+
+def _recent_turn_grounding_context(history: list, message: str, max_turns: int = 8) -> str:
+    clean = " ".join((message or "").split())
+    if len(history) < 2 or not clean or not _FOLLOWUP_GROUNDING_RE.search(clean):
+        return ""
+    turns: list[str] = []
+    for item in history[-max_turns:]:
+        if not isinstance(item, dict):
+            continue
+        role = item.get("role")
+        content = item.get("content", "")
+        if role not in {"user", "assistant"} or not isinstance(content, str):
+            continue
+        text = re.sub(r"\n\n\[[^\]]+\]", "", content).strip()
+        if not text:
+            continue
+        label = "User" if role == "user" else "H.I.R.A"
+        turns.append(f"{label}: {text[:420]}")
+    if not turns:
+        return ""
+    return (
+        "\n\n[Recent-turn grounding for follow-up resolution: The current user message may contain "
+        "pronouns or vague references. Resolve words like this/that/it/again/that day against the newest "
+        "relevant turns below. Give newer user corrections and clarifications priority over older assistant "
+        "guesses. Do not switch back to an older named event unless the user explicitly names it.\n"
+        + "\n".join(turns)
+        + "]"
+    )
+
+
+_SUBJECT_STOP_RE = re.compile(
+    r"\b(?:at|by|before|after|during|on|from|with|when|where|because|so|but|and|please|pls|again)\b",
+    re.I,
+)
+_VAGUE_SUBJECT_RE = re.compile(
+    r"^(?:it|its|this|that|that day|the day|today|tomorrow|morning|evening|briefing|reminder|remind me)\b",
+    re.I,
+)
+_ACTION_KEYWORD_RE = re.compile(
+    r"\b(remind|reminder|nudge|ping|notify|calendar|schedule|add|delete|remove|mark|done|follow[- ]?up|briefing)\b",
+    re.I,
+)
+
+
+def _load_working_memory(history_key: str) -> dict:
+    key = _working_memory_storage_key(history_key)
+    redis = bot._get_redis()
+    if redis:
+        try:
+            raw = redis.get(key)
+            return json.loads(raw) if raw else {}
+        except Exception as exc:
+            bot.logger.warning(f"Working memory read failed: {exc}")
+            return {}
+    memory = _WEB_WORKING_MEMORY.get(key, {})
+    if key in _WEB_WORKING_MEMORY:
+        _WEB_WORKING_MEMORY.move_to_end(key)
+    return dict(memory)
+
+
+def _save_working_memory(history_key: str, memory: dict) -> None:
+    key = _working_memory_storage_key(history_key)
+    memory = {k: v for k, v in memory.items() if v not in ("", None, [], {})}
+    redis = bot._get_redis()
+    if redis:
+        try:
+            redis.setex(key, 86400 * 2, json.dumps(memory, ensure_ascii=False))
+            return
+        except Exception as exc:
+            bot.logger.warning(f"Working memory write failed: {exc}")
+    _WEB_WORKING_MEMORY[key] = memory
+    _WEB_WORKING_MEMORY.move_to_end(key)
+    while len(_WEB_WORKING_MEMORY) > _MAX_LOCAL_WORKING_MEMORIES:
+        _WEB_WORKING_MEMORY.popitem(last=False)
+
+
+def _clean_turn_text(text: str) -> str:
+    clean = re.sub(r"\n\n\[[^\]]+\]", "", text or "")
+    return " ".join(clean.split())
+
+
+def _normalise_subject(raw: str) -> str:
+    subject = _SUBJECT_STOP_RE.split(raw or "", maxsplit=1)[0]
+    subject = re.sub(r"^[\"'`*_\\s]+|[\"'`*_.,!?;:\\s]+$", "", subject)
+    subject = re.sub(r"\b(?:heads[- ]?up|not regular coursework|marking)$", "", subject, flags=re.I).strip()
+    if len(subject) < 3 or _VAGUE_SUBJECT_RE.search(subject):
+        return ""
+    words = subject.split()
+    if len(words) > 8:
+        subject = " ".join(words[:8])
+    return subject
+
+
+def _subject_candidates_from_text(text: str) -> list[str]:
+    clean = _clean_turn_text(text)
+    candidates: list[str] = []
+    patterns = [
+        (r"\bi meant(?: reminder)? for\s+(?:the\s+)?([^.\n,;!?]{3,90})", re.I),
+        (r"\b(?:it'?s|its|this is|that'?s)\s+for\s+(?:the\s+)?([^.\n,;!?]{3,90})", re.I),
+        (r"\b(?:for|about|regarding|re:)\s+(?:the\s+)?([^.\n,;!?]{3,90})", re.I),
+        (r"\b([A-Z][A-Za-z0-9&/-]+(?:\s+[A-Za-z0-9&/-]+){0,5}\s+(?:exercise|briefing|competition|training|duty|meeting|marking))\b", 0),
+    ]
+    for pattern, flags in patterns:
+        for match in re.finditer(pattern, clean, flags):
+            subject = _normalise_subject(match.group(1))
+            if subject and subject.lower() not in {item.lower() for item in candidates}:
+                candidates.append(subject)
+    return candidates
+
+
+def _pending_action_from_text(text: str) -> str:
+    clean = _clean_turn_text(text).lower()
+    if not _ACTION_KEYWORD_RE.search(clean):
+        return ""
+    if re.search(r"\b(remind|reminder|nudge|ping|notify)\b", clean):
+        if "morning briefing" in clean:
+            return "morning briefing reminder"
+        if "evening" in clean:
+            return "evening reminder"
+        return "time-specific reminder"
+    if re.search(r"\b(schedule|calendar|add)\b", clean):
+        return "calendar/task action"
+    if re.search(r"\b(delete|remove|cancel)\b", clean):
+        return "deletion action"
+    if re.search(r"\bfollow[- ]?up\b", clean):
+        return "follow-up action"
+    return ""
+
+
+def _update_working_memory(history_key: str, history: list, message: str) -> dict:
+    memory = _load_working_memory(history_key)
+    previous_subject = str(memory.get("current_subject", "") or "")
+    candidates: list[tuple[str, str, str]] = []
+    for item in history[-8:]:
+        if not isinstance(item, dict) or not isinstance(item.get("content"), str):
+            continue
+        role = "user" if item.get("role") == "user" else "assistant"
+        for subject in _subject_candidates_from_text(item["content"]):
+            candidates.append((role, subject, _clean_turn_text(item["content"])[:220]))
+    for subject in _subject_candidates_from_text(message):
+        candidates.append(("user", subject, _clean_turn_text(message)[:220]))
+
+    current_subject = previous_subject
+    latest_correction = str(memory.get("latest_correction", "") or "")
+    for role, subject, source in candidates:
+        if role == "user":
+            current_subject = subject
+            if bot._looks_like_correction(source) or re.search(r"\b(i meant|not .+ it'?s for|no .+ for)\b", source, re.I):
+                latest_correction = source
+    if not current_subject and candidates:
+        current_subject = candidates[-1][1]
+
+    seen_subjects: list[str] = []
+    for _, subject, _ in candidates:
+        if subject and subject.lower() not in {item.lower() for item in seen_subjects}:
+            seen_subjects.append(subject)
+    competing = [item for item in seen_subjects if current_subject and item.lower() != current_subject.lower()]
+    pending_action = _pending_action_from_text(message) or str(memory.get("pending_action", "") or "")
+    updated = {
+        **memory,
+        "current_subject": current_subject,
+        "latest_correction": latest_correction,
+        "pending_action": pending_action,
+        "competing_subjects": competing[-3:],
+        "updated_at": datetime.now(bot.SGT).isoformat(),
+    }
+    _save_working_memory(history_key, updated)
+    return updated
+
+
+def _working_memory_context(memory: dict) -> str:
+    subject = memory.get("current_subject")
+    pending = memory.get("pending_action")
+    correction = memory.get("latest_correction")
+    competing = memory.get("competing_subjects") or []
+    if not any([subject, pending, correction, competing]):
+        return ""
+    parts = ["\n\n[Working memory for this PWA chat:"]
+    if subject:
+        parts.append(f"Current subject: {subject}.")
+    if pending:
+        parts.append(f"Pending user intent: {pending}.")
+    if correction:
+        parts.append(f"Latest user correction/clarification: {correction}.")
+    if competing:
+        parts.append(f"Older competing subjects in this chat: {', '.join(competing)}.")
+    parts.append(
+        "Use the current subject and latest user correction before older assistant guesses. "
+        "If action details are still incomplete, ask for only the missing detail.]"
+    )
+    return " ".join(parts)
+
+
+def _working_memory_summary(memory: dict) -> dict:
+    summary = {
+        "subject": memory.get("current_subject", ""),
+        "action": memory.get("pending_action", ""),
+        "conflict": ", ".join(memory.get("competing_subjects") or []),
+    }
+    return {key: value for key, value in summary.items() if value}
 
 
 def _parallel_home_data(days: int) -> dict:
@@ -1171,6 +1389,8 @@ async def chat(
 async def _chat_stream_response(message: str, location: DeviceLocation | None, x_hira_client: str | None):
     history_key = _history_key(x_hira_client)
     history = bot.get_history(history_key)
+    working_memory = _update_working_memory(history_key, history, message)
+    working_summary = _working_memory_summary(working_memory)
     bot.absorb_taste_hint(message)
     if bot.is_removed_work_gmail_request(message):
         reply = bot.WORK_GMAIL_REMOVED_MESSAGE
@@ -1195,7 +1415,13 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
     if bot.re.search(r"\bpersonal\s+(?:gmail|email|emails|mail)\b", message, bot.re.I):
         account_hint, _ = bot._extract_gmail_account_from_text(message)
         user_content = f"{message}\n\n[Email account hint: use account=\"{account_hint}\" for Gmail tools.]"
-    user_content = f"{user_content}{bot.intent_lens_hint(message)}{bot.source_discipline_hint(message)}"
+    user_content = (
+        f"{user_content}"
+        f"{_working_memory_context(working_memory)}"
+        f"{_recent_turn_grounding_context(history, message)}"
+        f"{bot.intent_lens_hint(message)}"
+        f"{bot.source_discipline_hint(message)}"
+    )
     location_context = _device_location_context(location)
     if location_context:
         user_content = f"{user_content}{location_context}"
@@ -1300,6 +1526,8 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             return payload
 
         try:
+            if working_summary:
+                yield sse({"type": "understood", **working_summary})
             quick = await bot.should_route_quick_pwa_chat(list(history[:-1]), message)
             yield sse(timing("route"))
             yield sse({"type": "route", "name": "quick" if quick else "agentic"})

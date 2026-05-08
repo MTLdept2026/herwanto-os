@@ -629,8 +629,8 @@ class AgenticClaudeTests(unittest.TestCase):
         with patch.dict(os.environ, {"RAILWAY_GIT_COMMIT_SHA": "abcdef1234567890"}):
             data = web_app.app_version()
 
-        self.assertEqual(data["app_version"], "20260506-5")
-        self.assertEqual(data["service_worker_cache"], "hira-os-v67")
+        self.assertEqual(data["app_version"], web_app.PWA_APP_VERSION)
+        self.assertEqual(data["service_worker_cache"], web_app.PWA_SERVICE_WORKER_CACHE)
         self.assertEqual(data["git_commit"], "abcdef123456")
         self.assertIn("server_time", data)
 
@@ -1269,6 +1269,94 @@ class AgenticClaudeTests(unittest.TestCase):
         names = {tool["name"] for tool in tools}
 
         self.assertIn("get_liverpool_brief", names)
+
+    def test_pwa_followup_reminder_gets_recent_turn_grounding(self):
+        history = [
+            {"role": "assistant", "content": "Locked in for Sahibba at Pei Hwa Sec, 2-6pm."},
+            {"role": "user", "content": "I meant reminder for the Rhino exercise briefing"},
+            {"role": "assistant", "content": "You meant the Rhino emergency exercise, but I do not have the date."},
+            {"role": "user", "content": "No lessons so its ok. It's for Rhino emergency exercise."},
+            {"role": "assistant", "content": "Got it - that's the Rhino emergency exercise marking, not regular coursework."},
+        ]
+
+        hint = web_app._recent_turn_grounding_context(
+            history,
+            "Thanks Hira. Just remind me again during the morning briefing for that day",
+        )
+
+        self.assertIn("Rhino emergency exercise", hint)
+        self.assertIn("Sahibba", hint)
+        self.assertIn("newer user corrections", hint)
+        self.assertIn("Do not switch back to an older named event", hint)
+
+    def test_pwa_working_memory_prefers_latest_user_correction(self):
+        history_key = "pwa:test-working-memory"
+        web_app._WEB_WORKING_MEMORY.pop(web_app._working_memory_storage_key(history_key), None)
+        history = [
+            {"role": "assistant", "content": "Locked in for Sahibba at Pei Hwa Sec, 2-6pm."},
+            {"role": "user", "content": "I meant reminder for the Rhino emergency exercise briefing"},
+            {"role": "assistant", "content": "Got it - that's the Rhino emergency exercise marking, not regular coursework."},
+        ]
+
+        memory = web_app._update_working_memory(
+            history_key,
+            history,
+            "Thanks Hira. Just remind me again during the morning briefing for that day",
+        )
+        context = web_app._working_memory_context(memory)
+        summary = web_app._working_memory_summary(memory)
+
+        self.assertEqual(memory["current_subject"], "Rhino emergency exercise briefing")
+        self.assertIn("Sahibba", memory["competing_subjects"])
+        self.assertEqual(summary["subject"], "Rhino emergency exercise briefing")
+        self.assertEqual(summary["action"], "morning briefing reminder")
+        self.assertIn("Latest user correction/clarification", context)
+
+    def test_pwa_time_specific_remind_me_includes_nudge_tool(self):
+        tools = bot.pwa_tools_for_message(
+            "Thanks Hira. Just remind me again during the morning briefing for that day"
+        )
+        names = {tool["name"] for tool in tools}
+
+        self.assertIn("create_proactive_nudge", names)
+        self.assertIn("add_reminder", names)
+
+    def test_state_changing_action_validation_blocks_unresolved_subject(self):
+        blocked = bot._validated_action_failure(
+            "create_proactive_nudge",
+            {"message": "Remind me about that day", "send_at": "2026-05-14T06:40:00+08:00"},
+        )
+
+        self.assertIsNotNone(blocked)
+        self.assertIn("blocked", blocked)
+        self.assertIn("unresolved vague references", blocked)
+
+    def test_state_changing_action_result_includes_audit(self):
+        with patch.object(bot.gs, "add_reminder", return_value="42"):
+            result = asyncio.run(bot._execute_tool(
+                "add_reminder",
+                {
+                    "description": "Rhino emergency exercise morning briefing reminder",
+                    "due_date": "2026-05-14",
+                    "category": "Teaching",
+                },
+            ))
+
+        self.assertIn("Added reminder #42", result)
+        self.assertIn("Action audit: action=add_reminder", result)
+        self.assertIn("subject=Rhino emergency exercise", result)
+
+    def test_redis_guardrail_warns_when_production_not_required(self):
+        with patch.dict(os.environ, {
+            "RAILWAY_ENVIRONMENT": "production",
+            "HIRA_REQUIRE_REDIS": "",
+            "REDIS_URL": "",
+        }):
+            status = bot.redis_guardrail_status()
+
+        self.assertTrue(status["production_detected"])
+        self.assertFalse(status["redis_required"])
+        self.assertTrue(any("HIRA_REQUIRE_REDIS=1" in warning for warning in status["warnings"]))
 
     def test_forced_lfc_tool_uses_recent_match_context(self):
         forced = bot._forced_tool_for_current_turn(

@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260507-1";
-const APP_SCRIPT = "app.js?v=20260507-1";
-const EXPECTED_SW_CACHE = "hira-os-v68";
+const APP_VERSION = "20260508-1";
+const APP_SCRIPT = "app.js?v=20260508-1";
+const EXPECTED_SW_CACHE = "hira-os-v69";
 
 const state = {
   token: localStorage.getItem("hira_web_token") || "",
@@ -1568,6 +1568,22 @@ function appendToolStatus(el, name) {
   scrollMessagesToBottom();
 }
 
+function renderUnderstanding(el, understanding) {
+  if (!el || !understanding) return;
+  let cue = el.querySelector(".understanding-cue");
+  if (!cue) {
+    cue = document.createElement("div");
+    cue.className = "understanding-cue";
+    el.appendChild(cue);
+  }
+  const parts = [];
+  if (understanding.subject) parts.push(`Tracking: ${understanding.subject}`);
+  if (understanding.action) parts.push(`Action: ${understanding.action}`);
+  if (understanding.conflict) parts.push(`Older: ${understanding.conflict}`);
+  cue.textContent = parts.join(" | ");
+  scrollMessagesToBottom();
+}
+
 function clearToolStatuses(el) {
   el?.querySelectorAll(".tool-status").forEach((item) => item.remove());
 }
@@ -2099,9 +2115,18 @@ async function sendChat(message) {
   setHiraSpeaking(pending, true);
   try {
     let latestText = "";
+    let understanding = null;
     const reply = await streamChatResponse(message, (event, streamedText = latestText) => {
       if (event.type === "route") {
         setStatus(event.name === "quick" ? "Quick reply path." : "Thinking with tools ready.", "muted");
+      }
+      if (event.type === "understood") {
+        understanding = {
+          subject: event.subject || "",
+          action: event.action || "",
+          conflict: event.conflict || "",
+        };
+        renderUnderstanding(pending, understanding);
       }
       if (event.type === "tools") {
         console.info("H.I.R.A tool route", event.names || []);
@@ -2117,11 +2142,13 @@ async function sendChat(message) {
         latestText = streamedText;
         pending.classList.toggle("pending", !latestText);
         updateMessage(pending, latestText);
+        renderUnderstanding(pending, understanding);
       }
     });
     pending.classList.remove("pending");
     setHiraSpeaking(pending, false);
     updateMessage(pending, reply);
+    renderUnderstanding(pending, understanding);
     clearToolStatuses(pending);
     state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: reply };
     saveChatHistory();
