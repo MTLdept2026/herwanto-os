@@ -245,6 +245,7 @@ JOB_INTERVALS = {
     "proactive_intelligence": _env_int("HIRA_PROACTIVE_INTELLIGENCE_INTERVAL", 21600, 1800),
     "daily_checkins": _env_int("HIRA_DAILY_CHECKIN_INTERVAL", 300, 60),
     "followups": _env_int("HIRA_FOLLOWUP_INTERVAL", 3600, 300),
+    "work_gmail_monitor": _env_int("HIRA_WORK_GMAIL_MONITOR_INTERVAL", 300, 120),
 }
 MEMORY_DISPLAY_CATEGORIES = (
     "profile",
@@ -7589,6 +7590,8 @@ def _should_send_phone_push(kind: str, source: str = "", now: datetime | None = 
     clean_source = str(source or "").strip()
     if clean_kind == "urgent":
         return True
+    if clean_source.startswith("work_gmail:"):
+        return True
     if not _quiet_hours_active(now=now):
         return True
     # User-scheduled nudges are explicit alarms/reminders, so they should still
@@ -7758,6 +7761,152 @@ def _web_push_delivered_for_source(source: str, now: datetime | None = None) -> 
         if int(item.get("sent", 0) or 0) > 0:
             return True
     return False
+
+
+WORK_GMAIL_MONITOR_SEEN_KEY = "work_gmail_monitor_seen_ids"
+WORK_GMAIL_MONITOR_LAST_RUN_KEY = "work_gmail_monitor_last_run"
+WORK_GMAIL_ACTION_TERMS = (
+    "action required",
+    "action needed",
+    "please",
+    "kindly",
+    "submit",
+    "submission",
+    "deadline",
+    "due",
+    "by today",
+    "by tomorrow",
+    "urgent",
+    "important",
+    "approval",
+    "approve",
+    "acknowledge",
+    "confirm",
+    "reply",
+    "respond",
+    "response required",
+    "follow up",
+    "follow-up",
+    "meeting",
+    "briefing",
+    "duty",
+    "form",
+    "survey",
+    "nomination",
+    "attendance",
+    "cover",
+    "invitation",
+    "reminder",
+    "task",
+    "required",
+)
+WORK_GMAIL_IGNORE_TERMS = (
+    "newsletter",
+    "digest",
+    "promotion",
+    "marketing",
+    "no-reply",
+    "noreply",
+    "do not reply",
+    "automated",
+)
+
+
+def _work_gmail_monitor_enabled() -> bool:
+    return os.environ.get("HIRA_WORK_GMAIL_MONITOR_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _load_work_gmail_seen_ids() -> set[str]:
+    raw = gs.get_config(WORK_GMAIL_MONITOR_SEEN_KEY) or ""
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return {str(item).strip() for item in parsed if str(item).strip()}
+    except Exception:
+        pass
+    return {item.strip() for item in raw.split(",") if item.strip()}
+
+
+def _save_work_gmail_seen_ids(seen: set[str]):
+    kept = list(dict.fromkeys([item for item in seen if item]))[-200:]
+    gs.set_config(WORK_GMAIL_MONITOR_SEEN_KEY, json.dumps(kept, ensure_ascii=False))
+    gs.set_config(WORK_GMAIL_MONITOR_LAST_RUN_KEY, datetime.now(SGT).isoformat())
+
+
+def _work_gmail_action_score(message: dict) -> tuple[int, list[str]]:
+    text = " ".join(str(message.get(key, "") or "") for key in ("from", "subject", "snippet", "body")).lower()
+    score = 0
+    reasons: list[str] = []
+    for term in WORK_GMAIL_IGNORE_TERMS:
+        if term in text:
+            score -= 2
+    for term in WORK_GMAIL_ACTION_TERMS:
+        if term in text:
+            score += 2 if term in {"urgent", "deadline", "due", "action required", "response required"} else 1
+            if len(reasons) < 3:
+                reasons.append(term)
+    if "?" in str(message.get("snippet", "")) or "?" in str(message.get("body", "")):
+        score += 1
+        if len(reasons) < 3:
+            reasons.append("question")
+    return score, reasons
+
+
+def _work_gmail_notification_body(message: dict, reasons: list[str]) -> str:
+    sender = str(message.get("from", "") or "").strip()
+    subject = str(message.get("subject", "") or "(No subject)").strip()
+    snippet = str(message.get("snippet", "") or "").strip()
+    why = ", ".join(reasons[:3]) if reasons else "possible action needed"
+    lines = [f"From: {sender}", f"Subject: {subject}", f"Why: {why}"]
+    if snippet:
+        lines.append(f"Preview: {snippet[:260]}")
+    lines.append("Open H.I.R.A > Gmail > Work Gmail to inspect or draft a reply.")
+    return "\n".join(lines)
+
+
+async def work_gmail_monitor_job(context):
+    if not _work_gmail_monitor_enabled() or not gs.gmail_ok("work"):
+        return
+    if not _acquire_job_lock("work_gmail_monitor", max(120, JOB_INTERVALS["work_gmail_monitor"] - 10)):
+        return
+    try:
+        query = os.environ.get("HIRA_WORK_GMAIL_MONITOR_QUERY", "newer_than:2d").strip() or "newer_than:2d"
+        max_results = _env_int("HIRA_WORK_GMAIL_MONITOR_MAX_RESULTS", 10, 1)
+        messages = gs.list_gmail_messages(query=query, max_results=max_results, account="work")
+        seen = _load_work_gmail_seen_ids()
+        incoming = [
+            msg for msg in reversed(messages)
+            if str(msg.get("id", "")).strip() and str(msg.get("id", "")).strip() not in seen
+        ]
+        if not seen and os.environ.get("HIRA_WORK_GMAIL_NOTIFY_ON_FIRST_RUN", "0").strip().lower() not in {"1", "true", "yes", "on"}:
+            _save_work_gmail_seen_ids({str(msg.get("id", "")).strip() for msg in messages if str(msg.get("id", "")).strip()})
+            logger.info("Work Gmail monitor seeded %s message id(s) without notifying.", len(messages))
+            return
+        notified = 0
+        minimum_score = _env_int("HIRA_WORK_GMAIL_ACTION_SCORE", 2, 0)
+        for msg in incoming:
+            msg_id = str(msg.get("id", "")).strip()
+            score, reasons = _work_gmail_action_score(msg)
+            seen.add(msg_id)
+            if score < minimum_score:
+                continue
+            subject = str(msg.get("subject", "") or "(No subject)")
+            item = _queue_app_notification(
+                "update",
+                f"Work Gmail: {subject[:80]}",
+                _work_gmail_notification_body(msg, reasons),
+                source=f"work_gmail:{msg_id}",
+            )
+            if item:
+                notified += 1
+        if incoming or notified:
+            _save_work_gmail_seen_ids(seen)
+        if notified:
+            logger.info("Work Gmail monitor queued %s action-worthy notification(s).", notified)
+    except Exception as e:
+        logger.error(f"Work Gmail monitor error: {e}")
+    finally:
+        _finish_background_job("work_gmail_monitor")
 
 
 def _get_news_digest_history() -> list[dict]:
@@ -8233,6 +8382,12 @@ async def run_pwa_notification_worker():
             40,
             followups_job,
         )),
+        asyncio.create_task(_pwa_worker_repeating_loop(
+            "work_gmail_monitor",
+            JOB_INTERVALS["work_gmail_monitor"],
+            50,
+            work_gmail_monitor_job,
+        )),
     ]
     await asyncio.gather(*tasks)
 
@@ -8374,6 +8529,13 @@ def main():
         interval=JOB_INTERVALS["followups"],
         first=40,
         name="followups",
+        job_kwargs={"coalesce": True, "max_instances": 1},
+    )
+    jq.run_repeating(
+        work_gmail_monitor_job,
+        interval=JOB_INTERVALS["work_gmail_monitor"],
+        first=50,
+        name="work_gmail_monitor",
         job_kwargs={"coalesce": True, "max_instances": 1},
     )
     logger.info("Herwanto OS running — all systems active.")

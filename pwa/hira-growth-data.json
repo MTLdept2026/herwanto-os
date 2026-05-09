@@ -5,9 +5,9 @@
   "summary": {
     "start": "2026-04-28",
     "current": "2026-05-09",
-    "commitsTracked": 170,
-    "majorPhases": 25,
-    "currentStage": "Trial-ready OS with Gmail account experiments"
+    "commitsTracked": 171,
+    "majorPhases": 26,
+    "currentStage": "Trial-ready OS with Work Gmail attention monitoring"
   },
   "metrics": [
     {
@@ -17,7 +17,7 @@
     },
     {
       "label": "Tracked upgrade commits",
-      "value": "170",
+      "value": "171",
       "note": "Grouped from git history through the growth-log minisite."
     },
     {
@@ -50,7 +50,7 @@
     {
       "name": "Live Knowledge",
       "score": 88,
-      "description": "Weather, MUIS, dual personal Gmail inbox support, experimental Work Gmail OAuth, Google News, Tavily search, fetch URL, source notes, live-check hints, structured Liverpool and F1 briefers."
+      "description": "Weather, MUIS, dual personal Gmail inbox support, experimental Work Gmail OAuth, Work Gmail action monitoring, Google News, Tavily search, fetch URL, source notes, live-check hints, structured Liverpool and F1 briefers."
     },
     {
       "name": "Self-Improvement",
@@ -444,16 +444,32 @@
         "The Gmail OAuth helper can print a custom Railway variable name so work-token generation is less error-prone."
       ],
       "impact": "H.I.R.A can now try Work/MOE Gmail if Google Workspace permits the OAuth flow, while still treating admin blocking as a likely external constraint."
+    },
+    {
+      "date": "2026-05-09",
+      "era": "Attention Layer",
+      "title": "Work Gmail starts watching for action",
+      "commit": "work-gmail-monitor",
+      "tag": "Email Triage",
+      "summary": "After Work Gmail OAuth succeeded, H.I.R.A gained a background monitor that checks work email and surfaces only messages that look like they need Herwanto's attention.",
+      "details": [
+        "The PWA notification worker now runs a Work Gmail monitor on a configurable interval.",
+        "First run seeds the current inbox so old mail does not flood the phone.",
+        "New Work Gmail messages are scored for action cues such as replies, deadlines, approvals, forms, meetings, submissions, questions, and urgent language.",
+        "Action-worthy messages create deduplicated app notifications with sender, subject, reason, preview, and a prompt to inspect Work Gmail in H.I.R.A.",
+        "Config flags allow the monitor to be disabled, slowed down, pointed at a different Gmail query, or made more/less selective."
+      ],
+      "impact": "H.I.R.A can now act as an attention filter for work email: it watches quietly, skips low-signal messages, and interrupts only when the inbox appears to contain something actionable."
     }
   ],
   "currentCapabilities": [
-    "Installable private PWA with minimal Nothing-style home-screen icon, sharper glyph surfaces, chat, agenda, tasks, dual personal Gmail options, experimental Work Gmail, files, uploads, notifications, and dashboard views.",
+    "Installable private PWA with minimal Nothing-style home-screen icon, sharper glyph surfaces, chat, agenda, tasks, dual personal Gmail options, experimental Work Gmail, Work Gmail action monitoring, files, uploads, notifications, and dashboard views.",
     "Home OS Intelligence that synthesizes agenda, workload, tasks, marking load, proactive signals, service health, and file memory into a readiness score, operating mode, next best move, risks, openings, and one-tap actions.",
     "Command Protocol that turns the current state into concrete Now, Next, and Later steps with confidence and evidence.",
     "Forecast Radar that highlights upcoming pressure from load spikes, due clusters, marking drag, or stable horizon signals.",
     "Adaptive Plan that creates live Prime, Build, Slice, and Stabilize work blocks from the current day state.",
     "7-Day Trial Loop with checkpoints and a trial-note action to measure whether H.I.R.A reduces decision friction in real life.",
-    "Telegram-compatible tool brain with calendar, reminders, marking, MTL classlists, dual personal Gmail brief/draft support, experimental Work Gmail brief/draft support, artifacts, weather, MUIS prayer/khutbah, news, web search, and URL reading.",
+    "Telegram-compatible tool brain with calendar, reminders, marking, MTL classlists, dual personal Gmail brief/draft support, experimental Work Gmail brief/draft support, work-email action monitoring, artifacts, weather, MUIS prayer/khutbah, news, web search, and URL reading.",
     "Structured sports intelligence for Liverpool and F1.",
     "Railway Hobby runtime profile with upload queue, memory guardrails, worker split, Redis production option, and admin status.",
     "Long-term memory buckets, topic profiles for new interests, correction ledger, self-reflection notes, source-backed research notes, and conversation summaries.",
