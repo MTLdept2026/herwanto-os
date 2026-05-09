@@ -1,9 +1,9 @@
-const CACHE_NAME = "hira-os-v100";
-const HIRA_APP_VERSION = "20260509-polish-gmail-27";
+const CACHE_NAME = "hira-os-v101";
+const HIRA_APP_VERSION = "20260509-signal-align-28";
 const ASSETS = [
   "/",
-  "/styles.css?v=20260509-polish-gmail-27",
-  "/app.js?v=20260509-polish-gmail-27",
+  "/styles.css?v=20260509-signal-align-28",
+  "/app.js?v=20260509-signal-align-28",
   "/static/icon.svg",
   "/static/icon-192.png",
   "/static/icon-512.png",

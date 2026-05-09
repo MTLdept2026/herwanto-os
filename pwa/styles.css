@@ -5718,8 +5718,8 @@ html[data-theme="dark"] .topbar h1 {
 
 .topbar-brand::after,
 html[data-theme="dark"] .topbar-brand::after {
-  left: min(272px, calc(100% + 16px)) !important;
-  top: 62px !important;
+  left: min(238px, calc(100% - 8px)) !important;
+  top: 52px !important;
   width: 20px !important;
   height: 20px !important;
   border-width: 2px !important;
@@ -6041,8 +6041,8 @@ html[data-theme="dark"] .nothing-glyph-display {
 
   .topbar-brand::after,
   html[data-theme="dark"] .topbar-brand::after {
-    left: 140px !important;
-    top: 42px !important;
+    left: 118px !important;
+    top: 31px !important;
     width: 15px !important;
     height: 15px !important;
   }
