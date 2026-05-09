@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260509-nothing-22";
-const APP_SCRIPT = "app.js?v=20260509-nothing-22";
-const EXPECTED_SW_CACHE = "hira-os-v95";
+const APP_VERSION = "20260509-threelevels-26";
+const APP_SCRIPT = "app.js?v=20260509-threelevels-26";
+const EXPECTED_SW_CACHE = "hira-os-v99";
 
 const state = {
   token: localStorage.getItem("hira_web_token") || "",
@@ -88,6 +88,10 @@ const CONNECTIONS = [
   { key: "work_drive", label: "Work Google Drive", icon: "folder" },
   { key: "personal_gmail", label: "Personal Gmail", icon: "mail" },
 ];
+const COMMAND_STATUS = {
+  send: "Command launched.",
+  fill: "Command staged. Add the missing detail and send.",
+};
 
 function updateLiveClock() {
   const now = new Date();
@@ -1476,6 +1480,156 @@ function renderDailyLoad(load = {}) {
   renderWorkloadTrend(load);
 }
 
+function intelligenceSeverityClass(severity) {
+  const clean = String(severity || "yellow").toLowerCase();
+  return ["green", "yellow", "orange", "red"].includes(clean) ? clean : "yellow";
+}
+
+function renderIntelligenceList(items = [], emptyText = "No signal.") {
+  if (!Array.isArray(items) || !items.length) {
+    return `<div class="intelligence-item empty"><strong>${markdownish(emptyText)}</strong></div>`;
+  }
+  return items
+    .slice(0, 4)
+    .map((item) => {
+      const severity = intelligenceSeverityClass(item.severity || "green");
+      return `
+        <article class="intelligence-item ${severity}">
+          <strong>${markdownish(item.label || "Signal")}</strong>
+          <p>${markdownish(item.detail || "")}</p>
+        </article>
+      `;
+    })
+    .join("");
+}
+
+function renderIntelligenceProtocol(protocol = {}) {
+  const steps = Array.isArray(protocol.steps) ? protocol.steps : [];
+  $("#intelligenceConfidence").textContent = `${protocol.confidence || "Limited"} confidence`;
+  $("#intelligenceProtocolSteps").innerHTML = steps.length
+    ? steps
+        .slice(0, 3)
+        .map((step) => `
+          <article class="protocol-step">
+            <div>
+              <strong>${markdownish(step.phase || "Now")}</strong>
+              <span>${markdownish(step.time || "")}</span>
+            </div>
+            <p>${markdownish(step.task || "")}</p>
+          </article>
+        `)
+        .join("")
+    : `<article class="protocol-step empty"><div><strong>Now</strong><span>0-20m</span></div><p>Waiting for a reliable operating signal.</p></article>`;
+  const evidence = Array.isArray(protocol.evidence) ? protocol.evidence.filter(Boolean) : [];
+  $("#intelligenceEvidence").innerHTML = evidence.length
+    ? evidence.slice(0, 4).map((item) => `<span>${markdownish(item)}</span>`).join("")
+    : "<span>No evidence yet</span>";
+}
+
+function renderForecastRadar(forecast = {}) {
+  $("#intelligenceForecastHorizon").textContent = forecast.horizon || "7 days";
+  const items = Array.isArray(forecast.items) ? forecast.items : [];
+  $("#intelligenceForecast").innerHTML = items.length
+    ? items
+        .slice(0, 4)
+        .map((item) => {
+          const severity = intelligenceSeverityClass(item.severity || "green");
+          return `
+            <article class="forecast-item ${severity}">
+              <div>
+                <strong>${markdownish(item.label || "Forecast")}</strong>
+                <span>${markdownish(item.when || "Soon")}</span>
+              </div>
+              <p>${markdownish(item.detail || "")}</p>
+            </article>
+          `;
+        })
+        .join("")
+    : `<article class="forecast-item green"><div><strong>Stable horizon</strong><span>7d</span></div><p>No forecast signal yet.</p></article>`;
+}
+
+function renderAdaptivePlan(plan = {}) {
+  const blocks = Array.isArray(plan.blocks) ? plan.blocks : [];
+  $("#intelligencePlan").innerHTML = blocks.length
+    ? blocks
+        .slice(0, 4)
+        .map((block) => `
+          <article class="plan-block">
+            <div>
+              <strong>${markdownish(block.label || "Block")}</strong>
+              <span>${markdownish(block.time || "")}</span>
+            </div>
+            <h4>${markdownish(block.title || "Execution block")}</h4>
+            <p>${markdownish(block.detail || "")}</p>
+          </article>
+        `)
+        .join("")
+    : `<article class="plan-block"><div><strong>Prime</strong><span>Now</span></div><h4>Waiting</h4><p>No adaptive block yet.</p></article>`;
+}
+
+function trialStartDate() {
+  const stored = localStorage.getItem("hira_trial_start_date");
+  if (stored && !Number.isNaN(Date.parse(stored))) return stored;
+  const today = new Date().toISOString().slice(0, 10);
+  localStorage.setItem("hira_trial_start_date", today);
+  return today;
+}
+
+function renderTrialLoop(trial = {}) {
+  const start = new Date(`${trialStartDate()}T00:00:00`);
+  const now = new Date();
+  const day = Math.max(1, Math.min(7, Math.floor((now - start) / 86400000) + 1));
+  $("#intelligenceTrialDay").textContent = `Day ${day} of 7`;
+  $("#intelligenceTrialMetric").textContent = trial.metric || "Did H.I.R.A reduce decision friction today?";
+  const checkpoints = Array.isArray(trial.checkpoints) ? trial.checkpoints : [];
+  $("#intelligenceTrialCheckpoints").innerHTML = checkpoints.length
+    ? checkpoints.slice(0, 3).map((item) => `<span>${markdownish(item)}</span>`).join("")
+    : "<span>Follow the protocol once.</span><span>Log one correction.</span>";
+  const button = $("#intelligenceTrialLogBtn");
+  if (button && trial.review_prompt) {
+    button.dataset.commandPrompt = trial.review_prompt;
+  }
+  refreshIcons(button);
+}
+
+function renderIntelligenceStack(intelligence = {}) {
+  const readiness = Math.max(0, Math.min(100, Number(intelligence.readiness || 0)));
+  const tone = intelligenceSeverityClass(intelligence.tone || "green");
+  $("#intelligenceMode").textContent = intelligence.mode || "Standby";
+  $("#intelligenceSignal").textContent = intelligence.signal || "Waiting for telemetry.";
+  $("#intelligenceReadinessValue").textContent = String(Math.round(readiness));
+  const readinessEl = $("#intelligenceReadiness");
+  readinessEl.className = `intelligence-readiness score-${tone}`;
+  readinessEl.style.setProperty("--score-arc", `${readiness * 2.7}deg`);
+  const next = intelligence.next_move || {};
+  $("#intelligenceNextTitle").textContent = next.title || "Protect a clean block";
+  $("#intelligenceNextBody").textContent = next.body || "No critical signal is dominating right now.";
+  renderIntelligenceProtocol(intelligence.protocol || {});
+  renderForecastRadar(intelligence.forecast || {});
+  renderAdaptivePlan(intelligence.adaptive_plan || {});
+  renderTrialLoop(intelligence.trial || {});
+  $("#intelligenceRisks").innerHTML = renderIntelligenceList(intelligence.risks, "No material risk.");
+  $("#intelligenceOpportunities").innerHTML = renderIntelligenceList(intelligence.opportunities, "No opening yet.");
+  const actions = Array.isArray(intelligence.actions) ? intelligence.actions : [];
+  $("#intelligenceActions").innerHTML = actions.length
+    ? actions
+        .map((action) => `
+          <button
+            type="button"
+            class="intelligence-action"
+            data-command-action="${escapeHtml(action.action || "fill")}"
+            data-command-prompt="${escapeHtml(action.prompt || "")}"
+          >
+            <span data-lucide="${escapeHtml(action.icon || "sparkles")}" aria-hidden="true"></span>
+            <span>${markdownish(action.label || "Ask H.I.R.A")}</span>
+          </button>
+        `)
+        .join("")
+    : `<button type="button" class="intelligence-action" data-command-action="send" data-command-prompt="Give me a crisp H.I.R.A briefing for right now."><span data-lucide="radar" aria-hidden="true"></span><span>Brief Me</span></button>`;
+  refreshIcons($("#intelligenceActions"));
+  refreshIcons(document.querySelector(".intelligence-next"));
+}
+
 function renderWorkloadTrend(load = {}) {
   const el = $("#workloadTrendChart");
   if (!el) return;
@@ -2089,6 +2243,7 @@ async function loadHome() {
     renderSegmentsAll(".services-segments", Math.round((connectedCount / CONNECTIONS.length) * 12), 12, connectedCount ? "accent" : "muted");
     renderConnections(services);
     renderDailyLoad(data.daily_load || {});
+    renderIntelligenceStack(data.intelligence || {});
     homeGlyphDataReady = true;
     if (glyphMode === "load" || glyphMode === "next") renderNothingGlyph(glyphMode);
     const proactiveTop = Array.isArray(data.proactive?.top) ? data.proactive.top : [];
@@ -2343,6 +2498,37 @@ function updateComposerState() {
     sendButton.disabled = state.chatBusy || !hasPayload;
     sendButton.classList.toggle("is-ready", hasPayload && !state.chatBusy);
   }
+}
+
+function stageCommandPrompt(prompt) {
+  const input = $("#messageInput");
+  if (!input) return;
+  input.value = prompt;
+  input.style.height = "auto";
+  input.style.height = `${Math.min(input.scrollHeight, 180)}px`;
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+  updateComposerState();
+  pulseComposerInput();
+}
+
+function runQuickCommand(button) {
+  const prompt = button?.dataset.commandPrompt?.trim();
+  const action = button?.dataset.commandAction || "fill";
+  if (!prompt || state.chatBusy) return;
+  hapticTap(10);
+  if (action === "send") {
+    $("#messageInput").value = "";
+    updateComposerState();
+    if (state.chatAttachments.length) {
+      uploadChatAttachment(prompt);
+    } else {
+      sendChat(prompt);
+    }
+  } else {
+    stageCommandPrompt(prompt);
+  }
+  setStatus(COMMAND_STATUS[action] || COMMAND_STATUS.fill, "ok");
 }
 
 function pulseComposerInput() {
@@ -2649,6 +2835,12 @@ document.querySelectorAll(".nav-tab").forEach((tab) => {
     if (view === "agenda") await loadAgenda(currentAgendaDays());
     if (view === "tasks") await loadTasks(7);
   });
+});
+
+document.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-command-prompt]");
+  if (!button) return;
+  runQuickCommand(button);
 });
 
 $("#nothingGlyphBtn")?.addEventListener("click", cycleNothingGlyph);

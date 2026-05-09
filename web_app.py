@@ -34,8 +34,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260509-nothing-22"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v95"
+PWA_APP_VERSION = "20260509-threelevels-26"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v99"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -800,6 +800,327 @@ def _working_memory_summary(memory: dict) -> dict:
     return {key: value for key, value in summary.items() if value}
 
 
+def _clamp_int(value, low: int = 0, high: int = 100) -> int:
+    return max(low, min(high, int(round(value))))
+
+
+def _home_intelligence(results: dict, days: int) -> dict:
+    daily_load = results.get("daily_load") if isinstance(results.get("daily_load"), dict) else {}
+    today_load = daily_load.get("today") if isinstance(daily_load.get("today"), dict) else {}
+    agenda = results.get("agenda_structured") if isinstance(results.get("agenda_structured"), dict) else {}
+    today_agenda = (agenda.get("days") or [{}])[0] if isinstance(agenda.get("days"), list) else {}
+    proactive = results.get("proactive") if isinstance(results.get("proactive"), dict) else {}
+    marking = results.get("marking") if isinstance(results.get("marking"), dict) else {}
+    services = results.get("services") if isinstance(results.get("services"), dict) else {}
+    tasks = results.get("tasks_structured") if isinstance(results.get("tasks_structured"), dict) else {}
+    task_items = tasks.get("items") if isinstance(tasks.get("items"), list) else []
+
+    load_score = int(today_load.get("score") or 0)
+    due_count = int(today_load.get("due") or len(today_agenda.get("due") or []))
+    lesson_count = int(today_load.get("lessons") or len(today_agenda.get("lessons") or []))
+    event_count = int(today_load.get("events") or len(today_agenda.get("events") or []))
+    unmarked = int(marking.get("unmarked_scripts") or today_load.get("marking_scripts") or 0)
+    active_stacks = int(marking.get("active_stacks") or 0)
+    current = datetime.now(bot.SGT)
+    today_date = current.date()
+    today = today_date.isoformat()
+    soon = (today_date + bot.timedelta(days=3)).isoformat()
+    overdue_tasks = [item for item in task_items if item.get("overdue")]
+    due_today_tasks = [item for item in task_items if str(item.get("due") or "") <= today]
+    due_soon_tasks = [item for item in task_items if today < str(item.get("due") or "") <= soon]
+    connected_count = sum(1 for value in services.values() if value)
+    disconnected_count = max(0, len(services) - connected_count)
+
+    readiness = _clamp_int(
+        94
+        - (load_score * 0.42)
+        - min(18, due_count * 5)
+        - min(18, unmarked * 1.2)
+        - min(14, len(overdue_tasks) * 7)
+        - min(10, disconnected_count * 2.5)
+    )
+    if readiness >= 78:
+        mode = "Deep Work Window" if load_score <= 34 and due_count == 0 else "Steady Ops"
+        tone = "green"
+    elif readiness >= 56:
+        mode = "Execution Mode"
+        tone = "yellow"
+    elif unmarked >= 10:
+        mode = "Marking Control"
+        tone = "orange"
+    else:
+        mode = "Triage Mode"
+        tone = "red"
+
+    risks = []
+    if overdue_tasks:
+        first = overdue_tasks[0]
+        risks.append({
+            "label": "Overdue",
+            "detail": first.get("description") or f"{len(overdue_tasks)} overdue task(s)",
+            "severity": "red",
+        })
+    if due_count or due_today_tasks:
+        risks.append({
+            "label": "Due pressure",
+            "detail": f"{max(due_count, len(due_today_tasks))} due item(s) need attention",
+            "severity": "orange" if due_count > 1 else "yellow",
+        })
+    if unmarked:
+        risks.append({
+            "label": "Marking load",
+            "detail": f"{unmarked} script(s) left across {active_stacks or 1} stack(s)",
+            "severity": "orange" if unmarked >= 10 else "yellow",
+        })
+    if disconnected_count:
+        risks.append({
+            "label": "Blind spots",
+            "detail": f"{disconnected_count} service(s) not connected",
+            "severity": "yellow",
+        })
+
+    future_days = daily_load.get("days") if isinstance(daily_load.get("days"), list) else []
+    future_spike = max(
+        future_days[1: max(2, min(len(future_days), days))],
+        key=lambda item: int(item.get("score") or 0),
+        default=None,
+    )
+    if future_spike and int(future_spike.get("score") or 0) >= 70:
+        risks.append({
+            "label": "Load spike",
+            "detail": f"{future_spike.get('label', 'Soon')} is trending {str(future_spike.get('load', 'heavy')).lower()}",
+            "severity": "orange",
+        })
+
+    opportunities = []
+    if readiness >= 78:
+        opportunities.append({
+            "label": "Good window",
+            "detail": "Use this for one deeper task before admin expands.",
+        })
+    if not due_count and not overdue_tasks:
+        opportunities.append({
+            "label": "No due drag",
+            "detail": "A clean moment to pull future work forward.",
+        })
+    if connected_count == len(services) and services:
+        opportunities.append({
+            "label": "Full telemetry",
+            "detail": "Calendar, Drive, and mail signals are available.",
+        })
+
+    top = proactive.get("top") if isinstance(proactive.get("top"), list) else []
+    lead = top[0] if top else None
+    if lead:
+        next_move_title = lead.get("title") or "Act on the lead signal"
+        next_move_body = lead.get("body") or lead.get("action_hint") or "Follow the highest-ranked proactive signal."
+        next_prompt = (
+            f"Help me execute this H.I.R.A lead signal now: {next_move_title}. "
+            f"Context: {next_move_body}. Give me a tight next-action plan."
+        )
+    elif unmarked:
+        next_move_title = "Cut the marking queue"
+        next_move_body = "Start with a small marking slice: 5 scripts or 20 minutes, then update progress."
+        next_prompt = "Plan a focused marking sprint from my current marking load. Give me a time-boxed plan, easiest first step, and what to postpone."
+    elif task_items:
+        first = task_items[0]
+        next_move_title = "Clear the first task"
+        next_move_body = first.get("description") or "Handle the highest-ranked task in the task brief."
+        next_prompt = f"Help me complete this task efficiently: {next_move_body}"
+    else:
+        next_move_title = "Protect a clean block"
+        next_move_body = daily_load.get("rest_note") or daily_load.get("note") or "No critical signal is dominating right now."
+        next_prompt = "Find the best use of my next clean block based on my calendar, tasks, marking load, and current energy."
+
+    first_task = task_items[0] if task_items else {}
+    if overdue_tasks:
+        now_step = f"Clear or reschedule overdue item: {overdue_tasks[0].get('description', 'highest-risk task')}."
+    elif unmarked:
+        now_step = "Mark a small slice first: 5 scripts or 20 minutes, then update H.I.R.A with progress."
+    elif first_task:
+        now_step = f"Start the first task: {first_task.get('description', 'highest-ranked task')}."
+    elif readiness >= 78:
+        now_step = "Use the next clean block for one deep task before messages and admin expand."
+    else:
+        now_step = "Ask H.I.R.A for triage before committing to any new work."
+
+    if lesson_count or event_count:
+        next_step = "Prepare for the next scheduled anchor, then keep the calendar gap protected."
+    elif future_spike and int(future_spike.get("score") or 0) >= 70:
+        next_step = f"Pull work forward before {future_spike.get('label', 'the next spike')}."
+    elif due_count:
+        next_step = "Move one due item from pending to done before starting discretionary work."
+    else:
+        next_step = "Batch low-friction admin after the deep block, not before it."
+
+    if disconnected_count:
+        later_step = "Reconnect missing services so future intelligence has fewer blind spots."
+    elif unmarked:
+        later_step = "Update marking progress, then let H.I.R.A recalculate the load."
+    else:
+        later_step = "Review the next 7 days and schedule one pre-emptive block."
+
+    evidence = [
+        f"Load score {load_score}",
+        f"{due_count} due",
+        f"{unmarked} unmarked",
+        f"{connected_count}/{len(services) or 0} services connected",
+    ]
+    confidence = "High" if connected_count >= 3 else "Medium" if connected_count else "Limited"
+
+    forecast_items = []
+    if future_spike and int(future_spike.get("score") or 0) >= 70:
+        forecast_items.append({
+            "label": "Pressure spike",
+            "when": future_spike.get("label") or future_spike.get("date") or "Soon",
+            "detail": f"Expected {str(future_spike.get('load', 'heavy')).lower()} load. Pull one task forward before then.",
+            "severity": "orange",
+        })
+    elif future_spike:
+        forecast_items.append({
+            "label": "Next pressure",
+            "when": future_spike.get("label") or future_spike.get("date") or "Soon",
+            "detail": f"Highest visible load is {future_spike.get('score', 0)}. Keep one buffer block open.",
+            "severity": "green",
+        })
+    if due_soon_tasks:
+        forecast_items.append({
+            "label": "Due cluster",
+            "when": "72h",
+            "detail": f"{len(due_soon_tasks)} task(s) due soon. First: {due_soon_tasks[0].get('description', 'upcoming task')}.",
+            "severity": "yellow",
+        })
+    if unmarked >= 8:
+        forecast_items.append({
+            "label": "Marking drag",
+            "when": "Today",
+            "detail": "Marking load is large enough to leak into tomorrow unless sliced early.",
+            "severity": "orange",
+        })
+    if not forecast_items:
+        forecast_items.append({
+            "label": "Stable horizon",
+            "when": "7d",
+            "detail": "No major spike detected from available telemetry. Protect one proactive block anyway.",
+            "severity": "green",
+        })
+
+    def time_window(start_minutes: int, duration: int) -> str:
+        start = current + bot.timedelta(minutes=start_minutes)
+        end = start + bot.timedelta(minutes=duration)
+        return f"{start.strftime('%H:%M')}-{end.strftime('%H:%M')}"
+
+    plan_blocks = [
+        {
+            "label": "Prime",
+            "time": time_window(0, 20),
+            "title": next_move_title,
+            "detail": now_step,
+        },
+        {
+            "label": "Build",
+            "time": time_window(25, 45),
+            "title": "Main execution block",
+            "detail": next_step,
+        },
+        {
+            "label": "Stabilize",
+            "time": "Before shutdown",
+            "title": "Close the loop",
+            "detail": later_step,
+        },
+    ]
+    if unmarked:
+        plan_blocks.insert(1, {
+            "label": "Slice",
+            "time": time_window(20, 25),
+            "title": "Marking sprint",
+            "detail": "Mark a bounded slice and report progress before switching context.",
+        })
+    plan_blocks = plan_blocks[:4]
+
+    trial_prompt = (
+        "Log a H.I.R.A trial note for today. Include: did the readiness score match reality, "
+        "did I follow the Now/Next/Later protocol, what did H.I.R.A miss, and one adjustment for tomorrow."
+    )
+
+    actions = [
+        {
+            "label": "Run Triage",
+            "icon": "list-checks",
+            "action": "send",
+            "prompt": "Triage my current load. Pick the top 3 things I should handle next, explain why, and give me a realistic order of attack.",
+        },
+        {
+            "label": "Next Move",
+            "icon": "move-right",
+            "action": "send",
+            "prompt": next_prompt,
+        },
+        {
+            "label": "Make Plan",
+            "icon": "calendar-plus",
+            "action": "fill",
+            "prompt": "Turn this into a practical plan with time blocks: ",
+        },
+        {
+            "label": "Trial Log",
+            "icon": "clipboard-check",
+            "action": "fill",
+            "prompt": trial_prompt,
+        },
+    ]
+    if unmarked:
+        actions.insert(1, {
+            "label": "Marking Sprint",
+            "icon": "timer-reset",
+            "action": "send",
+            "prompt": "Plan a focused marking sprint from my current marking load. Give me a time-boxed plan, easiest first step, and what to postpone.",
+        })
+
+    return {
+        "generated_at": datetime.now(bot.SGT).strftime("%A, %-d %B %Y, %H:%M SGT"),
+        "readiness": readiness,
+        "tone": tone,
+        "mode": mode,
+        "signal": f"{lesson_count} lesson(s), {event_count} event(s), {due_count} due, {unmarked} unmarked.",
+        "next_move": {
+            "title": next_move_title,
+            "body": next_move_body,
+            "prompt": next_prompt,
+        },
+        "risks": risks[:4],
+        "opportunities": opportunities[:3],
+        "protocol": {
+            "confidence": confidence,
+            "evidence": evidence,
+            "steps": [
+                {"phase": "Now", "time": "0-20m", "task": now_step},
+                {"phase": "Next", "time": "20-60m", "task": next_step},
+                {"phase": "Later", "time": "Today", "task": later_step},
+            ],
+        },
+        "forecast": {
+            "horizon": f"{min(max(days, 1), 14)} days",
+            "items": forecast_items[:4],
+        },
+        "adaptive_plan": {
+            "blocks": plan_blocks,
+        },
+        "trial": {
+            "metric": "Did H.I.R.A reduce decision friction today?",
+            "target": "Follow the Now/Next/Later protocol at least once and log one correction.",
+            "checkpoints": [
+                "Was the readiness score directionally right?",
+                "Did the first action reduce ambiguity?",
+                "Did H.I.R.A catch the real risk before you felt it?",
+            ],
+            "review_prompt": trial_prompt,
+        },
+        "actions": actions[:5],
+    }
+
+
 def _parallel_home_data(days: int) -> dict:
     jobs = {
         "agenda": lambda: bot.build_agenda(days),
@@ -808,6 +1129,7 @@ def _parallel_home_data(days: int) -> dict:
         "digest": bot.build_curated_digest_snapshot,
         "proactive": lambda: bot.build_proactive_v2_snapshot(days=days),
         "tasks": lambda: bot.build_task_brief(days),
+        "tasks_structured": lambda: bot.build_task_structured(days),
         "islamic": lambda: bot.build_islamic_brief(),
         "prayers": bot.prayer_notification_status,
         "files": bot.build_files_index,
@@ -850,6 +1172,11 @@ def _parallel_home_data(days: int) -> dict:
             "changed": [],
         },
         "tasks": "Task brief unavailable until Google is connected.",
+        "tasks_structured": {
+            "generated_at": "",
+            "end_date": "",
+            "items": [],
+        },
         "islamic": "Islamic rhythm unavailable right now.",
         "prayers": {
             "ok": False,
@@ -885,6 +1212,7 @@ def _parallel_home_data(days: int) -> dict:
             results[key] = future.result()
         except Exception:
             results[key] = fallbacks[key]
+    results["intelligence"] = _home_intelligence(results, days)
     return results
 
 

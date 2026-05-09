@@ -5,19 +5,19 @@
   "summary": {
     "start": "2026-04-28",
     "current": "2026-05-09",
-    "commitsTracked": 167,
-    "majorPhases": 22,
-    "currentStage": "Nothing-style identity system and growth record"
+    "commitsTracked": 168,
+    "majorPhases": 23,
+    "currentStage": "Trial-ready OS intelligence stack"
   },
   "metrics": [
     {
       "label": "Days of build acceleration",
       "value": "11",
-      "note": "From first installable PWA commit to a sharper Nothing-style app identity with explicit trust rails."
+      "note": "From first installable PWA commit to a sharper Nothing-style app identity with explicit trust rails and trial-ready intelligence surfaces."
     },
     {
       "label": "Tracked upgrade commits",
-      "value": "167",
+      "value": "168",
       "note": "Grouped from git history through the growth-log minisite."
     },
     {
@@ -34,8 +34,8 @@
   "capabilityRings": [
     {
       "name": "Interface",
-      "score": 95,
-      "description": "Installable PWA, Nothing-style home-screen icon, restored cockpit home, mobile dashboard, chat, files, action-enabled push notifications, recovery health, and notification controls."
+      "score": 97,
+      "description": "Installable PWA, Nothing-style home-screen icon, restored cockpit home, mobile dashboard, chat, files, quick command deck, OS Intelligence panel, action-enabled push notifications, recovery health, and notification controls."
     },
     {
       "name": "Security",
@@ -44,8 +44,8 @@
     },
     {
       "name": "Context",
-      "score": 95,
-      "description": "Timetable, Google Calendar, reminder-worthy events, rough travel buffers, MTL classlists, checked availability slots, Drive references, file memory, topic profiles, conversation summaries, relevant-memory retrieval, intent lensing, and short-lived working memory."
+      "score": 97,
+      "description": "Timetable, Google Calendar, reminder-worthy events, rough travel buffers, MTL classlists, checked availability slots, Drive references, file memory, topic profiles, conversation summaries, relevant-memory retrieval, intent lensing, short-lived working memory, and home intelligence synthesis."
     },
     {
       "name": "Live Knowledge",
@@ -54,8 +54,8 @@
     },
     {
       "name": "Self-Improvement",
-      "score": 94,
-      "description": "Priority-weighted memory prompt, relevant recall, working memory, action validation/audits, intent lens, proactive workload insights, notification feedback learning, implicit correction detection, weekly consolidation, and conversation summarisation."
+      "score": 97,
+      "description": "Priority-weighted memory prompt, relevant recall, working memory, action validation/audits, intent lens, proactive workload insights, OS readiness scoring, forecast radar, adaptive planning, 7-day trial loop, notification feedback learning, implicit correction detection, weekly consolidation, and conversation summarisation."
     }
   ],
   "chapters": [
@@ -394,10 +394,33 @@
         "Growth-log typography and panels were tightened: less soft-card language, stronger rails, clearer stage language, and cache-busted assets for the update."
       ],
       "impact": "H.I.R.A now reads as one product from the phone home screen to the growth record: private, mechanical, alive, and recognisably tied to the current cockpit UI."
+    },
+    {
+      "date": "2026-05-09",
+      "era": "Trial-Ready Intelligence",
+      "title": "Hira becomes a daily command system",
+      "commit": "threelevels-26",
+      "tag": "OS Intelligence",
+      "summary": "H.I.R.A gained a visible intelligence stack for a one-week real-life trial: quick commands, readiness scoring, command protocol, forecast radar, adaptive planning, and a trial loop.",
+      "details": [
+        "Home chat now includes a quick command deck for Brief Me, Triage, Marking Sprint, Draft Reply, and Reminder.",
+        "The backend now synthesizes agenda, workload, tasks, marking, proactive queue, service health, and file context into one OS Intelligence object.",
+        "The home screen now shows readiness, operating mode, next best move, risk signals, openings, and one-tap actions.",
+        "Command Protocol converts the diagnosis into Now, Next, and Later steps with confidence and evidence.",
+        "Forecast Radar predicts pressure from future load spikes, due clusters, marking drag, or stable horizon signals.",
+        "Adaptive Plan turns the live state into Prime, Build, Slice, and Stabilize blocks where relevant.",
+        "The 7-Day Trial Loop adds checkpoints and a Log Trial Note action so Herwanto can judge whether H.I.R.A reduces decision friction in real use."
+      ],
+      "impact": "H.I.R.A is now ready to be tested as a practical daily operating layer: it does not only show data, it interprets the day, suggests an execution protocol, predicts pressure, and asks for feedback to improve the next pass."
     }
   ],
   "currentCapabilities": [
     "Installable private PWA with refreshed Nothing-style home-screen icon, chat, agenda, tasks, Gmail, files, uploads, notifications, and dashboard views.",
+    "Home OS Intelligence that synthesizes agenda, workload, tasks, marking load, proactive signals, service health, and file memory into a readiness score, operating mode, next best move, risks, openings, and one-tap actions.",
+    "Command Protocol that turns the current state into concrete Now, Next, and Later steps with confidence and evidence.",
+    "Forecast Radar that highlights upcoming pressure from load spikes, due clusters, marking drag, or stable horizon signals.",
+    "Adaptive Plan that creates live Prime, Build, Slice, and Stabilize work blocks from the current day state.",
+    "7-Day Trial Loop with checkpoints and a trial-note action to measure whether H.I.R.A reduces decision friction in real life.",
     "Telegram-compatible tool brain with calendar, reminders, marking, MTL classlists, Gmail, artifacts, weather, MUIS prayer/khutbah, news, web search, and URL reading.",
     "Structured sports intelligence for Liverpool and F1.",
     "Railway Hobby runtime profile with upload queue, memory guardrails, worker split, Redis production option, and admin status.",

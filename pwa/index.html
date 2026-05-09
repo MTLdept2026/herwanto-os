@@ -11,10 +11,10 @@
       href="https://fonts.googleapis.com/css2?family=Doto:wght@400..900&family=Space+Grotesk:wght@300;400;500;700&family=VT323&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap"
       rel="stylesheet"
     />
-    <link rel="manifest" href="/manifest.webmanifest?v=20260509-nothing-22" />
-    <link rel="icon" href="/static/icon.svg?v=20260509-nothing-22" type="image/svg+xml" />
-    <link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=20260509-nothing-22" />
-    <link rel="stylesheet" href="./styles.css?v=20260509-nothing-22" />
+    <link rel="manifest" href="/manifest.webmanifest?v=20260509-threelevels-26" />
+    <link rel="icon" href="/static/icon.svg?v=20260509-threelevels-26" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=20260509-threelevels-26" />
+    <link rel="stylesheet" href="./styles.css?v=20260509-threelevels-26" />
   </head>
   <body>
     <main class="shell">
@@ -230,6 +230,28 @@
               </div>
               <div id="messages" class="messages" aria-live="polite"></div>
             </section>
+            <section class="quick-command-deck" aria-label="Quick H.I.R.A commands">
+              <button type="button" class="quick-command is-primary" data-command-action="send" data-command-prompt="Give me a crisp H.I.R.A briefing for right now: what matters today, what is due soon, what may clash, and the single best next move.">
+                <span data-lucide="radar" aria-hidden="true"></span>
+                <span>Brief Me</span>
+              </button>
+              <button type="button" class="quick-command" data-command-action="send" data-command-prompt="Triage my current load. Pick the top 3 things I should handle next, explain why, and give me a realistic order of attack.">
+                <span data-lucide="list-checks" aria-hidden="true"></span>
+                <span>Triage</span>
+              </button>
+              <button type="button" class="quick-command" data-command-action="send" data-command-prompt="Plan a focused marking sprint from my current marking load. Give me a time-boxed plan, easiest first step, and what to postpone.">
+                <span data-lucide="timer-reset" aria-hidden="true"></span>
+                <span>Marking Sprint</span>
+              </button>
+              <button type="button" class="quick-command" data-command-action="fill" data-command-prompt="Draft a warm, concise reply to: ">
+                <span data-lucide="mail-plus" aria-hidden="true"></span>
+                <span>Draft Reply</span>
+              </button>
+              <button type="button" class="quick-command" data-command-action="fill" data-command-prompt="/remind Description | YYYY-MM-DD | Category">
+                <span data-lucide="bell-plus" aria-hidden="true"></span>
+                <span>Reminder</span>
+              </button>
+            </section>
             <form id="chatForm" class="composer">
               <input
                 id="chatFileInput"
@@ -322,6 +344,81 @@
               </div>
               <div id="workloadTrendChart" class="workload-trend-card"></div>
             </div>
+          </section>
+
+          <section class="ops-card ops-card-wide intelligence-card">
+            <div class="intelligence-head">
+              <div>
+                <p class="eyebrow">OS Intelligence</p>
+                <h3 id="intelligenceMode">Standby</h3>
+                <p id="intelligenceSignal" class="intelligence-signal">Waiting for telemetry.</p>
+              </div>
+              <div id="intelligenceReadiness" class="intelligence-readiness score-green" aria-label="H.I.R.A readiness score">
+                <strong id="intelligenceReadinessValue">0</strong>
+                <span>READINESS</span>
+              </div>
+            </div>
+            <div class="intelligence-next">
+              <span data-lucide="move-right" aria-hidden="true"></span>
+              <div>
+                <p class="eyebrow">Next Best Move</p>
+                <strong id="intelligenceNextTitle">Protect a clean block</strong>
+                <p id="intelligenceNextBody">H.I.R.A will synthesize the next move from agenda, tasks, marking, and proactive signals.</p>
+              </div>
+            </div>
+            <div class="intelligence-protocol">
+              <div class="intelligence-protocol-head">
+                <p class="eyebrow">Command Protocol</p>
+                <strong id="intelligenceConfidence">Limited confidence</strong>
+              </div>
+              <div id="intelligenceProtocolSteps" class="protocol-steps"></div>
+              <div id="intelligenceEvidence" class="intelligence-evidence"></div>
+            </div>
+            <div class="intelligence-level-grid">
+              <section class="intelligence-level-panel">
+                <div class="intelligence-panel-head">
+                  <p class="eyebrow">Forecast Radar</p>
+                  <strong id="intelligenceForecastHorizon">7 days</strong>
+                </div>
+                <div id="intelligenceForecast" class="forecast-list"></div>
+              </section>
+              <section class="intelligence-level-panel">
+                <div class="intelligence-panel-head">
+                  <p class="eyebrow">Adaptive Plan</p>
+                  <strong>Live blocks</strong>
+                </div>
+                <div id="intelligencePlan" class="plan-blocks"></div>
+              </section>
+            </div>
+            <section class="intelligence-trial-panel">
+              <div>
+                <p class="eyebrow">7-Day Trial Loop</p>
+                <h4 id="intelligenceTrialDay">Day 1</h4>
+                <p id="intelligenceTrialMetric">Did H.I.R.A reduce decision friction today?</p>
+              </div>
+              <div id="intelligenceTrialCheckpoints" class="trial-checkpoints"></div>
+              <button
+                id="intelligenceTrialLogBtn"
+                type="button"
+                class="intelligence-action trial-log-action"
+                data-command-action="fill"
+                data-command-prompt="Log a H.I.R.A trial note for today. Include: did the readiness score match reality, did I follow the Now/Next/Later protocol, what did H.I.R.A miss, and one adjustment for tomorrow."
+              >
+                <span data-lucide="clipboard-check" aria-hidden="true"></span>
+                <span>Log Trial Note</span>
+              </button>
+            </section>
+            <div class="intelligence-columns">
+              <div>
+                <p class="eyebrow">Risks</p>
+                <div id="intelligenceRisks" class="intelligence-list"></div>
+              </div>
+              <div>
+                <p class="eyebrow">Openings</p>
+                <div id="intelligenceOpportunities" class="intelligence-list"></div>
+              </div>
+            </div>
+            <div id="intelligenceActions" class="intelligence-actions"></div>
           </section>
 
           <section class="ops-card">
@@ -582,6 +679,6 @@
       </section>
     </main>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-    <script src="./app.js?v=20260509-nothing-22" type="module"></script>
+    <script src="./app.js?v=20260509-threelevels-26" type="module"></script>
   </body>
 </html>
