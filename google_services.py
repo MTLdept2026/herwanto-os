@@ -153,9 +153,10 @@ def _gmail(account: str = "personal"):
                 client_id = client_id or os.environ.get("GOOGLE_GMAIL_CLIENT_ID", "").strip()
                 client_secret = client_secret or os.environ.get("GOOGLE_GMAIL_CLIENT_SECRET", "").strip()
         else:
-            refresh_token = os.environ.get("GOOGLE_GMAIL_REFRESH_TOKEN", "").strip()
-            client_id = os.environ.get("GOOGLE_GMAIL_CLIENT_ID", "").strip()
-            client_secret = os.environ.get("GOOGLE_GMAIL_CLIENT_SECRET", "").strip()
+            suffix = "2" if account in ("personal2", "secondary", "second") else ""
+            refresh_token = os.environ.get(f"GOOGLE_GMAIL{suffix}_REFRESH_TOKEN", "").strip()
+            client_id = os.environ.get(f"GOOGLE_GMAIL{suffix}_CLIENT_ID", "").strip() or os.environ.get("GOOGLE_GMAIL_CLIENT_ID", "").strip()
+            client_secret = os.environ.get(f"GOOGLE_GMAIL{suffix}_CLIENT_SECRET", "").strip() or os.environ.get("GOOGLE_GMAIL_CLIENT_SECRET", "").strip()
 
         if refresh_token and client_id and client_secret:
             creds = Credentials(
@@ -168,7 +169,12 @@ def _gmail(account: str = "personal"):
             )
             return _build_service("gmail", "v1", creds)
 
-        user_key = "GOOGLE_WORK_GMAIL_USER" if account in ("work", "moe", "school") else "GOOGLE_GMAIL_USER"
+        if account in ("work", "moe", "school"):
+            user_key = "GOOGLE_WORK_GMAIL_USER"
+        elif account in ("personal2", "secondary", "second"):
+            user_key = "GOOGLE_GMAIL2_USER"
+        else:
+            user_key = "GOOGLE_GMAIL_USER"
         user = os.environ.get(user_key, "").strip()
         if not user:
             raise EnvironmentError(f"{account.title()} Gmail not configured.")
@@ -3219,6 +3225,18 @@ def gmail_ok(account: str = "personal") -> bool:
             )
         )
         return has_work_oauth or bool(os.environ.get("GOOGLE_WORK_GMAIL_USER", "").strip())
+    if account in ("personal2", "secondary", "second"):
+        has_oauth = bool(os.environ.get("GOOGLE_GMAIL2_REFRESH_TOKEN", "").strip()) and (
+            all(
+                os.environ.get(key, "").strip()
+                for key in ("GOOGLE_GMAIL2_CLIENT_ID", "GOOGLE_GMAIL2_CLIENT_SECRET")
+            )
+            or all(
+                os.environ.get(key, "").strip()
+                for key in ("GOOGLE_GMAIL_CLIENT_ID", "GOOGLE_GMAIL_CLIENT_SECRET")
+            )
+        )
+        return has_oauth or bool(os.environ.get("GOOGLE_GMAIL2_USER", "").strip())
 
     has_oauth = all(
         os.environ.get(key, "").strip()
@@ -3231,6 +3249,8 @@ def gmail_label(account: str = "personal") -> str:
     account = (account or "personal").strip().lower()
     if account in ("work", "moe", "school"):
         return "work Gmail"
+    if account in ("personal2", "secondary", "second"):
+        return "personal Gmail 2"
     return "personal Gmail"
 
 

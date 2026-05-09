@@ -34,8 +34,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260509-threelevels-26"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v99"
+PWA_APP_VERSION = "20260509-polish-gmail-27"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v100"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -1191,6 +1191,7 @@ def _parallel_home_data(days: int) -> dict:
             "calendar": False,
             "work_drive": False,
             "personal_gmail": False,
+            "personal_gmail2": False,
         },
         "marking": {
             "active_stacks": 0,
@@ -1222,6 +1223,7 @@ def _service_status() -> dict:
         "calendar": bot.google_ok(),
         "work_drive": bot.google_ok(),
         "personal_gmail": bot.gs.gmail_ok("personal"),
+        "personal_gmail2": bot.gs.gmail_ok("personal2"),
     }
 
 
@@ -1754,7 +1756,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
 
         return StreamingResponse(removed_work_gmail_events(), media_type="text/event-stream")
     user_content = message
-    if bot.re.search(r"\bpersonal\s+(?:gmail|email|emails|mail)\b", message, bot.re.I):
+    if bot.re.search(r"\b(?:personal|personal\s*2|second(?:ary)?|other\s+personal)\s+(?:gmail|email|emails|mail|inbox)\b", message, bot.re.I):
         account_hint, _ = bot._extract_gmail_account_from_text(message)
         user_content = f"{message}\n\n[Email account hint: use account=\"{account_hint}\" for Gmail tools.]"
     user_content = (
@@ -2448,7 +2450,7 @@ def gmail(req: GmailRequest, x_hira_token: Optional[str] = Header(default=None))
     _require_token(x_hira_token)
     req.max_items = max(1, min(20, req.max_items))
     account = bot._normalise_gmail_account(req.account)
-    if account != "personal":
+    if account == "work":
         raise HTTPException(status_code=410, detail=bot.WORK_GMAIL_REMOVED_MESSAGE)
     if not bot.gs.gmail_ok(account):
         raise HTTPException(status_code=400, detail=f"{bot.gs.gmail_label(account).title()} is not connected")
@@ -2464,7 +2466,7 @@ def gmail(req: GmailRequest, x_hira_token: Optional[str] = Header(default=None))
 def gmail_draft(req: DraftRequest, x_hira_token: Optional[str] = Header(default=None)):
     _require_token(x_hira_token)
     account = bot._normalise_gmail_account(req.account)
-    if account != "personal":
+    if account == "work":
         raise HTTPException(status_code=410, detail=bot.WORK_GMAIL_REMOVED_MESSAGE)
     if not bot.gs.gmail_ok(account):
         raise HTTPException(status_code=400, detail=f"{bot.gs.gmail_label(account).title()} is not connected")

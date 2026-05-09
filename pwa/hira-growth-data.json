@@ -5,9 +5,9 @@
   "summary": {
     "start": "2026-04-28",
     "current": "2026-05-09",
-    "commitsTracked": 168,
-    "majorPhases": 23,
-    "currentStage": "Trial-ready OS intelligence stack"
+    "commitsTracked": 169,
+    "majorPhases": 24,
+    "currentStage": "Trial-ready OS with dual personal Gmail"
   },
   "metrics": [
     {
@@ -17,7 +17,7 @@
     },
     {
       "label": "Tracked upgrade commits",
-      "value": "168",
+      "value": "169",
       "note": "Grouped from git history through the growth-log minisite."
     },
     {
@@ -35,7 +35,7 @@
     {
       "name": "Interface",
       "score": 97,
-      "description": "Installable PWA, Nothing-style home-screen icon, restored cockpit home, mobile dashboard, chat, files, quick command deck, OS Intelligence panel, action-enabled push notifications, recovery health, and notification controls."
+      "description": "Installable PWA, minimal Nothing-style home-screen icon, restored cockpit home, sharper glyph surfaces, mobile dashboard, chat, files, quick command deck, OS Intelligence panel, action-enabled push notifications, recovery health, and notification controls."
     },
     {
       "name": "Security",
@@ -50,7 +50,7 @@
     {
       "name": "Live Knowledge",
       "score": 88,
-      "description": "Weather, MUIS, Google News, Tavily search, fetch URL, source notes, live-check hints, structured Liverpool and F1 briefers."
+      "description": "Weather, MUIS, dual personal Gmail inbox support, Google News, Tavily search, fetch URL, source notes, live-check hints, structured Liverpool and F1 briefers."
     },
     {
       "name": "Self-Improvement",
@@ -412,16 +412,32 @@
         "The 7-Day Trial Loop adds checkpoints and a Log Trial Note action so Herwanto can judge whether H.I.R.A reduces decision friction in real use."
       ],
       "impact": "H.I.R.A is now ready to be tested as a practical daily operating layer: it does not only show data, it interprets the day, suggests an execution protocol, predicts pressure, and asks for feedback to improve the next pass."
+    },
+    {
+      "date": "2026-05-09",
+      "era": "Trial Polish",
+      "title": "The app gets cleaner and more accountable",
+      "commit": "polish-gmail-27",
+      "tag": "Polish + Gmail 2",
+      "summary": "A phone-screenshot pass tightened the parts Herwanto would immediately see before the one-week trial: icon identity, glyph sharpness, input behavior, and email account clarity.",
+      "details": [
+        "The app icon was simplified into a cleaner Nothing-style badge with a dotted H mark, sharper geometry, and less visual clutter.",
+        "The black glyph display was rebuilt with crisper dots and less blur so the OS identity looks higher-resolution inside the PWA.",
+        "The chat composer now hides the browser's thin native caret when the block cursor is active, leaving only the intended block blink.",
+        "Personal Gmail 2 was added as a first-class inbox option for brief and draft flows in the PWA, Telegram commands, service status, and setup docs.",
+        "Growth-log and app cache versions were bumped together so installed devices can receive the visible polish as a clean update."
+      ],
+      "impact": "H.I.R.A should feel cleaner on first launch, less glitchy while typing, and more honest about email: personal inboxes can be connected, while work/MOE Gmail remains deliberately removed."
     }
   ],
   "currentCapabilities": [
-    "Installable private PWA with refreshed Nothing-style home-screen icon, chat, agenda, tasks, Gmail, files, uploads, notifications, and dashboard views.",
+    "Installable private PWA with minimal Nothing-style home-screen icon, sharper glyph surfaces, chat, agenda, tasks, dual personal Gmail options, files, uploads, notifications, and dashboard views.",
     "Home OS Intelligence that synthesizes agenda, workload, tasks, marking load, proactive signals, service health, and file memory into a readiness score, operating mode, next best move, risks, openings, and one-tap actions.",
     "Command Protocol that turns the current state into concrete Now, Next, and Later steps with confidence and evidence.",
     "Forecast Radar that highlights upcoming pressure from load spikes, due clusters, marking drag, or stable horizon signals.",
     "Adaptive Plan that creates live Prime, Build, Slice, and Stabilize work blocks from the current day state.",
     "7-Day Trial Loop with checkpoints and a trial-note action to measure whether H.I.R.A reduces decision friction in real life.",
-    "Telegram-compatible tool brain with calendar, reminders, marking, MTL classlists, Gmail, artifacts, weather, MUIS prayer/khutbah, news, web search, and URL reading.",
+    "Telegram-compatible tool brain with calendar, reminders, marking, MTL classlists, dual personal Gmail brief/draft support, artifacts, weather, MUIS prayer/khutbah, news, web search, and URL reading.",
     "Structured sports intelligence for Liverpool and F1.",
     "Railway Hobby runtime profile with upload queue, memory guardrails, worker split, Redis production option, and admin status.",
     "Long-term memory buckets, topic profiles for new interests, correction ledger, self-reflection notes, source-backed research notes, and conversation summaries.",

@@ -264,7 +264,9 @@ Voice notes require `OPENAI_API_KEY`. H.I.R.A transcribes the note and then trea
 ```
 /gmail
 /gmail is:unread newer_than:7d
+/gmail personal2 newer_than:7d
 /gmaildraft recipient@example.com | Subject | Email body
+/gmaildraft personal2 recipient@example.com | Subject | Email body
 ```
 
 **NEA weather:**
@@ -304,10 +306,17 @@ GOOGLE_GMAIL_CLIENT_ID=...
 GOOGLE_GMAIL_CLIENT_SECRET=...
 GOOGLE_GMAIL_REFRESH_TOKEN=...
 ```
-Work/MOE Gmail is no longer exposed in H.I.R.A because the workspace blocks the Gmail OAuth flow. Use personal Gmail only.
+To connect one more personal Gmail account, run the same OAuth script while signed in to the second inbox, then add:
+```env
+GOOGLE_GMAIL2_REFRESH_TOKEN=...
+```
+By default H.I.R.A reuses `GOOGLE_GMAIL_CLIENT_ID` and `GOOGLE_GMAIL_CLIENT_SECRET`. If the second inbox uses a different OAuth client, set `GOOGLE_GMAIL2_CLIENT_ID` and `GOOGLE_GMAIL2_CLIENT_SECRET` too.
+
+Work/MOE Gmail is no longer exposed in H.I.R.A because the workspace blocks the Gmail OAuth flow. Use personal Gmail accounts only.
 11. Redeploy Railway and test:
 ```text
 /gmail is:unread newer_than:7d
+/gmail personal2 newer_than:7d
 /gmaildraft someone@example.com | Test from H.I.R.A | Hello, this is a draft created by H.I.R.A.
 ```
 
