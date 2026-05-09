@@ -13,7 +13,7 @@
     />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/static/icon.svg?v=20260503-2" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260509-nothing-10" />
+    <link rel="stylesheet" href="./styles.css?v=20260509-nothing-11" />
   </head>
   <body>
     <main class="shell">
@@ -33,17 +33,6 @@
             <button type="button" data-theme-choice="light" class="theme-btn active">Light</button>
             <button type="button" data-theme-choice="dark" class="theme-btn">Dark</button>
           </div>
-          <button id="notificationsBtn" class="icon-btn notification-btn" type="button" title="Notifications">
-            <span data-lucide="bell" aria-hidden="true"></span>
-            <span class="notification-top-toggle" aria-hidden="true"><span></span></span>
-            <strong id="notificationBadge" hidden>0</strong>
-          </button>
-          <button id="installBtn" class="icon-btn" hidden title="Install app">
-            <span data-lucide="download" aria-hidden="true"></span>
-          </button>
-          <button id="settingsBtn" class="icon-btn" title="Settings">
-            <span data-lucide="settings" aria-hidden="true"></span>
-          </button>
         </div>
       </header>
 
@@ -125,6 +114,19 @@
         <div class="clock-live-label" aria-label="Singapore time zone">
           <span>SGT</span>
           <strong>UTC+8</strong>
+        </div>
+        <div class="clock-controls" aria-label="System controls">
+          <button id="notificationsBtn" class="icon-btn notification-btn" type="button" title="Notifications">
+            <span data-lucide="bell" aria-hidden="true"></span>
+            <span class="notification-top-toggle" aria-hidden="true"><span></span></span>
+            <strong id="notificationBadge" hidden>0</strong>
+          </button>
+          <button id="installBtn" class="icon-btn" hidden title="Install app">
+            <span data-lucide="download" aria-hidden="true"></span>
+          </button>
+          <button id="settingsBtn" class="icon-btn" title="Settings">
+            <span data-lucide="settings" aria-hidden="true"></span>
+          </button>
         </div>
         <p id="statusLine" data-tone="muted">Ready.</p>
       </section>
@@ -579,6 +581,6 @@
       </section>
     </main>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-    <script src="./app.js?v=20260509-nothing-10" type="module"></script>
+    <script src="./app.js?v=20260509-nothing-11" type="module"></script>
   </body>
 </html>

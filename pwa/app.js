@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260509-nothing-10";
-const APP_SCRIPT = "app.js?v=20260509-nothing-10";
-const EXPECTED_SW_CACHE = "hira-os-v83";
+const APP_VERSION = "20260509-nothing-11";
+const APP_SCRIPT = "app.js?v=20260509-nothing-11";
+const EXPECTED_SW_CACHE = "hira-os-v84";
 
 const state = {
   token: localStorage.getItem("hira_web_token") || "",
@@ -75,9 +75,10 @@ const glyphDigitFont = {
   "%": ["101", "001", "010", "100", "101"],
   "-": ["000", "000", "111", "000", "000"],
 };
-const GLYPH_MODES = ["time", "date", "load", "mail", "next"];
+const GLYPH_MODES = ["time", "date", "battery", "load", "mail", "next"];
 let glyphMode = "time";
 let glyphModeBeforeChat = "time";
+let batteryPercent = null;
 const CONNECTIONS = [
   { key: "calendar", label: "Calendar", icon: "calendar" },
   { key: "google", label: "Google", icon: "sparkles" },
@@ -120,6 +121,31 @@ function drawGlyphText(grid, value, startX, startY, tone = "on") {
   }
 }
 
+function glyphTextWidth(value) {
+  return [...String(value || "")].reduce((total, char) => total + (glyphDigitFont[char]?.[0].length || 1) + 1, -1);
+}
+
+function drawGlyphTextCentered(grid, value, startY, tone = "on") {
+  const width = glyphTextWidth(value);
+  drawGlyphText(grid, value, Math.max(0, Math.floor((17 - width) / 2)), startY, tone);
+}
+
+function drawGlyphDivider(grid, y = 6) {
+  [4, 5, 7, 8, 9, 11, 12].forEach((x) => drawGlyphPixel(grid, x, y, "dim"));
+}
+
+function drawGlyphMeter(grid, percent) {
+  const clean = Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : 0;
+  const filled = Math.round((clean / 100) * 9);
+  for (let x = 4; x <= 12; x += 1) drawGlyphPixel(grid, x, 11, x - 4 < filled ? "hot" : "dim");
+}
+
+function drawGlyphCompactClock(grid, value, topY = 3) {
+  const clean = String(value || "--:--").padStart(5, "-").slice(0, 5);
+  const positions = [0, 4, 8, 10, 14];
+  [...clean].forEach((char, index) => drawGlyphText(grid, char, positions[index], topY, "on"));
+}
+
 function drawGlyphFooter(grid, footer) {
   const marks = {
     MAY: [[5, 10], [6, 10], [8, 10], [10, 10], [5, 11], [7, 11], [8, 11], [10, 11]],
@@ -148,11 +174,20 @@ function drawGlyphWave(grid) {
 function glyphValueForMode(mode) {
   const now = new Date();
   if (mode === "time") return { value: clockFormatter.format(now).replace(/^24:/, "00:"), label: "local time" };
-  if (mode === "date") return { value: new Intl.DateTimeFormat("en-SG", { day: "2-digit", timeZone: "Asia/Singapore" }).format(now), footer: "MAY", label: "date" };
+  if (mode === "date") {
+    const day = new Intl.DateTimeFormat("en-SG", { day: "2-digit", timeZone: "Asia/Singapore" }).format(now);
+    const month = new Intl.DateTimeFormat("en-SG", { month: "2-digit", timeZone: "Asia/Singapore" }).format(now);
+    return { day, month, value: `${day}/${month}`, label: "date" };
+  }
+  if (mode === "battery") {
+    const value = Number.isFinite(batteryPercent) ? Math.round(batteryPercent) : null;
+    return { value: value === null ? "--%" : `${String(value).padStart(2, "0")}%`, percent: value, label: "battery" };
+  }
   if (mode === "mail") return { value: String(Math.min(99, state.notifications.length || 0)).padStart(2, "0"), footer: "NEW", label: "mail notifications" };
   if (mode === "load") {
     const score = Number($("#dailyLoadScore")?.textContent || 0);
-    return { value: `${String(Math.max(0, Math.min(99, Math.round(score)))).padStart(2, "0")}%`, label: "workload" };
+    const value = Math.max(0, Math.min(99, Math.round(score)));
+    return { value: `${String(value).padStart(2, "0")}%`, percent: value, label: "workload" };
   }
   if (mode === "next") {
     const nextTime = document
@@ -162,6 +197,33 @@ function glyphValueForMode(mode) {
     return { value: nextTime || "--:--", label: "next anchor" };
   }
   return { value: "", label: mode };
+}
+
+function drawGlyphMode(grid, mode, current) {
+  if (mode === "time") {
+    drawGlyphCompactClock(grid, current.value, 3);
+    return;
+  }
+  if (mode === "date") {
+    drawGlyphTextCentered(grid, current.day, 1);
+    drawGlyphDivider(grid, 6);
+    drawGlyphTextCentered(grid, current.month, 7);
+    return;
+  }
+  if (mode === "battery" || mode === "load") {
+    drawGlyphTextCentered(grid, current.value, 2);
+    drawGlyphMeter(grid, current.percent);
+    return;
+  }
+  if (mode === "next") {
+    const [hour = "--", minute = "--"] = String(current.value || "--:--").split(":");
+    drawGlyphTextCentered(grid, hour.padStart(2, "-").slice(0, 2), 1);
+    drawGlyphDivider(grid, 6);
+    drawGlyphTextCentered(grid, minute.padStart(2, "-").slice(0, 2), 7);
+    return;
+  }
+  drawGlyphTextCentered(grid, current.value, 3);
+  if (current.footer) drawGlyphFooter(grid, current.footer);
 }
 
 function renderNothingGlyph(mode = glyphMode) {
@@ -176,9 +238,7 @@ function renderNothingGlyph(mode = glyphMode) {
     button.setAttribute("aria-label", "Glyph display showing H.I.R.A chat waveform.");
   } else {
     const current = glyphValueForMode(mode);
-    const width = [...current.value].reduce((total, char) => total + (glyphDigitFont[char]?.[0].length || 1) + 1, -1);
-    drawGlyphText(grid, current.value, Math.max(0, Math.floor((17 - width) / 2)), 3);
-    if (current.footer) drawGlyphFooter(grid, current.footer);
+    drawGlyphMode(grid, mode, current);
     button.setAttribute("aria-label", `Glyph display showing ${current.label}: ${current.value}. Tap to cycle mode.`);
   }
   matrix.innerHTML = grid
@@ -189,6 +249,21 @@ function renderNothingGlyph(mode = glyphMode) {
 function cycleNothingGlyph() {
   const currentIndex = Math.max(0, GLYPH_MODES.indexOf(glyphMode));
   renderNothingGlyph(GLYPH_MODES[(currentIndex + 1) % GLYPH_MODES.length]);
+}
+
+async function initBatteryGlyph() {
+  if (!("getBattery" in navigator)) return;
+  try {
+    const battery = await navigator.getBattery();
+    const update = () => {
+      batteryPercent = Math.round(Number(battery.level || 0) * 100);
+      if (glyphMode === "battery") renderNothingGlyph("battery");
+    };
+    update();
+    battery.addEventListener("levelchange", update);
+  } catch {
+    batteryPercent = null;
+  }
 }
 
 function resolvedTheme() {
@@ -2727,6 +2802,7 @@ renderAppVersion();
 setView("home");
 updateLiveClock();
 renderNothingGlyph("time");
+initBatteryGlyph();
 setInterval(updateLiveClock, 1000);
 loadHome();
 startNotificationPolling();
