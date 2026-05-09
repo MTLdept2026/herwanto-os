@@ -6017,8 +6017,10 @@ html[data-theme="dark"] .nothing-glyph-display {
 }
 
 .nothing-glyph-dot {
-  width: 5px !important;
-  height: 5px !important;
+  width: 100% !important;
+  max-width: 4.4px !important;
+  height: auto !important;
+  aspect-ratio: 1 !important;
 }
 
 @media (max-width: 640px) {
@@ -6061,8 +6063,10 @@ html[data-theme="dark"] .nothing-glyph-display {
   }
 
   .nothing-glyph-dot {
-    width: 4.5px !important;
-    height: 4.5px !important;
+    width: 100% !important;
+    max-width: 3.6px !important;
+    height: auto !important;
+    aspect-ratio: 1 !important;
   }
 
 }

@@ -1,9 +1,9 @@
-const CACHE_NAME = "hira-os-v101";
-const HIRA_APP_VERSION = "20260509-signal-align-28";
+const CACHE_NAME = "hira-os-v102";
+const HIRA_APP_VERSION = "20260509-glyph-grid-29";
 const ASSETS = [
   "/",
-  "/styles.css?v=20260509-signal-align-28",
-  "/app.js?v=20260509-signal-align-28",
+  "/styles.css?v=20260509-glyph-grid-29",
+  "/app.js?v=20260509-glyph-grid-29",
   "/static/icon.svg",
   "/static/icon-192.png",
   "/static/icon-512.png",
