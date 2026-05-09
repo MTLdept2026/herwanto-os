@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260509-nothing-14";
-const APP_SCRIPT = "app.js?v=20260509-nothing-14";
-const EXPECTED_SW_CACHE = "hira-os-v87";
+const APP_VERSION = "20260509-nothing-15";
+const APP_SCRIPT = "app.js?v=20260509-nothing-15";
+const EXPECTED_SW_CACHE = "hira-os-v88";
 
 const state = {
   token: localStorage.getItem("hira_web_token") || "",
@@ -77,10 +77,11 @@ const glyphDigitFont = {
 };
 const GLYPH_COLS = 21;
 const GLYPH_ROWS = 13;
-const GLYPH_MODES = ["time", "date", "battery", "load", "mail", "next"];
+const GLYPH_MODES = ["time", "date", "battery", "load", "next"];
 let glyphMode = "time";
 let glyphModeBeforeChat = "time";
 let batteryPercent = null;
+let homeGlyphDataReady = false;
 const CONNECTIONS = [
   { key: "calendar", label: "Calendar", icon: "calendar" },
   { key: "google", label: "Google", icon: "sparkles" },
@@ -187,11 +188,13 @@ function glyphValueForMode(mode) {
   }
   if (mode === "mail") return { value: String(Math.min(99, state.notifications.length || 0)).padStart(2, "0"), footer: "NEW", label: "mail notifications" };
   if (mode === "load") {
+    if (!homeGlyphDataReady) return { value: "--%", percent: null, label: "workload loading" };
     const score = Number($("#dailyLoadScore")?.textContent || 0);
     const value = Math.max(0, Math.min(99, Math.round(score)));
     return { value: `${String(value).padStart(2, "0")}%`, percent: value, label: "workload" };
   }
   if (mode === "next") {
+    if (!homeGlyphDataReady) return { value: "--:--", label: "next anchor loading" };
     const nextTime = document
       .querySelector("#homeLivingTimeline .timeline-time strong")
       ?.textContent
@@ -2061,6 +2064,7 @@ async function loadHome() {
     refreshButton.classList.remove("is-updated");
   }
   $("#homeLivingTimeline").innerHTML = "<div>Loading...</div>";
+  homeGlyphDataReady = false;
   $("#homeProactive").innerHTML = "<div>Loading...</div>";
   $("#homeDigest").innerHTML = "<div>Loading...</div>";
   $("#homeIslamic").innerHTML = "<div>Loading...</div>";
@@ -2085,6 +2089,8 @@ async function loadHome() {
     renderSegmentsAll(".services-segments", Math.round((connectedCount / CONNECTIONS.length) * 12), 12, connectedCount ? "accent" : "muted");
     renderConnections(services);
     renderDailyLoad(data.daily_load || {});
+    homeGlyphDataReady = true;
+    if (glyphMode === "load" || glyphMode === "next") renderNothingGlyph(glyphMode);
     const proactiveTop = Array.isArray(data.proactive?.top) ? data.proactive.top : [];
     const lead = proactiveTop[0] || null;
     if (lead) {
