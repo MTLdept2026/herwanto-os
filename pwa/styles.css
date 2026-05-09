@@ -4036,7 +4036,7 @@ html[data-theme="dark"] .topbar {
 
 .nothing-glyph-matrix {
   display: grid;
-  grid-template-columns: repeat(17, 1fr);
+  grid-template-columns: repeat(21, 1fr);
   grid-template-rows: repeat(13, 1fr);
   gap: 1px;
   padding: 14px;
@@ -5497,6 +5497,7 @@ html[data-theme="dark"] .nothing-glyph-display {
 
 .nothing-glyph-matrix {
   padding: 18px !important;
+  grid-template-columns: repeat(21, 1fr) !important;
 }
 
 .nothing-glyph-dot {

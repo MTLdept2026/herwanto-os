@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260509-nothing-13";
-const APP_SCRIPT = "app.js?v=20260509-nothing-13";
-const EXPECTED_SW_CACHE = "hira-os-v86";
+const APP_VERSION = "20260509-nothing-14";
+const APP_SCRIPT = "app.js?v=20260509-nothing-14";
+const EXPECTED_SW_CACHE = "hira-os-v87";
 
 const state = {
   token: localStorage.getItem("hira_web_token") || "",
@@ -75,6 +75,8 @@ const glyphDigitFont = {
   "%": ["101", "001", "010", "100", "101"],
   "-": ["000", "000", "111", "000", "000"],
 };
+const GLYPH_COLS = 21;
+const GLYPH_ROWS = 13;
 const GLYPH_MODES = ["time", "date", "battery", "load", "mail", "next"];
 let glyphMode = "time";
 let glyphModeBeforeChat = "time";
@@ -96,7 +98,7 @@ function updateLiveClock() {
 }
 
 function blankGlyphGrid() {
-  return Array.from({ length: 13 }, () => Array.from({ length: 17 }, () => ""));
+  return Array.from({ length: GLYPH_ROWS }, () => Array.from({ length: GLYPH_COLS }, () => ""));
 }
 
 function drawGlyphPixel(grid, x, y, tone = "on") {
@@ -127,22 +129,22 @@ function glyphTextWidth(value) {
 
 function drawGlyphTextCentered(grid, value, startY, tone = "on") {
   const width = glyphTextWidth(value);
-  drawGlyphText(grid, value, Math.max(0, Math.floor((17 - width) / 2)), startY, tone);
+  drawGlyphText(grid, value, Math.max(0, Math.floor((GLYPH_COLS - width) / 2)), startY, tone);
 }
 
 function drawGlyphDivider(grid, y = 6) {
-  [4, 5, 7, 8, 9, 11, 12].forEach((x) => drawGlyphPixel(grid, x, y, "dim"));
+  [6, 7, 9, 10, 11, 13, 14].forEach((x) => drawGlyphPixel(grid, x, y, "dim"));
 }
 
 function drawGlyphMeter(grid, percent) {
   const clean = Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : 0;
-  const filled = Math.round((clean / 100) * 9);
-  for (let x = 4; x <= 12; x += 1) drawGlyphPixel(grid, x, 11, x - 4 < filled ? "hot" : "dim");
+  const filled = Math.round((clean / 100) * 11);
+  for (let x = 5; x <= 15; x += 1) drawGlyphPixel(grid, x, 11, x - 5 < filled ? "hot" : "dim");
 }
 
 function drawGlyphCompactClock(grid, value, topY = 3) {
   const clean = String(value || "--:--").padStart(5, "-").slice(0, 5);
-  const positions = [0, 4, 8, 10, 14];
+  const positions = [2, 6, 10, 12, 16];
   [...clean].forEach((char, index) => drawGlyphText(grid, char, positions[index], topY, "on"));
 }
 
@@ -156,7 +158,7 @@ function drawGlyphFooter(grid, footer) {
 
 function drawGlyphWave(grid) {
   const center = 6;
-  const heights = [0, 0, 1, 1, 3, 5, 2, 1, 4, 2, 3, 2, 1, 1, 0, 0, 0];
+  const heights = [0, 0, 1, 1, 2, 4, 5, 2, 1, 3, 4, 2, 3, 2, 1, 2, 1, 1, 0, 0, 0];
   heights.forEach((height, index) => {
     drawGlyphPixel(grid, index, center, "hot");
     for (let n = 1; n <= height; n += 1) {
@@ -164,8 +166,8 @@ function drawGlyphWave(grid) {
       drawGlyphPixel(grid, index, center + n, n > 3 ? "hot" : "on");
     }
   });
-  for (let x = 0; x < 17; x += 1) drawGlyphPixel(grid, x, center, "hot");
-  [2, 6, 9, 12, 15].forEach((x) => {
+  for (let x = 0; x < GLYPH_COLS; x += 1) drawGlyphPixel(grid, x, center, "hot");
+  [3, 7, 10, 13, 17].forEach((x) => {
     drawGlyphPixel(grid, x, center - 1, "dim");
     drawGlyphPixel(grid, x, center + 1, "dim");
   });
@@ -177,7 +179,7 @@ function glyphValueForMode(mode) {
   if (mode === "date") {
     const day = new Intl.DateTimeFormat("en-SG", { day: "2-digit", timeZone: "Asia/Singapore" }).format(now);
     const month = new Intl.DateTimeFormat("en-SG", { month: "2-digit", timeZone: "Asia/Singapore" }).format(now);
-    return { day, month, value: `${day}/${month}`, label: "date" };
+    return { value: `${day}-${month}`, label: "date" };
   }
   if (mode === "battery") {
     const value = Number.isFinite(batteryPercent) ? Math.round(batteryPercent) : null;
@@ -205,9 +207,7 @@ function drawGlyphMode(grid, mode, current) {
     return;
   }
   if (mode === "date") {
-    drawGlyphTextCentered(grid, current.day, 1);
-    drawGlyphDivider(grid, 6);
-    drawGlyphTextCentered(grid, current.month, 7);
+    drawGlyphTextCentered(grid, current.value, 3);
     return;
   }
   if (mode === "battery" || mode === "load") {
@@ -216,10 +216,7 @@ function drawGlyphMode(grid, mode, current) {
     return;
   }
   if (mode === "next") {
-    const [hour = "--", minute = "--"] = String(current.value || "--:--").split(":");
-    drawGlyphTextCentered(grid, hour.padStart(2, "-").slice(0, 2), 1);
-    drawGlyphDivider(grid, 6);
-    drawGlyphTextCentered(grid, minute.padStart(2, "-").slice(0, 2), 7);
+    drawGlyphCompactClock(grid, current.value, 3);
     return;
   }
   drawGlyphTextCentered(grid, current.value, 3);
