@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260509-nothing-5";
-const APP_SCRIPT = "app.js?v=20260509-nothing-5";
-const EXPECTED_SW_CACHE = "hira-os-v78";
+const APP_VERSION = "20260509-nothing-6";
+const APP_SCRIPT = "app.js?v=20260509-nothing-6";
+const EXPECTED_SW_CACHE = "hira-os-v79";
 
 const state = {
   token: localStorage.getItem("hira_web_token") || "",
@@ -1354,6 +1354,12 @@ function loadToneClass(tone) {
 
 function renderDailyLoad(load = {}) {
   const today = load.today || {};
+  const loadLabel = {
+    green: "LOW LOAD",
+    yellow: "STEADY LOAD",
+    orange: "HEAVY LOAD",
+    red: "CRITICAL LOAD",
+  }[String(today.tone || "green").toLowerCase()] || "LOAD STATE";
   const toneClass = loadToneClass(today.tone);
   $("#dailyLoadTitle").textContent = today.label || "Today";
   $("#dailyLoadBadge").textContent = today.load || "Pretty chill";
@@ -1363,7 +1369,7 @@ function renderDailyLoad(load = {}) {
   $("#dailyLoadScore").closest(".daily-load-score").className = `daily-load-score score-${String(today.tone || "green").toLowerCase()}`;
   $("#dailyLoadScore").closest(".daily-load-score").style.setProperty("--score-arc", `${scorePct * 2.7}deg`);
   $("#dailyLoadScore").textContent = String(today.score ?? 0);
-  $("#dailyLoadScoreLabel").textContent = `${String(today.tone || "green").toUpperCase()} DAY`;
+  $("#dailyLoadScoreLabel").textContent = loadLabel;
   $("#dailyLoadLessons").textContent = String(today.lessons ?? 0);
   $("#dailyLoadEvents").textContent = String(today.events ?? 0);
   $("#dailyLoadDue").textContent = String(today.due ?? 0);

@@ -4373,6 +4373,261 @@ html[data-theme="dark"] .composer textarea {
   color: var(--success) !important;
 }
 
+/* Nothing-system refinement after Android design review */
+html[data-theme="dark"] {
+  --surface: #202125;
+  --surface-raised: #191a1d;
+  --border: #55575d;
+  --border-visible: #666970;
+  --text-secondary: #a9abb0;
+  --success: #f1f1ec;
+  --warning: #a9abb0;
+}
+
+.topbar,
+html[data-theme="dark"] .topbar {
+  min-height: 238px;
+}
+
+.topbar-brand {
+  padding: 76px 0 0 92px;
+}
+
+.topbar .eyebrow {
+  left: 30px;
+  top: 222px;
+  width: 218px;
+  color: var(--hira-muted);
+  font-family: var(--font-dot);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.topbar h1 {
+  font-size: 62px;
+}
+
+.topbar-brand::after {
+  left: 266px;
+  top: 84px;
+}
+
+.topbar .brand-subtitle,
+.topbar-glyph {
+  display: none !important;
+}
+
+.topbar .topbar-actions {
+  border-left: 0 !important;
+  padding-left: 8px !important;
+}
+
+.topbar .topbar-actions .icon-btn,
+.topbar .topbar-actions .notification-btn,
+.topbar .topbar-actions .icon-btn:hover,
+.topbar .topbar-actions .icon-btn:focus,
+.topbar .topbar-actions .icon-btn:focus-visible,
+.topbar .topbar-actions .icon-btn:active,
+.topbar .topbar-actions .icon-btn.is-open,
+.topbar .topbar-actions .notification-btn:hover,
+.topbar .topbar-actions .notification-btn:focus,
+.topbar .topbar-actions .notification-btn:focus-visible,
+.topbar .topbar-actions .notification-btn:active,
+.topbar .topbar-actions .notification-btn.is-open {
+  border: 0 !important;
+  outline: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--hira-muted) !important;
+}
+
+.topbar .topbar-actions .icon-btn svg,
+.topbar .topbar-actions .notification-btn svg {
+  stroke-width: 1.85;
+}
+
+.load-badge,
+.load-badge.load-green,
+.load-badge.load-yellow,
+.load-badge.load-orange,
+.load-badge.load-red,
+html[data-theme="dark"] .load-badge,
+html[data-theme="dark"] .load-badge.load-green {
+  background: transparent !important;
+  border-color: var(--hira-line-strong) !important;
+  color: var(--hira-ink) !important;
+}
+
+.daily-load-score,
+.daily-load-score.score-yellow,
+.daily-load-score.score-orange,
+.daily-load-score.score-red {
+  --score-color: var(--hira-line-strong);
+}
+
+.load-green,
+.load-yellow,
+.load-orange,
+.load-red {
+  background: var(--hira-ink) !important;
+}
+
+html[data-theme="dark"] .load-green,
+html[data-theme="dark"] .load-yellow,
+html[data-theme="dark"] .load-orange {
+  background: var(--hira-white) !important;
+}
+
+html[data-theme="dark"] .load-red,
+.load-red {
+  background: var(--hira-red) !important;
+}
+
+.load-stat,
+.load-note,
+.connection-card {
+  background: color-mix(in srgb, var(--hira-plate) 76%, var(--hira-black)) !important;
+  border: 1px solid color-mix(in srgb, var(--hira-line) 35%, transparent);
+}
+
+html[data-theme="dark"] .load-stat,
+html[data-theme="dark"] .load-note,
+html[data-theme="dark"] .connection-card {
+  background: #17181a !important;
+}
+
+.connection-card.is-on .connection-switch {
+  background: var(--hira-ink) !important;
+  border-color: var(--hira-ink) !important;
+}
+
+html[data-theme="dark"] .connection-card.is-on .connection-switch {
+  background: var(--hira-white) !important;
+  border-color: var(--hira-white) !important;
+}
+
+.connection-card.is-on .connection-switch span {
+  background: var(--hira-plate) !important;
+}
+
+html[data-theme="dark"] .connection-card.is-on .connection-switch span {
+  background: var(--hira-black) !important;
+}
+
+.hira-signal,
+html[data-theme="dark"] .hira-signal {
+  background:
+    radial-gradient(circle, color-mix(in srgb, var(--hira-line) 24%, transparent) 0.8px, transparent 1px),
+    color-mix(in srgb, var(--hira-plate) 88%, var(--hira-plate-2)) !important;
+  background-size: 10px 10px, auto !important;
+  border: 1px solid var(--hira-line-strong) !important;
+  border-radius: 0 !important;
+}
+
+.hira-signal-head,
+html[data-theme="dark"] .hira-signal-head {
+  min-height: 58px;
+  border-bottom: 1px solid var(--hira-line) !important;
+  background: transparent !important;
+}
+
+.hira-signal-head .eyebrow {
+  color: var(--hira-muted) !important;
+  font-family: var(--font-dot);
+  font-size: 18px;
+  letter-spacing: 0.16em;
+}
+
+.signal-state {
+  color: var(--hira-ink) !important;
+  font-size: 12px;
+}
+
+.signal-state span {
+  background: var(--hira-red) !important;
+}
+
+.messages,
+.hira-signal > .messages,
+html[data-theme="dark"] .messages,
+html[data-theme="dark"] .hira-signal > .messages {
+  max-height: min(54vh, 620px);
+  padding: 22px 24px;
+  border-top: 0 !important;
+  background: transparent !important;
+  color: var(--hira-ink) !important;
+}
+
+.messages .message {
+  margin-bottom: 16px;
+  color: var(--hira-ink) !important;
+  font-family: var(--font-readable);
+  font-size: 16px;
+  line-height: 1.48;
+}
+
+.messages .message-body::before {
+  font-family: var(--font-ui);
+  font-weight: 800;
+}
+
+.message.user .message-body::before {
+  color: var(--hira-red) !important;
+}
+
+.message.hira .message-body::before {
+  color: var(--hira-ink) !important;
+}
+
+.composer,
+html[data-theme="dark"] .composer {
+  background: color-mix(in srgb, var(--hira-plate) 88%, var(--hira-plate-2)) !important;
+  border: 1px solid var(--hira-line-strong) !important;
+  border-top: 0 !important;
+}
+
+.composer textarea,
+html[data-theme="dark"] .composer textarea,
+#attachBtn,
+html[data-theme="dark"] #attachBtn,
+#sendBtn,
+#sendBtn:disabled,
+#sendBtn.is-ready,
+html[data-theme="dark"] #sendBtn,
+html[data-theme="dark"] #sendBtn:disabled,
+html[data-theme="dark"] #sendBtn.is-ready {
+  background: transparent !important;
+  color: var(--hira-ink) !important;
+}
+
+.composer textarea {
+  font-family: var(--font-readable);
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.composer textarea::placeholder {
+  color: var(--hira-muted) !important;
+}
+
+#attachBtn,
+html[data-theme="dark"] #attachBtn {
+  color: var(--hira-muted) !important;
+  border-right: 1px solid var(--hira-line-strong) !important;
+}
+
+#sendBtn,
+#sendBtn:disabled,
+#sendBtn.is-ready,
+html[data-theme="dark"] #sendBtn,
+html[data-theme="dark"] #sendBtn:disabled,
+html[data-theme="dark"] #sendBtn.is-ready {
+  border-left: 1px solid var(--hira-line-strong) !important;
+  color: var(--hira-ink) !important;
+}
+
 @media (max-width: 640px) {
   .shell {
     --mobile-edge: 16px;
@@ -4435,5 +4690,60 @@ html[data-theme="dark"] .composer textarea {
 
   .status-clockbar #greetingTime.clock-display-top {
     font-size: 44px;
+  }
+}
+
+@media (max-width: 640px) {
+  .topbar,
+  html[data-theme="dark"] .topbar {
+    min-height: 238px;
+    padding: 16px;
+  }
+
+  .topbar-brand {
+    padding: 74px 0 0 78px;
+  }
+
+  .topbar h1 {
+    font-size: 50px;
+  }
+
+  .topbar .eyebrow {
+    left: 28px;
+    top: 222px;
+    width: 216px;
+    font-size: 11px;
+  }
+
+  .topbar-brand::after {
+    left: 228px;
+    top: 82px;
+  }
+
+  .topbar .brand-subtitle,
+  .topbar-glyph {
+    display: none !important;
+  }
+
+  .topbar .topbar-actions .icon-btn,
+  .topbar .topbar-actions .notification-btn,
+  .topbar .topbar-actions .icon-btn:hover,
+  .topbar .topbar-actions .icon-btn:focus,
+  .topbar .topbar-actions .icon-btn:focus-visible,
+  .topbar .topbar-actions .icon-btn:active,
+  .topbar .topbar-actions .icon-btn.is-open,
+  .topbar .topbar-actions .notification-btn:hover,
+  .topbar .topbar-actions .notification-btn:focus,
+  .topbar .topbar-actions .notification-btn:focus-visible,
+  .topbar .topbar-actions .notification-btn:active,
+  .topbar .topbar-actions .notification-btn.is-open {
+    border: 0 !important;
+    outline: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+  }
+
+  .messages .message {
+    font-size: 15px;
   }
 }
