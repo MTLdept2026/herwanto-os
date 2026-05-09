@@ -1,10 +1,13 @@
-const CACHE_NAME = "hira-os-v88";
-const HIRA_APP_VERSION = "20260509-nothing-15";
+const CACHE_NAME = "hira-os-v92";
+const HIRA_APP_VERSION = "20260509-nothing-19";
 const ASSETS = [
   "/",
-  "/styles.css?v=20260509-nothing-15",
-  "/app.js?v=20260509-nothing-15",
+  "/styles.css?v=20260509-nothing-19",
+  "/app.js?v=20260509-nothing-19",
   "/static/icon.svg",
+  "/static/icon-192.png",
+  "/static/icon-512.png",
+  "/static/apple-touch-icon.png",
   "/manifest.webmanifest"
 ];
 

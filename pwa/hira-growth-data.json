@@ -1,19 +1,19 @@
 {
-  "updated": "2026-05-08",
+  "updated": "2026-05-09",
   "name": "H.I.R.A Growth Log",
-  "subtitle": "How Herwanto Interface for Responsive Assistance grew from an installable assistant into a more reliable personal operating system.",
+  "subtitle": "How Herwanto Interface for Responsive Assistance grew from an installable assistant into a more reliable, visually coherent personal operating system.",
   "summary": {
     "start": "2026-04-28",
-    "current": "2026-05-08",
+    "current": "2026-05-09",
     "commitsTracked": 167,
-    "majorPhases": 21,
-    "currentStage": "Restored cockpit interface and trust rails"
+    "majorPhases": 22,
+    "currentStage": "Nothing-style identity system and growth record"
   },
   "metrics": [
     {
       "label": "Days of build acceleration",
-      "value": "10",
-      "note": "From first installable PWA commit to a restored cockpit interface with explicit trust rails."
+      "value": "11",
+      "note": "From first installable PWA commit to a sharper Nothing-style app identity with explicit trust rails."
     },
     {
       "label": "Tracked upgrade commits",
@@ -34,8 +34,8 @@
   "capabilityRings": [
     {
       "name": "Interface",
-      "score": 94,
-      "description": "Installable PWA, restored cockpit home, mobile dashboard, chat, files, action-enabled push notifications, recovery health, and notification controls."
+      "score": 95,
+      "description": "Installable PWA, Nothing-style home-screen icon, restored cockpit home, mobile dashboard, chat, files, action-enabled push notifications, recovery health, and notification controls."
     },
     {
       "name": "Security",
@@ -379,10 +379,25 @@
         "The growth log now marks the premium redesign as an experiment, not the current interface."
       ],
       "impact": "H.I.R.A should look familiar again in the app while keeping the newer reliability behavior underneath."
+    },
+    {
+      "date": "2026-05-09",
+      "era": "Visual Identity Sync",
+      "title": "The home-screen icon joins the Nothing-style system",
+      "commit": "visual-language-sync",
+      "tag": "Icon + Growth Log",
+      "summary": "H.I.R.A's installable identity and growth log were pulled into the same sharper visual language as the current app surface.",
+      "details": [
+        "The app icon was rebuilt around the warm device plate, black cockpit core, LED-style H mark, red signal block, and rail/grid details used by the latest interface.",
+        "PNG home-screen assets were added alongside the SVG so saved app icons render cleanly across install surfaces.",
+        "The growth log palette moved from the older soft ivory/red treatment to the current Nothing-inspired off-white, graphite, grid, rail, and signal-red system.",
+        "Growth-log typography and panels were tightened: less soft-card language, stronger rails, clearer stage language, and cache-busted assets for the update."
+      ],
+      "impact": "H.I.R.A now reads as one product from the phone home screen to the growth record: private, mechanical, alive, and recognisably tied to the current cockpit UI."
     }
   ],
   "currentCapabilities": [
-    "Installable private PWA with chat, agenda, tasks, Gmail, files, uploads, notifications, and dashboard views.",
+    "Installable private PWA with refreshed Nothing-style home-screen icon, chat, agenda, tasks, Gmail, files, uploads, notifications, and dashboard views.",
     "Telegram-compatible tool brain with calendar, reminders, marking, MTL classlists, Gmail, artifacts, weather, MUIS prayer/khutbah, news, web search, and URL reading.",
     "Structured sports intelligence for Liverpool and F1.",
     "Railway Hobby runtime profile with upload queue, memory guardrails, worker split, Redis production option, and admin status.",
@@ -392,7 +407,7 @@
     "Unified Proactive Intelligence v2 queue that ranks nudges, check-ins, follow-ups, prayers, tasks, digest picks, and internal intelligence with suppression and feedback learning.",
     "Short-lived PWA working memory that tracks the current subject, latest correction, pending action, and older competing subjects during follow-up chats.",
     "Action validation and audit receipts for state-changing tools so vague calendar/reminder/nudge/follow-up saves are blocked or reviewable.",
-    "Restored cockpit-style home surface with local time, tabs, dashboard panels, workload context, marking, file memory, chat, and preserved dotted H.I.R.A display typography.",
+    "Restored cockpit-style home surface with local time, tabs, dashboard panels, workload context, marking, file memory, chat, refreshed identity assets, and preserved dotted H.I.R.A display typography.",
     "Recoverable push notification system with delivery logs, recovery status, confirmed-push completion checks, and catch-up retry behavior for daily briefings.",
     "Action-enabled push notifications: Done, Snooze 30m, Useful, and Not useful feed back into task/check-in/follow-up completion, proactive nudges, and notification outcome memory.",
     "Calendar and task reminder push layer with reminder confidence levels and rough time-to-leave estimates from explicit notes, place overrides, or default travel buffers.",

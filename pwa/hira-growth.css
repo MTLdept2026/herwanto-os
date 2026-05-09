@@ -1,19 +1,22 @@
 :root {
   color-scheme: light;
 
-  --bg: #efebe3;
-  --bg-soft: #f7f4ed;
-  --panel: rgba(255, 255, 255, 0.42);
-  --panel-solid: #f3efe8;
-  --panel-strong: #ece7de;
-  --text: #121212;
-  --text-dim: #4a4a46;
-  --text-faint: #7a756d;
-  --line: rgba(18, 18, 18, 0.08);
-  --line-strong: rgba(18, 18, 18, 0.2);
-  --accent: #d83a2e;
-  --accent-soft: rgba(216, 58, 46, 0.12);
-  --shadow: 0 18px 50px rgba(18, 18, 18, 0.06);
+  --bg: #e9e9e4;
+  --bg-soft: #f4f4ef;
+  --panel: rgba(244, 244, 239, 0.86);
+  --panel-solid: #f4f4ef;
+  --panel-strong: #e2e2dd;
+  --text: #10110f;
+  --text-dim: #5e605b;
+  --text-faint: #8b8d87;
+  --line: #a9aaa5;
+  --line-strong: #7f807b;
+  --accent: #c90018;
+  --accent-soft: rgba(201, 0, 24, 0.12);
+  --black: #050505;
+  --white: #fbfbf7;
+  --led: #f7ffd9;
+  --shadow: 0 18px 42px rgba(70, 70, 66, 0.18);
 
   --font-sans: "Space Grotesk", sans-serif;
   --font-mono: "Space Mono", monospace;
@@ -38,12 +41,11 @@ body {
   font-size: 15px;
   line-height: 1.6;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.34), transparent 26%),
-    radial-gradient(circle at top left, rgba(255, 255, 255, 0.8) 0, transparent 32%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.34), transparent 24%),
     linear-gradient(var(--line) 1px, transparent 1px),
     linear-gradient(90deg, var(--line) 1px, transparent 1px),
     var(--bg);
-  background-size: auto, auto, 28px 28px, 28px 28px, auto;
+  background-size: auto, 28px 28px, 28px 28px, auto;
 }
 
 a {
@@ -96,7 +98,7 @@ ol {
   align-items: center;
   gap: 0;
   min-height: 88px;
-  background: rgba(239, 235, 227, 0.82);
+  background: rgba(233, 233, 228, 0.88);
   backdrop-filter: blur(18px);
   border-bottom: 1px solid var(--line);
 }
@@ -118,9 +120,9 @@ ol {
   width: 34px;
   height: 34px;
   display: block;
-  border: 1px solid var(--line-strong);
-  background: #fff;
-  padding: 4px;
+  border: 2px solid var(--line-strong);
+  background: var(--bg-soft);
+  padding: 2px;
 }
 
 .nav-link {
@@ -155,8 +157,9 @@ ol {
 .hero-copy,
 .hero-panel {
   position: relative;
+  min-width: 0;
   min-height: 560px;
-  border: 1px solid var(--line);
+  border: 2px solid var(--line-strong);
   box-shadow: var(--shadow);
 }
 
@@ -166,25 +169,26 @@ ol {
   justify-content: flex-end;
   padding: 48px 48px 56px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.55), transparent 34%),
-    linear-gradient(135deg, rgba(255, 255, 255, 0.76), rgba(255, 255, 255, 0.16)),
+    linear-gradient(90deg, transparent 0 42%, var(--line) 42% calc(42% + 1px), transparent calc(42% + 1px)),
+    linear-gradient(var(--line) 1px, transparent 1px),
     var(--bg-soft);
+  background-size: auto, 100% 86px, auto;
   overflow: hidden;
 }
 
 .hero-copy::before {
   content: "";
   position: absolute;
-  inset: 88px auto auto 56px;
-  width: min(26vw, 240px);
-  height: min(26vw, 240px);
-  border-radius: 50%;
+  inset: 96px 48px auto auto;
+  z-index: 0;
+  width: 176px;
+  height: 126px;
+  border: 2px solid var(--line-strong);
   background:
-    radial-gradient(circle, transparent 58%, rgba(18, 18, 18, 0.08) 58%, rgba(18, 18, 18, 0.08) 59%, transparent 59%),
-    radial-gradient(circle, transparent 70%, rgba(18, 18, 18, 0.08) 70%, rgba(18, 18, 18, 0.08) 71%, transparent 71%),
-    radial-gradient(circle, var(--accent) 0 2px, transparent 3px);
-  background-size: auto, auto, 14px 14px;
-  opacity: 0.78;
+    radial-gradient(circle, var(--accent) 0 2px, transparent 2.5px),
+    var(--black);
+  background-size: 16px 16px, auto;
+  opacity: 0.92;
 }
 
 .hero-copy::after {
@@ -193,14 +197,15 @@ ol {
   right: 52px;
   bottom: 54px;
   width: 120px;
-  height: 1px;
+  height: 6px;
   background: var(--accent);
+  box-shadow: 0 0 14px rgba(201, 0, 24, 0.38);
 }
 
 .hero-copy > * ,
 .hero-panel > * {
   position: relative;
-  z-index: 1;
+  z-index: 2;
 }
 
 .hero-index {
@@ -241,18 +246,18 @@ ol {
 }
 
 h1 {
-  max-width: 780px;
-  font-size: clamp(54px, 8vw, 104px);
+  max-width: 700px;
+  font-size: clamp(50px, 5.4rem, 84px);
   line-height: 0.9;
   font-weight: 700;
-  letter-spacing: -0.05em;
+  letter-spacing: 0;
 }
 
 h2 {
-  font-size: clamp(30px, 4vw, 52px);
+  font-size: clamp(30px, 3.4rem, 48px);
   line-height: 0.94;
   font-weight: 700;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
 }
 
 .hero-subtitle {
@@ -265,7 +270,7 @@ h2 {
 .hero-panel {
   padding: 42px 34px 34px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.5), transparent 30%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.32), transparent 30%),
     var(--panel-solid);
   display: flex;
   flex-direction: column;
@@ -282,7 +287,7 @@ h2 {
   background:
     radial-gradient(circle, var(--accent) 0 1.6px, transparent 2px);
   background-size: 12px 12px;
-  opacity: 0.75;
+  opacity: 0.88;
 }
 
 .signal-orbit {
@@ -331,9 +336,9 @@ h2 {
   display: block;
   max-width: 300px;
   margin-bottom: 16px;
-  font-size: clamp(28px, 4vw, 42px);
+  font-size: clamp(28px, 2.8rem, 40px);
   line-height: 0.98;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
 }
 
 .hero-panel-copy {
@@ -347,14 +352,14 @@ h2 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-strong);
   background: var(--line);
 }
 
 .hero-stat {
   min-height: 120px;
   padding: 16px 16px 18px;
-  background: rgba(255, 255, 255, 0.54);
+  background: rgba(244, 244, 239, 0.88);
 }
 
 .hero-stat span {
@@ -383,14 +388,14 @@ h2 {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 1px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-strong);
   background: var(--line);
 }
 
 .metric-card {
   min-height: 210px;
   padding: 28px 24px;
-  background: rgba(255, 255, 255, 0.55);
+  background: var(--panel);
   display: flex;
   flex-direction: column;
   justify-content: space-between;
@@ -408,9 +413,9 @@ h2 {
   display: block;
   margin: 22px 0 18px;
   font-family: var(--font-dot);
-  font-size: clamp(40px, 6vw, 74px);
+  font-size: clamp(42px, 4.8rem, 72px);
   line-height: 0.84;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
 }
 
 .metric-card:first-child strong,
@@ -449,14 +454,14 @@ h2 {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 1px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-strong);
   background: var(--line);
 }
 
 .ring-card {
   min-height: 240px;
   padding: 22px 18px 20px;
-  background: rgba(255, 255, 255, 0.46);
+  background: var(--panel);
 }
 
 .ring-card h3 {
@@ -497,11 +502,11 @@ h2 {
 }
 
 .dot--on {
-  background: var(--text);
+  background: var(--black);
 }
 
 .dot--off {
-  background: rgba(18, 18, 18, 0.14);
+  background: rgba(16, 17, 15, 0.14);
 }
 
 .timeline-list {
@@ -514,8 +519,8 @@ h2 {
   display: grid;
   grid-template-columns: 170px minmax(0, 1fr) minmax(220px, 0.4fr);
   gap: 0;
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.44);
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
   box-shadow: var(--shadow);
 }
 
@@ -534,7 +539,7 @@ h2 {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  background: rgba(255, 255, 255, 0.36);
+  background: rgba(244, 244, 239, 0.92);
 }
 
 .timeline-date {
@@ -561,7 +566,7 @@ h2 {
   margin-bottom: 10px;
   font-size: 24px;
   line-height: 1;
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
 }
 
 .timeline-story > p {
@@ -589,8 +594,8 @@ h2 {
   top: 0.6em;
   width: 7px;
   height: 7px;
-  border-radius: 50%;
   background: var(--accent);
+  box-shadow: 0 0 10px rgba(201, 0, 24, 0.18);
 }
 
 .impact-box {
@@ -618,7 +623,7 @@ h2 {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-strong);
   background: var(--line);
 }
 
@@ -626,7 +631,7 @@ h2 {
   position: relative;
   min-height: 140px;
   padding: 20px 18px 20px 46px;
-  background: rgba(255, 255, 255, 0.48);
+  background: var(--panel);
   color: var(--text-dim);
   font-size: 13px;
   line-height: 1.6;
@@ -653,7 +658,7 @@ h2 {
 .update-list {
   display: grid;
   gap: 1px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-strong);
   background: var(--line);
   counter-reset: rule;
 }
@@ -661,7 +666,7 @@ h2 {
 .update-list li {
   position: relative;
   padding: 18px 20px 18px 70px;
-  background: rgba(255, 255, 255, 0.54);
+  background: var(--panel);
   color: var(--text-dim);
   font-size: 13px;
   line-height: 1.6;
@@ -726,30 +731,44 @@ h2 {
   }
 
   .growth-shell {
-    width: calc(100% - 24px);
+    width: 100%;
+    max-width: 100%;
+    padding-inline: 12px;
+    overflow-x: hidden;
   }
 
   .growth-nav {
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
     min-height: auto;
+    width: 100%;
   }
 
   .brand-link {
+    grid-column: 1 / -1;
     width: 100%;
     padding: 16px 0;
     border-bottom: 1px solid var(--line);
   }
 
   .nav-link {
+    min-width: 0;
     min-height: 56px;
-    flex: 1 1 33%;
+    width: 100%;
+    flex: none;
     justify-content: center;
     padding: 0 10px;
+    font-size: 9px;
+    letter-spacing: 0.08em;
+    line-height: 1.2;
+    text-align: center;
+    white-space: normal;
   }
 
   .hero-grid {
     padding-top: 20px;
     gap: 16px;
+    min-width: 0;
   }
 
   .hero-copy,
@@ -767,9 +786,7 @@ h2 {
   }
 
   .hero-copy::before {
-    inset: 110px auto auto 18px;
-    width: 160px;
-    height: 160px;
+    display: none;
   }
 
   .hero-copy::after {
@@ -779,11 +796,18 @@ h2 {
   }
 
   h1 {
-    font-size: clamp(42px, 16vw, 68px);
+    font-size: 40px;
+    line-height: 0.96;
+    max-width: 310px;
+    overflow-wrap: anywhere;
   }
 
   h2 {
-    font-size: clamp(26px, 9vw, 40px);
+    font-size: 32px;
+  }
+
+  .hero-subtitle {
+    max-width: 310px;
   }
 
   .hero-panel::before {
