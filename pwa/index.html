@@ -13,7 +13,7 @@
     />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/static/icon.svg?v=20260503-2" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260508-5" />
+    <link rel="stylesheet" href="./styles.css?v=20260509-nothing-2" />
   </head>
   <body>
     <main class="shell">
@@ -23,7 +23,7 @@
           <div class="topbar-brand-copy">
             <p class="eyebrow">Assistant Core</p>
             <h1>H.I.R.A</h1>
-            <p class="brand-subtitle">herwanto interface for responsive assistance</p>
+            <p class="brand-subtitle">ready / live</p>
             <div class="topbar-glyph" id="topbarGlyph" aria-hidden="true">
               <span></span><span></span><span></span><span></span>
               <span></span><span></span><span></span><span></span>
@@ -32,6 +32,9 @@
           </div>
         </div>
         <div class="topbar-actions">
+          <button id="nothingGlyphBtn" class="nothing-glyph-display" type="button" aria-label="Glyph display showing local time. Tap to cycle display mode.">
+            <span id="nothingGlyphMatrix" class="nothing-glyph-matrix" aria-hidden="true"></span>
+          </button>
           <div class="quick-theme-toggle" role="group" aria-label="Quick theme toggle">
             <button type="button" data-theme-choice="light" class="theme-btn active">Light</button>
             <button type="button" data-theme-choice="dark" class="theme-btn">Dark</button>
@@ -579,6 +582,6 @@
       </section>
     </main>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-    <script src="./app.js?v=20260508-5" type="module"></script>
+    <script src="./app.js?v=20260509-nothing-2" type="module"></script>
   </body>
 </html>

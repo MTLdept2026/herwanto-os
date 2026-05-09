@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260508-5";
-const APP_SCRIPT = "app.js?v=20260508-5";
-const EXPECTED_SW_CACHE = "hira-os-v73";
+const APP_VERSION = "20260509-nothing-2";
+const APP_SCRIPT = "app.js?v=20260509-nothing-2";
+const EXPECTED_SW_CACHE = "hira-os-v75";
 
 const state = {
   token: localStorage.getItem("hira_web_token") || "",
@@ -60,6 +60,24 @@ const dateFormatter = new Intl.DateTimeFormat("en-SG", {
   month: "long",
   timeZone: "Asia/Singapore",
 });
+const glyphDigitFont = {
+  "0": ["111", "101", "101", "101", "111"],
+  "1": ["010", "110", "010", "010", "111"],
+  "2": ["111", "001", "111", "100", "111"],
+  "3": ["111", "001", "111", "001", "111"],
+  "4": ["101", "101", "111", "001", "001"],
+  "5": ["111", "100", "111", "001", "111"],
+  "6": ["111", "100", "111", "101", "111"],
+  "7": ["111", "001", "010", "010", "010"],
+  "8": ["111", "101", "111", "101", "111"],
+  "9": ["111", "101", "111", "001", "111"],
+  ":": ["0", "1", "0", "1", "0"],
+  "%": ["101", "001", "010", "100", "101"],
+  "-": ["000", "000", "111", "000", "000"],
+};
+const GLYPH_MODES = ["time", "date", "load", "mail", "next"];
+let glyphMode = "time";
+let glyphModeBeforeChat = "time";
 const CONNECTIONS = [
   { key: "calendar", label: "Calendar", icon: "calendar" },
   { key: "google", label: "Google", icon: "sparkles" },
@@ -73,6 +91,104 @@ function updateLiveClock() {
   const date = dateFormatter.format(now).replace(",", "").toUpperCase();
   $("#greetingTime").textContent = time;
   $("#greetingDate").textContent = date;
+  if (glyphMode === "time") renderNothingGlyph("time");
+}
+
+function blankGlyphGrid() {
+  return Array.from({ length: 13 }, () => Array.from({ length: 17 }, () => ""));
+}
+
+function drawGlyphPixel(grid, x, y, tone = "on") {
+  if (!grid[y] || x < 0 || x >= grid[y].length) return;
+  grid[y][x] = tone;
+}
+
+function drawGlyphText(grid, value, startX, startY, tone = "on") {
+  let cursor = startX;
+  for (const char of String(value || "")) {
+    const glyph = glyphDigitFont[char];
+    if (!glyph) {
+      cursor += 2;
+      continue;
+    }
+    glyph.forEach((row, y) => {
+      [...row].forEach((cell, x) => {
+        if (cell === "1") drawGlyphPixel(grid, cursor + x, startY + y, tone);
+      });
+    });
+    cursor += glyph[0].length + 1;
+  }
+}
+
+function drawGlyphFooter(grid, footer) {
+  const marks = {
+    MAY: [[5, 10], [6, 10], [8, 10], [10, 10], [5, 11], [7, 11], [8, 11], [10, 11]],
+    NEW: [[5, 10], [5, 11], [7, 10], [8, 10], [7, 11], [10, 10], [10, 11], [11, 11]],
+  }[footer] || [];
+  marks.forEach(([x, y]) => drawGlyphPixel(grid, x, y, "dim"));
+}
+
+function drawGlyphWave(grid) {
+  const center = 6;
+  const heights = [0, 0, 1, 1, 3, 5, 2, 1, 4, 2, 3, 2, 1, 1, 0, 0, 0];
+  heights.forEach((height, index) => {
+    drawGlyphPixel(grid, index, center, "hot");
+    for (let n = 1; n <= height; n += 1) {
+      drawGlyphPixel(grid, index, center - n, n > 3 ? "hot" : "on");
+      drawGlyphPixel(grid, index, center + n, n > 3 ? "hot" : "on");
+    }
+  });
+  for (let x = 0; x < 17; x += 1) drawGlyphPixel(grid, x, center, "hot");
+  [2, 6, 9, 12, 15].forEach((x) => {
+    drawGlyphPixel(grid, x, center - 1, "dim");
+    drawGlyphPixel(grid, x, center + 1, "dim");
+  });
+}
+
+function glyphValueForMode(mode) {
+  const now = new Date();
+  if (mode === "time") return { value: clockFormatter.format(now).replace(/^24:/, "00:"), label: "local time" };
+  if (mode === "date") return { value: new Intl.DateTimeFormat("en-SG", { day: "2-digit", timeZone: "Asia/Singapore" }).format(now), footer: "MAY", label: "date" };
+  if (mode === "mail") return { value: String(Math.min(99, state.notifications.length || 0)).padStart(2, "0"), footer: "NEW", label: "mail notifications" };
+  if (mode === "load") {
+    const score = Number($("#dailyLoadScore")?.textContent || 0);
+    return { value: `${String(Math.max(0, Math.min(99, Math.round(score)))).padStart(2, "0")}%`, label: "workload" };
+  }
+  if (mode === "next") {
+    const nextTime = document
+      .querySelector("#homeLivingTimeline .timeline-time strong")
+      ?.textContent
+      ?.match(/\b\d{1,2}:\d{2}\b/)?.[0];
+    return { value: nextTime || "--:--", label: "next anchor" };
+  }
+  return { value: "", label: mode };
+}
+
+function renderNothingGlyph(mode = glyphMode) {
+  const button = $("#nothingGlyphBtn");
+  const matrix = $("#nothingGlyphMatrix");
+  if (!button || !matrix) return;
+  glyphMode = mode;
+  const grid = blankGlyphGrid();
+  button.dataset.glyphMode = mode;
+  if (mode === "chat") {
+    drawGlyphWave(grid);
+    button.setAttribute("aria-label", "Glyph display showing H.I.R.A chat waveform.");
+  } else {
+    const current = glyphValueForMode(mode);
+    const width = [...current.value].reduce((total, char) => total + (glyphDigitFont[char]?.[0].length || 1) + 1, -1);
+    drawGlyphText(grid, current.value, Math.max(0, Math.floor((17 - width) / 2)), 3);
+    if (current.footer) drawGlyphFooter(grid, current.footer);
+    button.setAttribute("aria-label", `Glyph display showing ${current.label}: ${current.value}. Tap to cycle mode.`);
+  }
+  matrix.innerHTML = grid
+    .flatMap((row) => row.map((tone) => `<span class="nothing-glyph-dot ${tone}"></span>`))
+    .join("");
+}
+
+function cycleNothingGlyph() {
+  const currentIndex = Math.max(0, GLYPH_MODES.indexOf(glyphMode));
+  renderNothingGlyph(GLYPH_MODES[(currentIndex + 1) % GLYPH_MODES.length]);
 }
 
 function resolvedTheme() {
@@ -1660,6 +1776,12 @@ function setHiraSpeaking(el, speaking) {
   if (label) label.textContent = "Live";
   // Glyph strip — cascade when HIRA is processing, breathe at idle
   document.getElementById("topbarGlyph")?.classList.toggle("is-active", Boolean(speaking));
+  if (speaking) {
+    if (glyphMode !== "chat") glyphModeBeforeChat = glyphMode;
+    renderNothingGlyph("chat");
+  } else {
+    renderNothingGlyph(glyphModeBeforeChat);
+  }
 }
 
 function updateMessage(el, text) {
@@ -2445,6 +2567,14 @@ document.querySelectorAll(".nav-tab").forEach((tab) => {
   });
 });
 
+$("#nothingGlyphBtn")?.addEventListener("click", cycleNothingGlyph);
+$("#nothingGlyphBtn")?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    cycleNothingGlyph();
+  }
+});
+
 document.querySelectorAll("[data-gmail-preset]").forEach((button) => {
   button.addEventListener("click", () => {
     $("#gmailQuery").value = button.dataset.gmailPreset;
@@ -2590,6 +2720,7 @@ updateComposerState();
 renderAppVersion();
 setView("home");
 updateLiveClock();
+renderNothingGlyph("time");
 setInterval(updateLiveClock, 1000);
 loadHome();
 startNotificationPolling();
