@@ -4236,12 +4236,61 @@ html[data-theme="dark"] .topbar {
   border-left: 0 !important;
 }
 
+.topbar .topbar-actions .icon-btn,
+.topbar .topbar-actions .notification-btn {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--hira-muted) !important;
+}
+
+.topbar .topbar-actions .icon-btn:hover,
+.topbar .topbar-actions .icon-btn:focus-visible,
+.topbar .topbar-actions .notification-btn:hover,
+.topbar .topbar-actions .notification-btn:focus-visible {
+  color: var(--hira-ink) !important;
+  outline: 1px solid var(--hira-line-strong);
+  outline-offset: 4px;
+}
+
+.topbar .notification-top-toggle {
+  display: none;
+}
+
 .status-clockbar,
 html[data-theme="dark"] .status-clockbar {
   background:
     radial-gradient(circle, color-mix(in srgb, var(--hira-line) 42%, transparent) 0.8px, transparent 1px),
     color-mix(in srgb, var(--hira-plate) 82%, var(--hira-plate-2)) !important;
   background-size: 10px 10px, auto !important;
+}
+
+.clock-live-label,
+html[data-theme="dark"] .clock-live-label {
+  top: 28px;
+  right: 28px;
+  display: grid;
+  gap: 5px;
+  justify-items: end;
+  color: var(--hira-muted) !important;
+  letter-spacing: 0.12em;
+}
+
+.clock-live-label span,
+html[data-theme="dark"] .clock-live-label span {
+  width: auto;
+  height: auto;
+  background: transparent;
+  animation: none;
+  color: var(--hira-faint);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.clock-live-label strong {
+  color: var(--hira-ink);
+  font: 800 16px/1 var(--font-ui);
+  letter-spacing: 0.06em;
 }
 
 .composer,
