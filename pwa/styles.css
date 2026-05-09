@@ -4226,6 +4226,86 @@ html[data-theme="dark"] #installBtn:hover {
   overflow-wrap: anywhere;
 }
 
+/* Final polish fixes from Android review captures */
+.topbar,
+html[data-theme="dark"] .topbar {
+  background: var(--hira-plate) !important;
+}
+
+.topbar-actions {
+  border-left: 0 !important;
+}
+
+.status-clockbar,
+html[data-theme="dark"] .status-clockbar {
+  background:
+    radial-gradient(circle, color-mix(in srgb, var(--hira-line) 42%, transparent) 0.8px, transparent 1px),
+    color-mix(in srgb, var(--hira-plate) 82%, var(--hira-plate-2)) !important;
+  background-size: 10px 10px, auto !important;
+}
+
+.composer,
+html[data-theme="dark"] .composer {
+  background: var(--hira-black) !important;
+  border-color: var(--hira-black) !important;
+  overflow: hidden;
+}
+
+.composer textarea,
+html[data-theme="dark"] .composer textarea,
+#attachBtn,
+html[data-theme="dark"] #attachBtn,
+#sendBtn,
+#sendBtn:disabled,
+#sendBtn.is-ready,
+html[data-theme="dark"] #sendBtn,
+html[data-theme="dark"] #sendBtn:disabled,
+html[data-theme="dark"] #sendBtn.is-ready {
+  min-height: 72px;
+  height: 72px;
+  background: var(--hira-black) !important;
+  border-color: var(--hira-line-strong) !important;
+  color: var(--hira-white) !important;
+}
+
+.composer textarea,
+html[data-theme="dark"] .composer textarea {
+  color: var(--hira-white) !important;
+}
+
+.composer textarea::placeholder {
+  color: color-mix(in srgb, var(--hira-white) 42%, transparent) !important;
+}
+
+#attachBtn {
+  color: color-mix(in srgb, var(--hira-white) 58%, transparent) !important;
+}
+
+#sendBtn {
+  align-self: stretch;
+}
+
+.messages .message,
+.messages .message.hira,
+.messages .message-body,
+.messages .message-body p,
+.messages .message-body li,
+.messages .message-body strong,
+.rich-output,
+.rich-output p,
+.rich-output li,
+.rich-output strong {
+  color: var(--hira-ink) !important;
+}
+
+.messages .message.user {
+  color: var(--hira-muted) !important;
+}
+
+.message.hira .message-body::before {
+  color: var(--success) !important;
+}
+
 @media (max-width: 640px) {
   .shell {
     --mobile-edge: 16px;
