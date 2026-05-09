@@ -135,7 +135,7 @@ def _gmail_http_error(exc: Exception, account: str) -> HTTPException:
     status = 502
     hint = raw or "Gmail request failed."
     if any(term in lower for term in ("invalid_grant", "expired", "revoked", "unauthorized", "invalid credentials")):
-        status = 401
+        status = 424
         hint = f"{label} OAuth token is expired or revoked. Reconnect Gmail and update the refresh token."
     elif any(term in lower for term in ("access not configured", "gmail api has not been used", "api has not been enabled")):
         status = 400
