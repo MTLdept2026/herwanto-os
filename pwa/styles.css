@@ -5553,13 +5553,14 @@ html[data-theme="dark"] .nothing-glyph-display {
 /* System controls now live with the local time system panel. */
 .clock-controls {
   position: absolute;
-  right: clamp(28px, 3.2vw, 40px);
-  bottom: clamp(18px, 2.4vw, 28px);
+  top: clamp(128px, 12vw, 154px);
+  right: clamp(54px, 6.4vw, 86px);
+  bottom: auto;
   z-index: 2;
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 12px;
+  gap: 8px;
 }
 
 .clock-controls .icon-btn,
@@ -5580,7 +5581,7 @@ html[data-theme="dark"] .nothing-glyph-display {
   min-height: 42px !important;
   padding: 0 !important;
   color: var(--hira-muted, var(--text-secondary)) !important;
-  background: color-mix(in srgb, var(--hira-plate, var(--surface)) 74%, transparent) !important;
+  background: transparent !important;
   border: 1px solid var(--hira-line, var(--border-visible)) !important;
   border-radius: 2px !important;
   outline: 0 !important;
@@ -5610,8 +5611,9 @@ html[data-theme="dark"] .nothing-glyph-display {
 
 @media (max-width: 640px) {
   .clock-controls {
-    right: 18px;
-    bottom: 18px;
+    top: 116px;
+    right: 28px;
+    bottom: auto;
     gap: 8px;
   }
 
