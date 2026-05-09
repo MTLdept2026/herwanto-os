@@ -160,20 +160,6 @@ ol {
   overflow: hidden;
 }
 
-.hero-copy::before {
-  content: "";
-  position: absolute;
-  top: 30px;
-  right: 34px;
-  width: 132px;
-  height: 88px;
-  border: 2px solid var(--line-strong);
-  background:
-    radial-gradient(circle, var(--accent) 0 1.6px, transparent 2px),
-    var(--black);
-  background-size: 14px 14px, auto;
-}
-
 .hero-copy::after {
   content: "";
   position: absolute;
@@ -741,7 +727,6 @@ h2 {
     padding: 78px 22px 28px;
   }
 
-  .hero-copy::before,
   .hero-copy::after,
   .hero-panel::before {
     display: none;
