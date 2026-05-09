@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260509-nothing-6";
-const APP_SCRIPT = "app.js?v=20260509-nothing-6";
-const EXPECTED_SW_CACHE = "hira-os-v79";
+const APP_VERSION = "20260509-nothing-8";
+const APP_SCRIPT = "app.js?v=20260509-nothing-8";
+const EXPECTED_SW_CACHE = "hira-os-v81";
 
 const state = {
   token: localStorage.getItem("hira_web_token") || "",

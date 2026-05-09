@@ -4628,6 +4628,43 @@ html[data-theme="dark"] #sendBtn.is-ready {
   color: var(--hira-ink) !important;
 }
 
+.composer {
+  position: relative;
+}
+
+.composer textarea::placeholder,
+html[data-theme="dark"] .composer textarea::placeholder {
+  color: transparent !important;
+  opacity: 0 !important;
+  animation: none !important;
+}
+
+.composer:not(.has-input)::after {
+  content: "";
+  grid-column: 2;
+  grid-row: 1;
+  align-self: center;
+  justify-self: start;
+  width: 12px;
+  height: 26px;
+  margin-left: 18px;
+  background: var(--hira-ink);
+  opacity: 0.82;
+  pointer-events: none;
+  z-index: 2;
+  animation: hira-terminal-cursor 1s steps(1, end) infinite;
+}
+
+.composer.has-input::after,
+.composer.is-busy::after {
+  content: none;
+}
+
+@keyframes hira-terminal-cursor {
+  0%, 49% { opacity: 0.86; }
+  50%, 100% { opacity: 0; }
+}
+
 @media (max-width: 640px) {
   .shell {
     --mobile-edge: 16px;
@@ -4745,5 +4782,216 @@ html[data-theme="dark"] #sendBtn.is-ready {
 
   .messages .message {
     font-size: 15px;
+  }
+}
+
+/* Alignment and highlight pass from Android review */
+:root {
+  --hira-amber: #d7a23b;
+  --hira-cyan: #30c7b5;
+  --hira-blue: #88aefb;
+}
+
+.topbar,
+html[data-theme="dark"] .topbar {
+  min-height: 214px;
+}
+
+.topbar-brand,
+html[data-theme="dark"] .topbar-brand {
+  padding: 72px 0 0 82px;
+}
+
+.topbar-brand-copy {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  min-width: 0;
+}
+
+.topbar .eyebrow,
+html[data-theme="dark"] .topbar .eyebrow {
+  position: static;
+  width: min(218px, 48vw);
+  max-width: 218px;
+  margin: 0;
+  transform: none;
+  color: var(--hira-muted);
+  font-family: var(--font-dot);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  line-height: 0.95;
+  text-transform: uppercase;
+  white-space: normal;
+}
+
+.topbar h1,
+html[data-theme="dark"] .topbar h1 {
+  font-size: 54px;
+  line-height: 0.86;
+}
+
+.topbar-brand::after,
+html[data-theme="dark"] .topbar-brand::after {
+  left: 246px;
+  top: 98px;
+  width: 18px;
+  height: 18px;
+}
+
+.topbar .topbar-actions .icon-btn,
+.topbar .topbar-actions .notification-btn,
+.topbar .topbar-actions .icon-btn *,
+.topbar .topbar-actions .notification-btn * {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.topbar .topbar-actions .icon-btn,
+.topbar .topbar-actions .notification-btn,
+.topbar .topbar-actions .icon-btn:hover,
+.topbar .topbar-actions .icon-btn:focus,
+.topbar .topbar-actions .icon-btn:focus-visible,
+.topbar .topbar-actions .icon-btn:active,
+.topbar .topbar-actions .icon-btn.is-open,
+.topbar .topbar-actions .notification-btn:hover,
+.topbar .topbar-actions .notification-btn:focus,
+.topbar .topbar-actions .notification-btn:focus-visible,
+.topbar .topbar-actions .notification-btn:active,
+.topbar .topbar-actions .notification-btn.is-open {
+  border-color: transparent !important;
+  outline: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.connection-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.connection-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: var(--hira-line-strong);
+  opacity: 0.55;
+}
+
+.connection-card.is-on::before {
+  background: linear-gradient(180deg, var(--hira-cyan), var(--hira-red));
+  opacity: 1;
+}
+
+.connection-card.is-on .connection-icon {
+  color: var(--hira-cyan);
+}
+
+.connection-card.is-on .connection-switch {
+  background: var(--hira-cyan) !important;
+  border-color: var(--hira-cyan) !important;
+}
+
+.connection-card.is-on .connection-switch span {
+  background: var(--hira-black) !important;
+}
+
+.timeline-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 16px;
+  bottom: 16px;
+  width: 3px;
+  background: transparent;
+}
+
+.timeline-item.lesson::before {
+  background: var(--hira-cyan);
+}
+
+.timeline-item.event::before {
+  background: var(--hira-blue);
+}
+
+.timeline-item.prayer::before {
+  background: var(--hira-amber);
+}
+
+.timeline-item.due::before {
+  background: var(--hira-red);
+}
+
+.timeline-item.lesson .timeline-time strong,
+.timeline-item.lesson .timeline-copy svg {
+  color: var(--hira-cyan);
+}
+
+.timeline-item.event .timeline-time strong,
+.timeline-item.event .timeline-copy svg {
+  color: var(--hira-blue);
+}
+
+.timeline-item.prayer .timeline-time strong,
+.timeline-item.prayer .timeline-copy svg {
+  color: var(--hira-amber);
+}
+
+.timeline-item.due .timeline-time strong,
+.timeline-item.due .timeline-copy svg {
+  color: var(--hira-red);
+}
+
+.timeline-item.lesson .timeline-pin {
+  background: var(--hira-cyan);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--hira-cyan) 70%, transparent);
+}
+
+.timeline-item.event .timeline-pin {
+  background: var(--hira-blue);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--hira-blue) 70%, transparent);
+}
+
+.timeline-item.prayer .timeline-pin {
+  background: var(--hira-amber);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--hira-amber) 70%, transparent);
+}
+
+.timeline-item.due .timeline-pin {
+  background: var(--hira-red);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--hira-red) 70%, transparent);
+}
+
+@media (max-width: 640px) {
+  .topbar,
+  html[data-theme="dark"] .topbar {
+    min-height: 220px;
+  }
+
+  .topbar-brand,
+  html[data-theme="dark"] .topbar-brand {
+    padding: 78px 0 0 70px;
+  }
+
+  .topbar .eyebrow,
+  html[data-theme="dark"] .topbar .eyebrow {
+    width: 150px;
+    max-width: 150px;
+    font-size: 9px;
+    line-height: 0.92;
+  }
+
+  .topbar h1,
+  html[data-theme="dark"] .topbar h1 {
+    font-size: 40px;
+  }
+
+  .topbar-brand::after,
+  html[data-theme="dark"] .topbar-brand::after {
+    left: 212px;
+    top: 103px;
+    width: 17px;
+    height: 17px;
   }
 }
