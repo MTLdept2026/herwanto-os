@@ -5487,7 +5487,7 @@ html[data-theme="dark"] .topbar-actions {
 .nothing-glyph-display,
 html[data-theme="dark"] .nothing-glyph-display {
   position: absolute !important;
-  top: 34px !important;
+  top: 54px !important;
   right: clamp(52px, 7vw, 78px) !important;
   width: 168px !important;
   height: 168px !important;
@@ -5532,7 +5532,7 @@ html[data-theme="dark"] .nothing-glyph-display {
 
   .nothing-glyph-display,
   html[data-theme="dark"] .nothing-glyph-display {
-    top: 32px !important;
+    top: 50px !important;
     right: 28px !important;
     width: 136px !important;
     height: 136px !important;
@@ -5582,7 +5582,7 @@ html[data-theme="dark"] .nothing-glyph-display {
   padding: 0 !important;
   color: var(--hira-muted, var(--text-secondary)) !important;
   background: transparent !important;
-  border: 1px solid var(--hira-line, var(--border-visible)) !important;
+  border: 0 !important;
   border-radius: 2px !important;
   outline: 0 !important;
   box-shadow: none !important;
@@ -5594,7 +5594,7 @@ html[data-theme="dark"] .nothing-glyph-display {
 .clock-controls .notification-btn:hover,
 .clock-controls .notification-btn:focus-visible {
   color: var(--hira-ink, var(--text-display)) !important;
-  border-color: var(--hira-line-strong, var(--border-visible)) !important;
+  border-color: transparent !important;
 }
 
 .clock-controls .icon-btn svg,
