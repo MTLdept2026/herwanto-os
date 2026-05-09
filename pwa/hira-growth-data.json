@@ -5,9 +5,9 @@
   "summary": {
     "start": "2026-04-28",
     "current": "2026-05-09",
-    "commitsTracked": 171,
+    "commitsTracked": 172,
     "majorPhases": 26,
-    "currentStage": "Trial-ready OS with Work Gmail attention monitoring"
+    "currentStage": "Trial-ready OS with Work Gmail monitoring and clearer chat entry"
   },
   "metrics": [
     {
@@ -17,7 +17,7 @@
     },
     {
       "label": "Tracked upgrade commits",
-      "value": "171",
+      "value": "172",
       "note": "Grouped from git history through the growth-log minisite."
     },
     {
@@ -35,7 +35,7 @@
     {
       "name": "Interface",
       "score": 97,
-      "description": "Installable PWA, minimal Nothing-style home-screen icon, restored cockpit home, sharper glyph surfaces, mobile dashboard, chat, files, quick command deck, OS Intelligence panel, action-enabled push notifications, recovery health, and notification controls."
+      "description": "Installable PWA, minimal Nothing-style home-screen icon, restored cockpit home, sharper glyph surfaces, mobile dashboard, always-visible chat composer, files, quick command deck, OS Intelligence panel, action-enabled push notifications, recovery health, and notification controls."
     },
     {
       "name": "Security",
@@ -460,10 +460,24 @@
         "Config flags allow the monitor to be disabled, slowed down, pointed at a different Gmail query, or made more/less selective."
       ],
       "impact": "H.I.R.A can now act as an attention filter for work email: it watches quietly, skips low-signal messages, and interrupts only when the inbox appears to contain something actionable."
+    },
+    {
+      "date": "2026-05-09",
+      "era": "Interface Reliability",
+      "title": "The chat entry point stops hiding",
+      "commit": "chat-composer-mobile-fix",
+      "tag": "Mobile UX",
+      "summary": "A mobile layout fix keeps the H.I.R.A typing box visible even before any quick command is selected.",
+      "details": [
+        "The empty-chat mobile grid no longer collapses the composer row to zero height.",
+        "The composer now sits directly under H.I.R.A Output, before the quick-command tiles, so the place to type is visually obvious.",
+        "The quick-command deck remains available underneath the input as an accelerator rather than the only apparent way to begin."
+      ],
+      "impact": "On the Home screen, Herwanto can immediately see where to type instead of needing to tap Brief Me, Triage, Draft Reply, or Reminder first."
     }
   ],
   "currentCapabilities": [
-    "Installable private PWA with minimal Nothing-style home-screen icon, sharper glyph surfaces, chat, agenda, tasks, dual personal Gmail options, experimental Work Gmail, Work Gmail action monitoring, files, uploads, notifications, and dashboard views.",
+    "Installable private PWA with minimal Nothing-style home-screen icon, sharper glyph surfaces, always-visible chat composer, chat, agenda, tasks, dual personal Gmail options, experimental Work Gmail, Work Gmail action monitoring, files, uploads, notifications, and dashboard views.",
     "Home OS Intelligence that synthesizes agenda, workload, tasks, marking load, proactive signals, service health, and file memory into a readiness score, operating mode, next best move, risks, openings, and one-tap actions.",
     "Command Protocol that turns the current state into concrete Now, Next, and Later steps with confidence and evidence.",
     "Forecast Radar that highlights upcoming pressure from load spikes, due clusters, marking drag, or stable horizon signals.",

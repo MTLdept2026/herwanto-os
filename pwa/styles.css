@@ -2523,7 +2523,7 @@ html[data-theme="dark"] .load-badge.load-green {
 }
 
 .quick-command-deck {
-  order: 3;
+  order: 4;
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   min-width: 0;
@@ -3037,7 +3037,7 @@ html[data-theme="dark"] .load-badge.load-green {
   background: var(--bg-dark);
   border: 1px solid var(--border-dark);
   border-top: 0;
-  border-radius: 0 0 2px 2px;
+  border-radius: 0;
 }
 
 .composer.has-input {
@@ -3833,12 +3833,12 @@ html[data-theme="dark"] .load-badge.load-green {
     justify-self: center;
     min-height: 0;
     padding: 0;
-    grid-template-rows: auto auto auto minmax(0, 1fr);
+    grid-template-rows: auto auto auto auto;
     overflow: hidden;
   }
 
   .chat-main.chat-empty {
-    grid-template-rows: auto auto auto 0;
+    grid-template-rows: auto auto auto auto;
   }
 
   .command-rail {
