@@ -840,8 +840,8 @@ Rules:
 - When the user asks to follow up based on an email, Gmail, inbox, or a recent message, call get_gmail_brief first and use the returned sender, subject, date, snippet/body excerpt to create the follow-up. Do not ask him to paste email details unless Gmail is not connected or the matching email cannot be found.
 - When the user asks to mark a reminder/task/follow-up done, call complete_task_by_text or complete_followup_by_text.
 - When the user asks what to do now or how to prioritise tasks, call get_task_brief.
-- When the user asks about Gmail, emails, inbox, unread email, latest/last/recent mail, email summaries, or drafting an email, use get_gmail_brief or create_gmail_draft for personal Gmail accounts only when Gmail is connected. Use account="personal" by default and account="personal2" when he says second, secondary, other personal, or personal 2 Gmail. For "last/latest/recent emails", leave the Gmail query empty and set max_items. Use is:unread only when he explicitly asks for unread mail. If he asks for a number, set max_items to that number.
-- Work/MOE/school Gmail is removed from H.I.R.A because Workspace blocks the OAuth flow. If he asks for work/MOE/school email, say it is no longer connected and do not try to fetch it. Personal Gmail accounts remain available.
+- When the user asks about Gmail, emails, inbox, unread email, latest/last/recent mail, email summaries, or drafting an email, use get_gmail_brief or create_gmail_draft when the requested account is connected. Use account="personal" by default, account="personal2" when he says second/secondary/other personal/personal 2 Gmail, and account="work" when he says work/MOE/school Gmail. For "last/latest/recent emails", leave the Gmail query empty and set max_items. Use is:unread only when he explicitly asks for unread mail. If he asks for a number, set max_items to that number.
+- Work/MOE/school Gmail is experimental because Workspace may block the OAuth flow. If work Gmail is not connected or Google rejects it, say that Workspace/admin policy may be blocking it and suggest using personal Gmail or reconnecting with GOOGLE_WORK_GMAIL_* variables.
 - When the user asks you to create a document, worksheet, letter, report, lesson plan, handout, memo, proposal, or meeting notes, call create_document_artifact.
 - When the user asks you to create slides, a deck, PowerPoint, PPTX, presentation, pitch deck, briefing deck, or lesson slides, call create_slide_deck_artifact.
 - When the user gives a reusable document/deck style, format, template preference, rubric format, NBSS worksheet format, GamePlan pitch style, or Rūḥ deck style, call remember_artifact_template.
@@ -1499,20 +1499,20 @@ TASK_BRIEF_TOOL = {
 
 GMAIL_BRIEF_TOOL = {
     "name": "get_gmail_brief",
-    "description": "Get personal Gmail messages from natural language email queries. Supports account=personal and account=personal2. Use for personal inbox, latest emails, last N emails, recent mail, unread mail, sender/subject searches, or email summaries.",
+    "description": "Get Gmail messages from natural language email queries. Supports account=personal, account=personal2, and experimental account=work. Use for inbox, latest emails, last N emails, recent mail, unread mail, sender/subject searches, or email summaries.",
     "input_schema": {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "Gmail search query. Leave empty for latest inbox messages. Use is:unread only if the user asks for unread mail."},
             "max_items": {"type": "integer", "description": "Maximum messages, default 10"},
-            "account": {"type": "string", "description": "personal or personal2. Work/MOE/school Gmail has been removed."}
+            "account": {"type": "string", "description": "personal, personal2, or work. Work/MOE/school Gmail is experimental and may be blocked by Workspace policy."}
         }
     }
 }
 
 GMAIL_DRAFT_TOOL = {
     "name": "create_gmail_draft",
-    "description": "Create a personal Gmail draft when Gmail is connected. Supports account=personal and account=personal2.",
+    "description": "Create a Gmail draft when Gmail is connected. Supports account=personal, account=personal2, and experimental account=work.",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -1520,7 +1520,7 @@ GMAIL_DRAFT_TOOL = {
             "subject": {"type": "string", "description": "Email subject"},
             "body": {"type": "string", "description": "Email body"},
             "cc": {"type": "string", "description": "Optional cc"},
-            "account": {"type": "string", "description": "personal or personal2. Work/MOE/school Gmail has been removed."}
+            "account": {"type": "string", "description": "personal, personal2, or work. Work/MOE/school Gmail is experimental and may be blocked by Workspace policy."}
         },
         "required": ["to", "subject", "body"]
     }
@@ -5157,7 +5157,7 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
 
     return None
 
-WORK_GMAIL_REMOVED_MESSAGE = "Work/MOE Gmail has been removed from H.I.R.A because the workspace blocks Gmail OAuth. Personal Gmail accounts remain available."
+WORK_GMAIL_REMOVED_MESSAGE = "Work/MOE Gmail is not connected. It is available as an experiment, but your Workspace admin may block Gmail OAuth; configure GOOGLE_WORK_GMAIL_* variables if you want H.I.R.A to try it."
 
 
 def _is_work_gmail_text(value: str = "") -> bool:
@@ -5166,10 +5166,7 @@ def _is_work_gmail_text(value: str = "") -> bool:
 
 
 def is_removed_work_gmail_request(text: str = "") -> bool:
-    clean = " ".join((text or "").lower().split())
-    if not re.search(r"\b(?:gmail|email|emails|mail|inbox|draft|reply)\b", clean):
-        return False
-    return bool(re.search(r"\b(?:work|moe|school)\s+(?:gmail|email|emails|mail|inbox)\b", clean))
+    return False
 
 
 def _normalise_gmail_account(value: str = "") -> str:
@@ -5190,6 +5187,14 @@ def _extract_gmail_account_from_text(text: str) -> tuple[str, str]:
     ]:
         if re.search(pattern, lowered):
             account = "personal2"
+            clean = re.sub(pattern, "", clean, flags=re.I).strip()
+            return account, " ".join(clean.split())
+    for pattern in [
+        r"\b(?:work|moe|school)\s+(?:gmail|emails?|mail|inbox)\b",
+        r"\b(?:gmail|emails?|mail|inbox)\s+(?:work|moe|school)\b",
+    ]:
+        if re.search(pattern, lowered):
+            account = "work"
             clean = re.sub(pattern, "", clean, flags=re.I).strip()
             return account, " ".join(clean.split())
     for pattern in [r"\bpersonal\s+gmail\b", r"\bpersonal\s+emails?\b"]:
@@ -6130,10 +6135,6 @@ async def gmail_cmd(update, context):
     args = list(context.args)
     if args and args[0].lower() in ("personal", "personal2", "secondary", "second", "work", "moe", "school"):
         account = _normalise_gmail_account(args.pop(0))
-    if account != "personal":
-        if account == "work":
-            await update.message.reply_text(WORK_GMAIL_REMOVED_MESSAGE)
-            return
     query = " ".join(args).strip()
     if not gs.gmail_ok(account):
         await update.message.reply_text(f"{gs.gmail_label(account).title()} not connected.")
@@ -6159,17 +6160,13 @@ async def gmaildraft_cmd(update, context):
     args = list(context.args)
     if args and args[0].lower() in ("personal", "personal2", "secondary", "second", "work", "moe", "school"):
         account = _normalise_gmail_account(args.pop(0))
-    if account != "personal":
-        if account == "work":
-            await update.message.reply_text(WORK_GMAIL_REMOVED_MESSAGE)
-            return
     if not gs.gmail_ok(account):
         await update.message.reply_text(f"{gs.gmail_label(account).title()} not connected.")
         return
     text = " ".join(args).strip()
     parts = [p.strip() for p in text.split("|")]
     if len(parts) < 3:
-        await reply(update, "Usage: `/gmaildraft [personal|personal2] to | subject | body | cc`", parse_mode="Markdown")
+        await reply(update, "Usage: `/gmaildraft [personal|personal2|work] to | subject | body | cc`", parse_mode="Markdown")
         return
     try:
         draft = gs.create_gmail_draft(parts[0], parts[1], parts[2], parts[3] if len(parts) > 3 else "", account=account)
@@ -7345,8 +7342,6 @@ async def _execute_tool(name: str, inp: dict) -> str:
     elif name == "get_gmail_brief":
         try:
             account = _normalise_gmail_account(inp.get("account", "personal"))
-            if account == "work":
-                return WORK_GMAIL_REMOVED_MESSAGE
             if not gs.gmail_ok(account):
                 return f"{gs.gmail_label(account).title()} is not connected."
             messages = gs.list_gmail_messages(
@@ -7371,8 +7366,6 @@ async def _execute_tool(name: str, inp: dict) -> str:
     elif name == "create_gmail_draft":
         try:
             account = _normalise_gmail_account(inp.get("account", "personal"))
-            if account == "work":
-                return WORK_GMAIL_REMOVED_MESSAGE
             if not gs.gmail_ok(account):
                 return f"{gs.gmail_label(account).title()} is not connected."
             draft = gs.create_gmail_draft(
@@ -7408,9 +7401,6 @@ async def handle_message(update, context):
 async def _process_user_text(update, context, text: str):
     user_id = update.effective_user.id
     absorb_taste_hint(text)
-    if is_removed_work_gmail_request(text):
-        await update.message.reply_text(WORK_GMAIL_REMOVED_MESSAGE)
-        return
     inferred_week_type, inferred_week_number = _school_week_from_text(text)
     if inferred_week_type and google_ok():
         try:
@@ -7489,7 +7479,7 @@ async def _process_user_text(update, context, text: str):
 
     history = get_history(user_id)
     user_content = text
-    if re.search(r"\b(?:personal|personal\s*2|second(?:ary)?|other\s+personal)\s+(?:gmail|email|emails|mail|inbox)\b", text, re.I):
+    if re.search(r"\b(?:personal|personal\s*2|second(?:ary)?|other\s+personal|work|moe|school)\s+(?:gmail|email|emails|mail|inbox)\b", text, re.I):
         account_hint, _ = _extract_gmail_account_from_text(text)
         user_content = f"{text}\n\n[Email account hint: use account=\"{account_hint}\" for Gmail tools.]"
     user_content = f"{user_content}{intent_lens_hint(text)}{source_discipline_hint(text)}"

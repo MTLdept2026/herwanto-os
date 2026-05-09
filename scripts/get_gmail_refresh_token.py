@@ -14,6 +14,7 @@ SCOPES = [
 def main():
     client_id = os.environ.get("GOOGLE_GMAIL_CLIENT_ID", "").strip()
     client_secret = os.environ.get("GOOGLE_GMAIL_CLIENT_SECRET", "").strip()
+    output_name = os.environ.get("GOOGLE_GMAIL_REFRESH_ENV", "GOOGLE_GMAIL_REFRESH_TOKEN").strip()
     if not client_id or not client_secret:
         raise SystemExit(
             "Set GOOGLE_GMAIL_CLIENT_ID and GOOGLE_GMAIL_CLIENT_SECRET first."
@@ -36,7 +37,7 @@ def main():
         prompt="consent",
     )
     print("\nAdd this to Railway:")
-    print(f"GOOGLE_GMAIL_REFRESH_TOKEN={creds.refresh_token}")
+    print(f"{output_name}={creds.refresh_token}")
 
 
 if __name__ == "__main__":

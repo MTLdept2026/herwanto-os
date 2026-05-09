@@ -265,8 +265,10 @@ Voice notes require `OPENAI_API_KEY`. H.I.R.A transcribes the note and then trea
 /gmail
 /gmail is:unread newer_than:7d
 /gmail personal2 newer_than:7d
+/gmail work newer_than:7d
 /gmaildraft recipient@example.com | Subject | Email body
 /gmaildraft personal2 recipient@example.com | Subject | Email body
+/gmaildraft work recipient@example.com | Subject | Email body
 ```
 
 **NEA weather:**
@@ -312,11 +314,24 @@ GOOGLE_GMAIL2_REFRESH_TOKEN=...
 ```
 By default H.I.R.A reuses `GOOGLE_GMAIL_CLIENT_ID` and `GOOGLE_GMAIL_CLIENT_SECRET`. If the second inbox uses a different OAuth client, set `GOOGLE_GMAIL2_CLIENT_ID` and `GOOGLE_GMAIL2_CLIENT_SECRET` too.
 
-Work/MOE Gmail is no longer exposed in H.I.R.A because the workspace blocks the Gmail OAuth flow. Use personal Gmail accounts only.
+Work/MOE Gmail is available as an experiment only because the workspace may block the Gmail OAuth flow. If you want to test it, run the same OAuth script while signed into the work inbox and print the work variable name:
+```bash
+export GOOGLE_GMAIL_CLIENT_ID="..."
+export GOOGLE_GMAIL_CLIENT_SECRET="..."
+GOOGLE_GMAIL_REFRESH_ENV=GOOGLE_WORK_GMAIL_REFRESH_TOKEN python3 scripts/get_gmail_refresh_token.py
+```
+Then add these Railway variables:
+```env
+GOOGLE_WORK_GMAIL_CLIENT_ID=...
+GOOGLE_WORK_GMAIL_CLIENT_SECRET=...
+GOOGLE_WORK_GMAIL_REFRESH_TOKEN=...
+```
+If you deliberately want to reuse the personal OAuth client for the work test, you can omit `GOOGLE_WORK_GMAIL_CLIENT_ID` and `GOOGLE_WORK_GMAIL_CLIENT_SECRET`, but Workspace/admin policy may still reject the flow.
 11. Redeploy Railway and test:
 ```text
 /gmail is:unread newer_than:7d
 /gmail personal2 newer_than:7d
+/gmail work newer_than:7d
 /gmaildraft someone@example.com | Test from H.I.R.A | Hello, this is a draft created by H.I.R.A.
 ```
 
@@ -359,8 +374,8 @@ Current PWA surfaces:
 - Chat with H.I.R.A
 - Agenda
 - Tasks
-- Personal Gmail fetch
-- Personal Gmail draft creation
+- Personal Gmail and experimental Work Gmail fetch
+- Personal Gmail and experimental Work Gmail draft creation
 - Latest NEA weather lookup
 - PDF/DOCX/PPTX/image upload analysis
 - Voice-note upload/transcription when `OPENAI_API_KEY` is configured

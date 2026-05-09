@@ -5,9 +5,9 @@
   "summary": {
     "start": "2026-04-28",
     "current": "2026-05-09",
-    "commitsTracked": 169,
-    "majorPhases": 24,
-    "currentStage": "Trial-ready OS with dual personal Gmail"
+    "commitsTracked": 170,
+    "majorPhases": 25,
+    "currentStage": "Trial-ready OS with Gmail account experiments"
   },
   "metrics": [
     {
@@ -17,7 +17,7 @@
     },
     {
       "label": "Tracked upgrade commits",
-      "value": "169",
+      "value": "170",
       "note": "Grouped from git history through the growth-log minisite."
     },
     {
@@ -50,7 +50,7 @@
     {
       "name": "Live Knowledge",
       "score": 88,
-      "description": "Weather, MUIS, dual personal Gmail inbox support, Google News, Tavily search, fetch URL, source notes, live-check hints, structured Liverpool and F1 briefers."
+      "description": "Weather, MUIS, dual personal Gmail inbox support, experimental Work Gmail OAuth, Google News, Tavily search, fetch URL, source notes, live-check hints, structured Liverpool and F1 briefers."
     },
     {
       "name": "Self-Improvement",
@@ -427,17 +427,33 @@
         "Personal Gmail 2 was added as a first-class inbox option for brief and draft flows in the PWA, Telegram commands, service status, and setup docs.",
         "Growth-log and app cache versions were bumped together so installed devices can receive the visible polish as a clean update."
       ],
-      "impact": "H.I.R.A should feel cleaner on first launch, less glitchy while typing, and more honest about email: personal inboxes can be connected, while work/MOE Gmail remains deliberately removed."
+      "impact": "H.I.R.A should feel cleaner on first launch, less glitchy while typing, and more honest about email: personal inboxes can be connected, while work/MOE Gmail requires a separate Workspace OAuth experiment."
+    },
+    {
+      "date": "2026-05-09",
+      "era": "Email Experiment",
+      "title": "Work Gmail is reopened as a controlled test",
+      "commit": "work-gmail-experiment",
+      "tag": "Gmail OAuth",
+      "summary": "H.I.R.A reopened Work/MOE Gmail as an explicit experiment after personal Gmail 2 proved the multi-account path could work.",
+      "details": [
+        "Work Gmail is now available as an account option in the PWA brief and draft flows.",
+        "Telegram Gmail commands and tool routing can use account=work instead of blocking work/MOE requests outright.",
+        "Service status now reports work_gmail separately from personal Gmail and Personal Gmail 2.",
+        "Setup docs and .env.example now document GOOGLE_WORK_GMAIL_CLIENT_ID, GOOGLE_WORK_GMAIL_CLIENT_SECRET, and GOOGLE_WORK_GMAIL_REFRESH_TOKEN.",
+        "The Gmail OAuth helper can print a custom Railway variable name so work-token generation is less error-prone."
+      ],
+      "impact": "H.I.R.A can now try Work/MOE Gmail if Google Workspace permits the OAuth flow, while still treating admin blocking as a likely external constraint."
     }
   ],
   "currentCapabilities": [
-    "Installable private PWA with minimal Nothing-style home-screen icon, sharper glyph surfaces, chat, agenda, tasks, dual personal Gmail options, files, uploads, notifications, and dashboard views.",
+    "Installable private PWA with minimal Nothing-style home-screen icon, sharper glyph surfaces, chat, agenda, tasks, dual personal Gmail options, experimental Work Gmail, files, uploads, notifications, and dashboard views.",
     "Home OS Intelligence that synthesizes agenda, workload, tasks, marking load, proactive signals, service health, and file memory into a readiness score, operating mode, next best move, risks, openings, and one-tap actions.",
     "Command Protocol that turns the current state into concrete Now, Next, and Later steps with confidence and evidence.",
     "Forecast Radar that highlights upcoming pressure from load spikes, due clusters, marking drag, or stable horizon signals.",
     "Adaptive Plan that creates live Prime, Build, Slice, and Stabilize work blocks from the current day state.",
     "7-Day Trial Loop with checkpoints and a trial-note action to measure whether H.I.R.A reduces decision friction in real life.",
-    "Telegram-compatible tool brain with calendar, reminders, marking, MTL classlists, dual personal Gmail brief/draft support, artifacts, weather, MUIS prayer/khutbah, news, web search, and URL reading.",
+    "Telegram-compatible tool brain with calendar, reminders, marking, MTL classlists, dual personal Gmail brief/draft support, experimental Work Gmail brief/draft support, artifacts, weather, MUIS prayer/khutbah, news, web search, and URL reading.",
     "Structured sports intelligence for Liverpool and F1.",
     "Railway Hobby runtime profile with upload queue, memory guardrails, worker split, Redis production option, and admin status.",
     "Long-term memory buckets, topic profiles for new interests, correction ledger, self-reflection notes, source-backed research notes, and conversation summaries.",

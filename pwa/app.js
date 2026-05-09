@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260509-glyph-grid-29";
-const APP_SCRIPT = "app.js?v=20260509-glyph-grid-29";
-const EXPECTED_SW_CACHE = "hira-os-v102";
+const APP_VERSION = "20260509-work-gmail-30";
+const APP_SCRIPT = "app.js?v=20260509-work-gmail-30";
+const EXPECTED_SW_CACHE = "hira-os-v103";
 
 const state = {
   token: localStorage.getItem("hira_web_token") || "",
@@ -88,6 +88,7 @@ const CONNECTIONS = [
   { key: "work_drive", label: "Work Google Drive", icon: "folder" },
   { key: "personal_gmail", label: "Personal Gmail", icon: "mail" },
   { key: "personal_gmail2", label: "Personal Gmail 2", icon: "mail-plus" },
+  { key: "work_gmail", label: "Work Gmail", icon: "briefcase-business" },
 ];
 const COMMAND_STATUS = {
   send: "Command launched.",
