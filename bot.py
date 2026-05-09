@@ -245,7 +245,7 @@ JOB_INTERVALS = {
     "proactive_intelligence": _env_int("HIRA_PROACTIVE_INTELLIGENCE_INTERVAL", 21600, 1800),
     "daily_checkins": _env_int("HIRA_DAILY_CHECKIN_INTERVAL", 300, 60),
     "followups": _env_int("HIRA_FOLLOWUP_INTERVAL", 3600, 300),
-    "work_gmail_monitor": _env_int("HIRA_WORK_GMAIL_MONITOR_INTERVAL", 300, 120),
+    "work_gmail_monitor": _env_int("HIRA_WORK_GMAIL_MONITOR_INTERVAL", 1800, 120),
 }
 MEMORY_DISPLAY_CATEGORIES = (
     "profile",

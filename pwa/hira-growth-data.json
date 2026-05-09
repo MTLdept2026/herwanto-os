@@ -5,9 +5,9 @@
   "summary": {
     "start": "2026-04-28",
     "current": "2026-05-09",
-    "commitsTracked": 172,
+    "commitsTracked": 173,
     "majorPhases": 26,
-    "currentStage": "Trial-ready OS with Work Gmail monitoring and clearer chat entry"
+    "currentStage": "Trial-ready OS with calmer Work Gmail monitoring"
   },
   "metrics": [
     {
@@ -17,7 +17,7 @@
     },
     {
       "label": "Tracked upgrade commits",
-      "value": "172",
+      "value": "173",
       "note": "Grouped from git history through the growth-log minisite."
     },
     {
@@ -474,6 +474,20 @@
         "The quick-command deck remains available underneath the input as an accelerator rather than the only apparent way to begin."
       ],
       "impact": "On the Home screen, Herwanto can immediately see where to type instead of needing to tap Brief Me, Triage, Draft Reply, or Reminder first."
+    },
+    {
+      "date": "2026-05-09",
+      "era": "Attention Layer",
+      "title": "Work Gmail monitoring becomes calmer",
+      "commit": "work-gmail-30-minute-monitor",
+      "tag": "Email Cadence",
+      "summary": "H.I.R.A's Work Gmail watcher shifted from a 5-minute default to a 30-minute default to reduce unnecessary background checks after work hours.",
+      "details": [
+        "The default Work Gmail monitor interval is now 1800 seconds.",
+        ".env.example documents the calmer 30-minute cadence.",
+        "The README now states that Work Gmail monitoring defaults to 30 minutes while staying configurable."
+      ],
+      "impact": "H.I.R.A still watches for actionable work email, but the trial setup is gentler on Gmail quota, Railway background activity, and after-hours attention."
     }
   ],
   "currentCapabilities": [
