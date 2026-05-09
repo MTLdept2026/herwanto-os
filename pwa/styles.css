@@ -4964,34 +4964,171 @@ html[data-theme="dark"] .topbar-brand::after {
 }
 
 @media (max-width: 640px) {
+  html,
+  body {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  .shell {
+    width: 100% !important;
+    max-width: 100% !important;
+    padding-left: 16px !important;
+    padding-right: 16px !important;
+    overflow-x: hidden;
+  }
+
   .topbar,
   html[data-theme="dark"] .topbar {
-    min-height: 220px;
+    min-height: 216px;
+    width: 100% !important;
+    max-width: 100% !important;
+    display: block !important;
+    overflow: hidden;
   }
 
   .topbar-brand,
   html[data-theme="dark"] .topbar-brand {
-    padding: 78px 0 0 70px;
+    padding: 78px 118px 0 52px;
   }
 
   .topbar .eyebrow,
   html[data-theme="dark"] .topbar .eyebrow {
-    width: 150px;
-    max-width: 150px;
-    font-size: 9px;
-    line-height: 0.92;
+    width: 162px;
+    max-width: 162px;
+    font-size: 8px;
+    line-height: 0.9;
   }
 
   .topbar h1,
   html[data-theme="dark"] .topbar h1 {
-    font-size: 40px;
+    font-size: 38px;
   }
 
   .topbar-brand::after,
   html[data-theme="dark"] .topbar-brand::after {
-    left: 212px;
-    top: 103px;
-    width: 17px;
-    height: 17px;
+    left: 186px;
+    top: 101px;
+    width: 16px;
+    height: 16px;
+  }
+
+  .topbar-actions {
+    position: absolute;
+    top: 34px;
+    right: 16px;
+    display: grid !important;
+    grid-template-columns: 96px !important;
+    padding-left: 0 !important;
+    justify-self: end;
+    justify-items: center;
+    gap: 10px !important;
+    width: 96px;
+  }
+
+  .nothing-glyph-display {
+    width: 96px;
+    height: 96px;
+    min-height: 96px;
+  }
+
+  .nothing-glyph-matrix {
+    padding: 12px;
+  }
+
+  .nothing-glyph-dot {
+    width: 3.5px;
+    height: 3.5px;
+  }
+}
+
+/* Dotted clock typography and restrained accent pass */
+.status-clockbar .status-label,
+.status-clockbar #greetingDate,
+.clock-live-label,
+.clock-live-label strong,
+html[data-theme="dark"] .status-clockbar .status-label,
+html[data-theme="dark"] .status-clockbar #greetingDate,
+html[data-theme="dark"] .clock-live-label,
+html[data-theme="dark"] .clock-live-label strong {
+  font-family: var(--font-dot) !important;
+  font-weight: 800 !important;
+  letter-spacing: 0.02em;
+}
+
+.status-clockbar #greetingTime.clock-display-top,
+html[data-theme="dark"] .status-clockbar #greetingTime.clock-display-top {
+  font-family: var(--font-dot) !important;
+  font-size: 92px;
+  font-weight: 900;
+  letter-spacing: 0;
+  line-height: 0.88;
+}
+
+.connection-card {
+  background: color-mix(in srgb, var(--hira-plate) 92%, var(--hira-plate-2)) !important;
+}
+
+.connection-card::before {
+  width: 3px;
+  background: var(--hira-red);
+  opacity: 0.88;
+}
+
+.connection-card.is-on::before {
+  background: var(--hira-cyan);
+}
+
+.connection-card.is-on .connection-icon {
+  color: var(--hira-cyan);
+  background: color-mix(in srgb, var(--hira-cyan) 12%, transparent);
+}
+
+.connection-card.is-on .connection-switch {
+  background: color-mix(in srgb, var(--hira-cyan) 86%, var(--hira-white)) !important;
+  border-color: var(--hira-cyan) !important;
+}
+
+.connection-card.is-on .connection-switch span {
+  background: var(--hira-black) !important;
+}
+
+.timeline-item {
+  padding-left: 14px;
+  grid-template-columns: minmax(54px, 74px) 26px minmax(0, 1fr);
+}
+
+.timeline-item::before {
+  left: 0;
+  width: 3px;
+}
+
+@media (max-width: 640px) {
+  .status-clockbar #greetingTime.clock-display-top,
+  html[data-theme="dark"] .status-clockbar #greetingTime.clock-display-top {
+    font-size: 56px;
+  }
+
+  .status-clockbar .status-label {
+    font-size: 18px;
+  }
+
+  .status-clockbar #greetingDate {
+    font-size: 22px;
+  }
+
+  .timeline-item {
+    grid-template-columns: 58px 26px minmax(0, 1fr);
+    gap: 8px;
+    padding-left: 10px;
+  }
+
+  .timeline-time strong {
+    font-size: 14px;
+  }
+
+  .timeline-time span {
+    font-size: 9px;
   }
 }
