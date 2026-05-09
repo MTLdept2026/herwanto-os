@@ -5132,3 +5132,336 @@ html[data-theme="dark"] .status-clockbar #greetingTime.clock-display-top {
     font-size: 9px;
   }
 }
+
+/* Final Android fit pass: lock the hero hardware panel to one internal grid. */
+.topbar,
+html[data-theme="dark"] .topbar {
+  position: relative !important;
+  display: block !important;
+  min-height: 242px !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  border: 1px solid var(--hira-line-strong, var(--border-visible)) !important;
+  background: var(--hira-plate, var(--surface-raised)) !important;
+  box-shadow: 0 18px 36px color-mix(in srgb, var(--black) 16%, transparent) !important;
+}
+
+.topbar::before,
+.topbar::after,
+html[data-theme="dark"] .topbar::before,
+html[data-theme="dark"] .topbar::after {
+  border-width: 1px !important;
+}
+
+.topbar-brand,
+html[data-theme="dark"] .topbar-brand {
+  position: absolute !important;
+  left: clamp(58px, 7vw, 86px) !important;
+  top: 95px !important;
+  width: min(44vw, 330px) !important;
+  min-width: 0 !important;
+  padding: 0 !important;
+  display: block !important;
+}
+
+.brand-mark-topbar {
+  display: none !important;
+}
+
+.topbar-brand-copy {
+  display: grid !important;
+  gap: 7px !important;
+  min-width: 0 !important;
+}
+
+.topbar .eyebrow,
+html[data-theme="dark"] .topbar .eyebrow {
+  position: static !important;
+  width: min(210px, 100%) !important;
+  max-width: 210px !important;
+  transform: none !important;
+  margin: 0 !important;
+  color: var(--hira-muted, var(--text-secondary)) !important;
+  font-family: var(--font-dot) !important;
+  font-size: 10px !important;
+  font-weight: 850 !important;
+  line-height: 0.92 !important;
+  letter-spacing: 0 !important;
+  text-transform: uppercase !important;
+  text-wrap: balance;
+}
+
+.topbar h1,
+html[data-theme="dark"] .topbar h1 {
+  margin: 0 !important;
+  color: var(--hira-ink, var(--text-display)) !important;
+  font-size: clamp(48px, 6vw, 68px) !important;
+  line-height: 0.86 !important;
+  letter-spacing: 0 !important;
+  white-space: nowrap !important;
+}
+
+.topbar-brand::after,
+html[data-theme="dark"] .topbar-brand::after {
+  left: min(272px, calc(100% + 16px)) !important;
+  top: 62px !important;
+  width: 20px !important;
+  height: 20px !important;
+  border-width: 2px !important;
+}
+
+.topbar .brand-subtitle,
+.topbar-glyph,
+.quick-theme-toggle {
+  display: none !important;
+}
+
+.topbar-actions,
+html[data-theme="dark"] .topbar-actions {
+  position: absolute !important;
+  top: 28px !important;
+  right: clamp(36px, 6vw, 62px) !important;
+  z-index: 2 !important;
+  display: grid !important;
+  grid-template-columns: 132px !important;
+  grid-template-rows: 132px 30px 30px !important;
+  align-items: center !important;
+  justify-items: center !important;
+  gap: 9px !important;
+  width: 132px !important;
+  height: auto !important;
+  min-width: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: 0 !important;
+  overflow: visible !important;
+}
+
+.nothing-glyph-display,
+html[data-theme="dark"] .nothing-glyph-display {
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+  width: 132px !important;
+  height: 132px !important;
+  min-height: 132px !important;
+  margin: 0 !important;
+}
+
+.topbar .topbar-actions #notificationsBtn,
+.topbar .topbar-actions #installBtn,
+.topbar .topbar-actions #settingsBtn,
+.topbar .topbar-actions .icon-btn,
+.topbar .topbar-actions .notification-btn,
+.topbar .topbar-actions .icon-btn:hover,
+.topbar .topbar-actions .icon-btn:focus,
+.topbar .topbar-actions .icon-btn:focus-visible,
+.topbar .topbar-actions .icon-btn:active,
+.topbar .topbar-actions .icon-btn.is-open,
+.topbar .topbar-actions .notification-btn:hover,
+.topbar .topbar-actions .notification-btn:focus,
+.topbar .topbar-actions .notification-btn:focus-visible,
+.topbar .topbar-actions .notification-btn:active,
+.topbar .topbar-actions .notification-btn.is-open {
+  width: 30px !important;
+  height: 30px !important;
+  min-width: 30px !important;
+  min-height: 30px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  color: var(--hira-muted, var(--text-secondary)) !important;
+  background: transparent !important;
+  border: 0 !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+  appearance: none !important;
+  -webkit-tap-highlight-color: transparent !important;
+}
+
+.topbar .topbar-actions #notificationsBtn {
+  grid-column: 1 !important;
+  grid-row: 2 !important;
+}
+
+.topbar .topbar-actions #installBtn {
+  grid-column: 1 !important;
+  grid-row: 2 !important;
+}
+
+.topbar .topbar-actions #settingsBtn {
+  grid-column: 1 !important;
+  grid-row: 3 !important;
+}
+
+.topbar .topbar-actions .icon-btn svg,
+.topbar .topbar-actions .notification-btn svg {
+  width: 23px !important;
+  height: 23px !important;
+  stroke-width: 1.75 !important;
+}
+
+.topbar .notification-top-toggle,
+.topbar #notificationBadge {
+  display: none !important;
+}
+
+.status-clockbar .status-label,
+.status-clockbar #greetingDate,
+.status-clockbar #statusLine,
+.status-clockbar #greetingTime.clock-display-top,
+html[data-theme="dark"] .status-clockbar .status-label,
+html[data-theme="dark"] .status-clockbar #greetingDate,
+html[data-theme="dark"] .status-clockbar #statusLine,
+html[data-theme="dark"] .status-clockbar #greetingTime.clock-display-top {
+  font-family: var(--font-dot) !important;
+  letter-spacing: 0 !important;
+}
+
+.connection-card,
+html[data-theme="dark"] .connection-card {
+  background: color-mix(in srgb, var(--hira-plate, var(--surface-raised)) 96%, var(--hira-ink, var(--text-display)) 4%) !important;
+  border-color: var(--hira-line, var(--border-visible)) !important;
+}
+
+.connection-card::before {
+  width: 2px !important;
+  background: var(--hira-red, var(--accent)) !important;
+  opacity: 0.9 !important;
+}
+
+.connection-card.is-on::before {
+  background: var(--hira-cyan) !important;
+}
+
+.connection-card.is-on .connection-icon {
+  color: var(--hira-cyan) !important;
+  background: color-mix(in srgb, var(--hira-cyan) 10%, var(--hira-plate, transparent)) !important;
+}
+
+.connection-card.is-on .connection-switch {
+  background: var(--hira-plate, var(--surface)) !important;
+  border-color: var(--hira-line-strong, var(--border-visible)) !important;
+}
+
+.connection-card.is-on .connection-switch span {
+  background: var(--hira-cyan) !important;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--hira-cyan) 45%, transparent), 0 0 12px color-mix(in srgb, var(--hira-cyan) 42%, transparent) !important;
+}
+
+.living-timeline {
+  overflow: hidden !important;
+}
+
+.living-timeline::before {
+  left: clamp(86px, 13vw, 110px) !important;
+}
+
+.timeline-item {
+  padding-left: 18px !important;
+  grid-template-columns: minmax(64px, 84px) 28px minmax(0, 1fr) !important;
+}
+
+.timeline-item::before {
+  left: 0 !important;
+  width: 3px !important;
+}
+
+@media (max-width: 640px) {
+  .shell {
+    padding-left: 16px !important;
+    padding-right: 16px !important;
+  }
+
+  .topbar,
+  html[data-theme="dark"] .topbar {
+    min-height: 224px !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    border-width: 1px !important;
+    border-radius: 24px 24px 8px 8px !important;
+  }
+
+  .topbar::before,
+  .topbar::after,
+  html[data-theme="dark"] .topbar::before,
+  html[data-theme="dark"] .topbar::after {
+    width: 18px !important;
+    height: 18px !important;
+  }
+
+  .topbar-brand,
+  html[data-theme="dark"] .topbar-brand {
+    left: 62px !important;
+    top: 94px !important;
+    width: 158px !important;
+  }
+
+  .topbar .eyebrow,
+  html[data-theme="dark"] .topbar .eyebrow {
+    width: 156px !important;
+    max-width: 156px !important;
+    font-size: 8px !important;
+    line-height: 0.9 !important;
+  }
+
+  .topbar h1,
+  html[data-theme="dark"] .topbar h1 {
+    font-size: 37px !important;
+    line-height: 0.86 !important;
+  }
+
+  .topbar-brand::after,
+  html[data-theme="dark"] .topbar-brand::after {
+    left: 148px !important;
+    top: 43px !important;
+    width: 16px !important;
+    height: 16px !important;
+  }
+
+  .topbar-actions,
+  html[data-theme="dark"] .topbar-actions {
+    top: 38px !important;
+    right: 30px !important;
+    width: 104px !important;
+    grid-template-columns: 104px !important;
+    grid-template-rows: 104px 28px 28px !important;
+    gap: 8px !important;
+  }
+
+  .nothing-glyph-display,
+  html[data-theme="dark"] .nothing-glyph-display {
+    width: 104px !important;
+    height: 104px !important;
+    min-height: 104px !important;
+  }
+
+  .nothing-glyph-matrix {
+    padding: 12px !important;
+  }
+
+  .nothing-glyph-dot {
+    width: 3.5px !important;
+    height: 3.5px !important;
+  }
+
+  .topbar .topbar-actions #notificationsBtn,
+  .topbar .topbar-actions #installBtn,
+  .topbar .topbar-actions #settingsBtn,
+  .topbar .topbar-actions .icon-btn,
+  .topbar .topbar-actions .notification-btn {
+    width: 28px !important;
+    height: 28px !important;
+    min-width: 28px !important;
+    min-height: 28px !important;
+  }
+
+  .topbar .topbar-actions .icon-btn svg,
+  .topbar .topbar-actions .notification-btn svg {
+    width: 22px !important;
+    height: 22px !important;
+  }
+
+  .timeline-item {
+    grid-template-columns: 64px 26px minmax(0, 1fr) !important;
+    padding-left: 14px !important;
+  }
+}

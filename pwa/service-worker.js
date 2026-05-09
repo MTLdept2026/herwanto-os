@@ -1,9 +1,9 @@
-const CACHE_NAME = "hira-os-v82";
-const HIRA_APP_VERSION = "20260509-nothing-9";
+const CACHE_NAME = "hira-os-v83";
+const HIRA_APP_VERSION = "20260509-nothing-10";
 const ASSETS = [
   "/",
-  "/styles.css?v=20260509-nothing-9",
-  "/app.js?v=20260509-nothing-9",
+  "/styles.css?v=20260509-nothing-10",
+  "/app.js?v=20260509-nothing-10",
   "/static/icon.svg",
   "/manifest.webmanifest"
 ];
