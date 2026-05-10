@@ -1,22 +1,28 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#f3f1ea" />
+    <meta name="theme-color" content="#e4e3df" />
     <title>ClassOps | H.I.R.A</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/classops.css?v=20260510-1" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Doto:wght@400..900&family=Space+Grotesk:wght@300;400;500;700&family=VT323&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/classops.css?v=20260510-4" />
   </head>
   <body>
     <main class="shell">
       <header class="topbar">
-        <div>
-          <p class="eyebrow">H.I.R.A ClassOps</p>
-          <h1>Class Control Centre</h1>
-          <p class="lede">Dropbox-backed class contents, collection radar, and printable filing pages.</p>
+        <div class="topbar-brand">
+          <img class="brand-mark brand-mark-topbar" src="/static/icon.svg" alt="" />
+          <div>
+            <p class="eyebrow">Herwanto Intelligent Response Agent</p>
+            <h1>ClassOps</h1>
+            <p class="brand-subtitle">class control centre</p>
+          </div>
         </div>
         <div class="topbar-actions">
           <a class="ghost" href="/">H.I.R.A</a>
@@ -24,6 +30,35 @@
           <button id="scanBtn" type="button">Scan Dropbox</button>
         </div>
       </header>
+
+      <section class="hero-panel">
+        <div>
+          <p class="eyebrow">Live class operations</p>
+          <h2>Lesson contents, due work, and submission gaps in one place.</h2>
+        </div>
+        <div class="mission-console">
+          <div class="mission-console-head">
+            <span>Ops status</span>
+            <strong id="missionReadiness">Standby</strong>
+          </div>
+          <div class="mission-console-grid">
+            <div>
+              <span>Latest scan</span>
+              <strong id="missionScanTime">--</strong>
+            </div>
+            <div>
+              <span>Follow-up</span>
+              <strong id="missionFollowUp">--</strong>
+            </div>
+          </div>
+          <div class="hero-signal" aria-hidden="true">
+            <span></span><span></span><span></span><span></span><span></span><span></span>
+          </div>
+          <div id="missionReadout" class="mission-readout">
+            <p>Awaiting class telemetry.</p>
+          </div>
+        </div>
+      </section>
 
       <section class="token-panel" id="tokenPanel">
         <label>
@@ -47,8 +82,12 @@
           <strong id="fileCount">--</strong>
         </article>
         <article>
-          <span>Collect Radar</span>
+          <span>Due Work</span>
           <strong id="collectCount">--</strong>
+        </article>
+        <article>
+          <span>Students</span>
+          <strong id="studentCount">--</strong>
         </article>
       </section>
 
@@ -71,10 +110,49 @@
             <h2 id="detailTitle">Contents</h2>
           </div>
           <div id="collectionPanel" class="collection-panel"></div>
+          <section class="student-ledger">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Google Drive roster</p>
+                <h2>Submission Ledger</h2>
+              </div>
+              <strong id="ledgerMeta">--</strong>
+            </div>
+            <form id="assignmentForm" class="assignment-form">
+              <label>
+                <span>Lesson date</span>
+                <input id="lessonDateInput" name="lesson_date" type="date" />
+              </label>
+              <label>
+                <span>Due date</span>
+                <input id="collectByInput" name="collect_by" type="date" />
+              </label>
+              <label class="wide">
+                <span>Work title</span>
+                <input id="assignmentTitleInput" name="assignment_title" type="text" placeholder="e.g. Latihan Lisan 13 April" />
+              </label>
+              <label class="wide">
+                <span>Topic / notes</span>
+                <input id="topicInput" name="topic" type="text" placeholder="Optional lesson topic or follow-up note" />
+              </label>
+              <div class="wide roster-picker-head">
+                <div>
+                  <span>Non submissions</span>
+                  <strong id="nonSubmissionCount">0 selected</strong>
+                </div>
+                <button id="clearNonSubmissionBtn" type="button" class="ghost">Clear</button>
+              </div>
+              <div id="nonSubmissionRoster" class="wide roster-picker">
+                <div class="empty">Choose a lesson, then select students who have not submitted.</div>
+              </div>
+              <button id="saveAssignmentBtn" type="submit">Save Tracking</button>
+            </form>
+            <div id="studentReport" class="student-report"></div>
+          </section>
           <div id="contentsTable" class="contents-table"></div>
         </section>
       </section>
     </main>
-    <script src="/classops.js?v=20260510-1"></script>
+    <script src="/classops.js?v=20260510-4"></script>
   </body>
 </html>

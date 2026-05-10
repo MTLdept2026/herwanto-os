@@ -11,10 +11,10 @@
       href="https://fonts.googleapis.com/css2?family=Doto:wght@400..900&family=Space+Grotesk:wght@300;400;500;700&family=VT323&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap"
       rel="stylesheet"
     />
-    <link rel="manifest" href="/manifest.webmanifest?v=20260509-composer-31" />
-    <link rel="icon" href="/static/icon.svg?v=20260509-composer-31" type="image/svg+xml" />
-    <link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=20260509-composer-31" />
-    <link rel="stylesheet" href="./styles.css?v=20260509-composer-31" />
+    <link rel="manifest" href="/manifest.webmanifest?v=20260510-classops-32" />
+    <link rel="icon" href="/static/icon.svg?v=20260510-classops-32" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=20260510-classops-32" />
+    <link rel="stylesheet" href="./styles.css?v=20260510-classops-32" />
   </head>
   <body>
     <main class="shell">
@@ -435,6 +435,34 @@
             <div class="segment-bar services-segments" aria-hidden="true"></div>
           </section>
 
+          <section class="ops-card classops-home-card">
+            <div class="classops-card-head">
+              <div>
+                <p class="eyebrow">ClassOps</p>
+                <h3>Control Centre</h3>
+              </div>
+              <a class="ghost-btn icon-label-btn" href="/classops">
+                <span data-lucide="external-link" aria-hidden="true"></span>
+                Open
+              </a>
+            </div>
+            <div class="classops-metrics">
+              <div>
+                <strong id="classOpsPendingValue">0</strong>
+                <span>Pending</span>
+              </div>
+              <div>
+                <strong id="classOpsConcernValue">0</strong>
+                <span>Follow-up</span>
+              </div>
+              <div>
+                <strong id="classOpsDueValue">0</strong>
+                <span>Due now</span>
+              </div>
+            </div>
+            <div id="classOpsStatusList" class="classops-status-list"></div>
+          </section>
+
           <section class="ops-card">
             <p class="eyebrow">Connections</p>
             <div id="homeConnectionsList" class="status-list"></div>
@@ -683,6 +711,6 @@
       </section>
     </main>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-    <script src="./app.js?v=20260509-composer-31" type="module"></script>
+    <script src="./app.js?v=20260510-classops-32" type="module"></script>
   </body>
 </html>

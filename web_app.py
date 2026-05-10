@@ -35,8 +35,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260509-work-gmail-30"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v103"
+PWA_APP_VERSION = "20260510-classops-32"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v105"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -558,6 +558,19 @@ class InsightFeedbackRequest(BaseModel):
 
 class TasteProfileRequest(BaseModel):
     answers: dict
+
+
+class ClassOpsAssignmentRequest(BaseModel):
+    class_name: str
+    lesson_date: str = ""
+    topic: str = ""
+    folder: str = ""
+    assignment_title: str
+    collect_by: str = ""
+    absent: Optional[list[str]] = None
+    submitted: Optional[list[str]] = None
+    non_submitted: Optional[list[str]] = None
+    notes: str = ""
 
 
 _UPLOAD_JOBS: OrderedDict[str, dict] = OrderedDict()
@@ -1144,6 +1157,7 @@ def _parallel_home_data(days: int) -> dict:
         "files": bot.build_files_index,
         "services": _service_status,
         "marking": _marking_summary,
+        "classops": _classops_status_summary,
     }
     fallbacks = {
         "agenda": "Agenda unavailable right now.",
@@ -1209,6 +1223,16 @@ def _parallel_home_data(days: int) -> dict:
             "marked_scripts": 0,
             "unmarked_scripts": 0,
             "connected": False,
+        },
+        "classops": {
+            "connected": False,
+            "class_count": 0,
+            "assignment_count": 0,
+            "pending_count": 0,
+            "concern_count": 0,
+            "due_today_count": 0,
+            "overdue_count": 0,
+            "classes": [],
         },
     }
     futures = {key: _HOME_EXECUTOR.submit(builder) for key, builder in jobs.items()}
@@ -2239,6 +2263,202 @@ def admin_memory(limit: int = 5, x_hira_token: Optional[str] = Header(default=No
         raise HTTPException(status_code=400, detail=f"Memory review unavailable: {exc}") from exc
 
 
+def _classops_name_key(value: str) -> str:
+    return re.sub(r"[^A-Z0-9]+", " ", str(value or "").upper()).strip()
+
+
+def _classops_record_for(ledger: dict, class_name: str) -> dict:
+    classes = ledger.get("classes") if isinstance(ledger, dict) else {}
+    if not isinstance(classes, dict):
+        return {"lessons": [], "assignments": []}
+    class_key = str(class_name or "").strip().upper()
+    return classes.get(class_key) or classes.get(str(class_name or "").strip()) or {"lessons": [], "assignments": []}
+
+
+def _classops_student_report(class_name: str, students: list[dict], ledger: dict | None = None) -> dict:
+    ledger = ledger if isinstance(ledger, dict) else bot.gs.get_classops_ledger()
+    record = _classops_record_for(ledger, class_name)
+    assignments = [item for item in record.get("assignments", []) if isinstance(item, dict)]
+    roster = []
+    for index, student in enumerate(students or [], start=1):
+        name = str(student.get("name") or "").strip()
+        if not name:
+            continue
+        roster.append({
+            "no": str(student.get("no") or index).strip(),
+            "class": str(student.get("class") or class_name).strip(),
+            "name": name,
+            "source": str(student.get("source") or "").strip(),
+            "submitted_count": 0,
+            "missing_count": 0,
+            "absent_count": 0,
+            "catchup_count": 0,
+            "status": "clear",
+        })
+    roster_by_key = {_classops_name_key(item["name"]): item for item in roster}
+    unmatched = {"absent": [], "submitted": [], "non_submitted": []}
+    assignment_summaries = []
+    for assignment in assignments:
+        submitted = {_classops_name_key(name) for name in assignment.get("submitted", []) if _classops_name_key(name)}
+        non_submitted = {_classops_name_key(name) for name in assignment.get("non_submitted", []) if _classops_name_key(name)}
+        absent = {_classops_name_key(name) for name in assignment.get("absent", []) if _classops_name_key(name)}
+        for raw in assignment.get("submitted", []) or []:
+            key = _classops_name_key(raw)
+            if key and key not in roster_by_key:
+                unmatched["submitted"].append({"assignment_id": assignment.get("id", ""), "name": str(raw)})
+        for raw in assignment.get("non_submitted", []) or []:
+            key = _classops_name_key(raw)
+            if key and key not in roster_by_key:
+                unmatched["non_submitted"].append({"assignment_id": assignment.get("id", ""), "name": str(raw)})
+        for raw in assignment.get("absent", []) or []:
+            key = _classops_name_key(raw)
+            if key and key not in roster_by_key:
+                unmatched["absent"].append({"assignment_id": assignment.get("id", ""), "name": str(raw)})
+        submitted_total = 0
+        missing_total = 0
+        absent_total = 0
+        for student in roster:
+            key = _classops_name_key(student["name"])
+            if key in absent:
+                absent_total += 1
+                student["absent_count"] += 1
+                student["catchup_count"] += 1
+            elif non_submitted:
+                if key in non_submitted:
+                    missing_total += 1
+                    student["missing_count"] += 1
+                else:
+                    submitted_total += 1
+                    student["submitted_count"] += 1
+            elif key in submitted:
+                submitted_total += 1
+                student["submitted_count"] += 1
+            else:
+                missing_total += 1
+                student["missing_count"] += 1
+        assignment_summaries.append({
+            **assignment,
+            "roster_count": len(roster),
+            "submitted_count": submitted_total,
+            "missing_count": missing_total,
+            "absent_count": absent_total,
+        })
+    for student in roster:
+        if student["missing_count"] >= 2:
+            student["status"] = "follow up"
+        elif student["catchup_count"] >= 1:
+            student["status"] = "catch up"
+        elif student["missing_count"] == 1:
+            student["status"] = "watch"
+    concerns = [student for student in roster if student["status"] != "clear"]
+    return {
+        "class_name": class_name,
+        "roster_count": len(roster),
+        "assignment_count": len(assignments),
+        "concern_count": len(concerns),
+        "students": roster,
+        "concerns": concerns,
+        "assignments": assignment_summaries[-12:],
+        "unmatched": unmatched,
+    }
+
+
+def _classops_enrich_with_students(manifest: dict) -> dict:
+    ledger = bot.gs.get_classops_ledger()
+    student_errors = {}
+    for class_item in manifest.get("classes", []) or []:
+        class_name = str(class_item.get("class") or "").strip()
+        if not class_name:
+            continue
+        try:
+            students = bot.gs.get_classops_students(class_name)
+        except Exception as exc:
+            students = []
+            student_errors[class_name] = str(exc)
+        report = _classops_student_report(class_name, students, ledger)
+        class_item["students"] = students
+        class_item["student_report"] = report
+    manifest["student_errors"] = student_errors
+    manifest["student_summary"] = {
+        "roster_count": sum(len(item.get("students") or []) for item in manifest.get("classes", []) or []),
+        "concern_count": sum((item.get("student_report") or {}).get("concern_count", 0) for item in manifest.get("classes", []) or []),
+        "assignment_count": sum((item.get("student_report") or {}).get("assignment_count", 0) for item in manifest.get("classes", []) or []),
+    }
+    return manifest
+
+
+def _classops_status_summary() -> dict:
+    ledger = bot.gs.get_classops_ledger()
+    classes = ledger.get("classes") if isinstance(ledger, dict) else {}
+    if not isinstance(classes, dict):
+        classes = {}
+    today = datetime.now(bot.SGT).date()
+    class_rows = []
+    totals = {
+        "class_count": 0,
+        "assignment_count": 0,
+        "pending_count": 0,
+        "concern_count": 0,
+        "due_today_count": 0,
+        "overdue_count": 0,
+    }
+    for class_name in sorted(classes.keys()):
+        record = classes.get(class_name) if isinstance(classes.get(class_name), dict) else {}
+        assignments = [item for item in record.get("assignments", []) if isinstance(item, dict)]
+        try:
+            students = bot.gs.get_classops_students(class_name)
+            report = _classops_student_report(class_name, students, ledger)
+            roster_count = report.get("roster_count", 0)
+            concern_count = report.get("concern_count", 0)
+            latest = report.get("assignments", [])[-1] if report.get("assignments") else {}
+        except Exception:
+            roster_count = 0
+            concern_count = 0
+            latest = assignments[-1] if assignments else {}
+        pending_count = int(latest.get("missing_count") or len(latest.get("non_submitted", []) or []) or 0)
+        due_today = 0
+        overdue = 0
+        for assignment in assignments:
+            due = str(assignment.get("collect_by") or "").strip()
+            if not due:
+                continue
+            try:
+                due_date = datetime.strptime(due, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            open_count = len(assignment.get("non_submitted", []) or [])
+            if not open_count:
+                continue
+            if due_date == today:
+                due_today += 1
+            elif due_date < today:
+                overdue += 1
+        row = {
+            "class_name": class_name,
+            "roster_count": roster_count,
+            "assignment_count": len(assignments),
+            "pending_count": pending_count,
+            "concern_count": concern_count,
+            "due_today_count": due_today,
+            "overdue_count": overdue,
+            "latest_assignment": latest,
+        }
+        class_rows.append(row)
+        totals["assignment_count"] += len(assignments)
+        totals["pending_count"] += pending_count
+        totals["concern_count"] += concern_count
+        totals["due_today_count"] += due_today
+        totals["overdue_count"] += overdue
+    totals["class_count"] = len(class_rows)
+    return {
+        "connected": True,
+        "generated_at": datetime.now(bot.SGT).isoformat(),
+        **totals,
+        "classes": class_rows,
+        "control_centre_url": "/classops",
+    }
+
+
 @app.post("/api/classops/dropbox/scan")
 def classops_dropbox_scan(x_hira_token: Optional[str] = Header(default=None)):
     _require_token(x_hira_token)
@@ -2256,9 +2476,59 @@ def classops_dashboard(x_hira_token: Optional[str] = Header(default=None)):
     if not dropbox.configured():
         raise HTTPException(status_code=400, detail="Dropbox ClassOps env vars are not configured.")
     try:
-        return dropbox.scan_classops_manifest()
+        return _classops_enrich_with_students(dropbox.scan_classops_manifest())
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"ClassOps dashboard unavailable: {exc}") from exc
+
+
+@app.get("/api/classops/students")
+def classops_students(class_name: str, x_hira_token: Optional[str] = Header(default=None)):
+    _require_token(x_hira_token)
+    try:
+        students = bot.gs.get_classops_students(class_name)
+        return {
+            "ok": True,
+            "class_name": class_name,
+            "students": students,
+            "report": _classops_student_report(class_name, students),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"ClassOps student list unavailable: {exc}") from exc
+
+
+@app.post("/api/classops/assignment")
+def classops_assignment(req: ClassOpsAssignmentRequest, x_hira_token: Optional[str] = Header(default=None)):
+    _require_token(x_hira_token)
+    try:
+        assignment = bot.gs.save_classops_assignment(
+            class_name=req.class_name,
+            lesson_date=req.lesson_date,
+            topic=req.topic,
+            folder=req.folder,
+            assignment_title=req.assignment_title,
+            collect_by=req.collect_by,
+            absent=req.absent or [],
+            submitted=req.submitted or [],
+            non_submitted=req.non_submitted or [],
+            notes=req.notes,
+        )
+        students = bot.gs.get_classops_students(req.class_name)
+        return {
+            "ok": True,
+            "assignment": assignment,
+            "report": _classops_student_report(req.class_name, students),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"ClassOps assignment save failed: {exc}") from exc
+
+
+@app.get("/api/classops/status")
+def classops_status(x_hira_token: Optional[str] = Header(default=None)):
+    _require_token(x_hira_token)
+    try:
+        return _classops_status_summary()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"ClassOps status unavailable: {exc}") from exc
 
 
 @app.post("/api/notifications/subscribe")

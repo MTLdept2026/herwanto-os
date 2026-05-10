@@ -1392,6 +1392,91 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(class_item["lesson_count"], 1)
         self.assertEqual(class_item["collection_candidates"][0]["collection"]["due"], "next_lesson")
 
+    def test_classops_assignment_ledger_persists_tracking(self):
+        store = {}
+
+        def fake_set(key, value):
+            store[key] = value
+
+        with patch.object(bot.gs, "get_config", side_effect=lambda key: store.get(key)), \
+             patch.object(bot.gs, "set_config", side_effect=fake_set):
+            assignment = bot.gs.save_classops_assignment(
+                class_name="2g3",
+                lesson_date="2026-05-10",
+                topic="Lisan",
+                folder="10:5:26",
+                assignment_title="Latihan Lisan",
+                absent=["Ali Bin Ahmad"],
+                submitted=["Siti Aminah", "Siti Aminah"],
+                non_submitted=["Kumar Das"],
+            )
+            ledger = bot.gs.get_classops_ledger()
+
+        self.assertEqual(assignment["class_name"], "2G3")
+        self.assertEqual(assignment["submitted"], ["Siti Aminah"])
+        self.assertEqual(assignment["non_submitted"], ["Kumar Das"])
+        self.assertIn("2G3", ledger["classes"])
+        self.assertEqual(ledger["classes"]["2G3"]["assignments"][0]["assignment_title"], "Latihan Lisan")
+
+    def test_classops_student_report_flags_missing_and_absent_followups(self):
+        ledger = {
+            "classes": {
+                "2G3": {
+                    "assignments": [{
+                        "id": "work-1",
+                        "assignment_title": "Latihan Lisan",
+                        "absent": ["Ali Bin Ahmad"],
+                        "non_submitted": ["Kumar Das"],
+                    }]
+                }
+            }
+        }
+        students = [
+            {"no": "1", "class": "2G3", "name": "Ali Bin Ahmad"},
+            {"no": "2", "class": "2G3", "name": "Siti Aminah"},
+            {"no": "3", "class": "2G3", "name": "Kumar Das"},
+        ]
+
+        report = web_app._classops_student_report("2G3", students, ledger)
+
+        by_name = {student["name"]: student for student in report["students"]}
+        self.assertEqual(by_name["Siti Aminah"]["submitted_count"], 1)
+        self.assertEqual(by_name["Ali Bin Ahmad"]["status"], "catch up")
+        self.assertEqual(by_name["Kumar Das"]["status"], "watch")
+        self.assertEqual(report["concern_count"], 2)
+        self.assertEqual(report["assignments"][0]["submitted_count"], 1)
+        self.assertEqual(report["assignments"][0]["missing_count"], 1)
+
+    def test_classops_status_summary_rolls_up_hira_panel_metrics(self):
+        today = datetime.now(web_app.bot.SGT).strftime("%Y-%m-%d")
+        ledger = {
+            "classes": {
+                "2G3": {
+                    "assignments": [{
+                        "id": "work-1",
+                        "assignment_title": "Latihan Lisan",
+                        "collect_by": today,
+                        "non_submitted": ["Kumar Das"],
+                    }]
+                }
+            }
+        }
+        students = [
+            {"no": "1", "class": "2G3", "name": "Siti Aminah"},
+            {"no": "2", "class": "2G3", "name": "Kumar Das"},
+        ]
+
+        with patch.object(web_app.bot.gs, "get_classops_ledger", return_value=ledger), \
+             patch.object(web_app.bot.gs, "get_classops_students", return_value=students):
+            summary = web_app._classops_status_summary()
+
+        self.assertTrue(summary["connected"])
+        self.assertEqual(summary["class_count"], 1)
+        self.assertEqual(summary["assignment_count"], 1)
+        self.assertEqual(summary["pending_count"], 1)
+        self.assertEqual(summary["due_today_count"], 1)
+        self.assertEqual(summary["classes"][0]["latest_assignment"]["submitted_count"], 1)
+
     def test_format_curated_digest_includes_why_lines(self):
         text = bot.format_curated_digest([
             {

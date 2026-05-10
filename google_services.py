@@ -11,6 +11,7 @@ import base64
 import logging
 import re
 import tempfile
+import uuid
 import pytz
 import threading
 import statistics
@@ -1528,6 +1529,129 @@ def update_marking_progress(
     if updated:
         set_marking_tasks(tasks)
     return updated
+
+
+# ─── CONFIG: CLASSOPS LEDGER ─────────────────────────────────────────────────
+
+CLASSOPS_LEDGER_KEY = "classops_ledger"
+
+
+def _normalise_classops_names(values) -> list[str]:
+    names = []
+    seen = set()
+    for value in values or []:
+        name = str(value or "").replace("*", "").strip()
+        if not name:
+            continue
+        key = _norm_cell(name)
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(name)
+    return names
+
+
+def get_classops_ledger() -> dict:
+    raw = get_config(CLASSOPS_LEDGER_KEY)
+    if not raw:
+        return {"classes": {}}
+    try:
+        ledger = json.loads(raw)
+    except Exception:
+        return {"classes": {}}
+    if not isinstance(ledger, dict):
+        return {"classes": {}}
+    classes = ledger.get("classes")
+    if not isinstance(classes, dict):
+        ledger["classes"] = {}
+    return ledger
+
+
+def set_classops_ledger(ledger: dict):
+    if not isinstance(ledger, dict):
+        ledger = {"classes": {}}
+    if not isinstance(ledger.get("classes"), dict):
+        ledger["classes"] = {}
+    set_config(CLASSOPS_LEDGER_KEY, json.dumps(ledger, ensure_ascii=False))
+
+
+def get_classops_students(class_name: str) -> list[dict]:
+    lists = get_mtl_classlists(
+        teacher_query="HERWANTO",
+        class_query=class_name,
+        include_students=True,
+        include_scores=False,
+    )
+    students = []
+    seen = set()
+    for item in lists:
+        source = item.get("grouping") or item.get("sheet_title") or item.get("spreadsheet_title") or ""
+        for student in item.get("students") or []:
+            name = str(student.get("name") or "").replace("*", "").strip()
+            if not name:
+                continue
+            key = _norm_cell(f"{student.get('class', '')} {name}")
+            if key in seen:
+                continue
+            seen.add(key)
+            students.append({
+                "no": str(student.get("no") or "").strip(),
+                "class": str(student.get("class") or class_name or "").strip(),
+                "name": name,
+                "source": source,
+            })
+    return students
+
+
+def save_classops_assignment(
+    class_name: str,
+    lesson_date: str,
+    topic: str = "",
+    folder: str = "",
+    assignment_title: str = "",
+    collect_by: str = "",
+    absent=None,
+    submitted=None,
+    non_submitted=None,
+    notes: str = "",
+) -> dict:
+    ledger = get_classops_ledger()
+    classes = ledger.setdefault("classes", {})
+    class_key = str(class_name or "").strip().upper()
+    if not class_key:
+        raise ValueError("Class name is required.")
+    if not str(assignment_title or "").strip():
+        raise ValueError("Assignment title is required.")
+    record = classes.setdefault(class_key, {"lessons": [], "assignments": []})
+    assignment_id = str(uuid.uuid4())
+    now = datetime.now(SGT).isoformat()
+    assignment = {
+        "id": assignment_id,
+        "class_name": class_key,
+        "lesson_date": str(lesson_date or "").strip(),
+        "topic": str(topic or "").strip(),
+        "folder": str(folder or "").strip(),
+        "assignment_title": str(assignment_title or "").strip(),
+        "collect_by": str(collect_by or "").strip(),
+        "absent": _normalise_classops_names(absent),
+        "submitted": _normalise_classops_names(submitted),
+        "non_submitted": _normalise_classops_names(non_submitted),
+        "notes": str(notes or "").strip(),
+        "created_at": now,
+        "updated_at": now,
+    }
+    record.setdefault("assignments", []).append(assignment)
+    lesson_key = f"{assignment['lesson_date']}|{assignment['folder']}"
+    lessons = record.setdefault("lessons", [])
+    if not any(f"{lesson.get('date', '')}|{lesson.get('folder', '')}" == lesson_key for lesson in lessons):
+        lessons.append({
+            "date": assignment["lesson_date"],
+            "topic": assignment["topic"],
+            "folder": assignment["folder"],
+            "created_at": now,
+        })
+    set_classops_ledger(ledger)
+    return assignment
 
 
 # ─── SHEETS: PROJECTS ────────────────────────────────────────────────────────

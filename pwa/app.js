@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260509-composer-31";
-const APP_SCRIPT = "app.js?v=20260509-composer-31";
-const EXPECTED_SW_CACHE = "hira-os-v104";
+const APP_VERSION = "20260510-classops-32";
+const APP_SCRIPT = "app.js?v=20260510-classops-32";
+const EXPECTED_SW_CACHE = "hira-os-v105";
 
 const state = {
   token: localStorage.getItem("hira_web_token") || "",
@@ -1733,6 +1733,33 @@ function markingRailContext(marking = {}) {
   return `${title} - ${progress}${extra}`;
 }
 
+function renderClassOpsStatus(classops = {}) {
+  const pending = Number(classops.pending_count || 0);
+  const concerns = Number(classops.concern_count || 0);
+  const dueNow = Number(classops.due_today_count || 0) + Number(classops.overdue_count || 0);
+  $("#classOpsPendingValue").textContent = String(pending);
+  $("#classOpsConcernValue").textContent = String(concerns);
+  $("#classOpsDueValue").textContent = String(dueNow);
+  const classes = Array.isArray(classops.classes) ? classops.classes : [];
+  $("#classOpsStatusList").innerHTML = classes.length
+    ? classes.slice(0, 4).map((item) => {
+        const latest = item.latest_assignment || {};
+        const title = latest.assignment_title || item.class_name || "Class";
+        const submitted = Number(latest.submitted_count || 0);
+        const roster = Number(latest.roster_count || item.roster_count || 0);
+        const missing = Number(item.pending_count || latest.missing_count || 0);
+        const due = latest.collect_by ? ` · due ${markdownish(latest.collect_by)}` : "";
+        return `
+          <div class="classops-status-row">
+            <span>${markdownish(item.class_name || "Class")}</span>
+            <strong>${markdownish(title)}</strong>
+            <small>${roster ? `${submitted}/${roster} submitted` : `${missing} pending`}${due}</small>
+          </div>
+        `;
+      }).join("")
+    : `<div class="classops-status-row is-empty"><span>Ready</span><strong>No tracked submission gaps</strong><small>Open ClassOps to scan lessons and start tracking.</small></div>`;
+}
+
 function saveChatHistory() {
   localStorage.setItem("hira_pwa_chat", JSON.stringify(state.chatHistory.slice(-30)));
 }
@@ -2224,6 +2251,7 @@ async function loadHome() {
   $("#homeProactive").innerHTML = "<div>Loading...</div>";
   $("#homeDigest").innerHTML = "<div>Loading...</div>";
   $("#homeIslamic").innerHTML = "<div>Loading...</div>";
+  $("#classOpsStatusList").innerHTML = "<div class=\"classops-status-row is-empty\"><span>ClassOps</span><strong>Checking status</strong><small>Loading submission ledger...</small></div>";
   try {
     const data = await api(`/api/home?days=${state.homeDays}`, { headers: headers(false) });
     updateLiveClock();
@@ -2246,6 +2274,7 @@ async function loadHome() {
     renderConnections(services);
     renderDailyLoad(data.daily_load || {});
     renderIntelligenceStack(data.intelligence || {});
+    renderClassOpsStatus(data.classops || {});
     homeGlyphDataReady = true;
     if (glyphMode === "load" || glyphMode === "next") renderNothingGlyph(glyphMode);
     const proactiveTop = Array.isArray(data.proactive?.top) ? data.proactive.top : [];

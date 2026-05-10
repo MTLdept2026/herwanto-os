@@ -2099,6 +2099,78 @@ html[data-theme="dark"] .load-badge.load-green {
   color: var(--success);
 }
 
+.classops-home-card {
+  gap: var(--space-md);
+}
+
+.classops-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: var(--space-sm);
+}
+
+.classops-card-head .ghost-btn {
+  min-height: 36px;
+  padding: 0 10px;
+  text-decoration: none;
+}
+
+.classops-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.classops-metrics div {
+  padding: 10px;
+  border: 1px solid var(--border-visible);
+  background: var(--surface-raised);
+}
+
+.classops-metrics strong {
+  display: block;
+  font-family: var(--font-dot);
+  font-size: 32px;
+  line-height: 0.95;
+  color: var(--text-display);
+}
+
+.classops-metrics span,
+.classops-status-row span,
+.classops-status-row small {
+  font-family: var(--font-ui);
+  font-size: var(--label);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.classops-status-list {
+  display: grid;
+  gap: 8px;
+}
+
+.classops-status-row {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid var(--border-visible);
+  border-left: 4px solid var(--interactive);
+  background: var(--surface-raised);
+}
+
+.classops-status-row strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-display);
+}
+
+.classops-status-row.is-empty {
+  border-left-color: var(--success);
+}
+
 .files-grid {
   grid-template-columns: 1.1fr 0.9fr;
 }
