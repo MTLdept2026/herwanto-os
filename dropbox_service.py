@@ -95,6 +95,10 @@ def configured() -> bool:
     )
 
 
+def _inspect_titles_enabled() -> bool:
+    return os.environ.get("DROPBOX_CLASSOPS_INSPECT_TITLES", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _root_path() -> str:
     root = os.environ.get("DROPBOX_CLASSOPS_ROOT", "").strip()
     if not root or root == "/":
@@ -256,7 +260,9 @@ def _smart_title(value: str) -> str:
 def infer_filing_title_from_filename(name: str) -> str:
     clean = re.sub(r"\.[A-Za-z0-9]{1,6}$", "", str(name or "")).strip()
     clean = re.sub(r"[_]+", " ", clean)
-    clean = re.sub(r"\s*[-–—]\s*", " - ", clean)
+    clean = re.sub(r"\s+[-–—]\s+", " - ", clean)
+    clean = re.sub(r"(?<=[a-z])[-–—](?=[a-z])", " ", clean)
+    clean = re.sub(r"[-–—]", " - ", clean)
     clean = re.sub(r"\s+", " ", clean)
     clean = re.sub(r"(?<!\d)\d{1,2}[.\-_/ :]\d{1,2}[.\-_/ :]\d{2,4}(?!\d)", " ", clean)
     clean = re.sub(r"\b(?:collect|collection|submit|submission)\s+(?:next\s+(?:lesson|class)|by\s+\S+)\b", " ", clean, flags=re.I)
@@ -330,7 +336,7 @@ def infer_filing_title(file_item: dict) -> str:
     ext = _file_extension(name)
     dropbox_path = str(file_item.get("dropbox_path") or "")
     size = int(file_item.get("size", 0) or 0)
-    if ext not in TITLE_INSPECT_EXTENSIONS or not dropbox_path or size > TITLE_MAX_BYTES:
+    if not _inspect_titles_enabled() or ext not in TITLE_INSPECT_EXTENSIONS or not dropbox_path or size > TITLE_MAX_BYTES:
         return fallback
     cached = _TITLE_CACHE.get(dropbox_path)
     if cached:

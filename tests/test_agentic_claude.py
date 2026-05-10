@@ -1405,6 +1405,19 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(title, "Latihan Peribahasa")
 
+    def test_classops_filing_title_does_not_download_by_default(self):
+        item = {
+            "name": "watak-melayu.html",
+            "dropbox_path": "/2G3/10:3:26/watak-melayu.html",
+            "size": 2048,
+        }
+
+        with patch.dict(os.environ, {"DROPBOX_CLASSOPS_INSPECT_TITLES": ""}, clear=False), \
+             patch.object(dropbox_service, "_download_file", side_effect=AssertionError("should not download")):
+            title = dropbox_service.infer_filing_title(item)
+
+        self.assertEqual(title, "Watak Melayu")
+
     def test_classops_students_filters_combined_teacher_roster_by_class(self):
         classlists = [{
             "grouping": "Herwanto MTL",
