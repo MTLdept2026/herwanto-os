@@ -247,10 +247,28 @@ def _folder_sort_key(folder: dict) -> tuple:
     return (date_value, str(folder.get("folder", "")).lower())
 
 
+def _classops_sort_date(value: str) -> date | None:
+    clean = str(value or "").strip()
+    if not clean:
+        return None
+    try:
+        return date.fromisoformat(clean[:10])
+    except ValueError:
+        pass
+    parsed = parse_classops_date_folder(clean)
+    if not parsed.get("matched"):
+        return None
+    try:
+        return date.fromisoformat(str(parsed.get("date", "")))
+    except ValueError:
+        return None
+
+
 def classops_content_sort_key(item: dict) -> tuple:
-    date_value = str(item.get("date") or "9999-12-31")
+    parsed_date = _classops_sort_date(item.get("date", ""))
     return (
-        date_value,
+        0 if parsed_date else 1,
+        -parsed_date.toordinal() if parsed_date else 0,
         str(item.get("folder", "") or "").lower(),
         str(item.get("title", "") or item.get("name", "") or "").lower(),
         str(item.get("path", "") or "").lower(),

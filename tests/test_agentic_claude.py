@@ -1480,7 +1480,7 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(class_item["content_items"][0]["title"], "Latihan Peribahasa")
         self.assertEqual(class_item["content_items"][0]["date"], "2026-02-24")
 
-    def test_classops_manifest_content_items_sort_earliest_first(self):
+    def test_classops_manifest_content_items_sort_newest_first(self):
         manifest = {
             "ok": True,
             "file_count": 3,
@@ -1514,7 +1514,18 @@ class AgenticClaudeTests(unittest.TestCase):
         enriched = dropbox_service.enrich_classops_manifest(manifest)
         dates = [item["date"] for item in enriched["classes"][0]["content_items"]]
 
-        self.assertEqual(dates, ["2026-02-24", "2026-03-05", "2026-03-10"])
+        self.assertEqual(dates, ["2026-03-10", "2026-03-05", "2026-02-24"])
+
+    def test_classops_manifest_content_items_sort_cross_year_newest_first(self):
+        items = [
+            {"title": "Kefahaman HBL March", "date": "27/02/25", "path": "2G3/27:2:25/hbl.pdf"},
+            {"title": "ADAB", "date": "08/01/26", "path": "2G3/8:1:26/adab.pdf"},
+            {"title": "Older", "date": "2025-01-08", "path": "2G3/8:1:25/older.pdf"},
+        ]
+
+        sorted_items = dropbox_service.sort_classops_content_items(items)
+
+        self.assertEqual([item["title"] for item in sorted_items], ["ADAB", "Kefahaman HBL March", "Older"])
 
     def test_classops_manifest_places_undated_folders_and_content_at_bottom(self):
         manifest = {
@@ -1551,7 +1562,7 @@ class AgenticClaudeTests(unittest.TestCase):
         class_item = enriched["classes"][0]
 
         self.assertEqual([folder["folder"] for folder in class_item["folders"]], ["24:2:26", "10:3:26", "Peribahasa no date"])
-        self.assertEqual([item["date"] for item in class_item["content_items"]], ["2026-02-24", "2026-03-10", ""])
+        self.assertEqual([item["date"] for item in class_item["content_items"]], ["2026-03-10", "2026-02-24", ""])
         self.assertTrue(class_item["content_items"][-1]["date_missing"])
         self.assertEqual(class_item["undated_folder_count"], 1)
         self.assertEqual(enriched["summary"]["undated_folder_count"], 1)
@@ -1633,7 +1644,7 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(updated["classes"][0]["content_items"][0]["title"], "Nota - Masa Senggang")
         self.assertTrue(updated["classes"][0]["content_items"][0]["title_overridden"])
 
-    def test_classops_content_overrides_keep_content_items_earliest_first(self):
+    def test_classops_content_overrides_keep_content_items_newest_first(self):
         manifest = {
             "summary": {"content_item_count": 3},
             "classes": [{
@@ -1651,7 +1662,7 @@ class AgenticClaudeTests(unittest.TestCase):
         updated = web_app._classops_apply_content_overrides(manifest, ledger)
         dates = [item["date"] for item in updated["classes"][0]["content_items"]]
 
-        self.assertEqual(dates, ["2026-02-24", "2026-03-05", "2026-03-10"])
+        self.assertEqual(dates, ["2026-03-10", "2026-03-05", "2026-02-24"])
 
     def test_classops_students_filters_combined_teacher_roster_by_class(self):
         classlists = [{

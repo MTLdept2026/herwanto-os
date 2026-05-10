@@ -70,19 +70,31 @@ function contentDateLabel(item = {}) {
   return formatContentDate(item.date || "");
 }
 
-function contentSortKey(item = {}) {
-  return [
-    item.date || "9999-12-31",
-    item.folder || "",
-    item.title || "",
-    item.path || "",
-  ].map((value) => String(value || "").toLowerCase());
+function contentSortDateValue(value = "") {
+  const clean = String(value || "").trim();
+  let match = clean.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (match) {
+    return Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  }
+  match = clean.match(/^(\d{1,2})[.\-_/ :](\d{1,2})[.\-_/ :](\d{2,4})$/);
+  if (match) {
+    const year = Number(match[3]) < 100 ? 2000 + Number(match[3]) : Number(match[3]);
+    return Date.UTC(year, Number(match[2]) - 1, Number(match[1]));
+  }
+  return null;
 }
 
 function sortContentItems(items = []) {
   return [...items].sort((left, right) => {
-    const a = contentSortKey(left);
-    const b = contentSortKey(right);
+    const leftDate = contentSortDateValue(left.date);
+    const rightDate = contentSortDateValue(right.date);
+    if (leftDate !== null || rightDate !== null) {
+      if (leftDate === null) return 1;
+      if (rightDate === null) return -1;
+      if (leftDate !== rightDate) return rightDate - leftDate;
+    }
+    const a = [left.folder || "", left.title || "", left.path || ""].map((value) => String(value || "").toLowerCase());
+    const b = [right.folder || "", right.title || "", right.path || ""].map((value) => String(value || "").toLowerCase());
     for (let index = 0; index < a.length; index += 1) {
       const compared = a[index].localeCompare(b[index]);
       if (compared) return compared;
