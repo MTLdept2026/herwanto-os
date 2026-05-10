@@ -881,6 +881,49 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(result["delivered"], 1)
         self.assertEqual(calls, ["evening_briefing"])
 
+    def test_briefing_delivery_status_shows_confirmed_pushes(self):
+        today_key = "2026-05-10"
+        now = bot.SGT.localize(datetime(2026, 5, 10, 21, 10))
+        delivery_log = [
+            {"created": "2026-05-10T06:50:00+08:00", "source": f"morning_briefing:{today_key}", "sent": 1},
+            {"created": "2026-05-10T21:03:00+08:00", "source": f"web_evening_briefing:{today_key}", "sent": 1},
+        ]
+
+        with patch.object(bot.gs, "get_config", return_value=today_key):
+            status = web_app._briefing_delivery_status(delivery_log, [], now=now)
+
+        self.assertEqual(status["overall"], "ok")
+        self.assertEqual([slot["status"] for slot in status["slots"]], ["delivered", "delivered"])
+        self.assertEqual(status["slots"][1]["delivered_at"], "21:03")
+
+    def test_briefing_delivery_status_flags_missed_evening_after_catchup(self):
+        today_key = "2026-05-10"
+        now = bot.SGT.localize(datetime(2026, 5, 10, 22, 45))
+        delivery_log = [
+            {"created": "2026-05-10T06:50:00+08:00", "source": f"morning_briefing:{today_key}", "sent": 1},
+        ]
+
+        with patch.object(bot.gs, "get_config", side_effect=lambda key: today_key if key == bot.MORNING_BRIEFING_SENT_KEY else ""):
+            status = web_app._briefing_delivery_status(delivery_log, [], now=now)
+
+        self.assertEqual(status["overall"], "attention")
+        self.assertEqual(status["slots"][1]["slot"], "evening")
+        self.assertEqual(status["slots"][1]["status"], "missed")
+
+    def test_briefing_delivery_status_shows_active_recovery_window(self):
+        today_key = "2026-05-10"
+        now = bot.SGT.localize(datetime(2026, 5, 10, 21, 5))
+        delivery_log = [
+            {"created": "2026-05-10T06:50:00+08:00", "source": f"morning_briefing:{today_key}", "sent": 1},
+        ]
+
+        with patch.object(bot.gs, "get_config", side_effect=lambda key: today_key if key == bot.MORNING_BRIEFING_SENT_KEY else ""):
+            status = web_app._briefing_delivery_status(delivery_log, [], now=now)
+
+        self.assertEqual(status["overall"], "watching")
+        self.assertEqual(status["slots"][1]["slot"], "evening")
+        self.assertEqual(status["slots"][1]["status"], "recovering")
+
     def test_proactive_v2_queue_prefers_higher_score_ready_items(self):
         now = bot.datetime.now(bot.SGT)
         with patch("bot.google_ok", return_value=False), \

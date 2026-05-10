@@ -2045,6 +2045,109 @@ html[data-theme="dark"] .load-badge.load-green {
   color: var(--text-secondary);
 }
 
+.briefing-delivery-card {
+  align-content: start;
+  min-height: 220px;
+}
+
+.briefing-delivery-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-md);
+}
+
+.briefing-delivery-head h3 {
+  margin-top: 4px;
+  font-family: var(--font-ui);
+  font-size: clamp(18px, 2vw, 26px);
+  line-height: 1.12;
+}
+
+.briefing-delivery-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid currentColor;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+}
+
+.briefing-delivery-rows {
+  display: grid;
+  gap: 10px;
+}
+
+.briefing-delivery-row {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-family: var(--font-ui);
+}
+
+.briefing-delivery-row::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  margin-top: 4px;
+  background: currentColor;
+  grid-row: 1 / 3;
+}
+
+.briefing-delivery-row span {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.briefing-delivery-row strong {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+}
+
+.briefing-delivery-row small {
+  color: var(--text-secondary);
+  font-size: 12px;
+  letter-spacing: 0;
+  line-height: 1.35;
+}
+
+.briefing-delivery-row > small {
+  grid-column: 2 / 4;
+  max-width: 20ch;
+  text-align: right;
+  justify-self: end;
+}
+
+.briefing-delivery-row.status-ok,
+.briefing-delivery-badge.status-ok {
+  color: var(--success);
+}
+
+.briefing-delivery-row.status-warn,
+.briefing-delivery-badge.status-warn {
+  color: var(--warning);
+}
+
+.briefing-delivery-row.status-danger,
+.briefing-delivery-badge.status-danger {
+  color: var(--accent);
+}
+
+.briefing-delivery-row.status-off,
+.briefing-delivery-badge.status-off {
+  color: var(--text-secondary);
+}
+
 .marking-summary {
   display: grid;
   grid-template-columns: 1fr 1fr 0.8fr;

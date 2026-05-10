@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260510-trace-39";
-const APP_SCRIPT = "app.js?v=20260510-trace-39";
-const EXPECTED_SW_CACHE = "hira-os-v110";
+const APP_VERSION = "20260510-digest-delivery-40";
+const APP_SCRIPT = "app.js?v=20260510-digest-delivery-40";
+const EXPECTED_SW_CACHE = "hira-os-v111";
 
 const state = {
   token: localStorage.getItem("hira_web_token") || "",
@@ -1089,6 +1089,7 @@ function renderHealth(data) {
     .map(([key, value]) => `${key} ${value}`)
     .join(" · ");
   const recovery = data.push_recovery || {};
+  const briefing = data.briefing_delivery || {};
   const recoveryText = [
     recovery.last_attempt_at ? `last attempt ${recovery.last_attempt_source || "push"} ${recovery.last_attempt_sent || 0}/${recovery.last_attempted || 0}` : "",
     recovery.last_success_at ? `last success ${recovery.last_success_source || "push"} ${recovery.last_success_at}` : "",
@@ -1106,11 +1107,57 @@ function renderHealth(data) {
     <div class="status-row"><span>Queued</span><strong>${data.queued_notification_count || 0}</strong></div>
     <div class="status-row"><span>Recovery</span><strong>${data.push_recovery_enabled ? "On" : "Off"}</strong></div>
     <div class="status-row"><span>Delivery</span><strong>${recovery.status || "unknown"}</strong></div>
+    <div class="status-row"><span>Digest</span><strong>${briefing.overall || "unknown"}</strong></div>
     <p class="subtle">${markdownish(recoveryText || "No recovery data yet.")}</p>
     <p class="subtle">${markdownish(deliveryRows || "No recent push delivery attempts logged.")}</p>
     <p class="subtle">${markdownish(outcomeRows || "No notification feedback captured yet.")}</p>
     <p class="subtle">${markdownish(prayerRows || "Prayer status unavailable.")}</p>
   `;
+}
+
+function briefingDeliveryTone(status) {
+  const clean = String(status || "").toLowerCase();
+  if (clean === "delivered" || clean === "pending") return "ok";
+  if (clean === "queued" || clean === "recovering") return "warn";
+  if (clean === "missed" || clean === "unconfirmed") return "danger";
+  return "off";
+}
+
+function renderBriefingDelivery(delivery = {}) {
+  const rowsEl = $("#briefingDeliveryRows");
+  const summaryEl = $("#briefingDeliverySummary");
+  const badgeEl = $("#briefingDeliveryBadge");
+  if (!rowsEl || !summaryEl || !badgeEl) return;
+  const slots = Array.isArray(delivery.slots) ? delivery.slots : [];
+  const overall = String(delivery.overall || "unknown").toLowerCase();
+  const badgeTone = overall === "attention" ? "danger" : overall === "watching" ? "warn" : overall === "ok" ? "ok" : "off";
+  summaryEl.textContent = delivery.summary || "Digest delivery status unavailable.";
+  badgeEl.textContent = overall === "attention" ? "CHECK" : overall === "watching" ? "WATCH" : overall === "ok" ? "OK" : "WAIT";
+  badgeEl.className = `briefing-delivery-badge status-${badgeTone}`;
+  if (!slots.length) {
+    rowsEl.innerHTML = `
+      <div class="briefing-delivery-row is-empty">
+        <span>Delivery</span>
+        <strong>Unavailable</strong>
+        <small>No digest delivery data returned.</small>
+      </div>
+    `;
+    return;
+  }
+  rowsEl.innerHTML = slots.map((slot) => {
+    const status = String(slot.status || "unknown");
+    const tone = briefingDeliveryTone(status);
+    const label = escapeHtml(slot.label || slot.slot || "Digest");
+    const time = escapeHtml(slot.time || "--:--");
+    const detail = escapeHtml(slot.detail || "No detail yet.");
+    return `
+      <div class="briefing-delivery-row status-${tone}">
+        <span>${label} <small>${time}</small></span>
+        <strong>${escapeHtml(status.toUpperCase())}</strong>
+        <small>${detail}</small>
+      </div>
+    `;
+  }).join("");
 }
 
 function versionRow(label, value, tone = "") {
@@ -2359,6 +2406,7 @@ async function loadHome() {
     renderSegmentsAll(".services-segments", Math.round((connectedCount / CONNECTIONS.length) * 12), 12, connectedCount ? "accent" : "muted");
     renderConnections(services);
     renderDailyLoad(data.daily_load || {});
+    renderBriefingDelivery(data.briefing_delivery || {});
     renderIntelligenceStack(data.intelligence || {});
     renderClassOpsStatus(data.classops || {});
     homeGlyphDataReady = true;
@@ -2402,6 +2450,11 @@ async function loadHome() {
     $("#fileMemoryLabel").textContent = "MEMORY CHECK FAILED";
     $("#fileMemoryValueHome").textContent = "--";
     $("#fileMemoryLabelHome").textContent = "MEMORY CHECK FAILED";
+    renderBriefingDelivery({
+      overall: "unknown",
+      summary: "Digest delivery status unavailable.",
+      slots: [],
+    });
     renderSegmentsAll(".file-memory-segments", 1, 12, "warning");
     setStatus(error.message, "error");
     if (refreshButton) refreshButton.textContent = "Try again";

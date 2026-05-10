@@ -36,8 +36,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260510-trace-39"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v110"
+PWA_APP_VERSION = "20260510-digest-delivery-40"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v111"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -473,6 +473,121 @@ def _daily_briefing_confirmed(slot: str, today_key: str, delivery_log: list) -> 
         f"web_{slot}_briefing:{today_key}",
     ]
     return any(_delivery_log_has_source(delivery_log, source, today_key) for source in sources)
+
+
+def _briefing_delivery_log_item(delivery_log: list, sources: list[str], today_key: str) -> dict:
+    source_set = set(sources)
+    for item in reversed(delivery_log or []):
+        if str(item.get("source", "")).strip() not in source_set:
+            continue
+        if int(item.get("sent", 0) or 0) <= 0:
+            continue
+        created = _parse_sgt_datetime(str(item.get("created", "")))
+        if created and created.strftime("%Y-%m-%d") == today_key:
+            return item
+    return {}
+
+
+def _briefing_delivery_status(delivery_log: Optional[list] = None, queued: Optional[list] = None, now: Optional[datetime] = None) -> dict:
+    current = now or datetime.now(bot.SGT)
+    today_key = current.strftime("%Y-%m-%d")
+    if delivery_log is None:
+        try:
+            delivery_log = bot.gs.get_web_push_delivery_log()
+        except Exception:
+            delivery_log = []
+    if queued is None:
+        try:
+            queued = bot.gs.get_app_notifications(include_archived=False)
+        except Exception:
+            queued = []
+
+    slots = [
+        {
+            "slot": "morning",
+            "label": "Morning",
+            "time": bot.MORNING_BRIEFING_TIME,
+            "catchup": bot.MORNING_BRIEFING_CATCHUP_MINUTES,
+            "config_key": bot.MORNING_BRIEFING_SENT_KEY,
+        },
+        {
+            "slot": "evening",
+            "label": "Evening",
+            "time": bot.EVENING_BRIEFING_TIME,
+            "catchup": bot.EVENING_BRIEFING_CATCHUP_MINUTES,
+            "config_key": bot.EVENING_BRIEFING_SENT_KEY,
+        },
+    ]
+    entries = []
+    attention = False
+    watching = False
+    for spec in slots:
+        slot = spec["slot"]
+        target = current.replace(hour=spec["time"][0], minute=spec["time"][1], second=0, microsecond=0)
+        catchup_until = target + bot.timedelta(minutes=spec["catchup"])
+        sources = [f"{slot}_briefing:{today_key}", f"web_{slot}_briefing:{today_key}"]
+        delivered_item = _briefing_delivery_log_item(delivery_log, sources, today_key)
+        queued_item = next((item for item in queued or [] if str(item.get("source", "")).strip() in sources), {})
+        try:
+            config_marked = bot.gs.get_config(spec["config_key"]) == today_key
+        except Exception:
+            config_marked = False
+
+        delivered_at = ""
+        if delivered_item:
+            created = _parse_sgt_datetime(str(delivered_item.get("created", "")))
+            delivered_at = created.strftime("%H:%M") if created else str(delivered_item.get("created", ""))
+            status = "delivered"
+            detail = f"Confirmed at {delivered_at}" if delivered_at else "Confirmed by push log"
+        elif config_marked:
+            status = "unconfirmed"
+            detail = "Marked sent, but no phone push proof"
+            attention = True
+        elif current < target:
+            status = "pending"
+            detail = f"Due at {target.strftime('%H:%M')}"
+        elif queued_item:
+            status = "queued"
+            detail = "Queued, awaiting phone push proof"
+            watching = True
+        elif current <= catchup_until:
+            status = "recovering"
+            detail = f"Safety net active until {catchup_until.strftime('%H:%M')}"
+            watching = True
+        else:
+            status = "missed"
+            detail = "No confirmed delivery today"
+            attention = True
+
+        entries.append({
+            "slot": slot,
+            "label": spec["label"],
+            "time": target.strftime("%H:%M"),
+            "catchup_until": catchup_until.strftime("%H:%M"),
+            "status": status,
+            "detail": detail,
+            "delivered_at": delivered_at,
+            "queued": bool(queued_item),
+            "config_marked": config_marked,
+            "sources": sources,
+        })
+
+    if attention:
+        overall = "attention"
+        summary = "Digest delivery needs attention"
+    elif watching:
+        overall = "watching"
+        summary = "Digest delivery is being watched"
+    else:
+        overall = "ok"
+        summary = "Digest delivery is on track"
+    return {
+        "today": today_key,
+        "generated_at": current.strftime("%H:%M SGT"),
+        "overall": overall,
+        "summary": summary,
+        "slots": entries,
+    }
 
 
 async def recover_missed_daily_briefings() -> dict:
@@ -1315,6 +1430,7 @@ def _parallel_home_data(days: int) -> dict:
         "services": _service_status,
         "marking": _marking_summary,
         "classops": _classops_status_summary,
+        "briefing_delivery": _briefing_delivery_status,
     }
     fallbacks = {
         "agenda": "Agenda unavailable right now.",
@@ -1390,6 +1506,13 @@ def _parallel_home_data(days: int) -> dict:
             "due_today_count": 0,
             "overdue_count": 0,
             "classes": [],
+        },
+        "briefing_delivery": {
+            "today": "",
+            "generated_at": "",
+            "overall": "unknown",
+            "summary": "Digest delivery status unavailable.",
+            "slots": [],
         },
     }
     futures = {key: _HOME_EXECUTOR.submit(builder) for key, builder in jobs.items()}
@@ -2584,6 +2707,7 @@ def notifications_health(
         "current_client_display_mode": current_subscription.get("display_mode", "") if current_subscription else "",
         "recent_delivery_log": delivery_log[-5:],
         "push_recovery": _push_recovery_summary(delivery_log, queued, subscriptions, subscription_error, queue_error),
+        "briefing_delivery": _briefing_delivery_status(delivery_log, queued),
         "outcome_actions": outcome_summary.get("actions", {}),
         "prayers": bot.prayer_notification_status(),
     }
