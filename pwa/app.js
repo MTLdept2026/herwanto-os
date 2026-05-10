@@ -20,9 +20,13 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260510-digest-delivery-40";
-const APP_SCRIPT = "app.js?v=20260510-digest-delivery-40";
-const EXPECTED_SW_CACHE = "hira-os-v111";
+const APP_VERSION = "20260510-instant-home-41";
+const APP_SCRIPT = "app.js?v=20260510-instant-home-41";
+const EXPECTED_SW_CACHE = "hira-os-v112";
+const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
+const AGENDA_CACHE_KEY = "hira_pwa_agenda_snapshot_v1";
+const HOME_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+const HOME_REFRESH_THROTTLE_MS = 45 * 1000;
 
 const state = {
   token: localStorage.getItem("hira_web_token") || "",
@@ -44,6 +48,8 @@ const state = {
   activeNotificationId: "",
   lastPushSyncAt: Number(localStorage.getItem("hira_pwa_last_push_sync_at") || "0"),
   lastInputPulseAt: 0,
+  homeRefreshInFlight: null,
+  homeLastRefreshStartedAt: 0,
   homeTimelineItems: [],
 };
 
@@ -382,6 +388,58 @@ function setStatus(text, tone = "muted") {
   const el = $("#statusLine");
   el.textContent = text;
   el.dataset.tone = tone;
+}
+
+function readHomeSnapshot() {
+  const snapshot = safeJsonParse(HOME_CACHE_KEY, null);
+  if (!snapshot || typeof snapshot !== "object" || !snapshot.data) return null;
+  const savedAt = Number(snapshot.saved_at || 0);
+  if (!Number.isFinite(savedAt) || savedAt <= 0) return null;
+  if (Date.now() - savedAt > HOME_CACHE_MAX_AGE_MS) return null;
+  return { data: snapshot.data, savedAt };
+}
+
+function saveHomeSnapshot(data) {
+  try {
+    localStorage.setItem(HOME_CACHE_KEY, JSON.stringify({ saved_at: Date.now(), data }));
+  } catch (_) {
+    // If storage is tight, keeping chat and settings matters more than a warm home snapshot.
+  }
+}
+
+function readAgendaSnapshot(days) {
+  const snapshot = safeJsonParse(AGENDA_CACHE_KEY, null);
+  const requestedDays = Number(days || 7);
+  if (snapshot && typeof snapshot === "object" && snapshot.data) {
+    const savedAt = Number(snapshot.saved_at || 0);
+    const snapshotDays = Number(snapshot.days || 0);
+    if (Number.isFinite(savedAt) && savedAt > 0 && snapshotDays === requestedDays && Date.now() - savedAt <= HOME_CACHE_MAX_AGE_MS) {
+      return { data: snapshot.data, savedAt };
+    }
+  }
+  const homeSnapshot = readHomeSnapshot();
+  const structured = homeSnapshot?.data?.agenda_structured;
+  if (structured && Number(requestedDays) === Number(state.homeDays || 7)) {
+    return { data: { structured, text: "" }, savedAt: homeSnapshot.savedAt };
+  }
+  return null;
+}
+
+function saveAgendaSnapshot(days, data) {
+  try {
+    localStorage.setItem(AGENDA_CACHE_KEY, JSON.stringify({ saved_at: Date.now(), days: Number(days || 7), data }));
+  } catch (_) {
+    // Agenda cache is a convenience layer; live fetch remains the source of truth.
+  }
+}
+
+function homeSnapshotAgeLabel(savedAt) {
+  const ageMs = Math.max(0, Date.now() - Number(savedAt || 0));
+  const minutes = Math.round(ageMs / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  return `${hours}h ago`;
 }
 
 function plainNotificationText(text) {
@@ -2072,7 +2130,7 @@ async function completeTask(taskId, checkbox) {
     addMessage("hira", chatAck);
     // Give the fade animation a moment before refreshing
     setTimeout(async () => {
-      await loadHome();
+      await loadHome({ force: true, background: true, useCache: false });
       if ($("#tasksView")?.classList.contains("active") || state.currentView === "tasks") {
         await loadTasks(Number($("#tasksDays")?.value || 7));
       }
@@ -2372,95 +2430,121 @@ function setView(name) {
   });
 }
 
-async function loadHome() {
-  const refreshButton = $("#refreshHomeBtn");
-  if (refreshButton) {
-    refreshButton.disabled = true;
-    refreshButton.textContent = "Refreshing";
-    refreshButton.classList.remove("is-updated");
+function renderHomeData(data = {}, { fromCache = false, savedAt = 0 } = {}) {
+  updateLiveClock();
+  $("#homeLivingTimeline").innerHTML = renderLivingTimeline(data.agenda_structured || {}, data.prayers || {});
+  refreshIcons($("#homeLivingTimeline"));
+  $("#homeProactive").innerHTML = renderProactiveQueue(data.proactive || {});
+  $("#homeDigest").innerHTML = renderMorningDigest(data.digest || {}, { limit: 3 });
+  $("#homeIslamic").innerHTML = renderTextBlock(data.islamic || "Islamic rhythm unavailable right now.");
+  const fileLines = countMeaningfulLines(data.files);
+  $("#fileMemoryValue").textContent = String(fileLines);
+  $("#fileMemoryLabel").textContent = fileLines ? "MEMORY ITEMS INDEXED" : "MEMORY STANDBY";
+  $("#fileMemoryValueHome").textContent = String(fileLines);
+  $("#fileMemoryLabelHome").textContent = fileLines ? "MEMORY ITEMS INDEXED" : "MEMORY STANDBY";
+  renderSegmentsAll(".file-memory-segments", fileMemorySegments(data.files), 12, fileLines > 8 ? "success" : "accent");
+  const services = data.services || {};
+  const connectedCount = CONNECTIONS.filter(({ key }) => Boolean(services[key])).length;
+  $("#homeServicesSummary").textContent = `${connectedCount}/${CONNECTIONS.length}`;
+  $("#homeServicesLabel").textContent = connectedCount ? "SERVICES CONNECTED" : "AWAITING CONNECTION";
+  renderSegmentsAll(".services-segments", Math.round((connectedCount / CONNECTIONS.length) * 12), 12, connectedCount ? "accent" : "muted");
+  renderConnections(services);
+  renderDailyLoad(data.daily_load || {});
+  renderBriefingDelivery(data.briefing_delivery || {});
+  renderIntelligenceStack(data.intelligence || {});
+  renderClassOpsStatus(data.classops || {});
+  homeGlyphDataReady = true;
+  if (glyphMode === "load" || glyphMode === "next") renderNothingGlyph(glyphMode);
+  const proactiveTop = Array.isArray(data.proactive?.top) ? data.proactive.top : [];
+  const lead = proactiveTop[0] || null;
+  if (lead) {
+    $("#homeFocusValue").textContent = lead.title || "Priority";
+    $("#homeFocusLabel").textContent = `${String(lead.priority || "medium").toUpperCase()} PRIORITY · ${String(lead.score || 0)}`;
   }
+  const marking = data.marking || {};
+  const totalScripts = Number(marking.total_scripts || 0);
+  const markedScripts = Number(marking.marked_scripts || 0);
+  const unmarkedScripts = Number(marking.unmarked_scripts || 0);
+  $("#markingMarkedValue").textContent = String(markedScripts);
+  $("#markingUnmarkedValue").textContent = String(unmarkedScripts);
+  $("#markingMarkedValueHome").textContent = String(markedScripts);
+  $("#markingUnmarkedValueHome").textContent = String(unmarkedScripts);
+  $("#markingStackCount").textContent = String(Number(marking.active_stacks || 0));
+  $("#markingTotalValue").textContent = String(totalScripts);
+  $("#markingSetsList").innerHTML = renderMarkingSets(marking.sets || []);
+  $("#markingRailContext").textContent = markingRailContext(marking);
+  renderSegmentsAll(".marked-segments", markingSegments(markedScripts, totalScripts), 12, "success");
+  renderSegmentsAll(".unmarked-segments", markingSegments(unmarkedScripts, totalScripts), 12, unmarkedScripts > markedScripts ? "warning" : "accent");
+  if (fromCache) setStatus(`Instant view from ${homeSnapshotAgeLabel(savedAt)}. Syncing quietly.`, "muted");
+}
+
+function renderHomeLoadingState() {
   $("#homeLivingTimeline").innerHTML = "<div>Loading...</div>";
   homeGlyphDataReady = false;
   $("#homeProactive").innerHTML = "<div>Loading...</div>";
   $("#homeDigest").innerHTML = "<div>Loading...</div>";
   $("#homeIslamic").innerHTML = "<div>Loading...</div>";
   $("#classOpsStatusList").innerHTML = "<div class=\"classops-status-row is-empty\"><span>ClassOps</span><strong>Checking status</strong><small>Loading submission ledger...</small></div>";
-  try {
-    const data = await api(`/api/home?days=${state.homeDays}`, { headers: headers(false) });
-    updateLiveClock();
-    $("#homeLivingTimeline").innerHTML = renderLivingTimeline(data.agenda_structured || {}, data.prayers || {});
-    refreshIcons($("#homeLivingTimeline"));
-    $("#homeProactive").innerHTML = renderProactiveQueue(data.proactive || {});
-    $("#homeDigest").innerHTML = renderMorningDigest(data.digest || {}, { limit: 3 });
-    $("#homeIslamic").innerHTML = renderTextBlock(data.islamic || "Islamic rhythm unavailable right now.");
-    const fileLines = countMeaningfulLines(data.files);
-    $("#fileMemoryValue").textContent = String(fileLines);
-    $("#fileMemoryLabel").textContent = fileLines ? "MEMORY ITEMS INDEXED" : "MEMORY STANDBY";
-    $("#fileMemoryValueHome").textContent = String(fileLines);
-    $("#fileMemoryLabelHome").textContent = fileLines ? "MEMORY ITEMS INDEXED" : "MEMORY STANDBY";
-    renderSegmentsAll(".file-memory-segments", fileMemorySegments(data.files), 12, fileLines > 8 ? "success" : "accent");
-    const services = data.services || {};
-    const connectedCount = CONNECTIONS.filter(({ key }) => Boolean(services[key])).length;
-    $("#homeServicesSummary").textContent = `${connectedCount}/${CONNECTIONS.length}`;
-    $("#homeServicesLabel").textContent = connectedCount ? "SERVICES CONNECTED" : "AWAITING CONNECTION";
-    renderSegmentsAll(".services-segments", Math.round((connectedCount / CONNECTIONS.length) * 12), 12, connectedCount ? "accent" : "muted");
-    renderConnections(services);
-    renderDailyLoad(data.daily_load || {});
-    renderBriefingDelivery(data.briefing_delivery || {});
-    renderIntelligenceStack(data.intelligence || {});
-    renderClassOpsStatus(data.classops || {});
-    homeGlyphDataReady = true;
-    if (glyphMode === "load" || glyphMode === "next") renderNothingGlyph(glyphMode);
-    const proactiveTop = Array.isArray(data.proactive?.top) ? data.proactive.top : [];
-    const lead = proactiveTop[0] || null;
-    if (lead) {
-      $("#homeFocusValue").textContent = lead.title || "Priority";
-      $("#homeFocusLabel").textContent = `${String(lead.priority || "medium").toUpperCase()} PRIORITY · ${String(lead.score || 0)}`;
-    }
-    const marking = data.marking || {};
-    const totalScripts = Number(marking.total_scripts || 0);
-    const markedScripts = Number(marking.marked_scripts || 0);
-    const unmarkedScripts = Number(marking.unmarked_scripts || 0);
-    $("#markingMarkedValue").textContent = String(markedScripts);
-    $("#markingUnmarkedValue").textContent = String(unmarkedScripts);
-    $("#markingMarkedValueHome").textContent = String(markedScripts);
-    $("#markingUnmarkedValueHome").textContent = String(unmarkedScripts);
-    $("#markingStackCount").textContent = String(Number(marking.active_stacks || 0));
-    $("#markingTotalValue").textContent = String(totalScripts);
-    $("#markingSetsList").innerHTML = renderMarkingSets(marking.sets || []);
-    $("#markingRailContext").textContent = markingRailContext(marking);
-    renderSegmentsAll(".marked-segments", markingSegments(markedScripts, totalScripts), 12, "success");
-    renderSegmentsAll(".unmarked-segments", markingSegments(unmarkedScripts, totalScripts), 12, unmarkedScripts > markedScripts ? "warning" : "accent");
-    setStatus(`Loaded ${state.homeDays}-day view.`, "ok");
-    if (refreshButton) {
-      refreshButton.textContent = "Updated";
-      refreshButton.classList.add("is-updated");
-      window.setTimeout(() => {
-        refreshButton.innerHTML = `<span data-lucide="rotate-ccw" aria-hidden="true"></span>Refresh System`;
-        refreshIcons(refreshButton);
-        refreshButton.classList.remove("is-updated");
-      }, 1400);
-    }
-  } catch (error) {
-    $("#homeLivingTimeline").textContent = `Error: ${error.message}`;
-    $("#homeProactive").textContent = `Error: ${error.message}`;
-    $("#homeDigest").textContent = `Error: ${error.message}`;
-    $("#homeIslamic").textContent = `Error: ${error.message}`;
-    $("#fileMemoryValue").textContent = "--";
-    $("#fileMemoryLabel").textContent = "MEMORY CHECK FAILED";
-    $("#fileMemoryValueHome").textContent = "--";
-    $("#fileMemoryLabelHome").textContent = "MEMORY CHECK FAILED";
-    renderBriefingDelivery({
-      overall: "unknown",
-      summary: "Digest delivery status unavailable.",
-      slots: [],
-    });
-    renderSegmentsAll(".file-memory-segments", 1, 12, "warning");
-    setStatus(error.message, "error");
-    if (refreshButton) refreshButton.textContent = "Try again";
-  } finally {
-    if (refreshButton) refreshButton.disabled = false;
+}
+
+function renderHomeErrorState(error) {
+  $("#homeLivingTimeline").textContent = `Error: ${error.message}`;
+  $("#homeProactive").textContent = `Error: ${error.message}`;
+  $("#homeDigest").textContent = `Error: ${error.message}`;
+  $("#homeIslamic").textContent = `Error: ${error.message}`;
+  $("#fileMemoryValue").textContent = "--";
+  $("#fileMemoryLabel").textContent = "MEMORY CHECK FAILED";
+  $("#fileMemoryValueHome").textContent = "--";
+  $("#fileMemoryLabelHome").textContent = "MEMORY CHECK FAILED";
+  renderBriefingDelivery({
+    overall: "unknown",
+    summary: "Digest delivery status unavailable.",
+    slots: [],
+  });
+  renderSegmentsAll(".file-memory-segments", 1, 12, "warning");
+}
+
+async function loadHome({ force = false, background = false, useCache = true } = {}) {
+  if (state.homeRefreshInFlight && !force) return state.homeRefreshInFlight;
+  const refreshButton = $("#refreshHomeBtn");
+  const snapshot = useCache ? readHomeSnapshot() : null;
+  const canShowCache = Boolean(snapshot && !force);
+  if (canShowCache) {
+    renderHomeData(snapshot.data, { fromCache: true, savedAt: snapshot.savedAt });
+  } else {
+    renderHomeLoadingState();
   }
+  if (refreshButton) {
+    refreshButton.disabled = true;
+    refreshButton.textContent = canShowCache || background ? "Syncing" : "Refreshing";
+    refreshButton.classList.remove("is-updated");
+  }
+  state.homeLastRefreshStartedAt = Date.now();
+  state.homeRefreshInFlight = (async () => {
+    try {
+      const data = await api(`/api/home?days=${state.homeDays}`, { headers: headers(false) });
+      saveHomeSnapshot(data);
+      renderHomeData(data);
+      setStatus(`Synced ${state.homeDays}-day view.`, "ok");
+      if (refreshButton) {
+        refreshButton.textContent = "Updated";
+        refreshButton.classList.add("is-updated");
+        window.setTimeout(() => {
+          refreshButton.innerHTML = `<span data-lucide="rotate-ccw" aria-hidden="true"></span>Refresh System`;
+          refreshIcons(refreshButton);
+          refreshButton.classList.remove("is-updated");
+        }, 1400);
+      }
+    } catch (error) {
+      if (!canShowCache) renderHomeErrorState(error);
+      setStatus(canShowCache ? `Live sync failed; cached view kept: ${error.message}` : error.message, canShowCache ? "warn" : "error");
+      if (refreshButton) refreshButton.textContent = canShowCache ? "Retry Sync" : "Try again";
+    } finally {
+      if (refreshButton) refreshButton.disabled = false;
+      state.homeRefreshInFlight = null;
+    }
+  })();
+  return state.homeRefreshInFlight;
 }
 
 async function checkForAppUpdate({ silent = false } = {}) {
@@ -2484,7 +2568,7 @@ async function checkForAppUpdate({ silent = false } = {}) {
 }
 
 async function refreshHomeAndApp() {
-  await loadHome();
+  await loadHome({ force: true, useCache: false });
   await checkForAppUpdate();
 }
 
@@ -2493,19 +2577,30 @@ function currentAgendaDays() {
 }
 
 async function refreshAgendaSurfaces() {
-  await loadHome();
+  await loadHome({ background: true });
   await loadAgenda(currentAgendaDays());
 }
 
-async function loadAgenda(days = 7) {
-  $("#agendaOutput").innerHTML = "<div>Loading...</div>";
+function renderAgendaData(data = {}) {
+  $("#agendaOutput").innerHTML = data.structured ? renderAgendaStructured(data.structured) : renderAgendaCards(data.text);
+}
+
+async function loadAgenda(days = 7, { force = false, useCache = true } = {}) {
+  const snapshot = useCache ? readAgendaSnapshot(days) : null;
+  if (snapshot && !force) {
+    renderAgendaData(snapshot.data);
+    setStatus(`Instant agenda from ${homeSnapshotAgeLabel(snapshot.savedAt)}. Syncing latest.`, "muted");
+  } else {
+    $("#agendaOutput").innerHTML = "<div>Loading...</div>";
+  }
   try {
     const data = await api(`/api/agenda?days=${days}`, { headers: headers(false) });
-    $("#agendaOutput").innerHTML = data.structured ? renderAgendaStructured(data.structured) : renderAgendaCards(data.text);
+    saveAgendaSnapshot(days, data);
+    renderAgendaData(data);
     setStatus("Agenda refreshed.", "ok");
   } catch (error) {
-    $("#agendaOutput").textContent = `Error: ${error.message}`;
-    setStatus(error.message, "error");
+    if (!snapshot || force) $("#agendaOutput").textContent = `Error: ${error.message}`;
+    setStatus(snapshot && !force ? `Live agenda failed; cached agenda kept: ${error.message}` : error.message, snapshot && !force ? "warn" : "error");
   }
 }
 
@@ -3008,7 +3103,9 @@ document.querySelectorAll(".nav-tab").forEach((tab) => {
   tab.addEventListener("click", async () => {
     const view = tab.dataset.view;
     setView(view);
-    if (view === "home") await loadHome();
+    if (view === "home" && Date.now() - state.homeLastRefreshStartedAt > HOME_REFRESH_THROTTLE_MS) {
+      await loadHome({ background: true });
+    }
     if (view === "agenda") await loadAgenda(currentAgendaDays());
     if (view === "tasks") await loadTasks(7);
   });
@@ -3101,7 +3198,7 @@ document.querySelectorAll("[data-home-dismiss]").forEach((button) => {
     dismissHomeSection(button.dataset.homeDismiss);
   });
 });
-$("#refreshAgendaBtn").addEventListener("click", () => loadAgenda(currentAgendaDays()));
+$("#refreshAgendaBtn").addEventListener("click", () => loadAgenda(currentAgendaDays(), { force: true, useCache: false }));
 $("#agendaDays").addEventListener("change", () => loadAgenda(currentAgendaDays()));
 $("#refreshTasksBtn").addEventListener("click", () => loadTasks(Number($("#tasksDays").value || 7)));
 $("#tasksDays").addEventListener("change", () => loadTasks(Number($("#tasksDays").value || 7)));
@@ -3176,5 +3273,5 @@ updateLiveClock();
 renderNothingGlyph("time");
 initBatteryGlyph();
 setInterval(updateLiveClock, 1000);
-loadHome();
+loadHome({ background: true });
 startNotificationPolling();
