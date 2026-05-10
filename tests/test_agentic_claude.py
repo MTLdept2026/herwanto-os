@@ -1405,6 +1405,47 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(title, "Latihan Peribahasa")
 
+    def test_classops_students_filters_combined_teacher_roster_by_class(self):
+        classlists = [{
+            "grouping": "Herwanto MTL",
+            "sheet_title": "Combined",
+            "spreadsheet_title": "2026 MTL",
+            "students": [
+                {"no": "1", "class": "1G2", "name": "Aisyah"},
+                {"no": "2", "class": "Secondary 2G3 ML", "name": "Bala"},
+                {"no": "3", "class": "3G3", "name": "Chen"},
+                {"no": "4", "class": "4NT", "name": "Danish"},
+            ],
+        }]
+
+        with patch.object(bot.gs, "get_mtl_classlists", return_value=classlists) as classlists_mock:
+            students = bot.gs.get_classops_students("2G3")
+
+        classlists_mock.assert_called_once_with(
+            teacher_query="HERWANTO",
+            class_query="",
+            include_students=True,
+            include_scores=False,
+        )
+        self.assertEqual([student["name"] for student in students], ["Bala"])
+        self.assertEqual(students[0]["class"], "Secondary 2G3 ML")
+
+    def test_classops_students_allows_single_class_sheet_without_class_column(self):
+        classlists = [{
+            "grouping": "2G3 ML",
+            "sheet_title": "2G3",
+            "spreadsheet_title": "2026 MTL",
+            "students": [
+                {"no": "1", "class": "", "name": "Bala"},
+                {"no": "2", "class": "", "name": "Siti"},
+            ],
+        }]
+
+        with patch.object(bot.gs, "get_mtl_classlists", return_value=classlists):
+            students = bot.gs.get_classops_students("2G3")
+
+        self.assertEqual([student["name"] for student in students], ["Bala", "Siti"])
+
     def test_classops_assignment_ledger_persists_tracking(self):
         store = {}
 

@@ -1575,10 +1575,30 @@ def set_classops_ledger(ledger: dict):
     set_config(CLASSOPS_LEDGER_KEY, json.dumps(ledger, ensure_ascii=False))
 
 
+def _classops_canonical_class(value: str) -> str:
+    compact = _norm_cell(value).replace(" ", "")
+    if not compact:
+        return ""
+    for pattern in (r"SEC(?:ONDARY)?([1-4])([A-Z]{1,3}\d?)", r"([1-4])([A-Z]{1,3}\d?)"):
+        match = re.match(pattern, compact)
+        if match:
+            return "".join(match.groups())
+    return compact
+
+
+def _classops_class_matches(class_name: str, value: str) -> bool:
+    query = _classops_canonical_class(class_name)
+    candidate = _classops_canonical_class(value)
+    raw_candidate = _norm_cell(value).replace(" ", "")
+    if not query or not candidate:
+        return False
+    return candidate == query or raw_candidate.startswith(query)
+
+
 def get_classops_students(class_name: str) -> list[dict]:
     lists = get_mtl_classlists(
         teacher_query="HERWANTO",
-        class_query=class_name,
+        class_query="",
         include_students=True,
         include_scores=False,
     )
@@ -1586,7 +1606,14 @@ def get_classops_students(class_name: str) -> list[dict]:
     seen = set()
     for item in lists:
         source = item.get("grouping") or item.get("sheet_title") or item.get("spreadsheet_title") or ""
+        item_students = item.get("students") or []
+        has_student_classes = any(str(student.get("class") or "").strip() for student in item_students)
+        if not has_student_classes and not _class_query_matches(class_name, item.get("grouping", ""), item.get("sheet_title", "")):
+            continue
         for student in item.get("students") or []:
+            student_class = str(student.get("class") or "").strip()
+            if has_student_classes and not _classops_class_matches(class_name, student_class):
+                continue
             name = str(student.get("name") or "").replace("*", "").strip()
             if not name:
                 continue
