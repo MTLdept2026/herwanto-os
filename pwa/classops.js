@@ -162,9 +162,9 @@ function renderContents(classItem) {
     ${contentItems.length ? contentItems.map((item, index) => {
       return `
         <article class="contents-row" data-track-lesson="${escapeHtml(item.date || "")}" data-track-topic="${escapeHtml(item.title || "")}" data-track-folder="${escapeHtml(item.folder || "")}" data-track-title="${escapeHtml(item.title || "")}" data-content-path="${escapeHtml(item.path || "")}" data-content-kind="${escapeHtml(item.kind || "")}">
-          <div><strong>${index + 1}</strong></div>
-          <div>${escapeHtml(item.title || "Untitled")}${item.title_overridden ? ` <span class="override-mark">edited</span>` : ""}</div>
-          <div>${escapeHtml(formatContentDate(item.date || ""))}</div>
+          <div class="contents-no"><strong>${index + 1}</strong></div>
+          <div class="contents-title">${escapeHtml(item.title || "Untitled")}${item.title_overridden ? ` <span class="override-mark">edited</span>` : ""}</div>
+          <div class="contents-date">${escapeHtml(formatContentDate(item.date || ""))}</div>
         </article>
       `;
     }).join("") : `<div class="empty">No filing items detected yet for this class.</div>`}
