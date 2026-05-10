@@ -14,6 +14,33 @@ DROPBOX_API = "https://api.dropboxapi.com/2"
 DROPBOX_TOKEN_URL = "https://api.dropbox.com/oauth2/token"
 _TOKEN_CACHE: dict = {}
 CLASSOPS_CLASSES = {"1G2", "2G3", "3G3", "4NT"}
+CONTENT_EXTENSIONS = {
+    ".html": "mini-site",
+    ".htm": "mini-site",
+    ".pdf": "pdf",
+    ".docx": "worksheet/doc",
+    ".doc": "worksheet/doc",
+    ".pptx": "slides",
+    ".ppt": "slides",
+    ".png": "image",
+    ".jpg": "image",
+    ".jpeg": "image",
+    ".mp4": "video",
+}
+COLLECT_TERMS = (
+    "collect",
+    "collection",
+    "submit",
+    "submission",
+    "homework",
+    "tugasan",
+    "latihan",
+    "worksheet",
+    "lembaran",
+    "karangan",
+    "kefahaman",
+)
+REFERENCE_SKIP_TERMS = ("reference", "rujukan", "answer", "answers", "jawapan", "scheme", "skema", "teacher")
 
 
 def configured() -> bool:
@@ -131,6 +158,91 @@ def _folder_sort_key(folder: dict) -> tuple:
     return (date_value, str(folder.get("folder", "")).lower())
 
 
+def _file_extension(name: str) -> str:
+    clean = str(name or "").lower()
+    if "." not in clean:
+        return ""
+    return clean[clean.rfind("."):]
+
+
+def _file_kind(name: str) -> str:
+    return CONTENT_EXTENSIONS.get(_file_extension(name), "file")
+
+
+def infer_collection_hint(name: str) -> dict:
+    clean = " ".join(str(name or "").lower().replace("_", " ").replace("-", " ").split())
+    if not clean or any(term in clean for term in REFERENCE_SKIP_TERMS):
+        return {"collect": False, "hint": "", "due": ""}
+    due = ""
+    if "next lesson" in clean or "next class" in clean:
+        due = "next_lesson"
+    date_match = parse_classops_date_folder(clean)
+    if date_match.get("matched"):
+        due = date_match.get("date", "")
+    collect = any(term in clean for term in COLLECT_TERMS)
+    hint = ""
+    if collect:
+        hint = "Collect"
+        if due:
+            hint += f" by {due.replace('_', ' ')}"
+    return {"collect": collect, "hint": hint, "due": due}
+
+
+def enrich_classops_manifest(manifest: dict) -> dict:
+    current = dict(manifest or {})
+    classes_out = []
+    total_collection_candidates = 0
+    total_lessons = 0
+    for class_item in current.get("classes", []) or []:
+        folders_out = []
+        latest = None
+        class_collection = []
+        for folder in class_item.get("folders", []) or []:
+            files_out = []
+            candidates = []
+            for file_item in folder.get("files", []) or []:
+                next_file = dict(file_item)
+                next_file["kind"] = _file_kind(next_file.get("name", ""))
+                collection = infer_collection_hint(next_file.get("name", ""))
+                next_file["collection"] = collection
+                if collection.get("collect"):
+                    candidates.append(next_file)
+                files_out.append(next_file)
+            next_folder = {
+                **folder,
+                "files": files_out,
+                "collection_candidates": candidates,
+                "resource_count": len(files_out),
+            }
+            folders_out.append(next_folder)
+            if folder.get("date"):
+                total_lessons += 1
+                if not latest or str(folder.get("date", "")) > str(latest.get("date", "")):
+                    latest = next_folder
+            class_collection.extend(candidates)
+        total_collection_candidates += len(class_collection)
+        classes_out.append({
+            **class_item,
+            "folders": folders_out,
+            "lesson_count": sum(1 for folder in folders_out if folder.get("date")),
+            "latest_lesson": {
+                "date": latest.get("date", "") if latest else "",
+                "topic": latest.get("topic", "") if latest else "",
+                "folder": latest.get("folder", "") if latest else "",
+            },
+            "collection_candidate_count": len(class_collection),
+            "collection_candidates": class_collection[:12],
+        })
+    current["classes"] = classes_out
+    current["summary"] = {
+        "class_count": len(classes_out),
+        "lesson_count": total_lessons,
+        "file_count": int(current.get("file_count", 0) or 0),
+        "collection_candidate_count": total_collection_candidates,
+    }
+    return current
+
+
 def scan_classops_manifest() -> dict:
     root = _root_path()
     entries = _list_folder(root, recursive=True)
@@ -186,7 +298,7 @@ def scan_classops_manifest() -> dict:
             "folders": folders_out,
         })
     classes.sort(key=lambda value: value["class"].lower())
-    return {
+    manifest = {
         "ok": True,
         "generated_at": datetime.now(SGT).isoformat(),
         "root": root or "/",
@@ -195,3 +307,4 @@ def scan_classops_manifest() -> dict:
         "file_count": len(files),
         "classes": classes,
     }
+    return enrich_classops_manifest(manifest)

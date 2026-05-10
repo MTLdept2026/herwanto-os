@@ -93,6 +93,7 @@ _STATIC_PATHS = {
     "/",
     "/growth",
     "/hira-growth",
+    "/classops",
     "/healthz",
     "/manifest.webmanifest",
     "/service-worker.js",
@@ -101,6 +102,8 @@ _STATIC_PATHS = {
     "/hira-growth.css",
     "/hira-growth.js",
     "/hira-growth-data.json",
+    "/classops.css",
+    "/classops.js",
 }
 _UPLOAD_QUEUE: asyncio.Queue[dict] | None = None
 _UPLOAD_QUEUE_TASKS: list[asyncio.Task] = []
@@ -207,17 +210,22 @@ async def add_static_cache_headers(request: Request, call_next):
         "/",
         "/growth",
         "/hira-growth",
+        "/classops",
         "/service-worker.js",
         "/app.js",
         "/styles.css",
         "/hira-growth.css",
         "/hira-growth.js",
         "/hira-growth-data.json",
+        "/classops.css",
+        "/classops.js",
         "/static/app.js",
         "/static/styles.css",
         "/static/hira-growth.css",
         "/static/hira-growth.js",
         "/static/hira-growth-data.json",
+        "/static/classops.css",
+        "/static/classops.js",
     }:
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
@@ -1585,6 +1593,11 @@ def growth_site():
     return FileResponse(PWA_DIR / "hira-growth.html")
 
 
+@app.get("/classops")
+def classops_site():
+    return FileResponse(PWA_DIR / "classops.html")
+
+
 @app.get("/manifest.webmanifest")
 def manifest():
     return FileResponse(PWA_DIR / "manifest.webmanifest", media_type="application/manifest+json")
@@ -1618,6 +1631,16 @@ def root_growth_js():
 @app.get("/hira-growth-data.json")
 def root_growth_data():
     return FileResponse(PWA_DIR / "hira-growth-data.json", media_type="application/json")
+
+
+@app.get("/classops.css")
+def root_classops_css():
+    return FileResponse(PWA_DIR / "classops.css", media_type="text/css")
+
+
+@app.get("/classops.js")
+def root_classops_js():
+    return FileResponse(PWA_DIR / "classops.js", media_type="application/javascript")
 
 
 @app.get("/api/home")
@@ -2225,6 +2248,17 @@ def classops_dropbox_scan(x_hira_token: Optional[str] = Header(default=None)):
         return dropbox.scan_classops_manifest()
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Dropbox ClassOps scan failed: {exc}") from exc
+
+
+@app.get("/api/classops/dashboard")
+def classops_dashboard(x_hira_token: Optional[str] = Header(default=None)):
+    _require_token(x_hira_token)
+    if not dropbox.configured():
+        raise HTTPException(status_code=400, detail="Dropbox ClassOps env vars are not configured.")
+    try:
+        return dropbox.scan_classops_manifest()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"ClassOps dashboard unavailable: {exc}") from exc
 
 
 @app.post("/api/notifications/subscribe")

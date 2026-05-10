@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f3f1ea" />
+    <title>ClassOps | H.I.R.A</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/classops.css?v=20260510-1" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">H.I.R.A ClassOps</p>
+          <h1>Class Control Centre</h1>
+          <p class="lede">Dropbox-backed class contents, collection radar, and printable filing pages.</p>
+        </div>
+        <div class="topbar-actions">
+          <a class="ghost" href="/">H.I.R.A</a>
+          <button id="printBtn" type="button">Print</button>
+          <button id="scanBtn" type="button">Scan Dropbox</button>
+        </div>
+      </header>
+
+      <section class="token-panel" id="tokenPanel">
+        <label>
+          <span>H.I.R.A web token</span>
+          <input id="tokenInput" type="password" placeholder="Paste token if this device has not saved it" />
+        </label>
+        <button id="saveTokenBtn" type="button">Save</button>
+      </section>
+
+      <section class="status-strip">
+        <article>
+          <span>Classes</span>
+          <strong id="classCount">--</strong>
+        </article>
+        <article>
+          <span>Lessons Logged</span>
+          <strong id="lessonCount">--</strong>
+        </article>
+        <article>
+          <span>Files</span>
+          <strong id="fileCount">--</strong>
+        </article>
+        <article>
+          <span>Collect Radar</span>
+          <strong id="collectCount">--</strong>
+        </article>
+      </section>
+
+      <p id="statusText" class="status-text">Ready.</p>
+
+      <section id="classGrid" class="class-grid"></section>
+
+      <section class="workspace">
+        <aside>
+          <div class="section-head">
+            <p class="eyebrow">Classes</p>
+            <h2>Dashboard</h2>
+          </div>
+          <div id="classList" class="class-list"></div>
+        </aside>
+
+        <section class="detail">
+          <div class="section-head">
+            <p id="detailEyebrow" class="eyebrow">Select class</p>
+            <h2 id="detailTitle">Contents</h2>
+          </div>
+          <div id="collectionPanel" class="collection-panel"></div>
+          <div id="contentsTable" class="contents-table"></div>
+        </section>
+      </section>
+    </main>
+    <script src="/classops.js?v=20260510-1"></script>
+  </body>
+</html>

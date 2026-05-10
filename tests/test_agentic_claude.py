@@ -1367,6 +1367,31 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertTrue(parsed["matched"])
         self.assertEqual(parsed["date"], "2026-02-10")
 
+    def test_classops_manifest_enrichment_marks_collection_candidates(self):
+        manifest = {
+            "ok": True,
+            "file_count": 2,
+            "classes": [{
+                "class": "2G3",
+                "file_count": 2,
+                "folder_count": 1,
+                "folders": [{
+                    "folder": "24:2:26",
+                    "date": "2026-02-24",
+                    "topic": "",
+                    "files": [
+                        {"name": "latihan peribahasa collect next lesson.pdf", "path": "2G3/24:2:26/latihan.pdf"},
+                        {"name": "teacher answer scheme.pdf", "path": "2G3/24:2:26/answers.pdf"},
+                    ],
+                }],
+            }],
+        }
+        enriched = dropbox_service.enrich_classops_manifest(manifest)
+        class_item = enriched["classes"][0]
+        self.assertEqual(enriched["summary"]["collection_candidate_count"], 1)
+        self.assertEqual(class_item["lesson_count"], 1)
+        self.assertEqual(class_item["collection_candidates"][0]["collection"]["due"], "next_lesson")
+
     def test_format_curated_digest_includes_why_lines(self):
         text = bot.format_curated_digest([
             {
