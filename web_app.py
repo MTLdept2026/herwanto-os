@@ -35,7 +35,7 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260510-classops-33"
+PWA_APP_VERSION = "20260510-classops-34"
 PWA_SERVICE_WORKER_CACHE = "hira-os-v105"
 
 try:

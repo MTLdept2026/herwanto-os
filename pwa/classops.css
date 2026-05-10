@@ -64,6 +64,7 @@ input {
 }
 
 button, .ghost {
+  max-width: 100%;
   padding: 0 16px;
   display: inline-flex;
   align-items: center;
@@ -277,6 +278,8 @@ aside h2 {
 .class-card,
 aside,
 .detail {
+  min-width: 0;
+  overflow: hidden;
   background: var(--surface);
   border: 1px solid var(--border-visible);
   box-shadow: var(--shadow-soft);
@@ -424,6 +427,19 @@ aside,
 }
 
 aside, .detail { padding: var(--space-md); }
+
+aside .section-head {
+  display: grid;
+  gap: 6px;
+  align-items: start;
+}
+
+aside h2 {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-size: 31px;
+  line-height: 0.95;
+}
 
 .section-head {
   display: flex;
