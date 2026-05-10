@@ -65,6 +65,27 @@ function formatContentDate(value = "") {
   return `${match[3]}/${match[2]}/${match[1].slice(2)}`;
 }
 
+function contentSortKey(item = {}) {
+  return [
+    item.date || "9999-12-31",
+    item.folder || "",
+    item.title || "",
+    item.path || "",
+  ].map((value) => String(value || "").toLowerCase());
+}
+
+function sortContentItems(items = []) {
+  return [...items].sort((left, right) => {
+    const a = contentSortKey(left);
+    const b = contentSortKey(right);
+    for (let index = 0; index < a.length; index += 1) {
+      const compared = a[index].localeCompare(b[index]);
+      if (compared) return compared;
+    }
+    return 0;
+  });
+}
+
 function segmentMarkup(value, total = 12, tone = "accent") {
   const filled = Math.max(0, Math.min(total, Math.round(Number(value || 0))));
   return Array.from({ length: total }, (_, index) => `<span class="${index < filled ? `active ${tone}` : ""}"></span>`).join("");
@@ -154,7 +175,7 @@ function renderContents(classItem) {
   renderCollectionPanel(classItem);
   renderStudentReport(classItem.student_report || {});
   renderNonSubmissionRoster(classItem);
-  const contentItems = classItem.content_items || [];
+  const contentItems = sortContentItems(classItem.content_items || []);
   $("#contentsTable").innerHTML = `
     <div class="contents-row header">
       <div>No</div><div>Item</div><div>Tarikh</div>
@@ -219,6 +240,7 @@ function updateContentItemInState(path, updates = {}) {
   classItem.content_items = (classItem.content_items || [])
     .map((item) => item.path === path ? { ...item, ...updates } : item)
     .filter((item) => !item.hidden);
+  classItem.content_items = sortContentItems(classItem.content_items);
   classItem.content_item_count = classItem.content_items.length;
   if (state.data?.summary) {
     state.data.summary.content_item_count = (state.data.classes || [])

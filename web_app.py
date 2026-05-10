@@ -3005,7 +3005,7 @@ def _classops_apply_content_overrides(manifest: dict, ledger: dict | None = None
                 next_item["title"] = override["title"]
                 next_item["title_overridden"] = True
             filtered.append(next_item)
-        class_item["content_items"] = filtered
+        class_item["content_items"] = dropbox.sort_classops_content_items(filtered)
         class_item["content_item_count"] = len(filtered)
     summary = manifest.get("summary")
     if isinstance(summary, dict):

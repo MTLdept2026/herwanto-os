@@ -1480,6 +1480,42 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(class_item["content_items"][0]["title"], "Latihan Peribahasa")
         self.assertEqual(class_item["content_items"][0]["date"], "2026-02-24")
 
+    def test_classops_manifest_content_items_sort_earliest_first(self):
+        manifest = {
+            "ok": True,
+            "file_count": 3,
+            "classes": [{
+                "class": "2G3",
+                "file_count": 3,
+                "folder_count": 3,
+                "folders": [
+                    {
+                        "folder": "10:3:26",
+                        "date": "2026-03-10",
+                        "topic": "",
+                        "files": [{"name": "karangan.pdf", "path": "2G3/10:3:26/karangan.pdf"}],
+                    },
+                    {
+                        "folder": "24:2:26",
+                        "date": "2026-02-24",
+                        "topic": "",
+                        "files": [{"name": "peribahasa.pdf", "path": "2G3/24:2:26/peribahasa.pdf"}],
+                    },
+                    {
+                        "folder": "5:3:26",
+                        "date": "2026-03-05",
+                        "topic": "",
+                        "files": [{"name": "kefahaman.pdf", "path": "2G3/5:3:26/kefahaman.pdf"}],
+                    },
+                ],
+            }],
+        }
+
+        enriched = dropbox_service.enrich_classops_manifest(manifest)
+        dates = [item["date"] for item in enriched["classes"][0]["content_items"]]
+
+        self.assertEqual(dates, ["2026-02-24", "2026-03-05", "2026-03-10"])
+
     def test_classops_filing_title_uses_minisite_title(self):
         title = dropbox_service._html_title(b"<html><head><title>Fallback</title></head><body><h1>Nota - Masa Senggang</h1></body></html>")
 
@@ -1556,6 +1592,26 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(updated["classes"][0]["content_item_count"], 1)
         self.assertEqual(updated["classes"][0]["content_items"][0]["title"], "Nota - Masa Senggang")
         self.assertTrue(updated["classes"][0]["content_items"][0]["title_overridden"])
+
+    def test_classops_content_overrides_keep_content_items_earliest_first(self):
+        manifest = {
+            "summary": {"content_item_count": 3},
+            "classes": [{
+                "class": "2G3",
+                "content_item_count": 3,
+                "content_items": [
+                    {"path": "2G3/10:3:26/raw.pdf", "title": "Raw", "date": "2026-03-10"},
+                    {"path": "2G3/24:2:26/nota.pdf", "title": "Nota", "date": "2026-02-24"},
+                    {"path": "2G3/5:3:26/kefahaman.pdf", "title": "Kefahaman", "date": "2026-03-05"},
+                ],
+            }],
+        }
+        ledger = {"content_overrides": {"2G3/10:3:26/raw.pdf": {"title": "Karangan"}}}
+
+        updated = web_app._classops_apply_content_overrides(manifest, ledger)
+        dates = [item["date"] for item in updated["classes"][0]["content_items"]]
+
+        self.assertEqual(dates, ["2026-02-24", "2026-03-05", "2026-03-10"])
 
     def test_classops_students_filters_combined_teacher_roster_by_class(self):
         classlists = [{

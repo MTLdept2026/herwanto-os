@@ -247,6 +247,20 @@ def _folder_sort_key(folder: dict) -> tuple:
     return (date_value, str(folder.get("folder", "")).lower())
 
 
+def classops_content_sort_key(item: dict) -> tuple:
+    date_value = str(item.get("date") or "9999-12-31")
+    return (
+        date_value,
+        str(item.get("folder", "") or "").lower(),
+        str(item.get("title", "") or item.get("name", "") or "").lower(),
+        str(item.get("path", "") or "").lower(),
+    )
+
+
+def sort_classops_content_items(items: list[dict]) -> list[dict]:
+    return sorted([dict(item) for item in items or []], key=classops_content_sort_key)
+
+
 def _file_extension(name: str) -> str:
     clean = str(name or "").lower()
     if "." not in clean:
@@ -450,6 +464,7 @@ def enrich_classops_manifest(manifest: dict) -> dict:
                 if not latest or str(folder.get("date", "")) > str(latest.get("date", "")):
                     latest = next_folder
             class_collection.extend(candidates)
+        content_items = sort_classops_content_items(content_items)
         total_collection_candidates += len(class_collection)
         total_content_items += len(content_items)
         classes_out.append({
