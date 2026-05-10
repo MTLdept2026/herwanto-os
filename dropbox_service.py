@@ -93,7 +93,7 @@ def _list_folder(path: str, recursive: bool = True, limit: int = 500) -> list[di
 
 def parse_classops_date_folder(name: str) -> dict:
     clean = str(name or "").strip()
-    match = re.search(r"(?<!\d)(\d{1,2})[.\-_/ ](\d{1,2})[.\-_/ ](\d{2,4})(?!\d)", clean)
+    match = re.search(r"(?<!\d)(\d{1,2})[.\-_/ :](\d{1,2})[.\-_/ :](\d{2,4})(?!\d)", clean)
     if not match:
         return {"date": "", "label": clean, "matched": False}
     day, month, year = (int(part) for part in match.groups())
