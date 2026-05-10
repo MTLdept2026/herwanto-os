@@ -5545,26 +5545,57 @@ def _latest_user_text(messages: list[dict]) -> str:
     return ""
 
 
+def _source_contracts_from_text(text: str) -> list[dict]:
+    contracts: list[dict] = []
+    for match in re.finditer(
+        r"SOURCE CONTRACT:\s*status=([^;]+);\s*as_of=([^;]+);\s*source=([^;]+);\s*reason=([^\n]+)",
+        str(text or ""),
+        re.I,
+    ):
+        status, as_of, source, reason = [part.strip() for part in match.groups()]
+        contracts.append({
+            "status": status,
+            "as_of": as_of,
+            "source": source,
+            "reason": reason,
+        })
+    return contracts
+
+
+def _source_contracts_from_tool_results(tool_results: list[dict]) -> list[dict]:
+    contracts: list[dict] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for item in tool_results or []:
+        if not isinstance(item, dict):
+            continue
+        for contract in _source_contracts_from_text(str(item.get("content", ""))):
+            key = (
+                contract.get("status", ""),
+                contract.get("as_of", ""),
+                contract.get("source", ""),
+                contract.get("reason", ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            contracts.append(contract)
+    return contracts
+
+
 def _source_contract_guardrail(messages: list[dict], tool_results: list[dict]) -> str:
     user_text = _latest_user_text(messages)
     if not re.search(r"\b(result|results|score|scores|latest result|full[- ]?time|match)\b", user_text, re.I):
         return ""
-    joined = "\n".join(
-        str(item.get("content", ""))
-        for item in tool_results
-        if isinstance(item, dict)
-    )
-    if "SOURCE CONTRACT:" not in joined:
+    contracts = _source_contracts_from_tool_results(tool_results)
+    if not contracts:
         return ""
-    if re.search(r"SOURCE CONTRACT:\s*status=confirmed\b", joined, re.I):
+    if any(str(contract.get("status", "")).lower() == "confirmed" for contract in contracts):
         return ""
-    status_match = re.search(r"SOURCE CONTRACT:\s*status=([^;]+);\s*as_of=([^;]+);\s*source=([^;]+);\s*reason=([^\n]+)", joined, re.I)
-    if not status_match:
-        return (
-            "I ran the live source check, but it did not return a confirmed result. "
-            "I’m not going to answer that from memory."
-        )
-    status, as_of, source, reason = [part.strip() for part in status_match.groups()]
+    contract = contracts[0]
+    status = contract.get("status", "unconfirmed")
+    as_of = contract.get("as_of", "unknown")
+    source = contract.get("source", "live source check")
+    reason = contract.get("reason", "no confirmed result returned")
     return (
         f"I checked live sources, but I could not confirm the latest result. "
         f"Source contract: {status} as of {as_of} via {source}. {reason}. "
@@ -7102,9 +7133,13 @@ async def stream_agentic_claude(messages, max_tokens=650, tools=None):
 
         tool_results = await asyncio.gather(*(run_tool(block) for block in tool_blocks))
         messages.append({"role": "user", "content": tool_results})
+        contracts = _source_contracts_from_tool_results(tool_results)
+        if contracts:
+            yield {"type": "trace", "patch": {"source_contracts_seen": contracts, "confidence_gate": "passed"}}
         guarded = _source_contract_guardrail(messages, tool_results)
         if guarded:
             reply_text = f"{reply_text}{guarded}"
+            yield {"type": "trace", "patch": {"confidence_gate": "blocked", "final_mode": "refused_to_guess"}}
             yield {"type": "replace", "text": reply_text}
             yield {"type": "done", "text": reply_text}
             return

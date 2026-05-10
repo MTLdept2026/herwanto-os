@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260510-intelligence-38";
-const APP_SCRIPT = "app.js?v=20260510-intelligence-38";
-const EXPECTED_SW_CACHE = "hira-os-v109";
+const APP_VERSION = "20260510-trace-39";
+const APP_SCRIPT = "app.js?v=20260510-trace-39";
+const EXPECTED_SW_CACHE = "hira-os-v110";
 
 const state = {
   token: localStorage.getItem("hira_web_token") || "",
@@ -2052,6 +2052,69 @@ function addMessage(role, text, persist = true) {
   return el;
 }
 
+function traceValue(value) {
+  if (Array.isArray(value)) return value.filter(Boolean).join(", ") || "-";
+  if (value && typeof value === "object") return JSON.stringify(value);
+  return String(value || "-");
+}
+
+function renderTrace(el, trace) {
+  if (!el || !trace || typeof trace !== "object") return;
+  let panel = el.querySelector(".chat-trace");
+  if (!panel) {
+    panel = document.createElement("details");
+    panel.className = "chat-trace";
+    const summary = document.createElement("summary");
+    summary.className = "chat-trace-summary";
+    const body = document.createElement("div");
+    body.className = "chat-trace-body";
+    panel.append(summary, body);
+    el.appendChild(panel);
+  }
+  const summary = panel.querySelector(".chat-trace-summary");
+  const body = panel.querySelector(".chat-trace-body");
+  const route = trace.route || "pending";
+  const mode = trace.final_mode || "running";
+  const gate = trace.confidence_gate || "pending";
+  summary.textContent = `Trace · ${route} · ${gate} · ${mode}`;
+
+  const contracts = Array.isArray(trace.source_contracts_seen) ? trace.source_contracts_seen : [];
+  const rows = [
+    ["Route", route],
+    ["Forced tool", trace.forced_tool || "-"],
+    ["Tools available", trace.tools_available || []],
+    ["Tools called", trace.tools_called || []],
+    ["Confidence gate", gate],
+    ["Final mode", mode],
+    ["Error phase", trace.error_phase || "-"],
+  ];
+  body.innerHTML = "";
+  for (const [label, value] of rows) {
+    const row = document.createElement("div");
+    row.className = "chat-trace-row";
+    const key = document.createElement("span");
+    key.textContent = label;
+    const val = document.createElement("strong");
+    val.textContent = traceValue(value);
+    row.append(key, val);
+    body.appendChild(row);
+  }
+  if (contracts.length) {
+    const section = document.createElement("div");
+    section.className = "chat-trace-contracts";
+    const heading = document.createElement("span");
+    heading.textContent = "Source contracts";
+    section.appendChild(heading);
+    for (const contract of contracts) {
+      const item = document.createElement("p");
+      item.textContent = `${contract.status || "unknown"} · ${contract.as_of || "no date"} · ${contract.source || "source"} · ${contract.reason || ""}`;
+      section.appendChild(item);
+    }
+    body.appendChild(section);
+  }
+  scrollMessagesToBottom();
+}
+
 function setHiraSpeaking(el, speaking) {
   el?.classList.toggle("speaking", Boolean(speaking));
   const signal = $("#hiraSignal");
@@ -2209,7 +2272,10 @@ async function streamChatResponse(message, onEvent) {
 
 function renderStoredChat() {
   $("#messages").innerHTML = "";
-  for (const item of state.chatHistory) addMessage(item.role, item.text, false);
+  for (const item of state.chatHistory) {
+    const el = addMessage(item.role, item.text, false);
+    if (item.trace) renderTrace(el, item.trace);
+  }
   updateChatChrome();
 }
 
@@ -2698,12 +2764,17 @@ async function sendChat(message) {
   const pending = addMessage("hira", "", true);
   pending.classList.add("pending");
   setHiraSpeaking(pending, true);
+  let latestText = "";
+  let understanding = null;
+  let trace = null;
   try {
-    let latestText = "";
-    let understanding = null;
     const reply = await streamChatResponse(message, (event, streamedText = latestText) => {
       if (event.type === "route") {
         setStatus(event.name === "quick" ? "Quick reply path." : "Thinking with tools ready.", "muted");
+      }
+      if (event.type === "trace") {
+        trace = event.trace || trace;
+        renderTrace(pending, trace);
       }
       if (event.type === "understood") {
         understanding = {
@@ -2734,8 +2805,9 @@ async function sendChat(message) {
     setHiraSpeaking(pending, false);
     updateMessage(pending, reply);
     renderUnderstanding(pending, understanding);
+    renderTrace(pending, trace);
     clearToolStatuses(pending);
-    state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: reply };
+    state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: reply, trace };
     saveChatHistory();
     setStatus("H.I.R.A replied.", "ok");
   } catch (error) {
@@ -2744,7 +2816,8 @@ async function sendChat(message) {
     setHiraSpeaking(pending, false);
     clearToolStatuses(pending);
     updateMessage(pending, friendly);
-    state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: friendly };
+    renderTrace(pending, trace);
+    state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: friendly, trace };
     saveChatHistory();
     console.error(error);
     setStatus(friendly, "error");

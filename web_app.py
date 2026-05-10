@@ -36,8 +36,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260510-intelligence-38"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v109"
+PWA_APP_VERSION = "20260510-trace-39"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v110"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -1821,9 +1821,96 @@ def _live_briefing_text(slot: str) -> str:
         return "I could not build a fresh briefing right now. Try again in a moment."
 
 
+def _new_chat_trace(message: str, route_name: str = "") -> dict:
+    discipline = bot.source_discipline_for_text(message)
+    return {
+        "id": uuid.uuid4().hex[:12],
+        "route": route_name,
+        "tools_available": [],
+        "forced_tool": "",
+        "tools_called": [],
+        "source_contracts_seen": [],
+        "confidence_gate": "pending" if discipline.get("needs_live_check") else "not_required",
+        "error_phase": "",
+        "final_mode": "",
+        "timings": {},
+        "source_discipline": {
+            "needs_live_check": bool(discipline.get("needs_live_check")),
+            "recommended_tools": list(discipline.get("recommended_tools") or []),
+            "confidence": discipline.get("confidence", ""),
+        },
+    }
+
+
+def _merge_chat_trace(trace: dict, patch: dict | None = None) -> dict:
+    if not patch:
+        return trace
+    for key, value in patch.items():
+        if key in {"tools_available", "tools_called"}:
+            existing = [str(item) for item in trace.get(key, []) if str(item)]
+            for item in value or []:
+                clean = str(item or "").strip()
+                if clean and clean not in existing:
+                    existing.append(clean)
+            trace[key] = existing
+        elif key == "source_contracts_seen":
+            existing = list(trace.get(key, []) or [])
+            seen = {
+                (
+                    str(item.get("status", "")),
+                    str(item.get("as_of", "")),
+                    str(item.get("source", "")),
+                    str(item.get("reason", "")),
+                )
+                for item in existing
+                if isinstance(item, dict)
+            }
+            for item in value or []:
+                if not isinstance(item, dict):
+                    continue
+                key_tuple = (
+                    str(item.get("status", "")),
+                    str(item.get("as_of", "")),
+                    str(item.get("source", "")),
+                    str(item.get("reason", "")),
+                )
+                if key_tuple not in seen:
+                    seen.add(key_tuple)
+                    existing.append({
+                        "status": str(item.get("status", "")),
+                        "as_of": str(item.get("as_of", "")),
+                        "source": str(item.get("source", "")),
+                        "reason": str(item.get("reason", "")),
+                    })
+            trace[key] = existing
+        elif key == "timings" and isinstance(value, dict):
+            timings = dict(trace.get("timings") or {})
+            timings.update(value)
+            trace["timings"] = timings
+        elif value not in (None, ""):
+            trace[key] = value
+    return trace
+
+
+def _finalise_chat_trace(trace: dict, final_mode: str = "answered") -> dict:
+    if not trace.get("final_mode"):
+        trace["final_mode"] = final_mode
+    contracts = trace.get("source_contracts_seen") or []
+    if contracts and trace.get("confidence_gate") in {"pending", "passed"}:
+        statuses = {str(item.get("status", "")).lower() for item in contracts if isinstance(item, dict)}
+        trace["confidence_gate"] = "passed" if statuses and statuses <= {"confirmed"} else "review_needed"
+    elif trace.get("confidence_gate") == "pending":
+        trace["confidence_gate"] = "no_contract" if trace.get("source_discipline", {}).get("needs_live_check") else "not_required"
+    return trace
+
+
 def _quick_sse_response(reply: str, history_key: str, history: list, route_name: str = "quick", tool_name: str = ""):
     history.append({"role": "assistant", "content": reply})
     bot.save_history(history_key, history[-bot.MAX_TURNS:])
+    trace = _new_chat_trace("", route_name=route_name)
+    if tool_name:
+        _merge_chat_trace(trace, {"tools_called": [tool_name]})
+    _finalise_chat_trace(trace)
 
     async def events():
         def sse(payload: dict) -> str:
@@ -1831,6 +1918,7 @@ def _quick_sse_response(reply: str, history_key: str, history: list, route_name:
 
         try:
             yield sse({"type": "route", "name": route_name})
+            yield sse({"type": "trace", "trace": trace})
             if tool_name:
                 yield sse({"type": "tool", "name": tool_name})
             yield sse({"type": "text", "text": reply})
@@ -1971,6 +2059,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
         final_text = ""
         started = time.perf_counter()
         phase_started = started
+        trace = _new_chat_trace(message)
 
         def sse(payload: dict) -> str:
             return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
@@ -1991,6 +2080,10 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                 payload["elapsed_ms"],
                 payload["phase_ms"],
             )
+            _merge_chat_trace(trace, {"timings": {phase: {
+                "elapsed_ms": payload["elapsed_ms"],
+                "phase_ms": payload["phase_ms"],
+            }}})
             return payload
 
         try:
@@ -1998,7 +2091,9 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                 yield sse({"type": "understood", **working_summary})
             quick = await bot.should_route_quick_pwa_chat(list(history[:-1]), message)
             yield sse(timing("route"))
-            yield sse({"type": "route", "name": "quick" if quick else "agentic"})
+            route_name = "quick" if quick else "agentic"
+            _merge_chat_trace(trace, {"route": route_name})
+            yield sse({"type": "route", "name": route_name})
             recent_context = "\n".join(
                 str(item.get("content", ""))[:600]
                 for item in history[-6:-1]
@@ -2006,7 +2101,13 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             )
             tools = [] if quick else bot.pwa_tools_for_message(message, recent_context=recent_context)
             if not quick:
+                forced_tool = bot._forced_tool_for_current_turn(list(history), tools) or ""
+                _merge_chat_trace(trace, {
+                    "tools_available": [tool["name"] for tool in tools],
+                    "forced_tool": forced_tool,
+                })
                 yield sse({"type": "tools", "count": len(tools), "names": [tool["name"] for tool in tools]})
+            yield sse({"type": "trace", "trace": trace})
             stream = (
                 bot.stream_quick_pwa_reply(list(history[:-1]), message)
                 if quick
@@ -2023,6 +2124,13 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                     reply_parts = [event.get("text", "")]
                 elif event.get("type") == "done":
                     final_text = event.get("text", "")
+                elif event.get("type") == "tool":
+                    _merge_chat_trace(trace, {"tools_called": [event.get("name", "")]})
+                    yield sse({"type": "trace", "trace": trace})
+                elif event.get("type") == "trace":
+                    _merge_chat_trace(trace, event.get("patch") or {})
+                    yield sse({"type": "trace", "trace": trace})
+                    continue
                 yield sse(event)
 
             reply_text = final_text or "".join(reply_parts).strip() or "Done."
@@ -2035,21 +2143,36 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             except Exception as exc:
                 bot.logger.warning(f"PWA learning event failed: {exc}")
             yield sse(timing("saved"))
+            _finalise_chat_trace(trace, "answered")
+            yield sse({"type": "trace", "trace": trace})
             yield sse({"type": "saved"})
         except Exception as exc:
             bot.logger.exception(f"PWA chat failed: {exc}")
+            _merge_chat_trace(trace, {"error_phase": "stream_or_model"})
             fallback_text = ""
+            fallback_result = ""
+            fallback_tool = ""
             try:
-                fallback_text = await _source_check_backend_fallback(message)
+                fallback_text, fallback_tool, fallback_result = await _source_check_backend_fallback_payload(message)
             except Exception as fallback_exc:
                 bot.logger.warning(f"PWA source fallback failed: {fallback_exc}")
             if fallback_text:
+                contracts = bot._source_contracts_from_text(fallback_result)
+                _merge_chat_trace(trace, {
+                    "tools_called": [fallback_tool],
+                    "source_contracts_seen": contracts,
+                    "confidence_gate": "fallback",
+                    "final_mode": "fallback_summary",
+                })
                 history.append({"role": "assistant", "content": fallback_text})
                 bot.save_history(history_key, history[-bot.MAX_TURNS:])
                 yield sse({"type": "text", "text": fallback_text})
                 yield sse({"type": "done", "text": fallback_text})
+                yield sse({"type": "trace", "trace": trace})
                 yield sse({"type": "saved"})
             else:
+                _merge_chat_trace(trace, {"confidence_gate": "failed", "final_mode": "backend_error"})
+                yield sse({"type": "trace", "trace": trace})
                 yield sse({
                     "type": "error",
                     "message": "H.I.R.A hit a backend snag. Try again in a moment.",
@@ -2063,6 +2186,11 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
 
 
 async def _source_check_backend_fallback(message: str) -> str:
+    text, _tool_name, _result = await _source_check_backend_fallback_payload(message)
+    return text
+
+
+async def _source_check_backend_fallback_payload(message: str) -> tuple[str, str, str]:
     discipline = bot.source_discipline_for_text(message)
     recommended = set(discipline.get("recommended_tools") or [])
     tool_name = ""
@@ -2074,19 +2202,19 @@ async def _source_check_backend_fallback(message: str) -> str:
         tool_name = "get_f1_brief"
         label = "F1"
     if not tool_name:
-        return ""
+        return "", "", ""
 
     result = await bot._execute_tool(tool_name, {"focus": message, "max_items": 2})
     if not result or result.startswith("Failed to fetch"):
         return (
             "I hit the model/backend step, and the live source check also failed, "
             "so I’m not going to answer from memory. Try again in a moment."
-        )
+        ), tool_name, result or ""
     clipped = _summarise_source_fallback(result, limit=2200)
     return (
         "I hit the model/backend step, so I’m not going to guess from memory. "
         f"I did run the live {label} source check:\n\n{clipped}"
-    )
+    ), tool_name, result
 
 
 def _summarise_source_fallback(result: str, limit: int = 2200) -> str:

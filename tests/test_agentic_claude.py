@@ -1874,6 +1874,44 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("Latest completed: Liverpool 1-1 Chelsea", summary)
         self.assertNotIn("filler", summary)
 
+    def test_source_contracts_from_tool_results_are_structured(self):
+        contracts = bot._source_contracts_from_tool_results([{
+            "content": (
+                "SOURCE CONTRACT: status=confirmed; as_of=2026-05-09; "
+                "source=ESPN scoreboard; reason=latest completed fixture"
+            )
+        }])
+
+        self.assertEqual(contracts[0]["status"], "confirmed")
+        self.assertEqual(contracts[0]["source"], "ESPN scoreboard")
+
+    def test_chat_trace_merge_and_finalise(self):
+        trace = web_app._new_chat_trace("latest LFC result")
+        web_app._merge_chat_trace(trace, {
+            "route": "agentic",
+            "tools_available": ["get_liverpool_brief", "get_latest_news"],
+            "tools_called": ["get_liverpool_brief"],
+            "source_contracts_seen": [{
+                "status": "confirmed",
+                "as_of": "2026-05-09",
+                "source": "ESPN",
+                "reason": "latest completed",
+            }],
+        })
+        web_app._finalise_chat_trace(trace)
+
+        self.assertEqual(trace["route"], "agentic")
+        self.assertEqual(trace["confidence_gate"], "passed")
+        self.assertEqual(trace["final_mode"], "answered")
+        self.assertEqual(trace["tools_called"], ["get_liverpool_brief"])
+
+    def test_chat_trace_finalise_marks_missing_contract(self):
+        trace = web_app._new_chat_trace("latest LFC result")
+        web_app._merge_chat_trace(trace, {"route": "agentic"})
+        web_app._finalise_chat_trace(trace)
+
+        self.assertEqual(trace["confidence_gate"], "no_contract")
+
     def test_pwa_followup_reminder_gets_recent_turn_grounding(self):
         history = [
             {"role": "assistant", "content": "Locked in for Sahibba at Pei Hwa Sec, 2-6pm."},

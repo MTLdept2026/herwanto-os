@@ -2781,6 +2781,60 @@ html[data-theme="dark"] .load-badge.load-green {
   margin-bottom: 0;
 }
 
+.chat-trace {
+  margin-top: 14px;
+  border-top: 1px solid rgba(20, 20, 20, 0.16);
+  padding-top: 10px;
+  color: var(--hira-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.chat-trace-summary {
+  cursor: pointer;
+  list-style: none;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.chat-trace-summary::-webkit-details-marker {
+  display: none;
+}
+
+.chat-trace-body {
+  display: grid;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.chat-trace-row {
+  display: grid;
+  grid-template-columns: minmax(96px, 0.42fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.chat-trace-row span,
+.chat-trace-contracts > span {
+  color: var(--hira-muted);
+}
+
+.chat-trace-row strong,
+.chat-trace-contracts p {
+  margin: 0;
+  color: var(--hira-ink);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.chat-trace-contracts {
+  display: grid;
+  gap: 6px;
+  border-top: 1px solid rgba(20, 20, 20, 0.12);
+  padding-top: 8px;
+}
+
 .chat-list {
   margin: 8px 0 14px;
   padding-left: 22px;
