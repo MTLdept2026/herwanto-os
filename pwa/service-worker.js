@@ -1,9 +1,9 @@
-const CACHE_NAME = "hira-os-v107";
-const HIRA_APP_VERSION = "20260510-classops-36";
+const CACHE_NAME = "hira-os-v108";
+const HIRA_APP_VERSION = "20260510-classops-37";
 const ASSETS = [
   "/",
-  "/styles.css?v=20260510-classops-36",
-  "/app.js?v=20260510-classops-36",
+  "/styles.css?v=20260510-classops-37",
+  "/app.js?v=20260510-classops-37",
   "/static/icon.svg",
   "/static/icon-192.png",
   "/static/icon-512.png",

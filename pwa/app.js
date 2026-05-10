@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260510-classops-36";
-const APP_SCRIPT = "app.js?v=20260510-classops-36";
-const EXPECTED_SW_CACHE = "hira-os-v107";
+const APP_VERSION = "20260510-classops-37";
+const APP_SCRIPT = "app.js?v=20260510-classops-37";
+const EXPECTED_SW_CACHE = "hira-os-v108";
 
 const state = {
   token: localStorage.getItem("hira_web_token") || "",
@@ -1627,7 +1627,7 @@ function renderIntelligenceStack(intelligence = {}) {
           </button>
         `)
         .join("")
-    : `<button type="button" class="intelligence-action" data-command-action="send" data-command-prompt="Give me a crisp H.I.R.A briefing for right now."><span data-lucide="radar" aria-hidden="true"></span><span>Brief Me</span></button>`;
+    : `<button type="button" class="intelligence-action" data-command-action="send" data-command-prompt="Build a fresh live H.I.R.A briefing for right now using the current Singapore date. Do not replay stored briefings."><span data-lucide="radar" aria-hidden="true"></span><span>Brief Me</span></button>`;
   refreshIcons($("#intelligenceActions"));
   refreshIcons(document.querySelector(".intelligence-next"));
 }

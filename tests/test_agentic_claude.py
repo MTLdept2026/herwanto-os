@@ -1704,6 +1704,25 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(summary["due_today_count"], 1)
         self.assertEqual(summary["classes"][0]["latest_assignment"]["submitted_count"], 1)
 
+    def test_live_briefing_prompt_does_not_replay_stored_briefing(self):
+        self.assertEqual(web_app._live_briefing_slot("Give me a crisp H.I.R.A briefing for right now."), "morning")
+        self.assertEqual(web_app._briefing_replay_slot("Give me a crisp H.I.R.A briefing for right now."), "")
+
+    def test_briefing_replay_ignores_stale_stored_notification(self):
+        stale = {
+            "kind": "briefing",
+            "title": "Morning briefing",
+            "source": "morning_briefing:2026-04-30",
+            "body": "Thursday, 30 April 2026",
+        }
+
+        with patch.object(web_app.bot.gs, "get_app_notifications", return_value=[stale]), \
+             patch.object(web_app.bot, "build_briefing", return_value="Fresh today") as build_briefing:
+            text = web_app._briefing_replay_text("morning")
+
+        self.assertEqual(text, "Fresh today")
+        build_briefing.assert_called_once_with(record_news_digest=False)
+
     def test_format_curated_digest_includes_why_lines(self):
         text = bot.format_curated_digest([
             {

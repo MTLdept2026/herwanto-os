@@ -36,8 +36,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260510-classops-36"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v107"
+PWA_APP_VERSION = "20260510-classops-37"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v108"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -1693,7 +1693,10 @@ def _briefing_replay_slot(message: str) -> str:
     if not clean:
         return ""
     wants_digest = re.search(r"\b(digest|briefing|brief|roundup)\b", clean)
-    wants_replay = re.search(r"\b(give|show|send|replay|open|missed|earlier|today|this morning|this evening)\b", clean)
+    wants_live = re.search(r"\b(right now|live|current|fresh|now)\b", clean)
+    if wants_live:
+        return ""
+    wants_replay = re.search(r"\b(show|replay|open|missed|earlier|this morning|this evening)\b", clean)
     if not wants_digest or not wants_replay:
         return ""
     if re.search(r"\b(evening|roundup|tonight)\b", clean):
@@ -1701,6 +1704,19 @@ def _briefing_replay_slot(message: str) -> str:
     if re.search(r"\b(morning|today|digest|briefing|brief)\b", clean):
         return "morning"
     return ""
+
+
+def _live_briefing_slot(message: str) -> str:
+    clean = " ".join((message or "").lower().split())
+    if not clean:
+        return ""
+    if not re.search(r"\b(brief me|briefing|brief)\b", clean):
+        return ""
+    if not re.search(r"\b(right now|live|current|fresh|now)\b", clean):
+        return ""
+    if re.search(r"\b(evening|roundup|tonight)\b", clean):
+        return "evening"
+    return "morning"
 
 
 def _notification_matches_briefing_slot(item: dict, slot: str) -> bool:
@@ -1715,20 +1731,33 @@ def _notification_matches_briefing_slot(item: dict, slot: str) -> bool:
     return "morning" in haystack or "morning digest" in haystack
 
 
-def _latest_stored_briefing(slot: str) -> dict | None:
+def _briefing_notification_date(item: dict) -> str:
+    source = str(item.get("source", "") or "").strip()
+    match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", source)
+    if match:
+        return match.group(1)
+    created = _parse_sgt_datetime(str(item.get("created_at") or item.get("created") or ""))
+    return created.strftime("%Y-%m-%d") if created else ""
+
+
+def _latest_stored_briefing(slot: str, target_date: str = "") -> dict | None:
     try:
         notifications = bot.gs.get_app_notifications(include_archived=True)
     except Exception as exc:
         bot.logger.warning(f"Briefing replay notification lookup failed: {exc}")
         return None
     for item in reversed(notifications):
-        if isinstance(item, dict) and _notification_matches_briefing_slot(item, slot):
-            return item
+        if not isinstance(item, dict) or not _notification_matches_briefing_slot(item, slot):
+            continue
+        if target_date and _briefing_notification_date(item) != target_date:
+            continue
+        return item
     return None
 
 
 def _briefing_replay_text(slot: str) -> str:
-    item = _latest_stored_briefing(slot)
+    today_key = datetime.now(bot.SGT).strftime("%Y-%m-%d")
+    item = _latest_stored_briefing(slot, target_date=today_key)
     if item and str(item.get("body", "") or "").strip():
         return str(item.get("body", "")).strip()
     try:
@@ -1739,6 +1768,16 @@ def _briefing_replay_text(slot: str) -> str:
         bot.logger.warning(f"Briefing replay rebuild failed: {exc}")
         label = "evening roundup" if slot == "evening" else "morning briefing"
         return f"I could not replay the stored {label} or rebuild it right now. The notification is saved in the bell panel if it reached this device."
+
+
+def _live_briefing_text(slot: str) -> str:
+    try:
+        if slot == "evening":
+            return bot.build_evening_briefing()
+        return bot.build_briefing(record_news_digest=False)
+    except Exception as exc:
+        bot.logger.warning(f"Live briefing rebuild failed: {exc}")
+        return "I could not build a fresh briefing right now. Try again in a moment."
 
 
 def _quick_sse_response(reply: str, history_key: str, history: list, route_name: str = "quick", tool_name: str = ""):
@@ -1810,6 +1849,11 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
         user_content = f"{user_content}{location_context}"
     history.append({"role": "user", "content": user_content})
     history = history[-bot.MAX_TURNS:]
+
+    live_briefing_slot = _live_briefing_slot(message)
+    if live_briefing_slot:
+        reply = _live_briefing_text(live_briefing_slot)
+        return _quick_sse_response(reply, history_key, history, route_name="live_briefing", tool_name=f"{live_briefing_slot}_briefing")
 
     briefing_slot = _briefing_replay_slot(message)
     if briefing_slot:
