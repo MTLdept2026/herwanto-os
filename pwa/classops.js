@@ -65,6 +65,11 @@ function formatContentDate(value = "") {
   return `${match[3]}/${match[2]}/${match[1].slice(2)}`;
 }
 
+function contentDateLabel(item = {}) {
+  if (item.date_missing || !item.date) return "Check date";
+  return formatContentDate(item.date || "");
+}
+
 function contentSortKey(item = {}) {
   return [
     item.date || "9999-12-31",
@@ -95,17 +100,19 @@ function renderMissionTelemetry(data = {}) {
   const summary = data.summary || {};
   const students = data.student_summary || {};
   const concernCount = Number(students.concern_count || 0);
+  const undatedCount = Number(summary.undated_folder_count || 0);
   const contents = Number(summary.content_item_count ?? summary.collection_candidate_count ?? 0);
   const classes = Number(summary.class_count ?? data.class_count ?? 0);
   const roster = Number(students.roster_count || 0);
-  const readiness = concernCount ? "Action" : classes ? "Nominal" : "Standby";
+  const readiness = concernCount || undatedCount ? "Action" : classes ? "Nominal" : "Standby";
   $("#missionReadiness").textContent = readiness;
-  $("#missionReadiness").dataset.tone = concernCount ? "warn" : classes ? "ok" : "muted";
+  $("#missionReadiness").dataset.tone = concernCount || undatedCount ? "warn" : classes ? "ok" : "muted";
   $("#missionScanTime").textContent = shortDateTime(data.generated_at);
   $("#missionFollowUp").textContent = String(concernCount);
   $("#missionReadout").innerHTML = `
     <p>${classes} classes online · ${roster} students synced from Drive.</p>
     <p>${contents} filing items · ${Number(students.assignment_count || 0)} tracked submissions.</p>
+    ${undatedCount ? `<p>${undatedCount} folder${undatedCount === 1 ? "" : "s"} need date cleanup.</p>` : ""}
   `;
 }
 
@@ -148,7 +155,22 @@ function renderClassList(classes = []) {
 
 function renderCollectionPanel(classItem) {
   const candidates = classItem?.collection_candidates || [];
-  $("#collectionPanel").innerHTML = candidates.length
+  const undated = classItem?.undated_folders || [];
+  const dateFlags = undated.length
+    ? `
+      <section class="date-check-panel">
+        <strong>Check folder dates</strong>
+        <p>These folders have no recognised date, so their contents sit at the bottom for now.</p>
+        ${undated.map((folder) => `
+          <article>
+            <span>${escapeHtml(folder.folder || "Untitled folder")}</span>
+            <small>${Number(folder.file_count || 0)} file${Number(folder.file_count || 0) === 1 ? "" : "s"}${folder.files?.length ? ` · ${escapeHtml(folder.files.join(", "))}` : ""}</small>
+          </article>
+        `).join("")}
+      </section>
+    `
+    : "";
+  const collections = candidates.length
     ? candidates.map((file) => `
         <article class="collection-item">
           <strong>${escapeHtml(file.name)}</strong>
@@ -157,6 +179,7 @@ function renderCollectionPanel(classItem) {
         </article>
       `).join("")
     : `<div class="empty">No due-work signals detected from filenames yet.</div>`;
+  $("#collectionPanel").innerHTML = `${dateFlags}${collections}`;
 }
 
 function renderContents(classItem) {
@@ -182,10 +205,10 @@ function renderContents(classItem) {
     </div>
     ${contentItems.length ? contentItems.map((item, index) => {
       return `
-        <article class="contents-row" data-track-lesson="${escapeHtml(item.date || "")}" data-track-topic="${escapeHtml(item.title || "")}" data-track-folder="${escapeHtml(item.folder || "")}" data-track-title="${escapeHtml(item.title || "")}" data-content-path="${escapeHtml(item.path || "")}" data-content-kind="${escapeHtml(item.kind || "")}">
+        <article class="contents-row ${item.date_missing || !item.date ? "date-missing" : ""}" data-track-lesson="${escapeHtml(item.date || "")}" data-track-topic="${escapeHtml(item.title || "")}" data-track-folder="${escapeHtml(item.folder || "")}" data-track-title="${escapeHtml(item.title || "")}" data-content-path="${escapeHtml(item.path || "")}" data-content-kind="${escapeHtml(item.kind || "")}" data-date-missing="${item.date_missing || !item.date ? "1" : ""}">
           <div class="contents-no"><strong>${index + 1}</strong></div>
           <div class="contents-title">${escapeHtml(item.title || "Untitled")}${item.title_overridden ? ` <span class="override-mark">edited</span>` : ""}</div>
-          <div class="contents-date">${escapeHtml(formatContentDate(item.date || ""))}</div>
+          <div class="contents-date">${escapeHtml(contentDateLabel(item))}</div>
         </article>
       `;
     }).join("") : `<div class="empty">No filing items detected yet for this class.</div>`}
@@ -203,6 +226,7 @@ function contentItemFromRow(row) {
     title: row.dataset.trackTitle || row.dataset.trackTopic || "",
     path: row.dataset.contentPath || "",
     kind: row.dataset.contentKind || "file",
+    date_missing: row.dataset.dateMissing === "1",
   };
 }
 
@@ -220,7 +244,7 @@ function showContentInspector(item = {}) {
   $("#contentInspectorMeta").textContent = [
     item.kind || "file",
     item.path || "",
-    item.date ? formatContentDate(item.date) : "",
+    item.date_missing || !item.date ? "Check folder date" : formatContentDate(item.date),
   ].filter(Boolean).join(" · ");
   document.querySelectorAll(".contents-row.is-selected").forEach((row) => row.classList.remove("is-selected"));
   selectedContentRow(item.path)?.classList.add("is-selected");

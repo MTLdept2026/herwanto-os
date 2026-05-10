@@ -464,7 +464,58 @@ aside h2 {
 }
 
 .collection-panel {
+  display: grid;
+  gap: 8px;
+  margin-bottom: var(--space-md);
+}
+
+.collection-panel .empty {
   display: none;
+}
+
+.collection-item,
+.date-check-panel {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--border-visible);
+  background: var(--surface);
+}
+
+.collection-item strong,
+.date-check-panel strong {
+  color: var(--text-display);
+}
+
+.collection-item small,
+.collection-item p,
+.date-check-panel small,
+.date-check-panel p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.date-check-panel {
+  border-color: color-mix(in srgb, var(--warning) 55%, var(--border-visible));
+  background: color-mix(in srgb, var(--warning) 12%, var(--surface));
+}
+
+.date-check-panel article {
+  display: grid;
+  gap: 2px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.date-check-panel article:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.date-check-panel span {
+  font-weight: 800;
 }
 
 .student-ledger {
@@ -692,6 +743,15 @@ aside h2 {
 .contents-row.is-selected {
   border-color: var(--accent);
   box-shadow: inset 4px 0 0 var(--accent);
+}
+
+.contents-row.date-missing {
+  border-color: color-mix(in srgb, var(--warning) 42%, var(--border-visible));
+}
+
+.contents-row.date-missing .contents-date {
+  color: #7a4f00;
+  font-weight: 700;
 }
 
 .contents-row.header {

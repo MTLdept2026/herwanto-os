@@ -427,11 +427,13 @@ def enrich_classops_manifest(manifest: dict) -> dict:
     total_collection_candidates = 0
     total_content_items = 0
     total_lessons = 0
+    total_undated_folders = 0
     for class_item in current.get("classes", []) or []:
         folders_out = []
         latest = None
         class_collection = []
         content_items = []
+        undated_folders = []
         for folder in class_item.get("folders", []) or []:
             files_out = []
             candidates = []
@@ -443,13 +445,14 @@ def enrich_classops_manifest(manifest: dict) -> dict:
                 next_file["collection"] = collection
                 if collection.get("collect"):
                     candidates.append(next_file)
-                if folder.get("date") and next_file.get("filing_title"):
+                if next_file.get("filing_title"):
                     content_items.append({
                         "title": next_file["filing_title"],
                         "date": folder.get("date", ""),
                         "folder": folder.get("folder", ""),
                         "path": next_file.get("path", ""),
                         "kind": next_file.get("kind", ""),
+                        "date_missing": not bool(folder.get("date")),
                     })
                 files_out.append(next_file)
             next_folder = {
@@ -463,10 +466,19 @@ def enrich_classops_manifest(manifest: dict) -> dict:
                 total_lessons += 1
                 if not latest or str(folder.get("date", "")) > str(latest.get("date", "")):
                     latest = next_folder
+            elif files_out:
+                undated_folders.append({
+                    "folder": next_folder.get("folder", ""),
+                    "topic": next_folder.get("topic", ""),
+                    "file_count": len(files_out),
+                    "files": [file_item.get("name", "") for file_item in files_out[:5]],
+                })
             class_collection.extend(candidates)
+        folders_out = sorted(folders_out, key=_folder_sort_key)
         content_items = sort_classops_content_items(content_items)
         total_collection_candidates += len(class_collection)
         total_content_items += len(content_items)
+        total_undated_folders += len(undated_folders)
         classes_out.append({
             **class_item,
             "folders": folders_out,
@@ -480,6 +492,8 @@ def enrich_classops_manifest(manifest: dict) -> dict:
             "collection_candidates": class_collection[:12],
             "content_items": content_items,
             "content_item_count": len(content_items),
+            "undated_folder_count": len(undated_folders),
+            "undated_folders": undated_folders[:12],
         })
     current["classes"] = classes_out
     current["summary"] = {
@@ -488,6 +502,7 @@ def enrich_classops_manifest(manifest: dict) -> dict:
         "file_count": int(current.get("file_count", 0) or 0),
         "collection_candidate_count": total_collection_candidates,
         "content_item_count": total_content_items,
+        "undated_folder_count": total_undated_folders,
     }
     return current
 

@@ -1516,6 +1516,46 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(dates, ["2026-02-24", "2026-03-05", "2026-03-10"])
 
+    def test_classops_manifest_places_undated_folders_and_content_at_bottom(self):
+        manifest = {
+            "ok": True,
+            "file_count": 3,
+            "classes": [{
+                "class": "2G3",
+                "file_count": 3,
+                "folder_count": 3,
+                "folders": [
+                    {
+                        "folder": "Peribahasa no date",
+                        "date": "",
+                        "topic": "Peribahasa no date",
+                        "files": [{"name": "simpulan bahasa.pdf", "path": "2G3/Peribahasa no date/simpulan.pdf"}],
+                    },
+                    {
+                        "folder": "10:3:26",
+                        "date": "2026-03-10",
+                        "topic": "",
+                        "files": [{"name": "karangan.pdf", "path": "2G3/10:3:26/karangan.pdf"}],
+                    },
+                    {
+                        "folder": "24:2:26",
+                        "date": "2026-02-24",
+                        "topic": "",
+                        "files": [{"name": "peribahasa.pdf", "path": "2G3/24:2:26/peribahasa.pdf"}],
+                    },
+                ],
+            }],
+        }
+
+        enriched = dropbox_service.enrich_classops_manifest(manifest)
+        class_item = enriched["classes"][0]
+
+        self.assertEqual([folder["folder"] for folder in class_item["folders"]], ["24:2:26", "10:3:26", "Peribahasa no date"])
+        self.assertEqual([item["date"] for item in class_item["content_items"]], ["2026-02-24", "2026-03-10", ""])
+        self.assertTrue(class_item["content_items"][-1]["date_missing"])
+        self.assertEqual(class_item["undated_folder_count"], 1)
+        self.assertEqual(enriched["summary"]["undated_folder_count"], 1)
+
     def test_classops_filing_title_uses_minisite_title(self):
         title = dropbox_service._html_title(b"<html><head><title>Fallback</title></head><body><h1>Nota - Masa Senggang</h1></body></html>")
 
