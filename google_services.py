@@ -1534,6 +1534,16 @@ def update_marking_progress(
 # ─── CONFIG: CLASSOPS LEDGER ─────────────────────────────────────────────────
 
 CLASSOPS_LEDGER_KEY = "classops_ledger"
+NAVAL_BASE_2026_FORM_CLASSES = {
+    "AN": "Anchor",
+    "BE": "Beacon",
+    "CO": "Compass",
+    "DA": "Danforth",
+    "EX": "Expedition",
+    "FL": "Flagship",
+    "GA": "Garrison",
+    "HA": "Harbour",
+}
 
 
 def _normalise_classops_names(values) -> list[str]:
@@ -1592,7 +1602,11 @@ def _classops_class_matches(class_name: str, value: str) -> bool:
     raw_candidate = _norm_cell(value).replace(" ", "")
     if not query or not candidate:
         return False
-    return candidate == query or raw_candidate.startswith(query)
+    return candidate == query or raw_candidate.startswith(query) or query in raw_candidate
+
+
+def _classops_sheet_matches(class_name: str, *values: str) -> bool:
+    return any(_classops_class_matches(class_name, value) for value in values)
 
 
 def get_classops_students(class_name: str) -> list[dict]:
@@ -1608,12 +1622,23 @@ def get_classops_students(class_name: str) -> list[dict]:
         source = item.get("grouping") or item.get("sheet_title") or item.get("spreadsheet_title") or ""
         item_students = item.get("students") or []
         has_student_classes = any(str(student.get("class") or "").strip() for student in item_students)
-        if not has_student_classes and not _class_query_matches(class_name, item.get("grouping", ""), item.get("sheet_title", "")):
-            continue
-        for student in item.get("students") or []:
-            student_class = str(student.get("class") or "").strip()
-            if has_student_classes and not _classops_class_matches(class_name, student_class):
+        sheet_matches_class = _classops_sheet_matches(class_name, item.get("grouping", ""), item.get("sheet_title", ""))
+        if has_student_classes:
+            exact_students = [
+                student for student in item_students
+                if _classops_class_matches(class_name, str(student.get("class") or "").strip())
+            ]
+            if exact_students:
+                candidate_students = exact_students
+            elif sheet_matches_class:
+                candidate_students = item_students
+            else:
                 continue
+        elif sheet_matches_class:
+            candidate_students = item_students
+        else:
+            continue
+        for student in candidate_students:
             name = str(student.get("name") or "").replace("*", "").strip()
             if not name:
                 continue

@@ -1446,6 +1446,32 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual([student["name"] for student in students], ["Bala", "Siti"])
 
+    def test_classops_students_keeps_form_classes_when_sheet_is_mtl_group(self):
+        classlists = [{
+            "grouping": "2G3",
+            "sheet_title": "2G3 MTL",
+            "spreadsheet_title": "2026 MTL",
+            "students": [
+                {"no": "1", "class": "S2-AN", "name": "Amelia"},
+                {"no": "2", "class": "S2-BE", "name": "Aulia"},
+                {"no": "3", "class": "S2-CO", "name": "Syuhrah"},
+            ],
+        }, {
+            "grouping": "3G3",
+            "sheet_title": "3G3 MTL",
+            "spreadsheet_title": "2026 MTL",
+            "students": [
+                {"no": "1", "class": "S3-AN", "name": "Umaira"},
+            ],
+        }]
+
+        with patch.object(bot.gs, "get_mtl_classlists", return_value=classlists):
+            students = bot.gs.get_classops_students("2G3")
+
+        self.assertEqual([student["name"] for student in students], ["Amelia", "Aulia", "Syuhrah"])
+        self.assertEqual([student["class"] for student in students], ["S2-AN", "S2-BE", "S2-CO"])
+        self.assertEqual(bot.gs.NAVAL_BASE_2026_FORM_CLASSES["AN"], "Anchor")
+
     def test_classops_assignment_ledger_persists_tracking(self):
         store = {}
 
