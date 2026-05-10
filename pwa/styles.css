@@ -2160,11 +2160,25 @@ html[data-theme="dark"] .load-badge.load-green {
   background: var(--surface-raised);
 }
 
+.classops-status-row[data-severity="critical"] {
+  border-left-color: var(--danger);
+}
+
+.classops-status-row[data-severity="watch"] {
+  border-left-color: var(--warning);
+}
+
 .classops-status-row strong {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-display);
+}
+
+.classops-status-row .classops-insight {
+  overflow-wrap: anywhere;
+  color: var(--interactive);
+  white-space: normal;
 }
 
 .classops-status-row.is-empty {

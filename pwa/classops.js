@@ -226,9 +226,17 @@ function updateContentItemInState(path, updates = {}) {
   }
 }
 
+function assignmentTimingText(assignment = {}) {
+  const labels = (assignment.timing_context || [])
+    .map((item) => item.label || "")
+    .filter(Boolean);
+  return labels.length ? ` · ${labels.map(escapeHtml).join(", ")}` : "";
+}
+
 function renderStudentReport(report = {}) {
   const students = report.students || [];
   const concerns = report.concerns || [];
+  const insights = report.insights || [];
   $("#ledgerMeta").textContent = `${report.roster_count || 0} students · ${report.assignment_count || 0} tracked`;
   if (!students.length) {
     $("#studentReport").innerHTML = `<div class="empty">No roster returned yet. Check that the Google classlist sheets are shared with H.I.R.A.</div>`;
@@ -247,12 +255,23 @@ function renderStudentReport(report = {}) {
       <div>${segmentMarkup(health, 12, report.concern_count ? "warn" : "success")}</div>
       <strong>${report.concern_count ? "Intervention path active" : "Submission channel clear"}</strong>
     </div>
+    ${insights.length ? `
+      <div class="insight-grid">
+        ${insights.map((insight) => `
+          <article class="insight-card" data-severity="${escapeHtml(insight.severity || "watch")}">
+            <span>${escapeHtml(insight.kind || "signal")}</span>
+            <strong>${escapeHtml(insight.title || "ClassOps signal")}</strong>
+            <p>${escapeHtml(insight.detail || "")}</p>
+          </article>
+        `).join("")}
+      </div>
+    ` : ""}
     ${latest.length ? `
       <div class="assignment-tally">
         ${latest.map((assignment) => `
           <article>
             <strong>${escapeHtml(assignment.assignment_title || "Tracked work")}</strong>
-            <span>${Number(assignment.submitted_count || 0)}/${Number(assignment.roster_count || 0)} submitted · ${Number(assignment.missing_count || 0)} pending</span>
+            <span>${Number(assignment.submitted_count || 0)}/${Number(assignment.roster_count || 0)} submitted · ${Number(assignment.missing_count || 0)} pending${assignmentTimingText(assignment)}</span>
           </article>
         `).join("")}
       </div>
@@ -268,7 +287,7 @@ function renderStudentReport(report = {}) {
           <div>${Number(student.missing_count || 0)}</div>
           <div>${Number(student.absent_count || 0)}</div>
           <div>${Number(student.catchup_count || 0)}</div>
-          <div>${escapeHtml(student.status || "clear")}</div>
+          <div>${escapeHtml(student.risk_reasons?.[0] || student.status || "clear")}</div>
         </article>
       `).join("")}
     </div>

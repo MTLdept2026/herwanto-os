@@ -13,7 +13,7 @@ import time
 import uuid
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, wait
-from datetime import datetime
+from datetime import date, datetime, timedelta
 import ipaddress
 from pathlib import Path
 from typing import Optional
@@ -27,6 +27,7 @@ from starlette.responses import JSONResponse
 import bot
 import document_service as docs
 import dropbox_service as dropbox
+from timetable import SCHOOL_CLOSURE_DATES_2026
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -35,8 +36,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260510-classops-34"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v105"
+PWA_APP_VERSION = "20260510-classops-35"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v106"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -2281,8 +2282,118 @@ def _classops_record_for(ledger: dict, class_name: str) -> dict:
     return classes.get(class_key) or classes.get(str(class_name or "").strip()) or {"lessons": [], "assignments": []}
 
 
-def _classops_student_report(class_name: str, students: list[dict], ledger: dict | None = None) -> dict:
+def _classops_parse_date(value: str) -> date | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    for candidate in (raw[:10], raw):
+        try:
+            return datetime.fromisoformat(candidate).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _classops_assignment_date(assignment: dict) -> date | None:
+    return (
+        _classops_parse_date(assignment.get("lesson_date", ""))
+        or _classops_parse_date(assignment.get("collect_by", ""))
+        or _classops_parse_date(assignment.get("created_at", ""))
+    )
+
+
+def _classops_timing_context(target: date | None) -> list[dict]:
+    if not target:
+        return []
+    context = []
+    if target.weekday() == 0:
+        context.append({"key": "after_weekend", "label": "Due after weekend"})
+    elif target.weekday() in {5, 6}:
+        context.append({"key": "weekend_due", "label": "Due over weekend"})
+    if target in SCHOOL_CLOSURE_DATES_2026:
+        context.append({"key": "school_closure", "label": "Due on school/public closure"})
+    if target - timedelta(days=1) in SCHOOL_CLOSURE_DATES_2026:
+        context.append({"key": "after_public_holiday", "label": "Due after school/public closure"})
+    return context
+
+
+def _classops_make_event(assignment: dict, timing_context: list[dict]) -> dict:
+    return {
+        "assignment_id": str(assignment.get("id", "")),
+        "assignment_title": str(assignment.get("assignment_title") or "Tracked work"),
+        "lesson_date": str(assignment.get("lesson_date") or ""),
+        "collect_by": str(assignment.get("collect_by") or ""),
+        "timing_context": timing_context,
+    }
+
+
+def _classops_build_insights(class_name: str, roster: list[dict], assignments: list[dict], today: date) -> list[dict]:
+    insights = []
+    risky = sorted(
+        [student for student in roster if student.get("risk_score", 0) > 0],
+        key=lambda item: (item.get("risk_score", 0), item.get("missing_count", 0)),
+        reverse=True,
+    )
+    if risky:
+        names = [student["name"] for student in risky[:3]]
+        insights.append({
+            "severity": "critical" if risky[0].get("missing_count", 0) >= 2 else "watch",
+            "kind": "student_risk",
+            "title": f"{len(risky)} student{'s' if len(risky) != 1 else ''} need follow-up",
+            "detail": ", ".join(names),
+            "students": names,
+        })
+    pattern_counts: dict[str, int] = {}
+    pattern_students: dict[str, set[str]] = {}
+    for student in roster:
+        for key, count in (student.get("timing_patterns") or {}).items():
+            if count <= 0:
+                continue
+            pattern_counts[key] = pattern_counts.get(key, 0) + count
+            pattern_students.setdefault(key, set()).add(student["name"])
+    pattern_labels = {
+        "after_weekend": "after weekends",
+        "after_public_holiday": "after school/public closures",
+        "weekend_due": "over weekends",
+        "school_closure": "on school/public closures",
+    }
+    for key, count in sorted(pattern_counts.items(), key=lambda item: item[1], reverse=True)[:2]:
+        if count < 2 and key not in {"after_public_holiday", "school_closure"}:
+            continue
+        names = sorted(pattern_students.get(key, set()))[:3]
+        insights.append({
+            "severity": "watch",
+            "kind": "timing_pattern",
+            "title": f"Submission pattern {pattern_labels.get(key, key.replace('_', ' '))}",
+            "detail": f"{count} non-submission signal{'s' if count != 1 else ''}: {', '.join(names)}",
+            "students": names,
+        })
+    assignment_dates = [day for day in (_classops_assignment_date(item) for item in assignments) if day]
+    if assignment_dates:
+        latest = max(assignment_dates)
+        gap_days = (today - latest).days
+        if gap_days >= 10:
+            insights.append({
+                "severity": "watch" if gap_days < 21 else "critical",
+                "kind": "assignment_gap",
+                "title": f"{class_name} has not had tracked work for {gap_days} days",
+                "detail": f"Last tracked assignment was on {latest.isoformat()}.",
+                "days": gap_days,
+            })
+    elif roster:
+        insights.append({
+            "severity": "watch",
+            "kind": "assignment_gap",
+            "title": f"{class_name} has no tracked assignments yet",
+            "detail": "Start tracking from a contents item when you next collect work.",
+            "days": None,
+        })
+    return insights[:5]
+
+
+def _classops_student_report(class_name: str, students: list[dict], ledger: dict | None = None, today: date | None = None) -> dict:
     ledger = ledger if isinstance(ledger, dict) else bot.gs.get_classops_ledger()
+    today = today or datetime.now(bot.SGT).date()
     record = _classops_record_for(ledger, class_name)
     assignments = [item for item in record.get("assignments", []) if isinstance(item, dict)]
     roster = []
@@ -2299,12 +2410,19 @@ def _classops_student_report(class_name: str, students: list[dict], ledger: dict
             "missing_count": 0,
             "absent_count": 0,
             "catchup_count": 0,
+            "risk_score": 0,
+            "risk_reasons": [],
+            "timing_patterns": {},
             "status": "clear",
         })
     roster_by_key = {_classops_name_key(item["name"]): item for item in roster}
+    student_events = {key: {"missing": [], "absent": []} for key in roster_by_key}
     unmatched = {"absent": [], "submitted": [], "non_submitted": []}
     assignment_summaries = []
     for assignment in assignments:
+        due_date = _classops_parse_date(assignment.get("collect_by", ""))
+        timing_context = _classops_timing_context(due_date)
+        event = _classops_make_event(assignment, timing_context)
         submitted = {_classops_name_key(name) for name in assignment.get("submitted", []) if _classops_name_key(name)}
         non_submitted = {_classops_name_key(name) for name in assignment.get("non_submitted", []) if _classops_name_key(name)}
         absent = {_classops_name_key(name) for name in assignment.get("absent", []) if _classops_name_key(name)}
@@ -2329,10 +2447,12 @@ def _classops_student_report(class_name: str, students: list[dict], ledger: dict
                 absent_total += 1
                 student["absent_count"] += 1
                 student["catchup_count"] += 1
+                student_events[key]["absent"].append(event)
             elif non_submitted:
                 if key in non_submitted:
                     missing_total += 1
                     student["missing_count"] += 1
+                    student_events[key]["missing"].append(event)
                 else:
                     submitted_total += 1
                     student["submitted_count"] += 1
@@ -2342,14 +2462,44 @@ def _classops_student_report(class_name: str, students: list[dict], ledger: dict
             else:
                 missing_total += 1
                 student["missing_count"] += 1
+                student_events[key]["missing"].append(event)
         assignment_summaries.append({
             **assignment,
             "roster_count": len(roster),
             "submitted_count": submitted_total,
             "missing_count": missing_total,
             "absent_count": absent_total,
+            "timing_context": timing_context,
         })
     for student in roster:
+        key = _classops_name_key(student["name"])
+        events = student_events.get(key, {"missing": [], "absent": []})
+        overdue = 0
+        timing_patterns: dict[str, int] = {}
+        for event in events.get("missing", []):
+            due = _classops_parse_date(event.get("collect_by", ""))
+            if due and due < today:
+                overdue += 1
+            for timing in event.get("timing_context", []):
+                timing_key = timing.get("key", "")
+                if timing_key:
+                    timing_patterns[timing_key] = timing_patterns.get(timing_key, 0) + 1
+        reasons = []
+        if student["missing_count"] >= 2:
+            reasons.append(f"Repeated non-submission across {student['missing_count']} tracked assignments")
+        elif student["missing_count"] == 1:
+            reasons.append("One open non-submission")
+        if overdue:
+            reasons.append(f"{overdue} overdue item{'s' if overdue != 1 else ''}")
+        if student["catchup_count"] >= 1:
+            reasons.append(f"{student['catchup_count']} absence catch-up item{'s' if student['catchup_count'] != 1 else ''}")
+        if timing_patterns.get("after_weekend", 0) >= 2:
+            reasons.append("Pattern appears after weekends")
+        if timing_patterns.get("after_public_holiday", 0) >= 1:
+            reasons.append("Watch after school/public holiday")
+        student["timing_patterns"] = timing_patterns
+        student["risk_reasons"] = reasons
+        student["risk_score"] = student["missing_count"] * 3 + overdue * 2 + student["catchup_count"]
         if student["missing_count"] >= 2:
             student["status"] = "follow up"
         elif student["catchup_count"] >= 1:
@@ -2357,14 +2507,17 @@ def _classops_student_report(class_name: str, students: list[dict], ledger: dict
         elif student["missing_count"] == 1:
             student["status"] = "watch"
     concerns = [student for student in roster if student["status"] != "clear"]
+    insights = _classops_build_insights(class_name, roster, assignments, today)
     return {
         "class_name": class_name,
         "roster_count": len(roster),
         "assignment_count": len(assignments),
         "concern_count": len(concerns),
+        "insight_count": len(insights),
         "students": roster,
         "concerns": concerns,
         "assignments": assignment_summaries[-12:],
+        "insights": insights,
         "unmatched": unmatched,
     }
 
@@ -2390,6 +2543,7 @@ def _classops_enrich_with_students(manifest: dict) -> dict:
         "roster_count": sum(len(item.get("students") or []) for item in manifest.get("classes", []) or []),
         "concern_count": sum((item.get("student_report") or {}).get("concern_count", 0) for item in manifest.get("classes", []) or []),
         "assignment_count": sum((item.get("student_report") or {}).get("assignment_count", 0) for item in manifest.get("classes", []) or []),
+        "insight_count": sum((item.get("student_report") or {}).get("insight_count", 0) for item in manifest.get("classes", []) or []),
     }
     return manifest
 
@@ -2445,6 +2599,7 @@ def _classops_status_summary() -> dict:
         "assignment_count": 0,
         "pending_count": 0,
         "concern_count": 0,
+        "insight_count": 0,
         "due_today_count": 0,
         "overdue_count": 0,
     }
@@ -2457,10 +2612,12 @@ def _classops_status_summary() -> dict:
             roster_count = report.get("roster_count", 0)
             concern_count = report.get("concern_count", 0)
             latest = report.get("assignments", [])[-1] if report.get("assignments") else {}
+            insights = report.get("insights", []) or []
         except Exception:
             roster_count = 0
             concern_count = 0
             latest = assignments[-1] if assignments else {}
+            insights = []
         pending_count = int(latest.get("missing_count") or len(latest.get("non_submitted", []) or []) or 0)
         due_today = 0
         overdue = 0
@@ -2488,11 +2645,14 @@ def _classops_status_summary() -> dict:
             "due_today_count": due_today,
             "overdue_count": overdue,
             "latest_assignment": latest,
+            "insight_count": len(insights),
+            "top_insight": insights[0] if insights else {},
         }
         class_rows.append(row)
         totals["assignment_count"] += len(assignments)
         totals["pending_count"] += pending_count
         totals["concern_count"] += concern_count
+        totals["insight_count"] += len(insights)
         totals["due_today_count"] += due_today
         totals["overdue_count"] += overdue
     totals["class_count"] = len(class_rows)

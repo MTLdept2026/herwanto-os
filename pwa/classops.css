@@ -554,7 +554,8 @@ aside h2 {
 }
 
 .student-summary,
-.assignment-tally {
+.assignment-tally,
+.insight-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--space-sm);
@@ -578,6 +579,7 @@ aside h2 {
 
 .student-summary article,
 .assignment-tally article,
+.insight-card,
 .student-row,
 .contents-row {
   border: 1px solid var(--border-visible);
@@ -585,13 +587,15 @@ aside h2 {
 }
 
 .student-summary article,
-.assignment-tally article {
+.assignment-tally article,
+.insight-card {
   padding: 10px;
 }
 
 .student-summary span,
 .student-row.header,
-.assignment-tally span {
+.assignment-tally span,
+.insight-card span {
   color: var(--text-secondary);
   font-size: 11px;
   letter-spacing: 0.08em;
@@ -611,6 +615,31 @@ aside h2 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.insight-card {
+  display: grid;
+  gap: 6px;
+  border-left: 4px solid var(--warning);
+}
+
+.insight-card[data-severity="critical"] {
+  border-left-color: var(--danger);
+}
+
+.insight-card strong {
+  color: var(--text-display);
+  font-family: var(--font-readable);
+  font-size: 15px;
+  line-height: 1.15;
+}
+
+.insight-card p {
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+  font-family: var(--font-readable);
+  font-size: 13px;
+  line-height: 1.3;
 }
 
 .student-table,
@@ -769,6 +798,7 @@ aside h2 {
   .contents-row,
   .assignment-form,
   .student-summary,
+  .insight-grid,
   .assignment-tally,
   .student-row,
   .roster-picker {

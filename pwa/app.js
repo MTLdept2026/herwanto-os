@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260510-classops-32";
-const APP_SCRIPT = "app.js?v=20260510-classops-32";
-const EXPECTED_SW_CACHE = "hira-os-v105";
+const APP_VERSION = "20260510-classops-35";
+const APP_SCRIPT = "app.js?v=20260510-classops-35";
+const EXPECTED_SW_CACHE = "hira-os-v106";
 
 const state = {
   token: localStorage.getItem("hira_web_token") || "",
@@ -1749,11 +1749,14 @@ function renderClassOpsStatus(classops = {}) {
         const roster = Number(latest.roster_count || item.roster_count || 0);
         const missing = Number(item.pending_count || latest.missing_count || 0);
         const due = latest.collect_by ? ` · due ${markdownish(latest.collect_by)}` : "";
+        const insight = item.top_insight || {};
+        const insightLine = insight.title ? `<small class="classops-insight">${markdownish(insight.title)}</small>` : "";
         return `
-          <div class="classops-status-row">
+          <div class="classops-status-row" data-severity="${markdownish(insight.severity || (item.concern_count ? "watch" : "clear"))}">
             <span>${markdownish(item.class_name || "Class")}</span>
             <strong>${markdownish(title)}</strong>
             <small>${roster ? `${submitted}/${roster} submitted` : `${missing} pending`}${due}</small>
+            ${insightLine}
           </div>
         `;
       }).join("")

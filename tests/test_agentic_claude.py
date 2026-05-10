@@ -1594,6 +1594,86 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(report["assignments"][0]["submitted_count"], 1)
         self.assertEqual(report["assignments"][0]["missing_count"], 1)
 
+    def test_classops_student_report_flags_weekend_submission_patterns(self):
+        ledger = {
+            "classes": {
+                "2G3": {
+                    "assignments": [
+                        {
+                            "id": "work-1",
+                            "assignment_title": "Latihan 1",
+                            "lesson_date": "2026-05-01",
+                            "collect_by": "2026-05-04",
+                            "non_submitted": ["Kumar Das"],
+                        },
+                        {
+                            "id": "work-2",
+                            "assignment_title": "Latihan 2",
+                            "lesson_date": "2026-05-08",
+                            "collect_by": "2026-05-11",
+                            "non_submitted": ["Kumar Das"],
+                        },
+                    ]
+                }
+            }
+        }
+        students = [
+            {"no": "1", "class": "2G3", "name": "Kumar Das"},
+            {"no": "2", "class": "2G3", "name": "Siti Aminah"},
+        ]
+
+        report = web_app._classops_student_report("2G3", students, ledger, today=date(2026, 5, 12))
+
+        by_name = {student["name"]: student for student in report["students"]}
+        self.assertEqual(by_name["Kumar Das"]["status"], "follow up")
+        self.assertEqual(by_name["Kumar Das"]["timing_patterns"]["after_weekend"], 2)
+        self.assertIn("Pattern appears after weekends", by_name["Kumar Das"]["risk_reasons"])
+        self.assertTrue(any(insight["kind"] == "timing_pattern" for insight in report["insights"]))
+
+    def test_classops_student_report_flags_public_holiday_timing(self):
+        ledger = {
+            "classes": {
+                "2G3": {
+                    "assignments": [{
+                        "id": "work-1",
+                        "assignment_title": "Latihan Hari Raya Haji",
+                        "lesson_date": "2026-05-26",
+                        "collect_by": "2026-05-28",
+                        "non_submitted": ["Kumar Das"],
+                    }]
+                }
+            }
+        }
+        students = [{"no": "1", "class": "2G3", "name": "Kumar Das"}]
+
+        report = web_app._classops_student_report("2G3", students, ledger, today=date(2026, 5, 29))
+
+        student = report["students"][0]
+        self.assertEqual(student["timing_patterns"]["after_public_holiday"], 1)
+        self.assertIn("Watch after school/public holiday", student["risk_reasons"])
+        self.assertEqual(report["assignments"][0]["timing_context"][0]["key"], "after_public_holiday")
+
+    def test_classops_student_report_flags_assignment_gap(self):
+        ledger = {
+            "classes": {
+                "2G3": {
+                    "assignments": [{
+                        "id": "work-1",
+                        "assignment_title": "Old work",
+                        "lesson_date": "2026-04-01",
+                        "non_submitted": [],
+                    }]
+                }
+            }
+        }
+        students = [{"no": "1", "class": "2G3", "name": "Siti Aminah"}]
+
+        report = web_app._classops_student_report("2G3", students, ledger, today=date(2026, 5, 10))
+
+        gap = [insight for insight in report["insights"] if insight["kind"] == "assignment_gap"][0]
+        self.assertEqual(gap["days"], 39)
+        self.assertIn("not had tracked work", gap["title"])
+
     def test_classops_status_summary_rolls_up_hira_panel_metrics(self):
         today = datetime.now(web_app.bot.SGT).strftime("%Y-%m-%d")
         ledger = {
