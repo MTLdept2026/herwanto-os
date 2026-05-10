@@ -112,6 +112,20 @@ def parse_classops_date_folder(name: str) -> dict:
     }
 
 
+def _date_info_from_folder_parts(folder_parts: list[str]) -> tuple[dict, int]:
+    if not folder_parts:
+        return {"date": "", "label": "", "matched": False}, 0
+    first = str(folder_parts[0] or "").strip()
+    direct = parse_classops_date_folder(first)
+    if direct.get("matched"):
+        return direct, 1
+    if len(folder_parts) >= 3 and all(re.fullmatch(r"\d{1,4}", str(part or "").strip()) for part in folder_parts[:3]):
+        nested = parse_classops_date_folder("/".join(folder_parts[:3]))
+        if nested.get("matched"):
+            return nested, 3
+    return {"date": "", "label": first, "matched": False}, 0
+
+
 def _folder_sort_key(folder: dict) -> tuple:
     date_value = folder.get("date") or "9999-12-31"
     return (date_value, str(folder.get("folder", "")).lower())
@@ -137,7 +151,9 @@ def scan_classops_manifest() -> dict:
             class_name = raw_class
         folder_parts = parts[1:-1]
         folder = "/".join(folder_parts) if folder_parts else ""
-        date_info = parse_classops_date_folder(folder_parts[0] if folder_parts else "")
+        date_info, date_part_count = _date_info_from_folder_parts(folder_parts)
+        if date_part_count and not date_info.get("label"):
+            date_info["label"] = " ".join(folder_parts[date_part_count:]).strip()
         bucket = class_map.setdefault(class_name, {"class": class_name, "folders": {}, "file_count": 0})
         bucket["file_count"] += 1
         folder_bucket = bucket["folders"].setdefault(

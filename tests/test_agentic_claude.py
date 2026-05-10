@@ -1357,6 +1357,11 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(parsed["date"], "2026-10-05")
         self.assertEqual(parsed["label"], "")
 
+    def test_classops_nested_date_parts_parse_like_dropbox_path(self):
+        parsed, consumed = dropbox_service._date_info_from_folder_parts(["24", "2", "26", "Peribahasa"])
+        self.assertEqual(consumed, 3)
+        self.assertEqual(parsed["date"], "2026-02-24")
+
     def test_format_curated_digest_includes_why_lines(self):
         text = bot.format_curated_digest([
             {
