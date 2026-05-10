@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 import unittest
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import ANY, patch
@@ -10,6 +10,7 @@ from unittest.mock import ANY, patch
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
 import bot
+import dropbox_service
 import islamic_service
 import pdf_service
 import search_service
@@ -1173,11 +1174,10 @@ class AgenticClaudeTests(unittest.TestCase):
             entries = bot.build_curated_digest_entries(limit=2, fetch_limit=2, record=False)
 
         self.assertEqual(len(entries), 2)
-        self.assertEqual(entries[0]["label"], "SG Education")
-        self.assertEqual(entries[1]["label"], "AI")
+        self.assertEqual({entry["label"] for entry in entries}, {"SG Education", "AI"})
         self.assertTrue(all(entry.get("why") for entry in entries))
 
-    def test_curated_digest_keeps_first_class_interest_slots(self):
+    def test_curated_digest_skips_interest_slots_without_relevant_items(self):
         fake_topics = [
             ("SG Education", "edu"),
             ("AI", "ai"),
@@ -1188,7 +1188,7 @@ class AgenticClaudeTests(unittest.TestCase):
 
         def fake_google_news(query, max_items=4):
             return [{
-                "title": f"{query} ordinary update",
+                "title": "Ordinary market update with no matching radar term",
                 "url": f"https://example.com/{query}",
                 "source": "Example",
             }]
@@ -1199,10 +1199,10 @@ class AgenticClaudeTests(unittest.TestCase):
             entries = bot.build_curated_digest_entries(limit=4, fetch_limit=2, record=False)
 
         labels = [entry["label"] for entry in entries]
-        self.assertIn("🏎️ F1", labels)
-        self.assertIn("⚽ Liverpool / EPL", labels)
+        self.assertNotIn("🏎️ F1", labels)
+        self.assertNotIn("⚽ Liverpool / EPL", labels)
 
-    def test_curated_digest_keeps_seen_f1_when_no_fresh_f1_item_available(self):
+    def test_curated_digest_skips_seen_f1_when_no_fresh_f1_item_available(self):
         f1_item = {"title": "F1 paddock update", "url": "https://example.com/f1", "source": "Example"}
         seen_key = search_service.news_item_key(f1_item)
 
@@ -1220,20 +1220,142 @@ class AgenticClaudeTests(unittest.TestCase):
              patch("search_service.google_news", side_effect=fake_google_news):
             entries = bot.build_curated_digest_entries(limit=3, fetch_limit=2, record=False)
 
-        self.assertIn("🏎️ F1", [entry["label"] for entry in entries])
+        self.assertNotIn("🏎️ F1", [entry["label"] for entry in entries])
 
-    def test_curated_digest_shows_required_topic_when_feed_returns_no_items(self):
+    def test_curated_digest_skips_topic_when_feed_returns_no_items(self):
         with patch("bot._news_topics", return_value=[("SG Education", "edu"), ("🏎️ F1", "f1")]), \
              patch("bot._recent_news_digest_keys", return_value=set()), \
              patch("search_service.google_news", side_effect=lambda query, max_items=4: [] if query == "f1" else [{
                  "title": "MOE policy update today",
                  "url": "https://example.com/edu",
                  "source": "Example",
-             }]):
+        }]):
             entries = bot.build_curated_digest_entries(limit=2, fetch_limit=2, record=False)
 
-        f1_entry = next(entry for entry in entries if entry["label"] == "🏎️ F1")
-        self.assertIn("no fresh headline returned", f1_entry["item"]["title"])
+        self.assertNotIn("🏎️ F1", [entry["label"] for entry in entries])
+
+    def test_curated_digest_rejects_generic_epl_for_liverpool_slot(self):
+        def fake_google_news(query, max_items=4):
+            if query == "lfc":
+                return [{
+                    "title": "Premier League title race takes another twist",
+                    "url": "https://example.com/epl",
+                    "source": "Example",
+                    "published": "Sun, 10 May 2026 06:00:00 GMT",
+                }]
+            return [{
+                "title": "MOE policy update today",
+                "url": "https://example.com/edu",
+                "source": "Example",
+            }]
+
+        with patch("bot._news_topics", return_value=[("SG Education", "edu"), ("⚽ Liverpool / EPL", "lfc")]), \
+             patch("bot._recent_news_digest_keys", return_value=set()), \
+             patch("search_service.google_news", side_effect=fake_google_news):
+            entries = bot.build_curated_digest_entries(
+                now=bot.SGT.localize(datetime(2026, 5, 10, 8, 0)),
+                limit=2,
+                fetch_limit=2,
+                record=False,
+            )
+
+        self.assertNotIn("⚽ Liverpool / EPL", [entry["label"] for entry in entries])
+
+    def test_curated_digest_prioritises_recent_liverpool_match_report(self):
+        def fake_google_news(query, max_items=4):
+            if query == "lfc":
+                return [
+                    {
+                        "title": "Liverpool transfer rumour roundup",
+                        "url": "https://example.com/old-transfer",
+                        "source": "Example",
+                        "published": "Wed, 06 May 2026 08:00:00 GMT",
+                    },
+                    {
+                        "title": "Liverpool 1-1 Chelsea: match report and player ratings",
+                        "url": "https://example.com/lfc-chelsea",
+                        "source": "Example",
+                        "published": "Sat, 09 May 2026 15:00:00 GMT",
+                    },
+                ]
+            return []
+
+        with patch("bot._news_topics", return_value=[("⚽ Liverpool / EPL", "lfc")]), \
+             patch("bot._recent_news_digest_keys", return_value=set()), \
+             patch("search_service.google_news", side_effect=fake_google_news):
+            entries = bot.build_curated_digest_entries(
+                now=bot.SGT.localize(datetime(2026, 5, 10, 8, 0)),
+                limit=1,
+                fetch_limit=2,
+                record=False,
+            )
+
+        self.assertEqual(entries[0]["item"]["title"], "Liverpool 1-1 Chelsea: match report and player ratings")
+        self.assertIn("Liverpool match", entries[0]["why"])
+
+    def test_curated_digest_accepts_ai_tools_radar_items(self):
+        def fake_google_news(query, max_items=4):
+            return [{
+                "title": "Claude and Kimi ship new coding agent updates",
+                "url": "https://example.com/ai-tools",
+                "source": "Example",
+                "published": "Sun, 10 May 2026 01:00:00 GMT",
+            }]
+
+        with patch("bot._news_topics", return_value=[("AI Tools", "ai")]), \
+             patch("bot._recent_news_digest_keys", return_value=set()), \
+             patch("search_service.google_news", side_effect=fake_google_news):
+            entries = bot.build_curated_digest_entries(
+                now=bot.SGT.localize(datetime(2026, 5, 10, 8, 0)),
+                limit=1,
+                fetch_limit=2,
+                record=False,
+            )
+
+        self.assertEqual(entries[0]["label"], "AI Tools")
+        self.assertIn("AI tool radar", entries[0]["why"])
+
+    def test_curated_digest_accepts_nothing_and_teenage_engineering_items(self):
+        def fake_google_news(query, max_items=4):
+            if query == "nothing":
+                return [{
+                    "title": "Nothing Phone roadmap and Nothing OS beta features detailed",
+                    "url": "https://example.com/nothing",
+                    "source": "Example",
+                    "published": "Sat, 09 May 2026 23:00:00 GMT",
+                }]
+            return [{
+                "title": "Teenage Engineering OP-XY firmware update reviewed",
+                "url": "https://example.com/te",
+                "source": "Example",
+                "published": "Sat, 09 May 2026 22:00:00 GMT",
+            }]
+
+        with patch("bot._news_topics", return_value=[("Nothing Products", "nothing"), ("Teenage Engineering", "te")]), \
+             patch("bot._recent_news_digest_keys", return_value=set()), \
+             patch("search_service.google_news", side_effect=fake_google_news):
+            entries = bot.build_curated_digest_entries(
+                now=bot.SGT.localize(datetime(2026, 5, 10, 8, 0)),
+                limit=2,
+                fetch_limit=2,
+                record=False,
+            )
+
+        labels = [entry["label"] for entry in entries]
+        self.assertIn("Nothing Products", labels)
+        self.assertIn("Teenage Engineering", labels)
+
+    def test_classops_date_folder_parses_singapore_day_month_year(self):
+        parsed = dropbox_service.parse_classops_date_folder("24/2/26 Peribahasa")
+        self.assertTrue(parsed["matched"])
+        self.assertEqual(parsed["date"], "2026-02-24")
+        self.assertEqual(parsed["label"], "Peribahasa")
+
+    def test_classops_date_folder_handles_plain_date_only(self):
+        parsed = dropbox_service.parse_classops_date_folder("5-10-2026")
+        self.assertTrue(parsed["matched"])
+        self.assertEqual(parsed["date"], "2026-10-05")
+        self.assertEqual(parsed["label"], "")
 
     def test_format_curated_digest_includes_why_lines(self):
         text = bot.format_curated_digest([

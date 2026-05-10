@@ -26,6 +26,7 @@ from starlette.responses import JSONResponse
 
 import bot
 import document_service as docs
+import dropbox_service as dropbox
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -1226,6 +1227,7 @@ def _service_status() -> dict:
         "personal_gmail": bot.gs.gmail_ok("personal"),
         "personal_gmail2": bot.gs.gmail_ok("personal2"),
         "work_gmail": bot.gs.gmail_ok("work"),
+        "dropbox": dropbox.configured(),
     }
 
 
@@ -2212,6 +2214,17 @@ def admin_memory(limit: int = 5, x_hira_token: Optional[str] = Header(default=No
         return bot.build_memory_review(limit=limit)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Memory review unavailable: {exc}") from exc
+
+
+@app.post("/api/classops/dropbox/scan")
+def classops_dropbox_scan(x_hira_token: Optional[str] = Header(default=None)):
+    _require_token(x_hira_token)
+    if not dropbox.configured():
+        raise HTTPException(status_code=400, detail="Dropbox ClassOps env vars are not configured.")
+    try:
+        return dropbox.scan_classops_manifest()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Dropbox ClassOps scan failed: {exc}") from exc
 
 
 @app.post("/api/notifications/subscribe")

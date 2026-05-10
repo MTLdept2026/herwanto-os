@@ -13,6 +13,7 @@ import tempfile
 from collections import OrderedDict, defaultdict
 from datetime import datetime, timedelta, time as dt_time, date
 from difflib import SequenceMatcher
+from email.utils import parsedate_to_datetime
 import pytz
 
 from anthropic import Anthropic, AsyncAnthropic
@@ -3284,16 +3285,270 @@ def _news_topics(now: datetime | None = None):
     return [(label, query) for label, query in ss.DIGEST_TOPICS]
 
 
-REQUIRED_DIGEST_LABEL_TERMS = ("f1", "liverpool")
+LIVERPOOL_DIGEST_TERMS = (
+    "liverpool",
+    "lfc",
+    "anfield",
+    "arne slot",
+    "salah",
+    "van dijk",
+    "alisson",
+    "mamardashvili",
+    "konate",
+    "gakpo",
+    "wirtz",
+    "isak",
+    "szoboszlai",
+    "mac allister",
+    "gravenberch",
+    "ngumoha",
+    "bradley",
+    "frimpong",
+    "kerkez",
+    "chiesa",
+    "ekitike",
+)
+F1_DIGEST_TERMS = (
+    "formula 1",
+    "f1",
+    "grand prix",
+    "fia",
+    "mercedes",
+    "russell",
+    "antonelli",
+    "hamilton",
+    "ferrari",
+    "mclaren",
+    "verstappen",
+    "red bull",
+    "qualifying",
+    "sprint",
+)
+SPORTS_MATCH_DIGEST_TERMS = (
+    "result",
+    "results",
+    "score",
+    "scores",
+    "match report",
+    "as it happened",
+    "highlights",
+    "player ratings",
+    "line-up",
+    "lineup",
+    "starting xi",
+    "team news",
+    "injury",
+    "injuries",
+    "availability",
+    "fixture",
+    "fixtures",
+    "qualifying",
+    "race",
+    "sprint",
+    "standings",
+    "table",
+)
+DIGEST_HOT_TERMS = (
+    "announces",
+    "announcement",
+    "available",
+    "beta",
+    "deadline",
+    "developer",
+    "firmware",
+    "hands-on",
+    "impact",
+    "launch",
+    "launches",
+    "new",
+    "plan",
+    "plans",
+    "policy",
+    "pricing",
+    "release",
+    "released",
+    "review",
+    "roadmap",
+    "security",
+    "shipping",
+    "update",
+    "upgrade",
+)
+DIGEST_TOPIC_RULES = {
+    "ai": {
+        "terms": (
+            "openai",
+            "chatgpt",
+            "codex",
+            "claude",
+            "anthropic",
+            "kimi",
+            "moonshot",
+            "gemini",
+            "cursor",
+            "llm",
+            "model",
+        ),
+        "lens": "AI tool radar",
+        "max_age_hours": 168,
+    },
+    "teenage": {
+        "terms": (
+            "teenage engineering",
+            "op-1",
+            "op-xy",
+            "op-z",
+            "pocket operator",
+            "field system",
+            "tp-7",
+            "tx-6",
+            "cm-15",
+            "ep-133",
+            "ep-1320",
+        ),
+        "lens": "Teenage Engineering radar",
+        "max_age_hours": 336,
+    },
+    "nothing": {
+        "terms": (
+            "nothing phone",
+            "nothing os",
+            "nothing ear",
+            "nothing products",
+            "cmf",
+            "carl pei",
+        ),
+        "lens": "Nothing product radar",
+        "max_age_hours": 336,
+    },
+    "android": {
+        "terms": ("android", "pixel", "google play", "play store", "google i/o", "material you"),
+        "lens": "Android user radar",
+        "max_age_hours": 168,
+    },
+    "ios": {
+        "terms": ("ios", "iphone", "ipad", "app store", "apple developer", "testflight"),
+        "lens": "iOS user radar",
+        "max_age_hours": 168,
+    },
+    "macos": {
+        "terms": ("macos", "macbook", "apple silicon", "xcode", "apple mac"),
+        "lens": "macOS user radar",
+        "max_age_hours": 168,
+    },
+    "developer": {
+        "terms": (
+            "developer",
+            "android",
+            "ios",
+            "react",
+            "vite",
+            "capacitor",
+            "railway",
+            "netlify",
+            "github",
+            "xcode",
+            "play store",
+            "app store",
+        ),
+        "lens": "solo-dev relevance",
+        "max_age_hours": 168,
+    },
+    "education": {
+        "terms": ("moe", "singapore education", "teacher", "school", "schools", "educator", "curriculum"),
+        "lens": "Singapore educator relevance",
+        "max_age_hours": 168,
+    },
+}
 
 
-def _is_required_digest_label(label: str) -> bool:
+def _digest_sports_kind(label: str) -> str:
     clean = str(label or "").lower()
-    return any(term in clean for term in REQUIRED_DIGEST_LABEL_TERMS)
+    if "liverpool" in clean or "lfc" in clean:
+        return "liverpool"
+    if "f1" in clean or "formula 1" in clean:
+        return "f1"
+    return ""
+
+
+def _digest_topic_rule(label: str) -> dict:
+    clean = str(label or "").lower()
+    if "f1" in clean or "formula 1" in clean:
+        return {
+            "terms": F1_DIGEST_TERMS,
+            "lens": "fresh F1/Mercedes radar",
+            "max_age_hours": 96,
+        }
+    if "liverpool" in clean or "lfc" in clean:
+        return {
+            "terms": LIVERPOOL_DIGEST_TERMS,
+            "lens": "fresh Liverpool radar",
+            "max_age_hours": 96,
+        }
+    if "teenage" in clean:
+        return DIGEST_TOPIC_RULES["teenage"]
+    if "nothing" in clean or "cmf" in clean:
+        return DIGEST_TOPIC_RULES["nothing"]
+    if "android" in clean:
+        return DIGEST_TOPIC_RULES["android"]
+    if "ios" in clean:
+        return DIGEST_TOPIC_RULES["ios"]
+    if "macos" in clean or clean == "mac":
+        return DIGEST_TOPIC_RULES["macos"]
+    if "developer" in clean or "app dev" in clean:
+        return DIGEST_TOPIC_RULES["developer"]
+    if "education" in clean or "moe" in clean:
+        return DIGEST_TOPIC_RULES["education"]
+    if "ai" in clean or "codex" in clean or "claude" in clean or "kimi" in clean:
+        return DIGEST_TOPIC_RULES["ai"]
+    return {}
+
+
+def _digest_item_age_hours(item: dict, now: datetime | None = None) -> float | None:
+    published = str((item or {}).get("published", "") or "").strip()
+    if not published:
+        return None
+    try:
+        parsed = parsedate_to_datetime(published)
+    except Exception:
+        try:
+            parsed = datetime.fromisoformat(published)
+        except Exception:
+            return None
+    if parsed.tzinfo is None:
+        parsed = SGT.localize(parsed)
+    current = now or datetime.now(SGT)
+    return max(0.0, (current.astimezone(SGT) - parsed.astimezone(SGT)).total_seconds() / 3600)
+
+
+def _digest_item_text(item: dict) -> str:
+    return f"{(item or {}).get('title', '')} {(item or {}).get('source', '')}".lower()
+
+
+def _digest_item_has_any(text: str, terms: tuple[str, ...]) -> bool:
+    return any(term in text for term in terms)
+
+
+def _digest_item_allowed(label: str, item: dict, now: datetime | None = None) -> bool:
+    rule = _digest_topic_rule(label)
+    if not rule:
+        return True
+    text = _digest_item_text(item)
+    terms = tuple(rule.get("terms") or ())
+    if terms and not _digest_item_has_any(text, terms):
+        return False
+    age_hours = _digest_item_age_hours(item, now=now)
+    max_age = int(rule.get("max_age_hours") or 0)
+    if max_age and age_hours is not None and age_hours > max_age:
+        return False
+    return True
 
 
 def _digest_label_lens(label: str) -> tuple[str, int]:
     clean = str(label or "").lower()
+    rule = _digest_topic_rule(label)
+    if rule:
+        return (str(rule.get("lens") or "topic relevance"), 9)
     if clean.startswith("owner:"):
         return ("new-owner relevance", 9)
     if any(term in clean for term in ("education", "moe", "sg education")):
@@ -3307,17 +3562,40 @@ def _digest_label_lens(label: str) -> tuple[str, int]:
     return ("shortlist relevance", 4)
 
 
-def _curated_digest_score(label: str, item: dict, slot_index: int = 0) -> tuple[int, str]:
+def _curated_digest_score(label: str, item: dict, slot_index: int = 0, now: datetime | None = None) -> tuple[int, str]:
     lens, lens_bonus = _digest_label_lens(label)
     score = 50 + ss.news_quality_score(item) + lens_bonus
     title_text = str(item.get("title", "")).lower()
     if any(term in title_text for term in ("today", "new", "launch", "update", "policy", "developer", "release", "security")):
         score += 4
+    if _digest_item_has_any(title_text, DIGEST_HOT_TERMS):
+        score += 6
+    sports_kind = _digest_sports_kind(label)
+    if sports_kind:
+        age_hours = _digest_item_age_hours(item, now=now)
+        has_match_signal = _digest_item_has_any(title_text, SPORTS_MATCH_DIGEST_TERMS)
+        if age_hours is not None:
+            if age_hours <= 18:
+                score += 14
+            elif age_hours <= 36:
+                score += 9
+            elif age_hours <= 72:
+                score += 3
+            else:
+                score -= 10
+        if has_match_signal:
+            score += 10
+        if sports_kind == "liverpool":
+            lens = "fresh Liverpool match/update relevance" if has_match_signal else "Liverpool relevance"
+        elif sports_kind == "f1":
+            lens = "fresh F1 race/weekend relevance" if has_match_signal else "F1 relevance"
     if str(label or "").lower().startswith("owner:") and any(
         term in title_text
         for term in ("setup", "guide", "tips", "hidden", "firmware", "update", "accessory", "accessories", "issue", "review")
     ):
         score += 8
+    if _digest_topic_rule(label) and _digest_item_has_any(title_text, tuple(_digest_topic_rule(label).get("terms") or ())):
+        score += 6
     score -= max(0, int(slot_index or 0)) * 2
     return min(100, score), lens
 
@@ -3335,7 +3613,9 @@ def build_curated_digest_entries(now: datetime | None = None, limit: int = 4, fe
             key = ss.news_item_key(item)
             if not key or key in used_keys:
                 continue
-            score, lens = _curated_digest_score(label, item, slot_index=index)
+            if not _digest_item_allowed(label, item, now=current):
+                continue
+            score, lens = _curated_digest_score(label, item, slot_index=index, now=current)
             entry = {
                 "label": label,
                 "item": item,
@@ -3355,36 +3635,6 @@ def build_curated_digest_entries(now: datetime | None = None, limit: int = 4, fe
     chosen = []
     chosen_labels = set()
 
-    for entry in candidates + seen_candidates:
-        label = str(entry.get("label", "")).strip()
-        label_key = label.lower()
-        if not _is_required_digest_label(label) or label_key in chosen_labels:
-            continue
-        chosen.append(entry)
-        chosen_labels.add(label_key)
-        if len(chosen) >= max(1, int(limit or 4)):
-            break
-
-    for label, _query in topics:
-        label_text = str(label or "").strip()
-        label_key = label_text.lower()
-        if not _is_required_digest_label(label_text) or label_key in chosen_labels:
-            continue
-        chosen.append({
-            "label": label_text,
-            "item": {
-                "title": f"{label_text} check: no fresh headline returned by Google News RSS",
-                "source": "H.I.R.A",
-                "url": "",
-            },
-            "key": f"required-digest:{label_key}:{current.strftime('%Y-%m-%d')}",
-            "score": 54,
-            "why": "personal interest",
-        })
-        chosen_labels.add(label_key)
-        if len(chosen) >= max(1, int(limit or 4)):
-            break
-
     for entry in candidates:
         label = str(entry.get("label", "")).strip().lower()
         if label in chosen_labels:
@@ -3401,18 +3651,6 @@ def build_curated_digest_entries(now: datetime | None = None, limit: int = 4, fe
             chosen.append(entry)
             if len(chosen) >= max(1, int(limit or 4)):
                 break
-
-    if not chosen:
-        fallback = ss.pick_fresh_morning_digest_entries(
-            topics=_news_topics(now=current),
-            seen_keys=seen,
-            max_items_per_topic=1,
-            fetch_limit=1,
-        )
-        chosen = [
-            {**entry, "score": 55, "why": "shortlist relevance"}
-            for entry in fallback[: max(1, int(limit or 4))]
-        ]
 
     if record and chosen:
         _remember_news_digest_entries(chosen, now=current)

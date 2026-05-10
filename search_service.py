@@ -22,20 +22,20 @@ GOOGLE_NEWS_TIMEOUT = 8
 # Google News RSS — one per digest topic, no API key needed
 # Format: news.google.com/rss/search?q=QUERY&hl=en-SG&gl=SG&ceid=SG:en
 DIGEST_TOPICS = [
-    ("⚽ Liverpool / EPL",  "Liverpool FC Premier League standings fixtures transfers"),
-    ("🏎️ F1",               "Formula 1"),
-    ("🤖 AI",               "Claude Gemini Codex AI"),
-    ("🤖 Android",          "Android OS Google Pixel app ecosystem"),
-    ("🍎 iOS",              "iOS iPhone Apple developer"),
-    ("🧑‍💻 Developer",       "iOS Android React Vite Capacitor developer updates"),
+    ("⚽ Liverpool / EPL",  "Liverpool FC latest result match report fixture line-up injury transfer"),
+    ("🏎️ F1 / Mercedes",    "Mercedes F1 George Russell Kimi Antonelli Lewis Hamilton latest result qualifying upgrade"),
+    ("🤖 AI Tools",         "OpenAI Codex Claude Anthropic Kimi Moonshot Gemini AI tools latest model release"),
+    ("🎛️ Teenage Engineering", "Teenage Engineering OP-XY OP-1 Field Pocket Operator product review firmware update"),
+    ("🤖 Android",          "Android OS Google Pixel Google Play app ecosystem security update"),
+    ("🍎 iOS",              "iOS iPhone Apple developer App Store TestFlight policy update"),
+    ("🧑‍💻 Solo Dev",        "solo developer iOS Android React Vite Capacitor Railway Netlify GitHub update"),
     ("☪️  Islam",            "Islam Muslim spirituality Singapore"),
     ("🇸🇬 SG Education",    "Singapore education MOE"),
     ("🇸🇬 SG News",         "Singapore news today"),
     ("🎨 Design / UI/UX",  "UI UX design"),
-    ("📱 App Dev",          "iOS Android app development"),
-    ("🍎 macOS",            "macOS Apple"),
-    ("📦 Nothing Products", "Nothing Phone CMF earbuds product launch"),
-    ("📦 Nothing OS",       "Nothing OS Nothing Phone Android update"),
+    ("🍎 macOS",            "macOS Apple MacBook Xcode developer update"),
+    ("📦 Nothing Products", "Nothing Phone Nothing Ear CMF product review launch upcoming plans"),
+    ("📦 Nothing OS",       "Nothing OS Nothing Phone Android update beta features"),
 ]
 
 
