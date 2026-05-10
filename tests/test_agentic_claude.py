@@ -1418,6 +1418,60 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(title, "Watak Melayu")
 
+    def test_classops_dropbox_file_link_uses_temporary_link(self):
+        with patch.dict(os.environ, {"DROPBOX_CLASSOPS_ROOT": "/ClassOps"}, clear=False), \
+             patch.object(dropbox_service, "_post", return_value={"link": "https://tmp.dropbox/link"}) as post_mock:
+            link = dropbox_service.get_file_link("2G3/24:2:26/nota.pdf")
+
+        post_mock.assert_called_once_with("/files/get_temporary_link", {"path": "/ClassOps/2G3/24:2:26/nota.pdf"})
+        self.assertEqual(link["url"], "https://tmp.dropbox/link")
+        self.assertEqual(link["kind"], "temporary_link")
+
+    def test_classops_content_override_persists_title_and_hidden_flag(self):
+        store = {}
+
+        def fake_set(key, value):
+            store[key] = value
+
+        with patch.object(bot.gs, "get_config", side_effect=lambda key: store.get(key)), \
+             patch.object(bot.gs, "set_config", side_effect=fake_set):
+            override = bot.gs.save_classops_content_override(
+                "2G3/24:2:26/latihan.pdf",
+                title="Latihan Peribahasa",
+                hidden=True,
+            )
+            overrides = bot.gs.get_classops_content_overrides()
+
+        self.assertTrue(override["hidden"])
+        self.assertEqual(overrides["2G3/24:2:26/latihan.pdf"]["title"], "Latihan Peribahasa")
+        self.assertTrue(overrides["2G3/24:2:26/latihan.pdf"]["hidden"])
+
+    def test_classops_content_overrides_rename_and_hide_manifest_items(self):
+        manifest = {
+            "summary": {"content_item_count": 2},
+            "classes": [{
+                "class": "2G3",
+                "content_item_count": 2,
+                "content_items": [
+                    {"path": "2G3/24:2:26/raw.pdf", "title": "Raw", "date": "2026-02-24"},
+                    {"path": "2G3/25:2:26/noise.pdf", "title": "Noise", "date": "2026-02-25"},
+                ],
+            }],
+        }
+        ledger = {
+            "content_overrides": {
+                "2G3/24:2:26/raw.pdf": {"title": "Nota - Masa Senggang"},
+                "2G3/25:2:26/noise.pdf": {"hidden": True},
+            }
+        }
+
+        updated = web_app._classops_apply_content_overrides(manifest, ledger)
+
+        self.assertEqual(updated["summary"]["content_item_count"], 1)
+        self.assertEqual(updated["classes"][0]["content_item_count"], 1)
+        self.assertEqual(updated["classes"][0]["content_items"][0]["title"], "Nota - Masa Senggang")
+        self.assertTrue(updated["classes"][0]["content_items"][0]["title_overridden"])
+
     def test_classops_students_filters_combined_teacher_roster_by_class(self):
         classlists = [{
             "grouping": "Herwanto MTL",

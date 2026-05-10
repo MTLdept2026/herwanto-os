@@ -644,6 +644,11 @@ aside, .detail { padding: var(--space-md); }
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border-visible));
 }
 
+.contents-row.is-selected {
+  border-color: var(--accent);
+  box-shadow: inset 4px 0 0 var(--accent);
+}
+
 .contents-row.header {
   color: var(--text-display);
   font-weight: 700;
@@ -665,6 +670,65 @@ aside, .detail { padding: var(--space-md); }
   font-size: 18px;
   line-height: 1.18;
   color: #000;
+}
+
+.override-mark {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  margin-left: 8px;
+  padding: 0 6px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-family: var(--font-ui);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
+.content-inspector {
+  display: grid;
+  gap: var(--space-sm);
+  margin: var(--space-md) 0;
+  padding: var(--space-md);
+  border: 1px solid var(--border-visible);
+  background: var(--surface-raised);
+}
+
+.content-inspector .section-head {
+  margin-bottom: 0;
+}
+
+.content-inspector h2 {
+  font-size: 32px;
+}
+
+.content-inspector label span {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.content-inspector-meta {
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.content-inspector-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
+.ghost.danger {
+  border-color: color-mix(in srgb, var(--danger) 38%, var(--border-visible));
+  color: var(--danger);
 }
 
 .empty {
@@ -711,6 +775,7 @@ aside, .detail { padding: var(--space-md); }
   .status-strip,
   .class-grid,
   aside,
+  .content-inspector,
   .student-ledger,
   .status-text,
   .hero-panel {

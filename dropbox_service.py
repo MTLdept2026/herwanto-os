@@ -8,6 +8,7 @@ import zipfile
 from datetime import date, datetime
 from html.parser import HTMLParser
 from io import BytesIO
+from urllib.parse import quote
 from xml.etree import ElementTree as ET
 
 import requests
@@ -106,6 +107,13 @@ def _root_path() -> str:
     return root if root.startswith("/") else f"/{root}"
 
 
+def _dropbox_path_from_relative(path: str) -> str:
+    rel = str(path or "").strip().lstrip("/")
+    root = _root_path().strip("/")
+    parts = [part for part in (root, rel) if part]
+    return "/" + "/".join(parts) if parts else ""
+
+
 def _access_token() -> str:
     if not configured():
         raise RuntimeError("Dropbox ClassOps env vars are not configured.")
@@ -159,6 +167,25 @@ def _download_file(path: str) -> bytes:
     )
     resp.raise_for_status()
     return resp.content
+
+
+def get_file_link(path: str) -> dict:
+    dropbox_path = _dropbox_path_from_relative(path)
+    if not dropbox_path:
+        raise ValueError("Dropbox file path is required.")
+    try:
+        data = _post("/files/get_temporary_link", {"path": dropbox_path})
+        link = str(data.get("link") or "").strip()
+        if link:
+            return {"url": link, "kind": "temporary_link", "path": path}
+    except Exception:
+        pass
+    folder, _, filename = str(path or "").strip("/").rpartition("/")
+    if filename:
+        url = f"https://www.dropbox.com/home/{quote(folder, safe='/')}?preview={quote(filename)}" if folder else f"https://www.dropbox.com/home?preview={quote(filename)}"
+    else:
+        url = f"https://www.dropbox.com/home/{quote(folder or path)}"
+    return {"url": url, "kind": "dropbox_web", "path": path}
 
 
 def _list_folder(path: str, recursive: bool = True, limit: int = 500) -> list[dict]:

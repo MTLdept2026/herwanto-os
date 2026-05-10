@@ -35,7 +35,7 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260510-classops-32"
+PWA_APP_VERSION = "20260510-classops-33"
 PWA_SERVICE_WORKER_CACHE = "hira-os-v105"
 
 try:
@@ -571,6 +571,12 @@ class ClassOpsAssignmentRequest(BaseModel):
     submitted: Optional[list[str]] = None
     non_submitted: Optional[list[str]] = None
     notes: str = ""
+
+
+class ClassOpsContentOverrideRequest(BaseModel):
+    path: str
+    title: Optional[str] = None
+    hidden: Optional[bool] = None
 
 
 _UPLOAD_JOBS: OrderedDict[str, dict] = OrderedDict()
@@ -2365,6 +2371,7 @@ def _classops_student_report(class_name: str, students: list[dict], ledger: dict
 
 def _classops_enrich_with_students(manifest: dict) -> dict:
     ledger = bot.gs.get_classops_ledger()
+    _classops_apply_content_overrides(manifest, ledger)
     student_errors = {}
     for class_item in manifest.get("classes", []) or []:
         class_name = str(class_item.get("class") or "").strip()
@@ -2384,6 +2391,45 @@ def _classops_enrich_with_students(manifest: dict) -> dict:
         "concern_count": sum((item.get("student_report") or {}).get("concern_count", 0) for item in manifest.get("classes", []) or []),
         "assignment_count": sum((item.get("student_report") or {}).get("assignment_count", 0) for item in manifest.get("classes", []) or []),
     }
+    return manifest
+
+
+def _classops_apply_content_overrides(manifest: dict, ledger: dict | None = None) -> dict:
+    if ledger is None:
+        ledger = bot.gs.get_classops_ledger()
+    overrides = ledger.get("content_overrides") if isinstance(ledger, dict) else {}
+    if not isinstance(overrides, dict):
+        legacy = ledger.get("content_title_overrides") if isinstance(ledger, dict) else {}
+        overrides = legacy if isinstance(legacy, dict) else {}
+    normalised = {}
+    for path, value in overrides.items():
+        key = str(path or "").strip()
+        if not key:
+            continue
+        if isinstance(value, dict):
+            normalised[key] = {
+                "title": str(value.get("title") or "").strip(),
+                "hidden": bool(value.get("hidden", False)),
+            }
+        else:
+            normalised[key] = {"title": str(value or "").strip(), "hidden": False}
+    for class_item in manifest.get("classes", []) or []:
+        filtered = []
+        for item in class_item.get("content_items", []) or []:
+            path = str(item.get("path") or "").strip()
+            override = normalised.get(path) or {}
+            if override.get("hidden"):
+                continue
+            next_item = dict(item)
+            if override.get("title"):
+                next_item["title"] = override["title"]
+                next_item["title_overridden"] = True
+            filtered.append(next_item)
+        class_item["content_items"] = filtered
+        class_item["content_item_count"] = len(filtered)
+    summary = manifest.get("summary")
+    if isinstance(summary, dict):
+        summary["content_item_count"] = sum(int(item.get("content_item_count") or 0) for item in manifest.get("classes", []) or [])
     return manifest
 
 
@@ -2520,6 +2566,27 @@ def classops_assignment(req: ClassOpsAssignmentRequest, x_hira_token: Optional[s
         }
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"ClassOps assignment save failed: {exc}") from exc
+
+
+@app.post("/api/classops/content-override")
+def classops_content_override(req: ClassOpsContentOverrideRequest, x_hira_token: Optional[str] = Header(default=None)):
+    _require_token(x_hira_token)
+    try:
+        override = bot.gs.save_classops_content_override(req.path, title=req.title, hidden=req.hidden)
+        return {"ok": True, "override": override}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"ClassOps content update failed: {exc}") from exc
+
+
+@app.get("/api/classops/dropbox/file-link")
+def classops_dropbox_file_link(path: str, x_hira_token: Optional[str] = Header(default=None)):
+    _require_token(x_hira_token)
+    if not dropbox.configured():
+        raise HTTPException(status_code=400, detail="Dropbox ClassOps env vars are not configured.")
+    try:
+        return {"ok": True, **dropbox.get_file_link(path)}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Dropbox file link unavailable: {exc}") from exc
 
 
 @app.get("/api/classops/status")

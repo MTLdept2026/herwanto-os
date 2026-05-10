@@ -11,7 +11,7 @@
       href="https://fonts.googleapis.com/css2?family=Doto:wght@400..900&family=Space+Grotesk:wght@300;400;500;700&family=VT323&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/classops.css?v=20260510-5" />
+    <link rel="stylesheet" href="/classops.css?v=20260510-7" />
   </head>
   <body>
     <main class="shell">
@@ -111,6 +111,26 @@
           </div>
           <div id="collectionPanel" class="collection-panel"></div>
           <div id="contentsTable" class="contents-table"></div>
+          <section id="contentInspector" class="content-inspector" hidden>
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Selected item</p>
+                <h2>Edit Contents Entry</h2>
+              </div>
+              <button id="closeContentInspectorBtn" type="button" class="ghost">Close</button>
+            </div>
+            <p id="contentInspectorMeta" class="content-inspector-meta">No item selected.</p>
+            <label>
+              <span>Display title</span>
+              <input id="contentTitleInput" type="text" />
+            </label>
+            <div class="content-inspector-actions">
+              <button id="openContentFileBtn" type="button">Open File</button>
+              <button id="saveContentTitleBtn" type="button">Save Title</button>
+              <button id="trackContentItemBtn" type="button" class="ghost">Track Submissions</button>
+              <button id="hideContentItemBtn" type="button" class="ghost danger">Hide From Contents</button>
+            </div>
+          </section>
           <section class="student-ledger">
             <div class="section-head">
               <div>
@@ -153,6 +173,6 @@
         </section>
       </section>
     </main>
-    <script src="/classops.js?v=20260510-5"></script>
+    <script src="/classops.js?v=20260510-7"></script>
   </body>
 </html>

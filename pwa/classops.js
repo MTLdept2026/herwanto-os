@@ -3,6 +3,7 @@ const state = {
   data: null,
   selectedClass: "",
   selectedFolder: "",
+  selectedContentItem: null,
   nonSubmitted: new Set(),
 };
 
@@ -145,6 +146,7 @@ function renderContents(classItem) {
     $("#ledgerMeta").textContent = "--";
     $("#studentReport").innerHTML = `<div class="empty">Choose a class to load its roster.</div>`;
     $("#contentsTable").innerHTML = `<div class="empty">Choose a class to view its content page.</div>`;
+    hideContentInspector();
     return;
   }
   $("#detailEyebrow").textContent = `${classItem.file_count || 0} files`;
@@ -159,14 +161,69 @@ function renderContents(classItem) {
     </div>
     ${contentItems.length ? contentItems.map((item, index) => {
       return `
-        <article class="contents-row" data-track-lesson="${escapeHtml(item.date || "")}" data-track-topic="${escapeHtml(item.title || "")}" data-track-folder="${escapeHtml(item.folder || "")}" data-track-title="${escapeHtml(item.title || "")}">
+        <article class="contents-row" data-track-lesson="${escapeHtml(item.date || "")}" data-track-topic="${escapeHtml(item.title || "")}" data-track-folder="${escapeHtml(item.folder || "")}" data-track-title="${escapeHtml(item.title || "")}" data-content-path="${escapeHtml(item.path || "")}" data-content-kind="${escapeHtml(item.kind || "")}">
           <div><strong>${index + 1}</strong></div>
-          <div>${escapeHtml(item.title || "Untitled")}</div>
+          <div>${escapeHtml(item.title || "Untitled")}${item.title_overridden ? ` <span class="override-mark">edited</span>` : ""}</div>
           <div>${escapeHtml(formatContentDate(item.date || ""))}</div>
         </article>
       `;
     }).join("") : `<div class="empty">No filing items detected yet for this class.</div>`}
   `;
+  if (state.selectedContentItem?.path) {
+    const stillExists = contentItems.some((item) => item.path === state.selectedContentItem.path);
+    if (!stillExists) hideContentInspector();
+  }
+}
+
+function contentItemFromRow(row) {
+  return {
+    date: row.dataset.trackLesson || "",
+    folder: row.dataset.trackFolder || "",
+    title: row.dataset.trackTitle || row.dataset.trackTopic || "",
+    path: row.dataset.contentPath || "",
+    kind: row.dataset.contentKind || "file",
+  };
+}
+
+function selectedContentRow(path) {
+  if (!path) return null;
+  return [...document.querySelectorAll(".contents-row[data-content-path]")]
+    .find((row) => row.dataset.contentPath === path);
+}
+
+function showContentInspector(item = {}) {
+  state.selectedContentItem = item;
+  const inspector = $("#contentInspector");
+  inspector.hidden = false;
+  $("#contentTitleInput").value = item.title || "";
+  $("#contentInspectorMeta").textContent = [
+    item.kind || "file",
+    item.path || "",
+    item.date ? formatContentDate(item.date) : "",
+  ].filter(Boolean).join(" · ");
+  document.querySelectorAll(".contents-row.is-selected").forEach((row) => row.classList.remove("is-selected"));
+  selectedContentRow(item.path)?.classList.add("is-selected");
+  $("#contentTitleInput").focus();
+}
+
+function hideContentInspector() {
+  state.selectedContentItem = null;
+  const inspector = $("#contentInspector");
+  if (inspector) inspector.hidden = true;
+  document.querySelectorAll(".contents-row.is-selected").forEach((row) => row.classList.remove("is-selected"));
+}
+
+function updateContentItemInState(path, updates = {}) {
+  const classItem = currentClassItem();
+  if (!classItem || !path) return;
+  classItem.content_items = (classItem.content_items || [])
+    .map((item) => item.path === path ? { ...item, ...updates } : item)
+    .filter((item) => !item.hidden);
+  classItem.content_item_count = classItem.content_items.length;
+  if (state.data?.summary) {
+    state.data.summary.content_item_count = (state.data.classes || [])
+      .reduce((total, item) => total + Number(item.content_item_count || 0), 0);
+  }
 }
 
 function renderStudentReport(report = {}) {
@@ -241,21 +298,89 @@ function renderNonSubmissionRoster(classItem = currentClassItem()) {
   }).join("");
 }
 
-function prefillLesson(button) {
-  const date = button.dataset.trackLesson || "";
-  state.selectedFolder = button.dataset.trackFolder || "";
+function prefillLessonFromItem(item = {}) {
+  const date = item.date || "";
+  state.selectedFolder = item.folder || "";
   state.nonSubmitted = new Set();
   $("#lessonDateInput").value = /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : "";
-  $("#topicInput").value = button.dataset.trackTopic || "";
-  const title = button.dataset.trackTitle || "";
+  $("#topicInput").value = item.title || "";
+  const title = item.title || "";
   if (title) $("#assignmentTitleInput").value = title.trim();
   renderNonSubmissionRoster();
   $("#assignmentTitleInput").focus();
 }
 
+function prefillLesson(button) {
+  prefillLessonFromItem({
+    date: button.dataset.trackLesson || "",
+    folder: button.dataset.trackFolder || "",
+    title: button.dataset.trackTitle || button.dataset.trackTopic || "",
+  });
+}
+
+async function saveContentOverride({ hidden = null } = {}) {
+  const item = state.selectedContentItem;
+  if (!item?.path) return setStatus("Select a contents item first.", "warn");
+  const title = $("#contentTitleInput").value.trim();
+  if (!title && !hidden) return setStatus("Add a display title before saving.", "warn");
+  $("#saveContentTitleBtn").disabled = true;
+  $("#hideContentItemBtn").disabled = true;
+  setStatus(hidden ? "Hiding contents item..." : "Saving display title...");
+  try {
+    const payload = {
+      path: item.path,
+      title: hidden ? undefined : title,
+      hidden,
+    };
+    const data = await api("/api/classops/content-override", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (hidden) {
+      updateContentItemInState(item.path, { hidden: true });
+      renderSummary(state.data);
+      renderClassCards(state.data?.classes || []);
+      renderClassList(state.data?.classes || []);
+      renderContents(currentClassItem());
+      setStatus("Item hidden from the printable contents page.", "ok");
+      return;
+    }
+    const nextTitle = data.override?.title || title;
+    const updated = { ...item, title: nextTitle, title_overridden: true };
+    updateContentItemInState(item.path, { title: nextTitle, title_overridden: true });
+    renderContents(currentClassItem());
+    showContentInspector(updated);
+    setStatus("Display title saved.", "ok");
+  } catch (error) {
+    setStatus(error.message, "error");
+  } finally {
+    $("#saveContentTitleBtn").disabled = false;
+    $("#hideContentItemBtn").disabled = false;
+  }
+}
+
+async function openSelectedContentFile() {
+  const item = state.selectedContentItem;
+  if (!item?.path) return setStatus("Select a contents item first.", "warn");
+  $("#openContentFileBtn").disabled = true;
+  setStatus("Opening Dropbox source file...");
+  try {
+    const data = await api(`/api/classops/dropbox/file-link?path=${encodeURIComponent(item.path)}`);
+    if (!data.url) throw new Error("Dropbox did not return a file link.");
+    window.open(data.url, "_blank", "noopener");
+    setStatus("Opened source file in Dropbox.", "ok");
+  } catch (error) {
+    setStatus(error.message, "error");
+  } finally {
+    $("#openContentFileBtn").disabled = false;
+  }
+}
+
 function selectClass(className) {
   state.selectedClass = className;
   state.selectedFolder = "";
+  hideContentInspector();
   state.nonSubmitted = new Set();
   const classItem = (state.data?.classes || []).find((item) => item.class === className);
   renderClassList(state.data?.classes || []);
@@ -341,6 +466,16 @@ $("#clearNonSubmissionBtn").addEventListener("click", () => {
   renderNonSubmissionRoster();
 });
 
+$("#closeContentInspectorBtn").addEventListener("click", hideContentInspector);
+$("#saveContentTitleBtn").addEventListener("click", () => saveContentOverride());
+$("#hideContentItemBtn").addEventListener("click", () => saveContentOverride({ hidden: true }));
+$("#openContentFileBtn").addEventListener("click", openSelectedContentFile);
+$("#trackContentItemBtn").addEventListener("click", () => {
+  if (!state.selectedContentItem) return setStatus("Select a contents item first.", "warn");
+  prefillLessonFromItem(state.selectedContentItem);
+  setStatus("Loaded item into submission tracker.", "ok");
+});
+
 $("#nonSubmissionRoster").addEventListener("change", (event) => {
   const input = event.target.closest("input[type='checkbox']");
   if (!input) return;
@@ -353,7 +488,12 @@ $("#nonSubmissionRoster").addEventListener("change", (event) => {
 });
 
 document.addEventListener("click", (event) => {
-  const lessonButton = event.target.closest("[data-track-lesson]");
+  const contentRow = event.target.closest(".contents-row[data-content-path]");
+  if (contentRow && !contentRow.classList.contains("header")) {
+    showContentInspector(contentItemFromRow(contentRow));
+    return;
+  }
+  const lessonButton = event.target.closest("[data-track-lesson]:not(.contents-row)");
   if (lessonButton) {
     prefillLesson(lessonButton);
     return;

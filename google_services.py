@@ -1585,6 +1585,45 @@ def set_classops_ledger(ledger: dict):
     set_config(CLASSOPS_LEDGER_KEY, json.dumps(ledger, ensure_ascii=False))
 
 
+def get_classops_content_overrides() -> dict:
+    ledger = get_classops_ledger()
+    overrides = ledger.get("content_overrides")
+    if not isinstance(overrides, dict):
+        legacy = ledger.get("content_title_overrides")
+        overrides = legacy if isinstance(legacy, dict) else {}
+    normalised = {}
+    for path, value in overrides.items():
+        key = str(path or "").strip()
+        if not key:
+            continue
+        if isinstance(value, dict):
+            normalised[key] = {
+                "title": str(value.get("title") or "").strip(),
+                "hidden": bool(value.get("hidden", False)),
+            }
+        else:
+            normalised[key] = {"title": str(value or "").strip(), "hidden": False}
+    return normalised
+
+
+def save_classops_content_override(path: str, title: str | None = None, hidden: bool | None = None) -> dict:
+    clean_path = str(path or "").strip()
+    if not clean_path:
+        raise ValueError("Content item path is required.")
+    ledger = get_classops_ledger()
+    overrides = ledger.setdefault("content_overrides", {})
+    current = overrides.get(clean_path)
+    if not isinstance(current, dict):
+        current = {"title": str(current or "").strip(), "hidden": False}
+    if title is not None:
+        current["title"] = str(title or "").strip()
+    if hidden is not None:
+        current["hidden"] = bool(hidden)
+    overrides[clean_path] = current
+    set_classops_ledger(ledger)
+    return {"path": clean_path, **current}
+
+
 def _classops_canonical_class(value: str) -> str:
     compact = _norm_cell(value).replace(" ", "")
     if not compact:
