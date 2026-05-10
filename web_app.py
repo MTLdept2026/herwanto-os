@@ -36,8 +36,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260510-classops-37"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v108"
+PWA_APP_VERSION = "20260510-intelligence-38"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v109"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -2038,16 +2038,83 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             yield sse({"type": "saved"})
         except Exception as exc:
             bot.logger.exception(f"PWA chat failed: {exc}")
-            yield sse({
-                "type": "error",
-                "message": "H.I.R.A hit a backend snag. Try again in a moment.",
-            })
+            fallback_text = ""
+            try:
+                fallback_text = await _source_check_backend_fallback(message)
+            except Exception as fallback_exc:
+                bot.logger.warning(f"PWA source fallback failed: {fallback_exc}")
+            if fallback_text:
+                history.append({"role": "assistant", "content": fallback_text})
+                bot.save_history(history_key, history[-bot.MAX_TURNS:])
+                yield sse({"type": "text", "text": fallback_text})
+                yield sse({"type": "done", "text": fallback_text})
+                yield sse({"type": "saved"})
+            else:
+                yield sse({
+                    "type": "error",
+                    "message": "H.I.R.A hit a backend snag. Try again in a moment.",
+                })
         finally:
             _CHAT_SEMAPHORE.release()
             gc.collect()
             bot._log_memory("after pwa chat")
 
     return StreamingResponse(events(), media_type="text/event-stream")
+
+
+async def _source_check_backend_fallback(message: str) -> str:
+    discipline = bot.source_discipline_for_text(message)
+    recommended = set(discipline.get("recommended_tools") or [])
+    tool_name = ""
+    label = ""
+    if "get_liverpool_brief" in recommended:
+        tool_name = "get_liverpool_brief"
+        label = "Liverpool"
+    elif "get_f1_brief" in recommended:
+        tool_name = "get_f1_brief"
+        label = "F1"
+    if not tool_name:
+        return ""
+
+    result = await bot._execute_tool(tool_name, {"focus": message, "max_items": 2})
+    if not result or result.startswith("Failed to fetch"):
+        return (
+            "I hit the model/backend step, and the live source check also failed, "
+            "so I’m not going to answer from memory. Try again in a moment."
+        )
+    clipped = _summarise_source_fallback(result, limit=2200)
+    return (
+        "I hit the model/backend step, so I’m not going to guess from memory. "
+        f"I did run the live {label} source check:\n\n{clipped}"
+    )
+
+
+def _summarise_source_fallback(result: str, limit: int = 2200) -> str:
+    text = str(result or "").strip()
+    if not text:
+        return "No usable source text came back."
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    picked: list[str] = []
+    for line in lines:
+        lower = line.lower()
+        if (
+            line.startswith("SOURCE CONTRACT:")
+            or "latest completed:" in lower
+            or "recent results from fotmob" in lower
+            or "scoreline candidates" in lower
+            or "table note:" in lower
+            or "upcoming fixtures:" in lower
+            or "fotmob fetch failed" in lower
+            or "scoreboard warnings:" in lower
+        ):
+            picked.append(line)
+    if not picked:
+        picked = lines[:12]
+    summary = "\n".join(picked)
+    if len(summary) > limit:
+        summary = summary[:limit].rsplit("\n", 1)[0].rstrip()
+        summary = f"{summary}\n[Source brief truncated.]"
+    return summary
 
 
 @app.post("/api/chat/reset")

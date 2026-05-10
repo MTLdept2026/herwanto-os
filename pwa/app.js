@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260510-classops-37";
-const APP_SCRIPT = "app.js?v=20260510-classops-37";
-const EXPECTED_SW_CACHE = "hira-os-v108";
+const APP_VERSION = "20260510-intelligence-38";
+const APP_SCRIPT = "app.js?v=20260510-intelligence-38";
+const EXPECTED_SW_CACHE = "hira-os-v109";
 
 const state = {
   token: localStorage.getItem("hira_web_token") || "",
@@ -44,6 +44,7 @@ const state = {
   activeNotificationId: "",
   lastPushSyncAt: Number(localStorage.getItem("hira_pwa_last_push_sync_at") || "0"),
   lastInputPulseAt: 0,
+  homeTimelineItems: [],
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -101,7 +102,7 @@ function updateLiveClock() {
   const date = dateFormatter.format(now).replace(",", "").toUpperCase();
   $("#greetingTime").textContent = time;
   $("#greetingDate").textContent = date;
-  if (glyphMode === "time") renderNothingGlyph("time");
+  if (glyphMode === "time" || glyphMode === "next") renderNothingGlyph(glyphMode);
 }
 
 function blankGlyphGrid() {
@@ -159,6 +160,7 @@ function drawGlyphFooter(grid, footer) {
   const marks = {
     MAY: [[5, 10], [6, 10], [8, 10], [10, 10], [5, 11], [7, 11], [8, 11], [10, 11]],
     NEW: [[5, 10], [5, 11], [7, 10], [8, 10], [7, 11], [10, 10], [10, 11], [11, 11]],
+    NXT: [[4, 10], [4, 11], [5, 10], [6, 11], [8, 10], [10, 10], [9, 11], [13, 10], [14, 10], [15, 10], [14, 11]],
   }[footer] || [];
   marks.forEach(([x, y]) => drawGlyphPixel(grid, x, y, "dim"));
 }
@@ -201,11 +203,16 @@ function glyphValueForMode(mode) {
   }
   if (mode === "next") {
     if (!homeGlyphDataReady) return { value: "--:--", label: "next anchor loading" };
-    const nextTime = document
-      .querySelector("#homeLivingTimeline .timeline-time strong")
-      ?.textContent
-      ?.match(/\b\d{1,2}:\d{2}\b/)?.[0];
-    return { value: nextTime || "--:--", label: "next anchor" };
+    const now = new Date();
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+    const items = Array.isArray(state.homeTimelineItems) ? state.homeTimelineItems : [];
+    const nextItem = items.find((item) => {
+      if (!Number.isFinite(item.start)) return false;
+      const end = Number.isFinite(item.end) ? item.end : item.start + 20;
+      return item.start >= currentMinutes || end >= currentMinutes;
+    });
+    const nextTime = String(nextItem?.time || "").match(/\b\d{1,2}:\d{2}\b/)?.[0];
+    return { value: nextTime || "--:--", label: nextItem ? "next anchor" : "no upcoming anchor" };
   }
   return { value: "", label: mode };
 }
@@ -226,6 +233,7 @@ function drawGlyphMode(grid, mode, current) {
   }
   if (mode === "next") {
     drawGlyphCompactClock(grid, current.value, 3);
+    drawGlyphFooter(grid, "NXT");
     return;
   }
   drawGlyphTextCentered(grid, current.value, 3);
@@ -241,10 +249,18 @@ function renderNothingGlyph(mode = glyphMode) {
   button.dataset.glyphMode = mode;
   if (mode === "chat") {
     drawGlyphWave(grid);
+    button.dataset.glyphLabel = "CHAT";
     button.setAttribute("aria-label", "Glyph display showing H.I.R.A chat waveform.");
   } else {
     const current = glyphValueForMode(mode);
     drawGlyphMode(grid, mode, current);
+    button.dataset.glyphLabel = ({
+      time: "TIME",
+      date: "DATE",
+      battery: "BATT",
+      load: "LOAD",
+      next: "NEXT",
+    }[mode] || String(current.label || mode).toUpperCase().slice(0, 5));
     button.setAttribute("aria-label", `Glyph display showing ${current.label}: ${current.value}. Tap to cycle mode.`);
   }
   matrix.innerHTML = grid
@@ -1386,6 +1402,7 @@ function renderLivingTimeline(structured = {}, prayers = {}) {
   const allItems = [...agendaTimelineItems(structured), ...prayerTimelineItems(prayers)]
     .filter((item) => Number.isFinite(item.start))
     .sort((a, b) => a.start - b.start);
+  state.homeTimelineItems = allItems;
   const visible = allItems
     .filter((item) => item.start >= now - 90)
     .slice(0, 7);

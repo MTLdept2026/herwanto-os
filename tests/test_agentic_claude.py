@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 import unittest
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import ANY, patch
@@ -1757,6 +1757,122 @@ class AgenticClaudeTests(unittest.TestCase):
         names = {tool["name"] for tool in tools}
 
         self.assertIn("get_liverpool_brief", names)
+
+    def test_liverpool_brief_uses_fotmob_before_news_snippets(self):
+        fotmob_text = (
+            "Recent results for Liverpool: "
+            "April 25, 2026: Premier League - 3-1 win vs Crystal Palace. "
+            "May 9, 2026: Premier League - 1-1 draw vs Chelsea. "
+            "Upcoming fixtures for Liverpool: May 17, 2026: Premier League - at Aston Villa. "
+            "Liverpool currently sits in 4th place in the Premier League with 58 points."
+        )
+        latest = {
+            "start": date(2026, 4, 1),
+            "end": date(2026, 5, 24),
+            "latest_completed": {
+                "date": datetime(2026, 5, 9, tzinfo=timezone.utc),
+                "date_text": "2026-05-09",
+                "league": "Premier League",
+                "status": "Full Time",
+                "scoreline": "Liverpool 1-1 Chelsea",
+                "source_url": "https://example.com/scoreboard",
+            },
+            "next_fixture": None,
+            "events": [],
+            "errors": [],
+        }
+        with (
+            patch.object(bot.sports, "_fetch_fotmob_team_text", return_value={"ok": True, "text": fotmob_text}),
+            patch.object(bot.sports, "_espn_liverpool_scoreboard_probe", return_value=latest),
+            patch.object(bot.sports.ss, "google_news", return_value=[]),
+            patch.object(bot.sports.ss, "search_enabled", return_value=False),
+        ):
+            brief = bot.sports.build_liverpool_brief("latest result", max_items=1)
+
+        self.assertIn("FotMob team-page probe", brief)
+        self.assertIn("May 9, 2026: Premier League - 1-1 draw vs Chelsea", brief)
+        self.assertLess(brief.index("FotMob team-page probe"), brief.index("Authoritative scoreboard probe"))
+
+    def test_source_discipline_warns_against_older_assistant_turns(self):
+        hint = bot.source_discipline_hint("latest LFC result")
+
+        self.assertIn("Do not rely only on memory or older assistant turns", hint)
+
+    def test_backend_fallback_runs_liverpool_source_check(self):
+        async def fake_execute_tool(name, inp):
+            self.assertEqual(name, "get_liverpool_brief")
+            self.assertEqual(inp["focus"], "what's up with lfc")
+            return "Liverpool FC structured live brief\nFotMob team-page probe"
+
+        with patch.object(bot, "_execute_tool", side_effect=fake_execute_tool):
+            reply = asyncio.run(web_app._source_check_backend_fallback("what's up with lfc"))
+
+        self.assertIn("not going to guess from memory", reply)
+        self.assertIn("FotMob team-page probe", reply)
+
+    def test_source_contract_guardrail_blocks_unconfirmed_result(self):
+        messages = [{"role": "user", "content": "is that the latest result?"}]
+        tool_results = [{
+            "content": (
+                "SOURCE CONTRACT: status=unconfirmed; as_of=2026-05-10; "
+                "source=FotMob/ESPN/news probe; reason=no completed fixture returned"
+            )
+        }]
+
+        reply = bot._source_contract_guardrail(messages, tool_results)
+
+        self.assertIn("could not confirm the latest result", reply)
+        self.assertIn("not going to answer this from older headlines", reply)
+
+    def test_liverpool_result_probe_demotes_stale_news(self):
+        latest = {
+            "start": date(2026, 4, 1),
+            "end": date(2026, 5, 24),
+            "latest_completed": {
+                "date": datetime(2026, 5, 9, tzinfo=timezone.utc),
+                "date_text": "2026-05-09",
+                "league": "Premier League",
+                "status": "Full Time",
+                "scoreline": "Liverpool 1-1 Chelsea",
+                "source_url": "https://example.com/scoreboard",
+            },
+            "next_fixture": None,
+            "events": [],
+            "errors": [],
+        }
+        stale_item = {
+            "title": "Liverpool 3-1 Crystal Palace match report",
+            "published": "Sat, 25 Apr 2026 18:00:00 GMT",
+            "source": "Example",
+            "description": "Liverpool won 3-1.",
+            "url": "https://example.com/stale",
+        }
+        with (
+            patch.object(bot.sports, "_fetch_fotmob_team_text", return_value={"ok": True, "text": ""}),
+            patch.object(bot.sports, "_espn_liverpool_scoreboard_probe", return_value=latest),
+            patch.object(bot.sports.ss, "google_news", return_value=[stale_item]),
+            patch.object(bot.sports.ss, "search_enabled", return_value=False),
+        ):
+            text = "\n".join(bot.sports._format_liverpool_result_probe("latest result", 1))
+
+        self.assertIn("SOURCE CONTRACT: status=confirmed", text)
+        self.assertIn("Demoted stale result/news leads", text)
+        self.assertIn("Liverpool 3-1 Crystal Palace", text)
+
+    def test_backend_fallback_summarises_source_readout(self):
+        raw = "\n".join([
+            "SOURCE CONTRACT: status=confirmed; as_of=2026-05-09; source=ESPN; reason=latest completed",
+            "Priority result probe",
+            "- filler",
+            "- Latest completed: Liverpool 1-1 Chelsea | 2026-05-09 | Premier League | Full Time",
+            "Table note: Liverpool currently sits in 4th place",
+        ])
+
+        summary = web_app._summarise_source_fallback(raw)
+
+        self.assertIn("SOURCE CONTRACT: status=confirmed", summary)
+        self.assertIn("Latest completed: Liverpool 1-1 Chelsea", summary)
+        self.assertNotIn("filler", summary)
 
     def test_pwa_followup_reminder_gets_recent_turn_grounding(self):
         history = [

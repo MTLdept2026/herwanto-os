@@ -4559,6 +4559,7 @@ html[data-theme="dark"] .topbar {
 }
 
 .nothing-glyph-display {
+  position: relative;
   width: 118px;
   height: 118px;
   min-height: 118px;
@@ -4585,6 +4586,22 @@ html[data-theme="dark"] .topbar {
   background-size: 11px 11px, 42px 42px, 42px 42px;
   background-position: 2px 2px, center, center;
   opacity: 0.86;
+}
+
+.nothing-glyph-display::after {
+  content: attr(data-glyph-label);
+  position: absolute;
+  left: 50%;
+  bottom: 11px;
+  transform: translateX(-50%);
+  z-index: 2;
+  color: rgba(247,255,217,0.72);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0;
+  line-height: 1;
+  pointer-events: none;
 }
 
 .nothing-glyph-display:hover,

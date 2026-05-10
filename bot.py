@@ -441,7 +441,8 @@ def source_discipline_hint(text: str) -> str:
     return (
         "\n\n[Source discipline: confidence=needs_live_source. "
         f"Reason: {discipline['reason']} Recommended tools: {tools}. "
-        "Do not rely only on memory; cite or summarise source-backed findings and label rumours/live facts clearly.]"
+        "Do not rely only on memory or older assistant turns; cite or summarise source-backed findings and label rumours/live facts clearly. "
+        "If source checks fail or do not confirm the fact, say that instead of guessing.]"
     )
 
 def build_memory_review(limit: int = 5) -> dict:
@@ -825,7 +826,8 @@ Rules:
 - When the user asks to calculate and enter a score/mark/result into an MTL classlist sheet, calculate only from the numbers he gives or sheet values retrieved with include_scores=true, then call update_mtl_class_score. Do not guess a student or column; if the tool reports ambiguity, ask for the missing class/student/column detail.
 - When the user asks to fill percentage columns in an MTL classlist, call fill_mtl_percentage_scores. Use class_query and assessment_query if the user provides them; otherwise the tool will ask for specificity when multiple % columns match.
 - When the user asks about latest news, current events, headlines, football, Liverpool/LFC, F1, AI, Singapore education, apps, Apple, Nothing OS, or his shortlisted topics — call get_latest_news before answering. Prefer get_liverpool_brief for Liverpool/LFC questions and get_f1_brief for Formula 1 questions because they gather structured source slices.
-- For Liverpool/F1 result or score questions, answer the result first in the first sentence. Do not lead with programme notes, previews, line-ups, fan reaction, or where Herwanto can check it himself. If get_liverpool_brief/get_f1_brief does not contain a clear scoreline, run web_search with an exact "team/opponent/date full-time score" query before answering. Only say the result is unavailable after that targeted lookup fails.
+- For Liverpool/F1 result or score questions, answer the result first in the first sentence only when a live/source tool confirms it. Treat SOURCE CONTRACT status=confirmed as usable; treat unconfirmed, stale, or failed as a hard stop. Do not lead with programme notes, previews, line-ups, fan reaction, or where Herwanto can check it himself. If get_liverpool_brief/get_f1_brief does not contain a clear confirmed scoreline, run web_search with an exact "team/opponent/date full-time score" query before answering. Only say the result is unavailable after that targeted lookup fails.
+- For volatile facts, use this source contract discipline: confirmed = answer directly with source/as_of; unconfirmed = say what was checked and what was missing; stale = mention it only as older context; failed = say the live check failed. Never upgrade unconfirmed/stale/failed tool output into a confident fact.
 - For sports corrections and follow-ups, preserve the conversation subject. If Herwanto corrects a Liverpool/F1 claim, or then asks "what was the match like?", "the result?", "recap?", "home or away?", or "actual details?", use the relevant structured sports brief before answering even if the follow-up omits the team name.
 - After giving verified Liverpool or F1 scores/match details, add a short supporter-read: infer Herwanto's likely mood from his known loyalties and the result. Keep it humble ("I imagine", "this probably lands as") and concrete, not melodramatic. For Liverpool losses, acknowledge frustration, defensive/selection worries, or rivalry pain before any tactical note. For wins, share the lift and what he will probably enjoy. Do not let mood-reading replace the verified facts.
 - Liverpool FC is a first-class interest. Herwanto supports Liverpool. Track the current squad/line-ups, Premier League standing, progress in every competition Liverpool are still in, injuries/suspensions, fixtures/results, and transfer news/rumours. As of the 2025-26 squad context, Liverpool are managed by Arne Slot and the first-team group includes Alisson, Giorgi Mamardashvili, Freddie Woodman, Virgil van Dijk, Ibrahima Konate, Joe Gomez, Milos Kerkez, Conor Bradley, Andy Robertson, Jeremie Frimpong, Giovanni Leoni, Wataru Endo, Florian Wirtz, Dominik Szoboszlai, Alexis Mac Allister, Curtis Jones, Ryan Gravenberch, Trey Nyoni, Alexander Isak, Mohamed Salah, Federico Chiesa, Cody Gakpo, Hugo Ekitike, and Rio Ngumoha. If Herwanto mentions Wirtz, Isak, or "lfc big match", assume Liverpool context and do not correct him back to old clubs without first checking current sources. For current starting XIs, matchday line-ups, EPL table position, points, goal difference, form, Champions League/FA Cup/Carabao Cup progress, injuries, contract situations, departures, signings, or rumours, always use get_latest_news/web_search/fetch_url and cite the source. Clearly label transfer items as confirmed, reported, or rumour/speculation.
@@ -5536,6 +5538,40 @@ def _forced_tool_for_current_turn(messages: list[dict], tools: list[dict]) -> st
     return None
 
 
+def _latest_user_text(messages: list[dict]) -> str:
+    for item in reversed(messages or []):
+        if item.get("role") == "user" and isinstance(item.get("content"), str):
+            return item["content"]
+    return ""
+
+
+def _source_contract_guardrail(messages: list[dict], tool_results: list[dict]) -> str:
+    user_text = _latest_user_text(messages)
+    if not re.search(r"\b(result|results|score|scores|latest result|full[- ]?time|match)\b", user_text, re.I):
+        return ""
+    joined = "\n".join(
+        str(item.get("content", ""))
+        for item in tool_results
+        if isinstance(item, dict)
+    )
+    if "SOURCE CONTRACT:" not in joined:
+        return ""
+    if re.search(r"SOURCE CONTRACT:\s*status=confirmed\b", joined, re.I):
+        return ""
+    status_match = re.search(r"SOURCE CONTRACT:\s*status=([^;]+);\s*as_of=([^;]+);\s*source=([^;]+);\s*reason=([^\n]+)", joined, re.I)
+    if not status_match:
+        return (
+            "I ran the live source check, but it did not return a confirmed result. "
+            "I’m not going to answer that from memory."
+        )
+    status, as_of, source, reason = [part.strip() for part in status_match.groups()]
+    return (
+        f"I checked live sources, but I could not confirm the latest result. "
+        f"Source contract: {status} as of {as_of} via {source}. {reason}. "
+        "I’m not going to answer this from older headlines or memory."
+    )
+
+
 async def _run_forced_weather_fallback(tool_choice: str | None) -> str | None:
     if tool_choice != "get_nea_weather":
         return None
@@ -6909,6 +6945,9 @@ async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
 
         tool_results = await asyncio.gather(*(run_tool(block) for block in tool_blocks))
         messages.append({"role": "user", "content": tool_results})
+        guarded = _source_contract_guardrail(messages, tool_results)
+        if guarded:
+            return guarded
 
     return _correct_weekday_date_mismatches(reply_text or "Done.")
 
@@ -7063,6 +7102,12 @@ async def stream_agentic_claude(messages, max_tokens=650, tools=None):
 
         tool_results = await asyncio.gather(*(run_tool(block) for block in tool_blocks))
         messages.append({"role": "user", "content": tool_results})
+        guarded = _source_contract_guardrail(messages, tool_results)
+        if guarded:
+            reply_text = f"{reply_text}{guarded}"
+            yield {"type": "replace", "text": reply_text}
+            yield {"type": "done", "text": reply_text}
+            return
 
     corrected = _correct_weekday_date_mismatches(reply_text or "Done.")
     if corrected != (reply_text or "Done."):
