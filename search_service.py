@@ -228,11 +228,15 @@ def google_news(query, max_items=5):
         feed = _parse_google_news_rss(query)
         items = []
         for entry in feed.entries[: max_items * 4]:
+            description = getattr(entry, "summary", "") or getattr(entry, "description", "")
+            description = re.sub(r"<[^>]+>", " ", description or "")
+            description = " ".join(description.split())
             items.append({
                 "title": getattr(entry, "title", ""),
                 "url": getattr(entry, "link", ""),
                 "published": getattr(entry, "published", ""),
                 "source": getattr(getattr(entry, "source", None), "title", ""),
+                "description": description[:500],
             })
         return _rank_news_items(items)[:max_items]
     except Exception as e:

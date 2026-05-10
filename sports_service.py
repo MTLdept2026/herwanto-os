@@ -9,6 +9,7 @@ source-backed sections instead of relying on stale memory.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import re
 
 import search_service as ss
 
@@ -57,6 +58,100 @@ def _format_search(query: str, max_items: int) -> list[str]:
     return lines
 
 
+def _scoreline_candidates(text: str) -> list[str]:
+    clean = " ".join(str(text or "").split())
+    if not clean:
+        return []
+    patterns = [
+        r"\b(?:Liverpool|LFC)\s+(?:FC\s+)?(\d{1,2})\s*[-–]\s*(\d{1,2})\s+(?:Chelsea|[A-Z][A-Za-z .'-]{2,30})\b",
+        r"\b(?:Chelsea|[A-Z][A-Za-z .'-]{2,30})\s+(\d{1,2})\s*[-–]\s*(\d{1,2})\s+(?:Liverpool|LFC)\b",
+        r"\b(\d{1,2})\s*[-–]\s*(\d{1,2})\s+(?:draw|win|defeat|loss)\b",
+        r"\b(?:drawn|drew|draw)\s+(\d{1,2})\s*[-–]\s*(\d{1,2})\b",
+    ]
+    found = []
+    seen = set()
+    for pattern in patterns:
+        for match in re.finditer(pattern, clean, re.I):
+            candidate = match.group(0).strip(" .,:;")
+            key = candidate.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            found.append(candidate)
+    return found[:4]
+
+
+def _format_liverpool_result_probe(focus: str, max_items: int) -> list[str]:
+    focus_text = (focus or "").strip()
+    query_bits = ["Liverpool FC latest result full-time score match report"]
+    if focus_text:
+        query_bits.append(focus_text)
+    if re.search(r"\bchelsea\b", focus_text, re.I):
+        query_bits.insert(0, "Liverpool Chelsea result full-time score match report")
+    if re.search(r"\b(yesterday|last night|9 may|09 may|2026-05-09)\b", focus_text, re.I):
+        query_bits.insert(0, "Liverpool result 9 May 2026 full-time score")
+
+    lines = [
+        "Priority result probe",
+        "Answer rule: if Herwanto asks for a result or score, state the confirmed full-time score first. Use the scoreline candidates below before any reaction, line-up, or programme-note detail. If no score appears here, run web_search with an exact score query before answering.",
+    ]
+    candidates = []
+    sources = []
+    for query in query_bits[:3]:
+        for item in ss.google_news(query, max_items=max_items):
+            haystack = f"{item.get('title', '')} {item.get('description', '')}"
+            for score in _scoreline_candidates(haystack):
+                candidates.append(score)
+            if item.get("title"):
+                sources.append(item)
+        if ss.search_enabled():
+            for result in ss.web_search(query, max_results=max_items):
+                haystack = f"{result.get('title', '')} {result.get('description', '')}"
+                for score in _scoreline_candidates(haystack):
+                    candidates.append(score)
+                if result.get("title"):
+                    sources.append({
+                        "title": result.get("title", ""),
+                        "description": result.get("description", ""),
+                        "url": result.get("url", ""),
+                        "source": "web_search",
+                    })
+
+    unique_candidates = []
+    seen_scores = set()
+    for candidate in candidates:
+        key = candidate.lower()
+        if key in seen_scores:
+            continue
+        seen_scores.add(key)
+        unique_candidates.append(candidate)
+
+    if unique_candidates:
+        lines.append("Detected scoreline candidates:")
+        for candidate in unique_candidates[:3]:
+            lines.append(f"- {candidate}")
+    else:
+        lines.append("- No scoreline candidate was detected in the first pass.")
+
+    if sources:
+        lines.append("Result-source leads:")
+        for item in sources[: max_items + 2]:
+            meta = []
+            if item.get("source"):
+                meta.append(item["source"])
+            if item.get("published"):
+                meta.append(item["published"])
+            suffix = f" ({' · '.join(meta)})" if meta else ""
+            lines.append(f"- {item.get('title', '')}{suffix}")
+            if item.get("description"):
+                lines.append(f"  {item['description']}")
+            if item.get("url"):
+                lines.append(f"  {item['url']}")
+    else:
+        lines.append("- No result-source leads returned.")
+    return lines
+
+
 def _format_sections(sections: list[tuple[str, str]], count: int) -> list[str]:
     lines: list[str] = []
     with ThreadPoolExecutor(max_workers=min(5, len(sections))) as executor:
@@ -94,9 +189,11 @@ def build_liverpool_brief(focus: str = "", max_items: int = 3) -> str:
     ]
     lines = [
         "Liverpool FC structured live brief",
-        "Answer guidance: cite sources, separate confirmed news from reports/rumours, and do not rely on old-club memory for current Liverpool players.",
+        "Answer guidance: cite sources, separate confirmed news from reports/rumours, and do not rely on old-club memory for current Liverpool players. For result/score questions, answer with the full-time score first; never bury it under preview, line-up, or fan-reaction items.",
         "",
     ]
+    lines.extend(_format_liverpool_result_probe(focus_text, count))
+    lines.append("")
     lines.extend(_format_sections(sections, count))
     lines.extend(_format_search(f"Liverpool FC {focus_text}", count))
     return "\n".join(lines).strip()

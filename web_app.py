@@ -25,9 +25,9 @@ from pydantic import BaseModel
 from starlette.responses import JSONResponse
 
 import bot
+import classops_intelligence as classops_ai
 import document_service as docs
 import dropbox_service as dropbox
-from timetable import SCHOOL_CLOSURE_DATES_2026
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -843,6 +843,8 @@ def _home_intelligence(results: dict, days: int) -> dict:
     services = results.get("services") if isinstance(results.get("services"), dict) else {}
     tasks = results.get("tasks_structured") if isinstance(results.get("tasks_structured"), dict) else {}
     task_items = tasks.get("items") if isinstance(tasks.get("items"), list) else []
+    classops = results.get("classops") if isinstance(results.get("classops"), dict) else {}
+    classops_signal = classops_ai.top_home_signal(classops)
 
     load_score = int(today_load.get("score") or 0)
     due_count = int(today_load.get("due") or len(today_agenda.get("due") or []))
@@ -859,6 +861,9 @@ def _home_intelligence(results: dict, days: int) -> dict:
     due_soon_tasks = [item for item in task_items if today < str(item.get("due") or "") <= soon]
     connected_count = sum(1 for value in services.values() if value)
     disconnected_count = max(0, len(services) - connected_count)
+    classops_open = int(classops.get("open_submission_count") or classops.get("pending_count") or 0)
+    classops_concerns = int(classops.get("concern_count") or 0)
+    classops_due_now = int(classops.get("due_today_count") or 0) + int(classops.get("overdue_count") or 0)
 
     readiness = _clamp_int(
         94
@@ -867,6 +872,8 @@ def _home_intelligence(results: dict, days: int) -> dict:
         - min(18, unmarked * 1.2)
         - min(14, len(overdue_tasks) * 7)
         - min(10, disconnected_count * 2.5)
+        - min(16, classops_due_now * 5)
+        - min(12, classops_concerns * 1.4)
     )
     if readiness >= 78:
         mode = "Deep Work Window" if load_score <= 34 and due_count == 0 else "Steady Ops"
@@ -907,6 +914,12 @@ def _home_intelligence(results: dict, days: int) -> dict:
             "detail": f"{disconnected_count} service(s) not connected",
             "severity": "yellow",
         })
+    if classops_signal:
+        risks.append({
+            "label": "ClassOps",
+            "detail": classops_signal.get("detail") or classops_signal.get("title") or "Student follow-up signal detected",
+            "severity": classops_signal.get("severity") or "yellow",
+        })
 
     future_days = daily_load.get("days") if isinstance(daily_load.get("days"), list) else []
     future_spike = max(
@@ -940,7 +953,15 @@ def _home_intelligence(results: dict, days: int) -> dict:
 
     top = proactive.get("top") if isinstance(proactive.get("top"), list) else []
     lead = top[0] if top else None
-    if lead:
+    classops_priority = int(classops_signal.get("score", 0) or 0) if classops_signal else 0
+    if classops_signal and (classops_signal.get("severity") in {"red", "orange"} or classops_priority >= 45):
+        next_move_title = classops_signal.get("title") or "Clear ClassOps follow-up"
+        next_move_body = classops_signal.get("detail") or "Open ClassOps and settle the highest-risk student/class signal first."
+        next_prompt = (
+            f"Help me clear this ClassOps signal now: {next_move_title}. "
+            f"Context: {next_move_body}. Give me a tight student follow-up plan."
+        )
+    elif lead:
         next_move_title = lead.get("title") or "Act on the lead signal"
         next_move_body = lead.get("body") or lead.get("action_hint") or "Follow the highest-ranked proactive signal."
         next_prompt = (
@@ -962,7 +983,9 @@ def _home_intelligence(results: dict, days: int) -> dict:
         next_prompt = "Find the best use of my next clean block based on my calendar, tasks, marking load, and current energy."
 
     first_task = task_items[0] if task_items else {}
-    if overdue_tasks:
+    if classops_signal and (classops_signal.get("severity") in {"red", "orange"} or classops_priority >= 45):
+        now_step = f"Open ClassOps and handle: {classops_signal.get('title', 'highest-risk student follow-up')}."
+    elif overdue_tasks:
         now_step = f"Clear or reschedule overdue item: {overdue_tasks[0].get('description', 'highest-risk task')}."
     elif unmarked:
         now_step = "Mark a small slice first: 5 scripts or 20 minutes, then update H.I.R.A with progress."
@@ -982,7 +1005,9 @@ def _home_intelligence(results: dict, days: int) -> dict:
     else:
         next_step = "Batch low-friction admin after the deep block, not before it."
 
-    if disconnected_count:
+    if classops_open and not classops_due_now:
+        later_step = f"Update ClassOps after collection so {classops_open} open submission signal(s) do not go stale."
+    elif disconnected_count:
         later_step = "Reconnect missing services so future intelligence has fewer blind spots."
     elif unmarked:
         later_step = "Update marking progress, then let H.I.R.A recalculate the load."
@@ -995,6 +1020,8 @@ def _home_intelligence(results: dict, days: int) -> dict:
         f"{unmarked} unmarked",
         f"{connected_count}/{len(services) or 0} services connected",
     ]
+    if classops.get("connected"):
+        evidence.append(f"{classops_concerns} ClassOps concern(s)")
     confidence = "High" if connected_count >= 3 else "Medium" if connected_count else "Limited"
 
     forecast_items = []
@@ -1025,6 +1052,20 @@ def _home_intelligence(results: dict, days: int) -> dict:
             "when": "Today",
             "detail": "Marking load is large enough to leak into tomorrow unless sliced early.",
             "severity": "orange",
+        })
+    if classops_due_now:
+        forecast_items.append({
+            "label": "ClassOps pressure",
+            "when": "Today",
+            "detail": f"{classops_due_now} tracked collection/follow-up signal(s) need attention.",
+            "severity": "orange",
+        })
+    elif classops_signal and classops_signal.get("severity") == "yellow":
+        forecast_items.append({
+            "label": "Student pattern",
+            "when": "Soon",
+            "detail": classops_signal.get("detail") or "ClassOps has a student pattern worth checking.",
+            "severity": "yellow",
         })
     if not forecast_items:
         forecast_items.append({
@@ -2315,50 +2356,23 @@ def admin_memory(limit: int = 5, x_hira_token: Optional[str] = Header(default=No
 
 
 def _classops_name_key(value: str) -> str:
-    return re.sub(r"[^A-Z0-9]+", " ", str(value or "").upper()).strip()
+    return classops_ai.classops_name_key(value)
 
 
 def _classops_record_for(ledger: dict, class_name: str) -> dict:
-    classes = ledger.get("classes") if isinstance(ledger, dict) else {}
-    if not isinstance(classes, dict):
-        return {"lessons": [], "assignments": []}
-    class_key = str(class_name or "").strip().upper()
-    return classes.get(class_key) or classes.get(str(class_name or "").strip()) or {"lessons": [], "assignments": []}
+    return classops_ai.classops_record_for(ledger, class_name)
 
 
 def _classops_parse_date(value: str) -> date | None:
-    raw = str(value or "").strip()
-    if not raw:
-        return None
-    for candidate in (raw[:10], raw):
-        try:
-            return datetime.fromisoformat(candidate).date()
-        except ValueError:
-            continue
-    return None
+    return classops_ai.parse_classops_date(value)
 
 
 def _classops_assignment_date(assignment: dict) -> date | None:
-    return (
-        _classops_parse_date(assignment.get("lesson_date", ""))
-        or _classops_parse_date(assignment.get("collect_by", ""))
-        or _classops_parse_date(assignment.get("created_at", ""))
-    )
+    return classops_ai.classops_assignment_date(assignment)
 
 
 def _classops_timing_context(target: date | None) -> list[dict]:
-    if not target:
-        return []
-    context = []
-    if target.weekday() == 0:
-        context.append({"key": "after_weekend", "label": "Due after weekend"})
-    elif target.weekday() in {5, 6}:
-        context.append({"key": "weekend_due", "label": "Due over weekend"})
-    if target in SCHOOL_CLOSURE_DATES_2026:
-        context.append({"key": "school_closure", "label": "Due on school/public closure"})
-    if target - timedelta(days=1) in SCHOOL_CLOSURE_DATES_2026:
-        context.append({"key": "after_public_holiday", "label": "Due after school/public closure"})
-    return context
+    return classops_ai.classops_timing_context(target)
 
 
 def _classops_make_event(assignment: dict, timing_context: list[dict]) -> dict:
@@ -2372,67 +2386,7 @@ def _classops_make_event(assignment: dict, timing_context: list[dict]) -> dict:
 
 
 def _classops_build_insights(class_name: str, roster: list[dict], assignments: list[dict], today: date) -> list[dict]:
-    insights = []
-    risky = sorted(
-        [student for student in roster if student.get("risk_score", 0) > 0],
-        key=lambda item: (item.get("risk_score", 0), item.get("missing_count", 0)),
-        reverse=True,
-    )
-    if risky:
-        names = [student["name"] for student in risky[:3]]
-        insights.append({
-            "severity": "critical" if risky[0].get("missing_count", 0) >= 2 else "watch",
-            "kind": "student_risk",
-            "title": f"{len(risky)} student{'s' if len(risky) != 1 else ''} need follow-up",
-            "detail": ", ".join(names),
-            "students": names,
-        })
-    pattern_counts: dict[str, int] = {}
-    pattern_students: dict[str, set[str]] = {}
-    for student in roster:
-        for key, count in (student.get("timing_patterns") or {}).items():
-            if count <= 0:
-                continue
-            pattern_counts[key] = pattern_counts.get(key, 0) + count
-            pattern_students.setdefault(key, set()).add(student["name"])
-    pattern_labels = {
-        "after_weekend": "after weekends",
-        "after_public_holiday": "after school/public closures",
-        "weekend_due": "over weekends",
-        "school_closure": "on school/public closures",
-    }
-    for key, count in sorted(pattern_counts.items(), key=lambda item: item[1], reverse=True)[:2]:
-        if count < 2 and key not in {"after_public_holiday", "school_closure"}:
-            continue
-        names = sorted(pattern_students.get(key, set()))[:3]
-        insights.append({
-            "severity": "watch",
-            "kind": "timing_pattern",
-            "title": f"Submission pattern {pattern_labels.get(key, key.replace('_', ' '))}",
-            "detail": f"{count} non-submission signal{'s' if count != 1 else ''}: {', '.join(names)}",
-            "students": names,
-        })
-    assignment_dates = [day for day in (_classops_assignment_date(item) for item in assignments) if day]
-    if assignment_dates:
-        latest = max(assignment_dates)
-        gap_days = (today - latest).days
-        if gap_days >= 10:
-            insights.append({
-                "severity": "watch" if gap_days < 21 else "critical",
-                "kind": "assignment_gap",
-                "title": f"{class_name} has not had tracked work for {gap_days} days",
-                "detail": f"Last tracked assignment was on {latest.isoformat()}.",
-                "days": gap_days,
-            })
-    elif roster:
-        insights.append({
-            "severity": "watch",
-            "kind": "assignment_gap",
-            "title": f"{class_name} has no tracked assignments yet",
-            "detail": "Start tracking from a contents item when you next collect work.",
-            "days": None,
-        })
-    return insights[:5]
+    return classops_ai.build_classops_insights(class_name, roster, assignments, today)
 
 
 def _classops_student_report(class_name: str, students: list[dict], ledger: dict | None = None, today: date | None = None) -> dict:
@@ -2632,81 +2586,12 @@ def _classops_apply_content_overrides(manifest: dict, ledger: dict | None = None
 
 
 def _classops_status_summary() -> dict:
-    ledger = bot.gs.get_classops_ledger()
-    classes = ledger.get("classes") if isinstance(ledger, dict) else {}
-    if not isinstance(classes, dict):
-        classes = {}
-    today = datetime.now(bot.SGT).date()
-    class_rows = []
-    totals = {
-        "class_count": 0,
-        "assignment_count": 0,
-        "pending_count": 0,
-        "concern_count": 0,
-        "insight_count": 0,
-        "due_today_count": 0,
-        "overdue_count": 0,
-    }
-    for class_name in sorted(classes.keys()):
-        record = classes.get(class_name) if isinstance(classes.get(class_name), dict) else {}
-        assignments = [item for item in record.get("assignments", []) if isinstance(item, dict)]
-        try:
-            students = bot.gs.get_classops_students(class_name)
-            report = _classops_student_report(class_name, students, ledger)
-            roster_count = report.get("roster_count", 0)
-            concern_count = report.get("concern_count", 0)
-            latest = report.get("assignments", [])[-1] if report.get("assignments") else {}
-            insights = report.get("insights", []) or []
-        except Exception:
-            roster_count = 0
-            concern_count = 0
-            latest = assignments[-1] if assignments else {}
-            insights = []
-        pending_count = int(latest.get("missing_count") or len(latest.get("non_submitted", []) or []) or 0)
-        due_today = 0
-        overdue = 0
-        for assignment in assignments:
-            due = str(assignment.get("collect_by") or "").strip()
-            if not due:
-                continue
-            try:
-                due_date = datetime.strptime(due, "%Y-%m-%d").date()
-            except ValueError:
-                continue
-            open_count = len(assignment.get("non_submitted", []) or [])
-            if not open_count:
-                continue
-            if due_date == today:
-                due_today += 1
-            elif due_date < today:
-                overdue += 1
-        row = {
-            "class_name": class_name,
-            "roster_count": roster_count,
-            "assignment_count": len(assignments),
-            "pending_count": pending_count,
-            "concern_count": concern_count,
-            "due_today_count": due_today,
-            "overdue_count": overdue,
-            "latest_assignment": latest,
-            "insight_count": len(insights),
-            "top_insight": insights[0] if insights else {},
-        }
-        class_rows.append(row)
-        totals["assignment_count"] += len(assignments)
-        totals["pending_count"] += pending_count
-        totals["concern_count"] += concern_count
-        totals["insight_count"] += len(insights)
-        totals["due_today_count"] += due_today
-        totals["overdue_count"] += overdue
-    totals["class_count"] = len(class_rows)
-    return {
-        "connected": True,
-        "generated_at": datetime.now(bot.SGT).isoformat(),
-        **totals,
-        "classes": class_rows,
-        "control_centre_url": "/classops",
-    }
+    return classops_ai.build_status_summary(
+        bot.gs.get_classops_ledger(),
+        bot.gs.get_classops_students,
+        now=datetime.now(bot.SGT),
+        logger=bot.logger,
+    )
 
 
 @app.post("/api/classops/dropbox/scan")

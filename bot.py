@@ -19,6 +19,7 @@ import pytz
 from anthropic import Anthropic, AsyncAnthropic
 
 import google_services as gs
+import classops_intelligence as classops_ai
 import timetable as tt
 import search_service as ss
 import sports_service as sports
@@ -824,6 +825,7 @@ Rules:
 - When the user asks to calculate and enter a score/mark/result into an MTL classlist sheet, calculate only from the numbers he gives or sheet values retrieved with include_scores=true, then call update_mtl_class_score. Do not guess a student or column; if the tool reports ambiguity, ask for the missing class/student/column detail.
 - When the user asks to fill percentage columns in an MTL classlist, call fill_mtl_percentage_scores. Use class_query and assessment_query if the user provides them; otherwise the tool will ask for specificity when multiple % columns match.
 - When the user asks about latest news, current events, headlines, football, Liverpool/LFC, F1, AI, Singapore education, apps, Apple, Nothing OS, or his shortlisted topics — call get_latest_news before answering. Prefer get_liverpool_brief for Liverpool/LFC questions and get_f1_brief for Formula 1 questions because they gather structured source slices.
+- For Liverpool/F1 result or score questions, answer the result first in the first sentence. Do not lead with programme notes, previews, line-ups, fan reaction, or where Herwanto can check it himself. If get_liverpool_brief/get_f1_brief does not contain a clear scoreline, run web_search with an exact "team/opponent/date full-time score" query before answering. Only say the result is unavailable after that targeted lookup fails.
 - For sports corrections and follow-ups, preserve the conversation subject. If Herwanto corrects a Liverpool/F1 claim, or then asks "what was the match like?", "the result?", "recap?", "home or away?", or "actual details?", use the relevant structured sports brief before answering even if the follow-up omits the team name.
 - After giving verified Liverpool or F1 scores/match details, add a short supporter-read: infer Herwanto's likely mood from his known loyalties and the result. Keep it humble ("I imagine", "this probably lands as") and concrete, not melodramatic. For Liverpool losses, acknowledge frustration, defensive/selection worries, or rivalry pain before any tactical note. For wins, share the lift and what he will probably enjoy. Do not let mood-reading replace the verified facts.
 - Liverpool FC is a first-class interest. Herwanto supports Liverpool. Track the current squad/line-ups, Premier League standing, progress in every competition Liverpool are still in, injuries/suspensions, fixtures/results, and transfer news/rumours. As of the 2025-26 squad context, Liverpool are managed by Arne Slot and the first-team group includes Alisson, Giorgi Mamardashvili, Freddie Woodman, Virgil van Dijk, Ibrahima Konate, Joe Gomez, Milos Kerkez, Conor Bradley, Andy Robertson, Jeremie Frimpong, Giovanni Leoni, Wataru Endo, Florian Wirtz, Dominik Szoboszlai, Alexis Mac Allister, Curtis Jones, Ryan Gravenberch, Trey Nyoni, Alexander Isak, Mohamed Salah, Federico Chiesa, Cody Gakpo, Hugo Ekitike, and Rio Ngumoha. If Herwanto mentions Wirtz, Isak, or "lfc big match", assume Liverpool context and do not correct him back to old clubs without first checking current sources. For current starting XIs, matchday line-ups, EPL table position, points, goal difference, form, Champions League/FA Cup/Carabao Cup progress, injuries, contract situations, departures, signings, or rumours, always use get_latest_news/web_search/fetch_url and cite the source. Clearly label transfer items as confirmed, reported, or rumour/speculation.
@@ -1262,7 +1264,7 @@ NEWS_TOOL = {
 
 LIVERPOOL_BRIEF_TOOL = {
     "name": "get_liverpool_brief",
-    "description": "Fetch a structured current Liverpool FC brief: Premier League standing/form, fixtures/results/line-ups, competition progress, injuries/suspensions, and transfer news/rumours. Use for Liverpool, LFC, Anfield, EPL/Premier League table, Wirtz, Isak, Salah, team news, and transfer questions.",
+    "description": "Fetch a structured current Liverpool FC brief with a score-first result probe, Premier League standing/form, fixtures/results/line-ups, competition progress, injuries/suspensions, and transfer news/rumours. Use for Liverpool, LFC, Anfield, EPL/Premier League table, match results, scorelines, Wirtz, Isak, Salah, team news, and transfer questions.",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -1532,6 +1534,46 @@ GMAIL_DRAFT_TOOL = {
 
 def google_ok():
     return bool(os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON") and os.environ.get("GOOGLE_SHEET_ID"))
+
+
+def build_classops_status_summary(now: datetime | None = None) -> dict:
+    if not google_ok():
+        return {
+            "connected": False,
+            "class_count": 0,
+            "assignment_count": 0,
+            "pending_count": 0,
+            "open_submission_count": 0,
+            "concern_count": 0,
+            "due_today_count": 0,
+            "overdue_count": 0,
+            "classes": [],
+            "control_centre_url": "/classops",
+        }
+    current = now or datetime.now(SGT)
+    try:
+        return classops_ai.build_status_summary(
+            gs.get_classops_ledger(),
+            gs.get_classops_students,
+            now=current,
+            logger=logger,
+        )
+    except Exception as exc:
+        logger.warning(f"ClassOps intelligence summary failed: {exc}")
+        return {
+            "connected": False,
+            "error": str(exc),
+            "class_count": 0,
+            "assignment_count": 0,
+            "pending_count": 0,
+            "open_submission_count": 0,
+            "concern_count": 0,
+            "due_today_count": 0,
+            "overdue_count": 0,
+            "classes": [],
+            "control_centre_url": "/classops",
+        }
+
 
 async def reply(update, text, **kwargs):
     if len(text) > 4000:
@@ -2520,6 +2562,22 @@ def build_proactive_intelligence_insights(days: int = 7, now: datetime | None = 
             "body": f"{person}{followup.get('topic', 'A follow-up')} is due by {followup.get('due_date', today.isoformat())}.",
         })
 
+    try:
+        classops_summary = build_classops_status_summary(now=current)
+        for item in classops_ai.proactive_insights(classops_summary, now=current):
+            insights.append({
+                "id": item["id"],
+                "kind": "classops",
+                "priority": item.get("priority", "medium"),
+                "title": item.get("title", "ClassOps needs attention"),
+                "body": item.get("body", ""),
+                "why": item.get("why", ""),
+                "action_hint": item.get("action_hint", ""),
+                "metadata": item.get("metadata", {}),
+            })
+    except Exception as exc:
+        logger.warning(f"Proactive ClassOps scan failed: {exc}")
+
     if not insights and current.hour < 11 and today_score <= 34:
         insights.append({
             "id": f"{today.isoformat()}:quiet_window",
@@ -3095,9 +3153,9 @@ def build_proactive_v2_queue(now: datetime | None = None, days: int = 7, familie
                     insight.get("body", ""),
                     score,
                     priority=insight.get("priority", "medium"),
-                    why="Detected from workload, due items, marking, or follow-ups.",
-                    action_hint="Use this to pre-empt friction before the day crowds in.",
-                    metadata={"insight_id": str(insight.get("id", ""))},
+                    why=insight.get("why") or "Detected from workload, due items, marking, follow-ups, or ClassOps.",
+                    action_hint=insight.get("action_hint") or "Use this to pre-empt friction before the day crowds in.",
+                    metadata={"insight_id": str(insight.get("id", "")), **dict(insight.get("metadata") or {})},
                 ))
     except Exception as exc:
         logger.warning(f"Proactive v2 intelligence scan failed: {exc}")
@@ -5628,6 +5686,13 @@ def build_briefing(record_news_digest: bool = False):
                 lines.append(build_marking_brief())
         except Exception:
             pass
+        try:
+            classops_lines = classops_ai.brief_lines(build_classops_status_summary(now=now))
+            if classops_lines:
+                lines.append("")
+                lines.extend(classops_lines)
+        except Exception as e:
+            logger.warning(f"ClassOps briefing scan failed: {e}")
 
     # Morning news digest
     try:
