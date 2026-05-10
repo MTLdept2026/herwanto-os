@@ -839,6 +839,48 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertTrue(sent)
         build_evening.assert_not_called()
 
+    def test_daily_briefing_confirmed_accepts_canonical_or_web_source(self):
+        today_key = "2026-05-10"
+        delivery_log = [{
+            "created": "2026-05-10T21:00:00+08:00",
+            "source": f"web_evening_briefing:{today_key}",
+            "sent": 1,
+        }]
+
+        with patch.object(bot.gs, "get_config", return_value=today_key):
+            confirmed = web_app._daily_briefing_confirmed("evening", today_key, delivery_log)
+
+        self.assertTrue(confirmed)
+
+    def test_daily_briefing_safety_net_runs_missing_evening_digest(self):
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                value = datetime(2026, 5, 10, 21, 5)
+                return bot.SGT.localize(value) if tz else value
+
+        calls = []
+
+        async def fake_evening(context=None, source="evening_briefing"):
+            calls.append(source)
+            return True
+
+        async def fake_morning(context=None, source="morning_briefing"):
+            raise AssertionError("morning safety net should not run at 21:05")
+
+        with (
+            patch.object(web_app, "datetime", FixedDateTime),
+            patch.object(bot.gs, "get_web_push_delivery_log", return_value=[]),
+            patch.object(bot.gs, "get_config", return_value=""),
+            patch.object(bot, "send_evening_briefing_once", side_effect=fake_evening),
+            patch.object(bot, "send_morning_briefing_once", side_effect=fake_morning),
+        ):
+            result = asyncio.run(web_app.recover_missed_daily_briefings())
+
+        self.assertEqual(result["attempted"], 1)
+        self.assertEqual(result["delivered"], 1)
+        self.assertEqual(calls, ["evening_briefing"])
+
     def test_proactive_v2_queue_prefers_higher_score_ready_items(self):
         now = bot.datetime.now(bot.SGT)
         with patch("bot.google_ok", return_value=False), \

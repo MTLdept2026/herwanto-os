@@ -234,18 +234,36 @@ async def add_static_cache_headers(request: Request, call_next):
     return response
 
 
-async def _web_daily_briefing_loop(hour: int, minute: int, sender, source: str):
+async def _web_daily_briefing_loop(
+    hour: int,
+    minute: int,
+    sender,
+    source: str,
+    grace_minutes: int | None = None,
+    retry_until_success: bool = False,
+):
     last_attempt_date = None
+    last_success_date = None
     while True:
         try:
             now = datetime.now(bot.SGT)
             target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            grace_until = target + bot.timedelta(minutes=bot.DAILY_JOB_GRACE_MINUTES)
+            grace_until = target + bot.timedelta(minutes=grace_minutes or bot.DAILY_JOB_GRACE_MINUTES)
             today_key = now.strftime("%Y-%m-%d")
-            if target <= now <= grace_until and today_key != last_attempt_date:
+            if retry_until_success:
+                should_run = target <= now <= grace_until and today_key != last_success_date
+            else:
+                should_run = target <= now <= grace_until and today_key != last_attempt_date
+            if should_run:
                 bot.logger.info(f"Web scheduler running {source} for {today_key}")
-                last_attempt_date = today_key
-                await sender(context=None, source=source)
+                if not retry_until_success:
+                    last_attempt_date = today_key
+                delivered = await sender(context=None, source=source)
+                if delivered:
+                    last_success_date = today_key
+                    last_attempt_date = today_key
+                elif retry_until_success:
+                    bot.logger.warning(f"Web scheduler {source} not confirmed; will retry during catch-up window")
             if now >= grace_until:
                 target = target + bot.timedelta(days=1)
             sleep_for = max(60, min(1800, (target - now).total_seconds()))
@@ -431,16 +449,93 @@ def recover_missed_push_notifications(limit: int | None = None) -> dict:
     return {"attempted": attempted, "sent": sent_total, "skipped": skipped}
 
 
+def _delivery_log_has_source(delivery_log: list, source: str, today_key: str) -> bool:
+    for item in reversed(delivery_log or []):
+        if str(item.get("source", "")).strip() != source:
+            continue
+        if int(item.get("sent", 0) or 0) <= 0:
+            continue
+        created = _parse_sgt_datetime(str(item.get("created", "")))
+        if created and created.strftime("%Y-%m-%d") == today_key:
+            return True
+    return False
+
+
+def _daily_briefing_confirmed(slot: str, today_key: str, delivery_log: list) -> bool:
+    config_key = bot.MORNING_BRIEFING_SENT_KEY if slot == "morning" else bot.EVENING_BRIEFING_SENT_KEY
+    try:
+        if bot.gs.get_config(config_key) != today_key:
+            return False
+    except Exception:
+        return False
+    sources = [
+        f"{slot}_briefing:{today_key}",
+        f"web_{slot}_briefing:{today_key}",
+    ]
+    return any(_delivery_log_has_source(delivery_log, source, today_key) for source in sources)
+
+
+async def recover_missed_daily_briefings() -> dict:
+    current = datetime.now(bot.SGT)
+    today_key = current.strftime("%Y-%m-%d")
+    try:
+        delivery_log = bot.gs.get_web_push_delivery_log()
+    except Exception as exc:
+        bot.logger.warning(f"Daily briefing safety net could not read delivery log: {exc}")
+        delivery_log = []
+
+    checks = [
+        (
+            "morning",
+            bot.MORNING_BRIEFING_TIME,
+            bot.MORNING_BRIEFING_CATCHUP_MINUTES,
+            bot.send_morning_briefing_once,
+        ),
+        (
+            "evening",
+            bot.EVENING_BRIEFING_TIME,
+            bot.EVENING_BRIEFING_CATCHUP_MINUTES,
+            bot.send_evening_briefing_once,
+        ),
+    ]
+    attempted = 0
+    delivered = 0
+    skipped = 0
+    for slot, when, grace_minutes, sender in checks:
+        target = current.replace(hour=when[0], minute=when[1], second=0, microsecond=0)
+        grace_until = target + bot.timedelta(minutes=grace_minutes)
+        if not (target <= current <= grace_until):
+            skipped += 1
+            continue
+        if _daily_briefing_confirmed(slot, today_key, delivery_log):
+            skipped += 1
+            continue
+        attempted += 1
+        source = f"{slot}_briefing"
+        bot.logger.warning(f"Daily briefing safety net running missed {slot} briefing for {today_key}")
+        if await sender(context=None, source=source):
+            delivered += 1
+    return {"attempted": attempted, "delivered": delivered, "skipped": skipped}
+
+
 async def _web_push_recovery_loop():
     while True:
         try:
             result = recover_missed_push_notifications()
+            briefing_result = await recover_missed_daily_briefings()
             if result.get("attempted"):
                 bot.logger.info(
                     "Web push recovery attempted=%s sent=%s skipped=%s",
                     result.get("attempted", 0),
                     result.get("sent", 0),
                     result.get("skipped", 0),
+                )
+            if briefing_result.get("attempted"):
+                bot.logger.info(
+                    "Daily briefing safety net attempted=%s delivered=%s skipped=%s",
+                    briefing_result.get("attempted", 0),
+                    briefing_result.get("delivered", 0),
+                    briefing_result.get("skipped", 0),
                 )
             await asyncio.sleep(_WEB_PUSH_RECOVERY_INTERVAL)
         except asyncio.CancelledError:
@@ -477,12 +572,26 @@ async def start_web_scheduler():
     if enabled:
         morning_hour, morning_minute = bot.MORNING_BRIEFING_TIME
         _WEB_SCHEDULER_TASKS.append(asyncio.create_task(
-            _web_daily_briefing_loop(morning_hour, morning_minute, bot.send_morning_briefing_once, "web_morning_briefing")
+            _web_daily_briefing_loop(
+                morning_hour,
+                morning_minute,
+                bot.send_morning_briefing_once,
+                "morning_briefing",
+                grace_minutes=bot.MORNING_BRIEFING_CATCHUP_MINUTES,
+                retry_until_success=True,
+            )
         ))
     if evening_enabled:
         evening_hour, evening_minute = bot.EVENING_BRIEFING_TIME
         _WEB_SCHEDULER_TASKS.append(asyncio.create_task(
-            _web_daily_briefing_loop(evening_hour, evening_minute, bot.send_evening_briefing_once, "web_evening_briefing")
+            _web_daily_briefing_loop(
+                evening_hour,
+                evening_minute,
+                bot.send_evening_briefing_once,
+                "evening_briefing",
+                grace_minutes=bot.EVENING_BRIEFING_CATCHUP_MINUTES,
+                retry_until_success=True,
+            )
         ))
     if prayer_enabled:
         _WEB_SCHEDULER_TASKS.append(asyncio.create_task(_web_prayer_reminder_loop()))
