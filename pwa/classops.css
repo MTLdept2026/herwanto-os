@@ -563,7 +563,7 @@ aside, .detail { padding: var(--space-md); }
 .student-summary article,
 .assignment-tally article,
 .student-row,
-.lesson-row {
+.contents-row {
   border: 1px solid var(--border-visible);
   background: var(--surface-raised);
 }
@@ -612,7 +612,7 @@ aside, .detail { padding: var(--space-md); }
 }
 
 .student-row.header,
-.lesson-row.header {
+.contents-row.header {
   background: transparent;
   border-color: transparent;
 }
@@ -621,29 +621,50 @@ aside, .detail { padding: var(--space-md); }
 .student-row[data-status="catch up"],
 .student-row[data-status="watch"] { border-left: 4px solid var(--warning); }
 
-.lesson-row {
+.contents-row {
   display: grid;
-  grid-template-columns: 130px minmax(130px, 0.7fr) minmax(220px, 1.5fr) minmax(180px, 0.75fr);
-  gap: var(--space-md);
-  padding: 12px;
+  grid-template-columns: 64px minmax(0, 1fr) 150px;
+  gap: 0;
+  align-items: stretch;
+  padding: 0;
+  cursor: pointer;
 }
 
-.lesson-row.header {
-  color: var(--text-secondary);
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+.contents-row > div {
+  padding: 9px 10px;
+  border-left: 1px solid var(--border-visible);
 }
 
-.folder-meta,
-.file-list,
-.due-work-name {
-  color: var(--text-secondary);
+.contents-row > div:first-child {
+  border-left: 0;
+  text-align: center;
 }
 
-.file-list {
-  margin: 0;
-  padding-left: 18px;
+.contents-row:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-visible));
+}
+
+.contents-row.header {
+  color: var(--text-display);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  cursor: default;
+}
+
+.contents-row.header > div {
+  background: #9fbe5c;
+  color: #000;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.contents-row:not(.header) > div {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 18px;
+  line-height: 1.18;
+  color: #000;
 }
 
 .empty {
@@ -665,7 +686,7 @@ aside, .detail { padding: var(--space-md); }
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .lesson-row,
+  .contents-row,
   .assignment-form,
   .student-summary,
   .assignment-tally,
@@ -698,5 +719,11 @@ aside, .detail { padding: var(--space-md); }
   .shell { width: 100%; padding: 0; }
   .workspace { display: block; }
   .detail { border: 0; padding: 0; }
-  .lesson-row { break-inside: avoid; }
+  .contents-row {
+    break-inside: avoid;
+    grid-template-columns: 64px minmax(0, 1fr) 150px;
+  }
+  .contents-row > div {
+    border-color: #000;
+  }
 }

@@ -58,6 +58,12 @@ function shortDateTime(value = "") {
   }
 }
 
+function formatContentDate(value = "") {
+  const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return value || "-";
+  return `${match[3]}/${match[2]}/${match[1].slice(2)}`;
+}
+
 function segmentMarkup(value, total = 12, tone = "accent") {
   const filled = Math.max(0, Math.min(total, Math.round(Number(value || 0))));
   return Array.from({ length: total }, (_, index) => `<span class="${index < filled ? `active ${tone}` : ""}"></span>`).join("");
@@ -67,7 +73,7 @@ function renderMissionTelemetry(data = {}) {
   const summary = data.summary || {};
   const students = data.student_summary || {};
   const concernCount = Number(students.concern_count || 0);
-  const dueWork = Number(summary.collection_candidate_count || 0);
+  const contents = Number(summary.content_item_count ?? summary.collection_candidate_count ?? 0);
   const classes = Number(summary.class_count ?? data.class_count ?? 0);
   const roster = Number(students.roster_count || 0);
   const readiness = concernCount ? "Action" : classes ? "Nominal" : "Standby";
@@ -77,7 +83,7 @@ function renderMissionTelemetry(data = {}) {
   $("#missionFollowUp").textContent = String(concernCount);
   $("#missionReadout").innerHTML = `
     <p>${classes} classes online · ${roster} students synced from Drive.</p>
-    <p>${dueWork} due-work signals · ${Number(students.assignment_count || 0)} tracked submissions.</p>
+    <p>${contents} filing items · ${Number(students.assignment_count || 0)} tracked submissions.</p>
   `;
 }
 
@@ -86,7 +92,7 @@ function renderSummary(data) {
   $("#classCount").textContent = String(summary.class_count ?? data?.class_count ?? "--");
   $("#lessonCount").textContent = String(summary.lesson_count ?? "--");
   $("#fileCount").textContent = String(summary.file_count ?? data?.file_count ?? "--");
-  $("#collectCount").textContent = String(summary.collection_candidate_count ?? "--");
+  $("#collectCount").textContent = String(summary.content_item_count ?? summary.collection_candidate_count ?? "--");
   $("#studentCount").textContent = String(data?.student_summary?.roster_count ?? "--");
 }
 
@@ -99,8 +105,8 @@ function renderClassCards(classes = []) {
           <p>${escapeHtml(item.latest_lesson?.topic || item.latest_lesson?.folder || "Waiting for lesson folders.")}</p>
           <div class="metric-row">
             <div><span>Lessons</span><strong>${Number(item.lesson_count || 0)}</strong></div>
-            <div><span>Files</span><strong>${Number(item.file_count || 0)}</strong></div>
-            <div><span>Watch</span><strong>${Number(item.student_report?.concern_count || item.collection_candidate_count || 0)}</strong></div>
+            <div><span>Items</span><strong>${Number(item.content_item_count || 0)}</strong></div>
+            <div><span>Watch</span><strong>${Number(item.student_report?.concern_count || 0)}</strong></div>
           </div>
           <div class="class-telemetry" aria-hidden="true">${segmentMarkup(Math.min(12, Number(item.lesson_count || 0)), 12, item.student_report?.concern_count ? "warn" : "accent")}</div>
           <button type="button" data-select-class="${escapeHtml(item.class)}">Open</button>
@@ -113,7 +119,7 @@ function renderClassList(classes = []) {
   $("#classList").innerHTML = classes.map((item) => `
     <button type="button" class="${item.class === state.selectedClass ? "active" : ""}" data-select-class="${escapeHtml(item.class)}">
       <span>${escapeHtml(item.class)}</span>
-      <strong>${Number(item.student_report?.concern_count || item.collection_candidate_count || 0)}</strong>
+      <strong>${Number(item.student_report?.concern_count || 0)}</strong>
     </button>
   `).join("");
 }
@@ -146,29 +152,20 @@ function renderContents(classItem) {
   renderCollectionPanel(classItem);
   renderStudentReport(classItem.student_report || {});
   renderNonSubmissionRoster(classItem);
-  const lessons = (classItem.folders || []).filter((folder) => folder.date || folder.folder !== ".");
+  const contentItems = classItem.content_items || [];
   $("#contentsTable").innerHTML = `
-    <div class="lesson-row header">
-      <div>Date</div><div>Topic</div><div>Materials</div><div>Submission</div>
+    <div class="contents-row header">
+      <div>No</div><div>Item</div><div>Tarikh</div>
     </div>
-    ${lessons.length ? lessons.map((folder) => {
-      const dueWork = (folder.collection_candidates || []).map((file) => file.name).join(", ");
+    ${contentItems.length ? contentItems.map((item, index) => {
       return `
-        <article class="lesson-row">
-          <div><strong>${escapeHtml(folder.date || "Undated")}</strong><p class="folder-meta">${escapeHtml(folder.folder || "")}</p></div>
-          <div>${escapeHtml(folder.topic || "-")}</div>
-          <div>
-            <ul class="file-list">
-              ${(folder.files || []).slice(0, 12).map((file) => `<li>${escapeHtml(file.name)} <span>${escapeHtml(file.kind || "")}</span></li>`).join("")}
-            </ul>
-          </div>
-          <div>
-            <p class="due-work-name">${escapeHtml(dueWork || "No due work marked")}</p>
-            <button type="button" data-track-lesson="${escapeHtml(folder.date || "")}" data-track-topic="${escapeHtml(folder.topic || "")}" data-track-folder="${escapeHtml(folder.folder || "")}">Submissions</button>
-          </div>
+        <article class="contents-row" data-track-lesson="${escapeHtml(item.date || "")}" data-track-topic="${escapeHtml(item.title || "")}" data-track-folder="${escapeHtml(item.folder || "")}" data-track-title="${escapeHtml(item.title || "")}">
+          <div><strong>${index + 1}</strong></div>
+          <div>${escapeHtml(item.title || "Untitled")}</div>
+          <div>${escapeHtml(formatContentDate(item.date || ""))}</div>
         </article>
       `;
-    }).join("") : `<div class="empty">No dated lesson folders found for this class.</div>`}
+    }).join("") : `<div class="empty">No filing items detected yet for this class.</div>`}
   `;
 }
 
@@ -250,8 +247,8 @@ function prefillLesson(button) {
   state.nonSubmitted = new Set();
   $("#lessonDateInput").value = /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : "";
   $("#topicInput").value = button.dataset.trackTopic || "";
-  const dueWork = (button.closest(".lesson-row")?.querySelector(".due-work-name")?.textContent || "").trim();
-  if (dueWork && dueWork !== "No due work marked") $("#assignmentTitleInput").value = dueWork.split(",")[0].trim();
+  const title = button.dataset.trackTitle || "";
+  if (title) $("#assignmentTitleInput").value = title.trim();
   renderNonSubmissionRoster();
   $("#assignmentTitleInput").focus();
 }

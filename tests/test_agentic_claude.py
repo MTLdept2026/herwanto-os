@@ -1389,8 +1389,21 @@ class AgenticClaudeTests(unittest.TestCase):
         enriched = dropbox_service.enrich_classops_manifest(manifest)
         class_item = enriched["classes"][0]
         self.assertEqual(enriched["summary"]["collection_candidate_count"], 1)
+        self.assertEqual(enriched["summary"]["content_item_count"], 1)
         self.assertEqual(class_item["lesson_count"], 1)
         self.assertEqual(class_item["collection_candidates"][0]["collection"]["due"], "next_lesson")
+        self.assertEqual(class_item["content_items"][0]["title"], "Latihan Peribahasa")
+        self.assertEqual(class_item["content_items"][0]["date"], "2026-02-24")
+
+    def test_classops_filing_title_uses_minisite_title(self):
+        title = dropbox_service._html_title(b"<html><head><title>Fallback</title></head><body><h1>Nota - Masa Senggang</h1></body></html>")
+
+        self.assertEqual(title, "Nota - Masa Senggang")
+
+    def test_classops_filing_title_cleans_filename_noise(self):
+        title = dropbox_service.infer_filing_title_from_filename("2G3_latihan peribahasa collect next lesson.pdf")
+
+        self.assertEqual(title, "Latihan Peribahasa")
 
     def test_classops_assignment_ledger_persists_tracking(self):
         store = {}

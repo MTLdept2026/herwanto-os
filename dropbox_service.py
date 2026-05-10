@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import os
+import json
 import re
 import time
+import zipfile
 from datetime import date, datetime
+from html.parser import HTMLParser
+from io import BytesIO
+from xml.etree import ElementTree as ET
 
 import requests
 import pytz
@@ -11,8 +16,10 @@ import pytz
 
 SGT = pytz.timezone("Asia/Singapore")
 DROPBOX_API = "https://api.dropboxapi.com/2"
+DROPBOX_CONTENT_API = "https://content.dropboxapi.com/2"
 DROPBOX_TOKEN_URL = "https://api.dropbox.com/oauth2/token"
 _TOKEN_CACHE: dict = {}
+_TITLE_CACHE: dict[str, str] = {}
 CLASSOPS_CLASSES = {"1G2", "2G3", "3G3", "4NT"}
 CONTENT_EXTENSIONS = {
     ".html": "mini-site",
@@ -41,6 +48,44 @@ COLLECT_TERMS = (
     "kefahaman",
 )
 REFERENCE_SKIP_TERMS = ("reference", "rujukan", "answer", "answers", "jawapan", "scheme", "skema", "teacher")
+FILING_EXTENSIONS = {".html", ".htm", ".pdf", ".docx", ".doc", ".pptx", ".ppt"}
+TITLE_INSPECT_EXTENSIONS = {".html", ".htm", ".docx"}
+TITLE_MAX_BYTES = int(os.environ.get("DROPBOX_CLASSOPS_TITLE_MAX_BYTES", "2500000") or 2500000)
+
+
+class _MiniSiteTitleParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self._stack: list[str] = []
+        self.title_parts: list[str] = []
+        self.h1_parts: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        self._stack.append(str(tag or "").lower())
+
+    def handle_endtag(self, tag):
+        tag = str(tag or "").lower()
+        for index in range(len(self._stack) - 1, -1, -1):
+            if self._stack[index] == tag:
+                del self._stack[index:]
+                return
+
+    def handle_data(self, data):
+        current = self._stack[-1] if self._stack else ""
+        text = " ".join(str(data or "").split())
+        if not text:
+            return
+        if current == "title":
+            self.title_parts.append(text)
+        elif current == "h1":
+            self.h1_parts.append(text)
+
+    @property
+    def title(self) -> str:
+        h1 = " ".join(self.h1_parts).strip()
+        if h1:
+            return h1
+        return " ".join(self.title_parts).strip()
 
 
 def configured() -> bool:
@@ -97,6 +142,19 @@ def _post(endpoint: str, payload: dict) -> dict:
     )
     resp.raise_for_status()
     return resp.json()
+
+
+def _download_file(path: str) -> bytes:
+    resp = requests.post(
+        f"{DROPBOX_CONTENT_API}/files/download",
+        headers={
+            "Authorization": f"Bearer {_access_token()}",
+            "Dropbox-API-Arg": json.dumps({"path": path}),
+        },
+        timeout=20,
+    )
+    resp.raise_for_status()
+    return resp.content
 
 
 def _list_folder(path: str, recursive: bool = True, limit: int = 500) -> list[dict]:
@@ -169,6 +227,134 @@ def _file_kind(name: str) -> str:
     return CONTENT_EXTENSIONS.get(_file_extension(name), "file")
 
 
+def _clean_title_text(value: str) -> str:
+    text = str(value or "")
+    text = re.sub(r"\s+", " ", text.replace("\u00a0", " ")).strip(" \t\r\n-_|")
+    return text
+
+
+def _smart_title(value: str) -> str:
+    text = _clean_title_text(value)
+    if not text:
+        return ""
+    small = {"dan", "atau", "di", "ke", "dari", "daripada", "untuk", "yang", "dengan", "serta"}
+    words = []
+    for raw in text.split(" "):
+        if not raw:
+            continue
+        if raw.isupper() and len(raw) <= 5:
+            words.append(raw)
+            continue
+        lowered = raw.lower()
+        if lowered in small and words:
+            words.append(lowered)
+            continue
+        words.append(raw[:1].upper() + raw[1:].lower())
+    return " ".join(words)
+
+
+def infer_filing_title_from_filename(name: str) -> str:
+    clean = re.sub(r"\.[A-Za-z0-9]{1,6}$", "", str(name or "")).strip()
+    clean = re.sub(r"[_]+", " ", clean)
+    clean = re.sub(r"\s*[-–—]\s*", " - ", clean)
+    clean = re.sub(r"\s+", " ", clean)
+    clean = re.sub(r"(?<!\d)\d{1,2}[.\-_/ :]\d{1,2}[.\-_/ :]\d{2,4}(?!\d)", " ", clean)
+    clean = re.sub(r"\b(?:collect|collection|submit|submission)\s+(?:next\s+(?:lesson|class)|by\s+\S+)\b", " ", clean, flags=re.I)
+    clean = re.sub(r"\b(?:collect|collection|submit|submission)\b", " ", clean, flags=re.I)
+    clean = re.sub(r"\b(?:1G2|2G3|3G3|4NT)\b", " ", clean, flags=re.I)
+    clean = re.sub(r"\b(?:copy|final|updated|new)\b", " ", clean, flags=re.I)
+    clean = re.sub(r"\s+", " ", clean).strip(" -_")
+    return _smart_title(clean)
+
+
+def _html_title(content: bytes) -> str:
+    for encoding in ("utf-8", "utf-16", "latin-1"):
+        try:
+            text = content.decode(encoding, errors="ignore")
+            break
+        except Exception:
+            text = ""
+    parser = _MiniSiteTitleParser()
+    try:
+        parser.feed(text[:200_000])
+    except Exception:
+        return ""
+    title = _clean_title_text(parser.title)
+    title = re.sub(r"\s*[|–—-]\s*(?:H\.?I\.?R\.?A|Canva|Google Docs?)\s*$", "", title, flags=re.I)
+    return _smart_title(title)
+
+
+def _docx_text_from_paragraph(paragraph) -> str:
+    texts = []
+    for node in paragraph.iter():
+        if node.tag.endswith("}t") and node.text:
+            texts.append(node.text)
+    return _clean_title_text("".join(texts))
+
+
+def _docx_title(content: bytes) -> str:
+    try:
+        with zipfile.ZipFile(BytesIO(content)) as docx:
+            try:
+                core = ET.fromstring(docx.read("docProps/core.xml"))
+                for node in core.iter():
+                    if node.tag.endswith("}title") and _clean_title_text(node.text or ""):
+                        return _smart_title(node.text or "")
+            except Exception:
+                pass
+            document = ET.fromstring(docx.read("word/document.xml"))
+    except Exception:
+        return ""
+    first_paragraph = ""
+    for paragraph in document.iter():
+        if not paragraph.tag.endswith("}p"):
+            continue
+        text = _docx_text_from_paragraph(paragraph)
+        if not text:
+            continue
+        if not first_paragraph:
+            first_paragraph = text
+        for node in paragraph.iter():
+            if node.tag.endswith("}pStyle"):
+                style = str(node.attrib.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val", ""))
+                if "Heading" in style or "Title" in style:
+                    return _smart_title(text)
+        if len(text) <= 90:
+            return _smart_title(text)
+    return _smart_title(first_paragraph)
+
+
+def infer_filing_title(file_item: dict) -> str:
+    name = str(file_item.get("name") or "")
+    fallback = infer_filing_title_from_filename(name)
+    ext = _file_extension(name)
+    dropbox_path = str(file_item.get("dropbox_path") or "")
+    size = int(file_item.get("size", 0) or 0)
+    if ext not in TITLE_INSPECT_EXTENSIONS or not dropbox_path or size > TITLE_MAX_BYTES:
+        return fallback
+    cached = _TITLE_CACHE.get(dropbox_path)
+    if cached:
+        return cached
+    try:
+        content = _download_file(dropbox_path)
+        title = _html_title(content) if ext in {".html", ".htm"} else _docx_title(content)
+    except Exception:
+        title = ""
+    title = title or fallback
+    if title:
+        _TITLE_CACHE[dropbox_path] = title
+    return title
+
+
+def _is_filing_item(file_item: dict) -> bool:
+    name = str(file_item.get("name") or "")
+    ext = _file_extension(name)
+    if ext not in FILING_EXTENSIONS:
+        return False
+    clean = " ".join(name.lower().replace("_", " ").replace("-", " ").split())
+    return not any(term in clean for term in REFERENCE_SKIP_TERMS)
+
+
 def infer_collection_hint(name: str) -> dict:
     clean = " ".join(str(name or "").lower().replace("_", " ").replace("-", " ").split())
     if not clean or any(term in clean for term in REFERENCE_SKIP_TERMS):
@@ -192,21 +378,32 @@ def enrich_classops_manifest(manifest: dict) -> dict:
     current = dict(manifest or {})
     classes_out = []
     total_collection_candidates = 0
+    total_content_items = 0
     total_lessons = 0
     for class_item in current.get("classes", []) or []:
         folders_out = []
         latest = None
         class_collection = []
+        content_items = []
         for folder in class_item.get("folders", []) or []:
             files_out = []
             candidates = []
             for file_item in folder.get("files", []) or []:
                 next_file = dict(file_item)
                 next_file["kind"] = _file_kind(next_file.get("name", ""))
+                next_file["filing_title"] = infer_filing_title(next_file) if _is_filing_item(next_file) else ""
                 collection = infer_collection_hint(next_file.get("name", ""))
                 next_file["collection"] = collection
                 if collection.get("collect"):
                     candidates.append(next_file)
+                if folder.get("date") and next_file.get("filing_title"):
+                    content_items.append({
+                        "title": next_file["filing_title"],
+                        "date": folder.get("date", ""),
+                        "folder": folder.get("folder", ""),
+                        "path": next_file.get("path", ""),
+                        "kind": next_file.get("kind", ""),
+                    })
                 files_out.append(next_file)
             next_folder = {
                 **folder,
@@ -221,6 +418,7 @@ def enrich_classops_manifest(manifest: dict) -> dict:
                     latest = next_folder
             class_collection.extend(candidates)
         total_collection_candidates += len(class_collection)
+        total_content_items += len(content_items)
         classes_out.append({
             **class_item,
             "folders": folders_out,
@@ -232,6 +430,8 @@ def enrich_classops_manifest(manifest: dict) -> dict:
             },
             "collection_candidate_count": len(class_collection),
             "collection_candidates": class_collection[:12],
+            "content_items": content_items,
+            "content_item_count": len(content_items),
         })
     current["classes"] = classes_out
     current["summary"] = {
@@ -239,6 +439,7 @@ def enrich_classops_manifest(manifest: dict) -> dict:
         "lesson_count": total_lessons,
         "file_count": int(current.get("file_count", 0) or 0),
         "collection_candidate_count": total_collection_candidates,
+        "content_item_count": total_content_items,
     }
     return current
 
@@ -281,6 +482,7 @@ def scan_classops_manifest() -> dict:
         folder_bucket["files"].append({
             "name": item.get("name", ""),
             "path": rel,
+            "dropbox_path": item.get("path_display", "") or item.get("path_lower", ""),
             "size": int(item.get("size", 0) or 0),
             "modified": item.get("server_modified", "") or item.get("client_modified", ""),
             "id": item.get("id", ""),
