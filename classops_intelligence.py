@@ -77,6 +77,10 @@ def normalise_classops_assignments(assignments: list[dict]) -> list[dict]:
     return [item for _, item in sorted(deduped.values(), key=lambda value: value[0])]
 
 
+def _classops_assignment_has_active_signal(assignment: dict) -> bool:
+    return bool((assignment.get("non_submitted") or []) or (assignment.get("absent") or []))
+
+
 def classops_timing_context(target: date | None) -> list[dict]:
     if not target:
         return []
@@ -253,7 +257,10 @@ def build_student_report(class_name: str, students: list[dict], ledger: dict | N
     ledger = ledger if isinstance(ledger, dict) else {"classes": {}}
     today = today or datetime.now().date()
     record = classops_record_for(ledger, class_name)
-    assignments = normalise_classops_assignments([item for item in record.get("assignments", []) if isinstance(item, dict)])
+    assignments = [
+        item for item in normalise_classops_assignments([item for item in record.get("assignments", []) if isinstance(item, dict)])
+        if _classops_assignment_has_active_signal(item)
+    ]
     roster = []
     for index, student in enumerate(students or [], start=1):
         name = str(student.get("name") or "").strip()

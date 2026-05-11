@@ -1938,7 +1938,7 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("Watch after school/public holiday", student["risk_reasons"])
         self.assertEqual(report["assignments"][0]["timing_context"][0]["key"], "after_public_holiday")
 
-    def test_classops_student_report_flags_assignment_gap(self):
+    def test_classops_student_report_ignores_cleared_assignment_for_gap(self):
         ledger = {
             "classes": {
                 "2G3": {
@@ -1956,8 +1956,8 @@ class AgenticClaudeTests(unittest.TestCase):
         report = web_app._classops_student_report("2G3", students, ledger, today=date(2026, 5, 10))
 
         gap = [insight for insight in report["insights"] if insight["kind"] == "assignment_gap"][0]
-        self.assertEqual(gap["days"], 39)
-        self.assertIn("not had tracked work", gap["title"])
+        self.assertIsNone(gap["days"])
+        self.assertIn("no tracked assignments", gap["title"])
 
     def test_classops_empty_non_submission_list_does_not_mark_everyone_missing(self):
         ledger = {
@@ -1979,10 +1979,10 @@ class AgenticClaudeTests(unittest.TestCase):
 
         report = web_app._classops_student_report("3G3", students, ledger, today=date(2026, 5, 12))
 
+        self.assertEqual(report["assignment_count"], 0)
         self.assertEqual(report["open_non_submission_count"], 0)
         self.assertEqual(report["concern_count"], 0)
-        self.assertEqual(report["assignments"][0]["submitted_count"], 2)
-        self.assertEqual(report["assignments"][0]["missing_count"], 0)
+        self.assertEqual(report["assignments"], [])
         self.assertTrue(all(student["missing_count"] == 0 for student in report["students"]))
 
     def test_classops_student_report_flags_marks_watch(self):
@@ -2027,7 +2027,7 @@ class AgenticClaudeTests(unittest.TestCase):
         practice = [group for group in report["feed_forward_groups"] if group["key"] == "practice"][0]
         self.assertEqual(practice["students"][0]["name"], "Kumar Das")
 
-    def test_classops_student_report_cleared_source_path_counts_done(self):
+    def test_classops_student_report_cleared_source_path_is_not_active_tracking(self):
         ledger = {
             "classes": {
                 "2G3": {
@@ -2049,12 +2049,11 @@ class AgenticClaudeTests(unittest.TestCase):
 
         report = web_app._classops_student_report("2G3", students, ledger, today=date(2026, 5, 12))
 
-        by_name = {student["name"]: student for student in report["students"]}
-        self.assertEqual(by_name["Kumar Das"]["submitted_count"], 1)
-        self.assertEqual(by_name["Kumar Das"]["missing_count"], 0)
+        self.assertEqual(report["assignment_count"], 0)
         self.assertEqual(report["open_non_submission_count"], 0)
-        self.assertEqual(report["assignments"][0]["submitted_count"], 2)
-        self.assertEqual(report["assignments"][0]["missing_count"], 0)
+        self.assertEqual(report["assignments"], [])
+        self.assertTrue(all(student["submitted_count"] == 0 for student in report["students"]))
+        self.assertTrue(all(student["missing_count"] == 0 for student in report["students"]))
 
     def test_classops_student_report_dedupes_stale_legacy_record_for_same_item(self):
         ledger = {
@@ -2090,9 +2089,9 @@ class AgenticClaudeTests(unittest.TestCase):
 
         report = web_app._classops_student_report("3G3", students, ledger, today=date(2026, 5, 12))
 
-        self.assertEqual(report["assignment_count"], 1)
+        self.assertEqual(report["assignment_count"], 0)
         self.assertEqual(report["open_non_submission_count"], 0)
-        self.assertEqual(report["assignments"][0]["id"], "source-work")
+        self.assertEqual(report["assignments"], [])
         self.assertTrue(all(student["missing_count"] == 0 for student in report["students"]))
 
     def test_classops_non_submission_count_stays_cumulative_across_files(self):
@@ -2136,10 +2135,11 @@ class AgenticClaudeTests(unittest.TestCase):
         report = web_app._classops_student_report("2G3", students, ledger, today=date(2026, 5, 14))
 
         by_name = {student["name"]: student for student in report["students"]}
-        self.assertEqual(by_name["Kumar Das"]["submitted_count"], 1)
+        self.assertEqual(by_name["Kumar Das"]["submitted_count"], 0)
         self.assertEqual(by_name["Kumar Das"]["missing_count"], 2)
+        self.assertEqual(report["assignment_count"], 2)
         self.assertEqual(report["open_non_submission_count"], 2)
-        self.assertEqual([event["status"] for event in by_name["Kumar Das"]["timeline"]], ["submitted", "missing", "missing"])
+        self.assertEqual([event["status"] for event in by_name["Kumar Das"]["timeline"]], ["missing", "missing"])
 
     def test_classops_reflection_worksheet_uses_lesson_and_watchlist(self):
         report = {
