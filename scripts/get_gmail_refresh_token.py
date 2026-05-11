@@ -12,12 +12,23 @@ SCOPES = [
 
 
 def main():
-    client_id = os.environ.get("GOOGLE_GMAIL_CLIENT_ID", "").strip()
-    client_secret = os.environ.get("GOOGLE_GMAIL_CLIENT_SECRET", "").strip()
     output_name = os.environ.get("GOOGLE_GMAIL_REFRESH_ENV", "GOOGLE_GMAIL_REFRESH_TOKEN").strip()
+    work_token_requested = output_name == "GOOGLE_WORK_GMAIL_REFRESH_TOKEN"
+    if work_token_requested:
+        client_id = (
+            os.environ.get("GOOGLE_WORK_GMAIL_CLIENT_ID", "").strip()
+            or os.environ.get("GOOGLE_GMAIL_CLIENT_ID", "").strip()
+        )
+        client_secret = (
+            os.environ.get("GOOGLE_WORK_GMAIL_CLIENT_SECRET", "").strip()
+            or os.environ.get("GOOGLE_GMAIL_CLIENT_SECRET", "").strip()
+        )
+    else:
+        client_id = os.environ.get("GOOGLE_GMAIL_CLIENT_ID", "").strip()
+        client_secret = os.environ.get("GOOGLE_GMAIL_CLIENT_SECRET", "").strip()
     if not client_id or not client_secret:
         raise SystemExit(
-            "Set GOOGLE_GMAIL_CLIENT_ID and GOOGLE_GMAIL_CLIENT_SECRET first."
+            "Set GOOGLE_GMAIL_CLIENT_ID/SECRET first, or GOOGLE_WORK_GMAIL_CLIENT_ID/SECRET for a work token."
         )
 
     client_config = {

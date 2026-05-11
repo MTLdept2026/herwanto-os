@@ -3873,6 +3873,108 @@ class AgenticClaudeTests(unittest.TestCase):
             self.assertFalse(bot.gs.gmail_ok("personal"))
             self.assertEqual(bot._normalise_gmail_account("work"), "work")
 
+    def test_work_gmail_monitor_first_run_still_notifies_recent_action_mail(self):
+        now_header = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")
+        messages = [
+            {
+                "id": "recent-action",
+                "from": "HOD <hod@example.com>",
+                "subject": "Action required: submit form by today",
+                "snippet": "Please submit the form by today.",
+                "body": "",
+                "date": now_header,
+            },
+            {
+                "id": "old-action",
+                "from": "Admin <admin@example.com>",
+                "subject": "Action required: old briefing",
+                "snippet": "Please respond.",
+                "body": "",
+                "date": "Thu, 01 Jan 2026 09:00:00 +0800",
+            },
+        ]
+        store = {}
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "gmail_ok", return_value=True),
+            patch.object(bot, "_acquire_job_lock", return_value=True),
+            patch.object(bot, "_finish_background_job"),
+            patch.object(bot.gs, "list_gmail_messages", return_value=messages),
+            patch.object(bot.gs, "get_config", side_effect=lambda key: store.get(key, "")),
+            patch.object(bot.gs, "set_config", side_effect=lambda key, value: store.__setitem__(key, value)),
+            patch.object(bot, "_queue_app_notification", return_value={"id": "n1", "_push_sent": 1}) as queue,
+            patch.dict(os.environ, {
+                "HIRA_WORK_GMAIL_NOTIFY_ON_FIRST_RUN": "0",
+                "HIRA_WORK_GMAIL_FIRST_RUN_GRACE_MINUTES": "90",
+                "HIRA_WORK_GMAIL_ACTION_SCORE": "2",
+            }),
+        ):
+            asyncio.run(bot.work_gmail_monitor_job(None))
+
+        queue.assert_called_once()
+        self.assertEqual(queue.call_args.kwargs["source"], "work_gmail:recent-action")
+        seen = set(json.loads(store[bot.WORK_GMAIL_MONITOR_SEEN_KEY]))
+        self.assertEqual(seen, {"recent-action", "old-action"})
+        status = json.loads(store[bot.WORK_GMAIL_MONITOR_STATUS_KEY])
+        self.assertEqual(status["status"], "notified")
+        self.assertEqual(status["candidates"], 1)
+
+    def test_work_gmail_monitor_records_checked_status_with_no_new_mail(self):
+        store = {bot.WORK_GMAIL_MONITOR_SEEN_KEY: json.dumps(["known"])}
+        messages = [{
+            "id": "known",
+            "from": "Admin <admin@example.com>",
+            "subject": "Known",
+            "snippet": "Already seen",
+            "body": "",
+            "date": datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000"),
+        }]
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "gmail_ok", return_value=True),
+            patch.object(bot, "_acquire_job_lock", return_value=True),
+            patch.object(bot, "_finish_background_job"),
+            patch.object(bot.gs, "list_gmail_messages", return_value=messages),
+            patch.object(bot.gs, "get_config", side_effect=lambda key: store.get(key, "")),
+            patch.object(bot.gs, "set_config", side_effect=lambda key, value: store.__setitem__(key, value)),
+            patch.object(bot, "_queue_app_notification") as queue,
+        ):
+            asyncio.run(bot.work_gmail_monitor_job(None))
+
+        queue.assert_not_called()
+        self.assertIn(bot.WORK_GMAIL_MONITOR_LAST_RUN_KEY, store)
+        status = json.loads(store[bot.WORK_GMAIL_MONITOR_STATUS_KEY])
+        self.assertEqual(status["status"], "checked")
+        self.assertEqual(status["incoming"], 0)
+
+    def test_work_gmail_monitor_queues_reconnect_notice_on_revoked_token(self):
+        store = {}
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "gmail_ok", return_value=True),
+            patch.object(bot, "_acquire_job_lock", return_value=True),
+            patch.object(bot, "_finish_background_job"),
+            patch.object(
+                bot.gs,
+                "list_gmail_messages",
+                side_effect=Exception("invalid_grant: Token has been expired or revoked."),
+            ),
+            patch.object(bot.gs, "get_config", side_effect=lambda key: store.get(key, "")),
+            patch.object(bot.gs, "set_config", side_effect=lambda key, value: store.__setitem__(key, value)),
+            patch.object(bot, "_queue_app_notification", return_value={"id": "n1", "_push_sent": 1}) as queue,
+        ):
+            asyncio.run(bot.work_gmail_monitor_job(None))
+
+        queue.assert_called_once()
+        self.assertEqual(queue.call_args.kwargs["source"], "work_gmail_monitor:error")
+        self.assertIn("reconnect", queue.call_args.args[1].lower())
+        status = json.loads(store[bot.WORK_GMAIL_MONITOR_STATUS_KEY])
+        self.assertEqual(status["status"], "error")
+        self.assertIn("invalid_grant", status["detail"])
+
     def test_prayer_reminder_has_catchup_window(self):
         now = bot.SGT.localize(bot.datetime(2026, 5, 1, 13, 18))
         plan = [{

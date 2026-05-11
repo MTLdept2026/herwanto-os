@@ -353,6 +353,7 @@ def build_runtime_status() -> dict:
             "google_connected": google_connected,
             "personal_gmail": gs.gmail_ok("personal"),
             "personal_gmail2": gs.gmail_ok("personal2"),
+            "work_gmail": gs.gmail_ok("work"),
             "search_enabled": ss.search_enabled(),
         },
         "state_guardrails": {
@@ -382,6 +383,7 @@ def build_runtime_status() -> dict:
             "intervals_seconds": dict(JOB_INTERVALS),
             "last_morning_briefing": safe_config(MORNING_BRIEFING_SENT_KEY),
             "last_evening_briefing": safe_config(EVENING_BRIEFING_SENT_KEY),
+            "work_gmail_monitor": work_gmail_monitor_status(),
         },
     }
 
@@ -8184,6 +8186,7 @@ def _web_push_delivered_for_source(source: str, now: datetime | None = None) -> 
 
 WORK_GMAIL_MONITOR_SEEN_KEY = "work_gmail_monitor_seen_ids"
 WORK_GMAIL_MONITOR_LAST_RUN_KEY = "work_gmail_monitor_last_run"
+WORK_GMAIL_MONITOR_STATUS_KEY = "work_gmail_monitor_status"
 WORK_GMAIL_ACTION_TERMS = (
     "action required",
     "action needed",
@@ -8235,6 +8238,14 @@ def _work_gmail_monitor_enabled() -> bool:
     return os.environ.get("HIRA_WORK_GMAIL_MONITOR_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _work_gmail_monitor_query() -> str:
+    return os.environ.get("HIRA_WORK_GMAIL_MONITOR_QUERY", "newer_than:2d").strip() or "newer_than:2d"
+
+
+def _work_gmail_notify_on_first_run() -> bool:
+    return os.environ.get("HIRA_WORK_GMAIL_NOTIFY_ON_FIRST_RUN", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _load_work_gmail_seen_ids() -> set[str]:
     raw = gs.get_config(WORK_GMAIL_MONITOR_SEEN_KEY) or ""
     try:
@@ -8250,6 +8261,75 @@ def _save_work_gmail_seen_ids(seen: set[str]):
     kept = list(dict.fromkeys([item for item in seen if item]))[-200:]
     gs.set_config(WORK_GMAIL_MONITOR_SEEN_KEY, json.dumps(kept, ensure_ascii=False))
     gs.set_config(WORK_GMAIL_MONITOR_LAST_RUN_KEY, datetime.now(SGT).isoformat())
+
+
+def _save_work_gmail_monitor_status(status: str, detail: str = "", **extra):
+    payload = {
+        "status": status,
+        "detail": detail,
+        "checked_at": datetime.now(SGT).isoformat(),
+        **extra,
+    }
+    try:
+        gs.set_config(WORK_GMAIL_MONITOR_LAST_RUN_KEY, payload["checked_at"])
+        gs.set_config(WORK_GMAIL_MONITOR_STATUS_KEY, json.dumps(payload, ensure_ascii=False))
+    except Exception as exc:
+        logger.warning(f"Could not persist Work Gmail monitor status: {exc}")
+
+
+def _work_gmail_message_datetime(message: dict) -> datetime | None:
+    raw = str(message.get("date", "") or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = parsedate_to_datetime(raw)
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        parsed = pytz.utc.localize(parsed)
+    return parsed.astimezone(SGT)
+
+
+def _work_gmail_first_run_cutoff(now: datetime | None = None) -> datetime:
+    current = now or datetime.now(SGT)
+    default_minutes = max(45, int(JOB_INTERVALS["work_gmail_monitor"] / 60) * 2)
+    grace_minutes = _env_int("HIRA_WORK_GMAIL_FIRST_RUN_GRACE_MINUTES", default_minutes, 15)
+    return current - timedelta(minutes=grace_minutes)
+
+
+def _work_gmail_recent_for_first_run(message: dict, now: datetime | None = None) -> bool:
+    msg_time = _work_gmail_message_datetime(message)
+    return bool(msg_time and msg_time >= _work_gmail_first_run_cutoff(now))
+
+
+def work_gmail_monitor_status() -> dict:
+    status = {}
+    if google_ok():
+        try:
+            raw_status = gs.get_config(WORK_GMAIL_MONITOR_STATUS_KEY) or "{}"
+            parsed = json.loads(raw_status)
+            if isinstance(parsed, dict):
+                status = parsed
+        except Exception:
+            status = {}
+        try:
+            status.setdefault("last_run", gs.get_config(WORK_GMAIL_MONITOR_LAST_RUN_KEY) or "")
+        except Exception:
+            status.setdefault("last_run", "")
+        try:
+            status["seen_count"] = len(_load_work_gmail_seen_ids())
+        except Exception:
+            status["seen_count"] = None
+    return {
+        "enabled": _work_gmail_monitor_enabled(),
+        "connected": gs.gmail_ok("work"),
+        "interval_seconds": JOB_INTERVALS["work_gmail_monitor"],
+        "query": _work_gmail_monitor_query(),
+        "max_results": _env_int("HIRA_WORK_GMAIL_MONITOR_MAX_RESULTS", 10, 1),
+        "action_score": _env_int("HIRA_WORK_GMAIL_ACTION_SCORE", 2, 0),
+        "notify_on_first_run": _work_gmail_notify_on_first_run(),
+        **status,
+    }
 
 
 def _work_gmail_action_score(message: dict) -> tuple[int, list[str]]:
@@ -8284,12 +8364,18 @@ def _work_gmail_notification_body(message: dict, reasons: list[str]) -> str:
 
 
 async def work_gmail_monitor_job(context):
-    if not _work_gmail_monitor_enabled() or not gs.gmail_ok("work"):
+    if not _work_gmail_monitor_enabled():
+        if google_ok():
+            _save_work_gmail_monitor_status("skipped", "Work Gmail monitor disabled.")
+        return
+    if not gs.gmail_ok("work"):
+        if google_ok():
+            _save_work_gmail_monitor_status("skipped", "Work Gmail is not connected.")
         return
     if not _acquire_job_lock("work_gmail_monitor", max(120, JOB_INTERVALS["work_gmail_monitor"] - 10)):
         return
     try:
-        query = os.environ.get("HIRA_WORK_GMAIL_MONITOR_QUERY", "newer_than:2d").strip() or "newer_than:2d"
+        query = _work_gmail_monitor_query()
         max_results = _env_int("HIRA_WORK_GMAIL_MONITOR_MAX_RESULTS", 10, 1)
         messages = gs.list_gmail_messages(query=query, max_results=max_results, account="work")
         seen = _load_work_gmail_seen_ids()
@@ -8297,17 +8383,19 @@ async def work_gmail_monitor_job(context):
             msg for msg in reversed(messages)
             if str(msg.get("id", "")).strip() and str(msg.get("id", "")).strip() not in seen
         ]
-        if not seen and os.environ.get("HIRA_WORK_GMAIL_NOTIFY_ON_FIRST_RUN", "0").strip().lower() not in {"1", "true", "yes", "on"}:
-            _save_work_gmail_seen_ids({str(msg.get("id", "")).strip() for msg in messages if str(msg.get("id", "")).strip()})
-            logger.info("Work Gmail monitor seeded %s message id(s) without notifying.", len(messages))
-            return
+        first_run_seed = not seen and not _work_gmail_notify_on_first_run()
+        if first_run_seed:
+            candidates = [msg for msg in incoming if _work_gmail_recent_for_first_run(msg)]
+            candidate_ids = {str(msg.get("id", "")).strip() for msg in candidates}
+        else:
+            candidate_ids = {str(msg.get("id", "")).strip() for msg in incoming}
         notified = 0
         minimum_score = _env_int("HIRA_WORK_GMAIL_ACTION_SCORE", 2, 0)
         for msg in incoming:
             msg_id = str(msg.get("id", "")).strip()
             score, reasons = _work_gmail_action_score(msg)
             seen.add(msg_id)
-            if score < minimum_score:
+            if msg_id not in candidate_ids or score < minimum_score:
                 continue
             subject = str(msg.get("subject", "") or "(No subject)")
             item = _queue_app_notification(
@@ -8318,11 +8406,35 @@ async def work_gmail_monitor_job(context):
             )
             if item:
                 notified += 1
-        if incoming or notified:
+        if incoming or not seen:
             _save_work_gmail_seen_ids(seen)
+        status = "notified" if notified else ("seeded" if first_run_seed and incoming else "checked")
+        detail = ""
+        if first_run_seed and incoming and not notified:
+            detail = "Seeded inbox history; no recent action-worthy message met the first-run window."
+        elif incoming and not notified:
+            detail = "New messages found, but none met the action score."
+        elif not incoming:
+            detail = "No new work Gmail messages found."
+        _save_work_gmail_monitor_status(
+            status,
+            detail,
+            messages_scanned=len(messages),
+            incoming=len(incoming),
+            candidates=len(candidate_ids),
+            notified=notified,
+        )
         if notified:
             logger.info("Work Gmail monitor queued %s action-worthy notification(s).", notified)
     except Exception as e:
+        _save_work_gmail_monitor_status("error", str(e))
+        if "invalid_grant" in str(e).lower():
+            _queue_app_notification(
+                "update",
+                "Work Gmail needs reconnecting",
+                "H.I.R.A could not scan Work Gmail because the Google OAuth token is expired or revoked. Reconnect Work Gmail by generating a new GOOGLE_WORK_GMAIL_REFRESH_TOKEN in Railway.",
+                source="work_gmail_monitor:error",
+            )
         logger.error(f"Work Gmail monitor error: {e}")
     finally:
         _finish_background_job("work_gmail_monitor")
