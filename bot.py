@@ -3437,8 +3437,10 @@ DIGEST_HOT_TERMS = (
 DIGEST_TOPIC_RULES = {
     "ai": {
         "terms": (
+            "ai",
             "openai",
             "chatgpt",
+            "agent",
             "codex",
             "claude",
             "anthropic",
@@ -5257,7 +5259,32 @@ def _validate_state_changing_action(name: str, inp: dict) -> tuple[bool, str]:
     return True, ""
 
 
-def _action_audit_text(name: str, inp: dict, result: str) -> str:
+def _record_action_ledger_event(
+    name: str,
+    status: str,
+    subject: str = "",
+    date_value: str = "",
+    result: str = "",
+    metadata: dict | None = None,
+):
+    if not google_ok():
+        return None
+    try:
+        return gs.add_action_ledger(
+            action=name,
+            status=status,
+            subject=subject,
+            date=date_value,
+            result=result,
+            source="assistant_tool",
+            metadata=metadata or {},
+        )
+    except Exception as exc:
+        logger.warning(f"Could not write action ledger entry for {name}: {exc}")
+        return None
+
+
+def _action_audit_text(name: str, inp: dict, result: str, metadata: dict | None = None) -> str:
     subject = _clip_memory_text(_action_subject_for_audit(name, inp), 140)
     date_value = inp.get("date") or inp.get("due_date") or inp.get("send_at") or ""
     status = "failed" if str(result).lower().startswith("failed") else "saved"
@@ -5268,6 +5295,7 @@ def _action_audit_text(name: str, inp: dict, result: str) -> str:
         pieces.append(f"date={date_value}")
     audit = "Action audit: " + " | ".join(pieces)
     logger.info(audit)
+    _record_action_ledger_event(name, status, subject, str(date_value or ""), result, metadata=metadata)
     return audit
 
 
@@ -5277,6 +5305,13 @@ def _validated_action_failure(name: str, inp: dict) -> str | None:
         return None
     audit = f"Action audit: action={name} | status=blocked | reason={reason}"
     logger.warning(audit)
+    _record_action_ledger_event(
+        name,
+        "blocked",
+        _clip_memory_text(_action_subject_for_audit(name, inp), 140),
+        str(inp.get("date") or inp.get("due_date") or inp.get("send_at") or ""),
+        reason,
+    )
     return f"Action validation blocked this save: {reason} Ask Herwanto for the missing concrete detail instead of guessing.\n\n{audit}"
 
 def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
@@ -7493,10 +7528,11 @@ async def _execute_tool(name: str, inp: dict) -> str:
                 return blocked
             start_dt = SGT.localize(datetime.strptime(f"{inp['date']} {inp['start_time']}", "%Y-%m-%d %H:%M"))
             end_dt   = SGT.localize(datetime.strptime(f"{inp['date']} {inp['end_time']}",   "%Y-%m-%d %H:%M"))
-            gs.create_event(inp["title"], start_dt, end_dt,
-                            inp.get("location", ""), inp.get("description", ""))
+            event = gs.create_event(inp["title"], start_dt, end_dt,
+                                    inp.get("location", ""), inp.get("description", ""))
+            event_id = str(event.get("id", "") or "").strip()
             result = f"Created: {inp['title']} on {inp['date']} {inp['start_time']}–{inp['end_time']}"
-            return f"{result}\n\n{_action_audit_text(name, inp, result)}"
+            return f"{result}\n\n{_action_audit_text(name, inp, result, metadata={'event_id': event_id, 'calendar_id': event.get('_calendar_id', '') or ''})}"
         except Exception as e:
             return f"Failed to create event: {e}"
 
@@ -7514,7 +7550,7 @@ async def _execute_tool(name: str, inp: dict) -> str:
                 return "No confident calendar event match found. Ask with the event title/date so I do not delete the wrong thing."
             gs.delete_event(event["id"], event.get("_calendar_id", ""))
             result = f"Deleted calendar event: {event.get('summary', '(No title)')} ({_event_when_text(event)})"
-            return f"{result}\n\n{_action_audit_text(name, inp, result)}"
+            return f"{result}\n\n{_action_audit_text(name, inp, result, metadata={'event_id': event.get('id', ''), 'calendar_id': event.get('_calendar_id', '')})}"
         except Exception as e:
             return f"Failed to delete calendar event: {e}"
 
@@ -7525,7 +7561,7 @@ async def _execute_tool(name: str, inp: dict) -> str:
                 return blocked
             rid = gs.add_reminder(inp["description"], inp["due_date"], inp.get("category", "General"))
             result = f"Added reminder #{rid}: {inp['description']} by {inp['due_date']}"
-            return f"{result}\n\n{_action_audit_text(name, inp, result)}"
+            return f"{result}\n\n{_action_audit_text(name, inp, result, metadata={'reminder_id': str(rid)})}"
         except Exception as e:
             return f"Failed to add reminder: {e}"
 
@@ -7536,7 +7572,7 @@ async def _execute_tool(name: str, inp: dict) -> str:
                 return blocked
             nudge = _create_nudge(inp["message"], inp["send_at"])
             result = f"Scheduled nudge #{nudge['id']} for {nudge['send_at']}: {nudge['message']}"
-            return f"{result}\n\n{_action_audit_text(name, inp, result)}"
+            return f"{result}\n\n{_action_audit_text(name, inp, result, metadata={'nudge_id': str(nudge.get('id', ''))})}"
         except Exception as e:
             return f"Failed to schedule nudge: {e}"
 
@@ -7592,7 +7628,7 @@ async def _execute_tool(name: str, inp: dict) -> str:
             times = _parse_checkin_times(",".join(inp.get("times", [])))
             checkin = gs.add_checkin(inp["name"], inp["question"], times)
             result = f"Created daily check-in #{checkin['id']}: {checkin['name']} at {', '.join(checkin['times'])}"
-            return f"{result}\n\n{_action_audit_text(name, inp, result)}"
+            return f"{result}\n\n{_action_audit_text(name, inp, result, metadata={'checkin_id': str(checkin.get('id', ''))})}"
         except Exception as e:
             return f"Failed to create daily check-in: {e}"
 
@@ -7614,7 +7650,7 @@ async def _execute_tool(name: str, inp: dict) -> str:
             slots = _break_aware_slots(checkin, datetime.now(SGT).date())
             today_note = f" Today's planned slots: {', '.join(slots)}." if slots else " No clear break slots found for today yet."
             result = f"Created break-aware daily check-in #{checkin['id']}: {checkin['name']}.{today_note}"
-            return f"{result}\n\n{_action_audit_text(name, inp, result)}"
+            return f"{result}\n\n{_action_audit_text(name, inp, result, metadata={'checkin_id': str(checkin.get('id', ''))})}"
         except Exception as e:
             return f"Failed to create break-aware daily check-in: {e}"
 
@@ -7674,7 +7710,7 @@ async def _execute_tool(name: str, inp: dict) -> str:
                 inp.get("notes", ""),
             )
             result = f"Created follow-up: {_format_followup(followup)}"
-            return f"{result}\n\n{_action_audit_text(name, inp, result)}"
+            return f"{result}\n\n{_action_audit_text(name, inp, result, metadata={'followup_id': str(followup.get('id', ''))})}"
         except Exception as e:
             return f"Failed to create follow-up: {e}"
 

@@ -42,6 +42,20 @@ Your AI second brain on Telegram. Calendar-aware, project-tracking, daily briefi
 
 ---
 
+## Local checks
+
+Run the dependency-free reliability sweep before shipping behavior changes:
+
+```bash
+python3 scripts/dev_check.py
+```
+
+For a running PWA server, add smoke checks:
+
+```bash
+python3 scripts/dev_check.py --smoke-url http://127.0.0.1:4173
+```
+
 ## Setup
 
 ### Step 1 — Telegram bot (5 min)

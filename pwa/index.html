@@ -11,10 +11,10 @@
       href="https://fonts.googleapis.com/css2?family=Doto:wght@400..900&family=Space+Grotesk:wght@300;400;500;700&family=VT323&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap"
       rel="stylesheet"
     />
-    <link rel="manifest" href="/manifest.webmanifest?v=20260510-trace-39" />
+    <link rel="manifest" href="/manifest.webmanifest?v=20260511-trust-ledger-42" />
     <link rel="icon" href="/static/icon.svg?v=20260510-trace-39" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=20260510-trace-39" />
-    <link rel="stylesheet" href="./styles.css?v=20260510-trace-39" />
+    <link rel="stylesheet" href="./styles.css?v=20260511-trust-ledger-42" />
   </head>
   <body>
     <main class="shell">
@@ -103,6 +103,15 @@
             <button id="checkAppUpdateBtn" type="button" class="ghost-btn">Check</button>
           </div>
           <div id="versionOutput" class="version-output"></div>
+        </div>
+        <div class="action-ledger-panel">
+          <div class="section-head compact">
+            <h3>Action Ledger</h3>
+            <button id="refreshActionLedgerBtn" type="button" class="ghost-btn">Refresh</button>
+          </div>
+          <div id="actionLedgerList" class="action-ledger-list">
+            <div class="empty-state compact">Open Settings to review recent writes.</div>
+          </div>
         </div>
       </aside>
 
@@ -728,6 +737,6 @@
       </section>
     </main>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-    <script src="./app.js?v=20260510-trace-39" type="module"></script>
+    <script src="./app.js?v=20260511-trust-ledger-42" type="module"></script>
   </body>
 </html>

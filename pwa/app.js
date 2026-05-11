@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260510-instant-home-41";
-const APP_SCRIPT = "app.js?v=20260510-instant-home-41";
-const EXPECTED_SW_CACHE = "hira-os-v112";
+const APP_VERSION = "20260511-trust-ledger-42";
+const APP_SCRIPT = "app.js?v=20260511-trust-ledger-42";
+const EXPECTED_SW_CACHE = "hira-os-v113";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
 const AGENDA_CACHE_KEY = "hira_pwa_agenda_snapshot_v1";
 const HOME_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
@@ -51,6 +51,7 @@ const state = {
   homeRefreshInFlight: null,
   homeLastRefreshStartedAt: 0,
   homeTimelineItems: [],
+  actionLedger: [],
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -1305,6 +1306,107 @@ async function renderAppVersion() {
   ].join("");
 }
 
+function ledgerStatusClass(status) {
+  const clean = String(status || "").toLowerCase();
+  if (["saved", "done", "snoozed"].includes(clean)) return "status-ok";
+  if (["blocked", "failed"].includes(clean)) return "status-warn";
+  return "status-off";
+}
+
+function ledgerActionLabel(action) {
+  const labels = {
+    "task.done": "Task done",
+    "notification.done": "Notification done",
+    "notification.snooze": "Notification snoozed",
+    "gmail.draft": "Gmail draft",
+    "classops.assignment": "ClassOps assignment",
+    "classops.content_override": "ClassOps content",
+    "create_calendar_event": "Calendar event",
+    "create_proactive_nudge": "Nudge",
+    "add_reminder": "Reminder",
+    "action_ledger.undo": "Undo",
+  };
+  return labels[action] || String(action || "Action").replaceAll("_", " ");
+}
+
+function renderActionLedger(entries = state.actionLedger) {
+  const el = $("#actionLedgerList");
+  if (!el) return;
+  const items = Array.isArray(entries) ? entries : [];
+  if (!items.length) {
+    el.innerHTML = "<div class='empty-state compact'>No recent action receipts.</div>";
+    return;
+  }
+  el.innerHTML = items.map((item) => {
+    const reviewed = Boolean(item.reviewed);
+    const undone = String(item.undo_status || "") === "undone";
+    const canUndo = !undone && ["saved", "done", "snoozed"].includes(String(item.status || "").toLowerCase());
+    const detail = [item.date, item.source, item.client_id].filter(Boolean).join(" · ");
+    return `
+      <article class="action-ledger-item ${reviewed ? "is-reviewed" : ""}">
+        <div>
+          <span class="action-ledger-meta ${ledgerStatusClass(item.status)}">${markdownish(item.status || "logged")}</span>
+          <strong>${markdownish(ledgerActionLabel(item.action))}</strong>
+          <p>${markdownish(item.subject || item.result || "No subject recorded.")}</p>
+          ${detail ? `<small>${markdownish(detail)}</small>` : ""}
+          ${item.undo_result ? `<small class="action-ledger-undo">${markdownish(item.undo_result)}</small>` : ""}
+        </div>
+        <div class="action-ledger-actions">
+          <button type="button" class="ghost-btn" data-ledger-review="${escapeHtml(item.id)}">${reviewed ? "Reviewed" : "Review"}</button>
+          <button type="button" class="ghost-btn" data-ledger-undo="${escapeHtml(item.id)}" ${canUndo ? "" : "disabled"}>Undo</button>
+        </div>
+      </article>
+    `;
+  }).join("");
+  refreshIcons(el);
+}
+
+async function loadActionLedger({ quiet = false } = {}) {
+  const el = $("#actionLedgerList");
+  if (el && !quiet) el.innerHTML = "<div class='empty-state compact'>Loading receipts...</div>";
+  try {
+    const data = await api("/api/action-ledger?limit=12&include_reviewed=true", { headers: headers(false) });
+    state.actionLedger = data.entries || [];
+    renderActionLedger();
+    if (!quiet) setStatus("Action ledger refreshed.", "ok");
+  } catch (error) {
+    if (el) el.innerHTML = `<div class="empty-state compact">Action ledger unavailable: ${markdownish(error.message)}</div>`;
+    if (!quiet) setStatus(`Action ledger unavailable: ${error.message}`, "warn");
+  }
+}
+
+async function reviewActionEntry(entryId) {
+  try {
+    const data = await api(`/api/action-ledger/${encodeURIComponent(entryId)}/review`, {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ reviewed: true }),
+    });
+    state.actionLedger = state.actionLedger.map((item) => String(item.id) === String(entryId) ? data.entry : item);
+    renderActionLedger();
+    setStatus("Action receipt reviewed.", "ok");
+  } catch (error) {
+    setStatus(`Could not review action: ${error.message}`, "warn");
+  }
+}
+
+async function undoActionEntry(entryId) {
+  try {
+    const data = await api(`/api/action-ledger/${encodeURIComponent(entryId)}/undo`, {
+      method: "POST",
+      headers: headers(false),
+    });
+    state.actionLedger = state.actionLedger.map((item) => String(item.id) === String(entryId) ? data.entry : item);
+    renderActionLedger();
+    setStatus(data.result || "Undo checked.", data.ok ? "ok" : "warn");
+    if (data.ok) {
+      await loadHome({ force: true, background: true, useCache: false });
+    }
+  } catch (error) {
+    setStatus(`Undo failed: ${error.message}`, "warn");
+  }
+}
+
 async function checkNotificationHealth() {
   try {
     const data = await api("/api/notifications/health", { headers: headers(false) });
@@ -2184,6 +2286,7 @@ function renderTrace(el, trace) {
   summary.textContent = `Trace · ${route} · ${gate} · ${mode}`;
 
   const contracts = Array.isArray(trace.source_contracts_seen) ? trace.source_contracts_seen : [];
+  const memorySources = Array.isArray(trace.memory_sources) ? trace.memory_sources : [];
   const rows = [
     ["Route", route],
     ["Forced tool", trace.forced_tool || "-"],
@@ -2213,6 +2316,19 @@ function renderTrace(el, trace) {
     for (const contract of contracts) {
       const item = document.createElement("p");
       item.textContent = `${contract.status || "unknown"} · ${contract.as_of || "no date"} · ${contract.source || "source"} · ${contract.reason || ""}`;
+      section.appendChild(item);
+    }
+    body.appendChild(section);
+  }
+  if (memorySources.length) {
+    const section = document.createElement("div");
+    section.className = "chat-trace-contracts";
+    const heading = document.createElement("span");
+    heading.textContent = "Memory sources";
+    section.appendChild(heading);
+    for (const source of memorySources.slice(0, 5)) {
+      const item = document.createElement("p");
+      item.textContent = `${source.category || "memory"} · score ${source.score || 0} · ${source.text || ""}`;
       section.appendChild(item);
     }
     body.appendChild(section);
@@ -3010,7 +3126,10 @@ $("#settingsBtn").addEventListener("click", () => {
   panel.toggleAttribute("hidden");
   $("#settingsBtn").classList.toggle("is-open", !panel.hidden);
   updateNotificationControls();
-  if (!panel.hidden) renderAppVersion();
+  if (!panel.hidden) {
+    renderAppVersion();
+    loadActionLedger({ quiet: true });
+  }
 });
 $("#notificationsBtn").addEventListener("click", () => {
   const panel = $("#notificationsPanel");
@@ -3062,6 +3181,16 @@ $("#enableNotificationsBtn").addEventListener("click", enableNotifications);
 $("#settingsEnableNotificationsBtn").addEventListener("click", enableNotifications);
 $("#testNotificationsBtn").addEventListener("click", sendTestNotification);
 $("#checkHealthBtn").addEventListener("click", checkNotificationHealth);
+$("#refreshActionLedgerBtn").addEventListener("click", () => loadActionLedger());
+$("#actionLedgerList").addEventListener("click", (event) => {
+  const review = event.target.closest("[data-ledger-review]");
+  if (review) {
+    reviewActionEntry(review.dataset.ledgerReview);
+    return;
+  }
+  const undo = event.target.closest("[data-ledger-undo]");
+  if (undo && !undo.disabled) undoActionEntry(undo.dataset.ledgerUndo);
+});
 $("#checkAppUpdateBtn").addEventListener("click", async () => {
   const button = $("#checkAppUpdateBtn");
   const previousLabel = button.textContent;

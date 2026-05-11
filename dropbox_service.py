@@ -169,6 +169,13 @@ def _download_file(path: str) -> bytes:
     return resp.content
 
 
+def download_file(path: str) -> bytes:
+    dropbox_path = _dropbox_path_from_relative(path)
+    if not dropbox_path:
+        raise ValueError("Dropbox file path is required.")
+    return _download_file(dropbox_path)
+
+
 def get_file_link(path: str) -> dict:
     dropbox_path = _dropbox_path_from_relative(path)
     if not dropbox_path:

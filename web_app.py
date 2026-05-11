@@ -36,8 +36,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260510-instant-home-41"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v112"
+PWA_APP_VERSION = "20260511-trust-ledger-42"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v113"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -785,6 +785,10 @@ class TasteProfileRequest(BaseModel):
     answers: dict
 
 
+class ActionLedgerReviewRequest(BaseModel):
+    reviewed: bool = True
+
+
 class ClassOpsAssignmentRequest(BaseModel):
     class_name: str
     lesson_date: str = ""
@@ -802,6 +806,11 @@ class ClassOpsContentOverrideRequest(BaseModel):
     path: str
     title: Optional[str] = None
     hidden: Optional[bool] = None
+
+
+class ClassOpsReflectionRequest(BaseModel):
+    class_name: str
+    lesson: dict
 
 
 _UPLOAD_JOBS: OrderedDict[str, dict] = OrderedDict()
@@ -824,6 +833,31 @@ def _safe_text(builder, fallback: str) -> str:
         return builder()
     except Exception:
         return fallback
+
+
+def _record_web_action(
+    action: str,
+    status: str,
+    subject: str = "",
+    date_value: str = "",
+    result: str = "",
+    client_id: str | None = None,
+    metadata: dict | None = None,
+):
+    try:
+        return bot.gs.add_action_ledger(
+            action=action,
+            status=status,
+            subject=subject,
+            date=date_value,
+            result=result,
+            source="pwa",
+            client_id=_client_key(client_id),
+            metadata=metadata or {},
+        )
+    except Exception as exc:
+        bot.logger.warning(f"Could not record PWA action ledger entry for {action}: {exc}")
+        return None
 
 
 def _device_location_context(location: DeviceLocation | None) -> str:
@@ -2055,6 +2089,19 @@ def _live_briefing_text(slot: str) -> str:
 
 def _new_chat_trace(message: str, route_name: str = "") -> dict:
     discipline = bot.source_discipline_for_text(message)
+    memory_sources = []
+    if message:
+        try:
+            memory_sources = [
+                {
+                    "category": str(item.get("category", "")),
+                    "score": int(item.get("score", 0) or 0),
+                    "text": str(item.get("text", ""))[:320],
+                }
+                for item in bot.retrieve_relevant_memory(message, limit=5)
+            ]
+        except Exception as exc:
+            bot.logger.debug(f"Trace memory source lookup failed: {exc}")
     return {
         "id": uuid.uuid4().hex[:12],
         "route": route_name,
@@ -2062,6 +2109,7 @@ def _new_chat_trace(message: str, route_name: str = "") -> dict:
         "forced_tool": "",
         "tools_called": [],
         "source_contracts_seen": [],
+        "memory_sources": memory_sources,
         "confidence_gate": "pending" if discipline.get("needs_live_check") else "not_required",
         "error_phase": "",
         "final_mode": "",
@@ -2522,7 +2570,11 @@ def islamic(x_hira_token: Optional[str] = Header(default=None)):
 
 
 @app.post("/api/tasks/{task_id}/done")
-def task_done(task_id: str, x_hira_token: Optional[str] = Header(default=None)):
+def task_done(
+    task_id: str,
+    x_hira_token: Optional[str] = Header(default=None),
+    x_hira_client: Optional[str] = Header(default=None),
+):
     _require_token(x_hira_token)
     try:
         ok, synced_marking = bot.complete_reminder_by_id(task_id)
@@ -2530,6 +2582,14 @@ def task_done(task_id: str, x_hira_token: Optional[str] = Header(default=None)):
         raise HTTPException(status_code=400, detail=f"Could not complete task: {exc}") from exc
     if not ok:
         raise HTTPException(status_code=404, detail=f"Task #{task_id} not found")
+    _record_web_action(
+        "task.done",
+        "done",
+        subject=f"Task #{task_id}",
+        result=f"Completed reminder #{task_id}",
+        client_id=x_hira_client,
+        metadata={"reminder_id": str(task_id)},
+    )
     return {"ok": True, "synced_marking": synced_marking}
 
 
@@ -2783,6 +2843,105 @@ def admin_memory(limit: int = 5, x_hira_token: Optional[str] = Header(default=No
         raise HTTPException(status_code=400, detail=f"Memory review unavailable: {exc}") from exc
 
 
+def _ledger_metadata(entry: dict) -> dict:
+    metadata = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
+    return {str(key): str(value) for key, value in metadata.items()}
+
+
+def _ledger_id_from_result(entry: dict, pattern: str) -> str:
+    match = re.search(pattern, str(entry.get("result", "") or ""))
+    return match.group(1) if match else ""
+
+
+def _undo_action_ledger_entry(entry: dict) -> tuple[bool, str]:
+    action = str(entry.get("action", "") or "")
+    metadata = _ledger_metadata(entry)
+    if entry.get("undo_status") == "undone":
+        return True, entry.get("undo_result") or "Already undone."
+    if str(entry.get("status", "")).lower() not in {"saved", "done", "snooze", "snoozed"}:
+        return False, "Only saved/completed actions can be undone."
+
+    if action == "create_proactive_nudge" or action == "notification.snooze":
+        nudge_id = metadata.get("nudge_id") or _ledger_id_from_result(entry, r"nudge #([\w-]+)")
+        if not nudge_id:
+            return False, "No nudge id was recorded for this action."
+        ok = bot.gs.cancel_nudge(nudge_id)
+        return ok, f"Cancelled nudge #{nudge_id}." if ok else f"Nudge #{nudge_id} was not found or already sent."
+
+    if action == "create_calendar_event":
+        event_id = metadata.get("event_id")
+        if not event_id:
+            return False, "No calendar event id was recorded for this action."
+        ok = bot.gs.delete_event(event_id, metadata.get("calendar_id", ""))
+        return ok, f"Deleted calendar event #{event_id}." if ok else f"Calendar event #{event_id} could not be deleted."
+
+    if action in {"task.done", "notification.done"}:
+        reminder_id = metadata.get("reminder_id") or _ledger_id_from_result(entry, r"reminder #([\w-]+)")
+        if not reminder_id:
+            return False, "No reminder id was recorded for this completion."
+        ok = bot.gs.mark_not_done(reminder_id)
+        return ok, f"Reopened reminder #{reminder_id}." if ok else f"Reminder #{reminder_id} was not found."
+
+    return False, "Undo is not yet available for this action type; review the receipt before changing the source record manually."
+
+
+@app.get("/api/action-ledger")
+def action_ledger(
+    limit: int = 20,
+    include_reviewed: bool = True,
+    x_hira_token: Optional[str] = Header(default=None),
+):
+    _require_token(x_hira_token)
+    try:
+        entries = bot.gs.get_action_ledger(include_reviewed=include_reviewed)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Action ledger unavailable: {exc}") from exc
+    return {"entries": list(reversed(entries))[: max(1, min(int(limit or 20), 80))]}
+
+
+@app.post("/api/action-ledger/{entry_id}/review")
+def action_ledger_review(
+    entry_id: str,
+    req: ActionLedgerReviewRequest,
+    x_hira_token: Optional[str] = Header(default=None),
+):
+    _require_token(x_hira_token)
+    entry = bot.gs.update_action_ledger_entry(entry_id, {"reviewed": bool(req.reviewed)})
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"Action ledger entry #{entry_id} not found")
+    return {"ok": True, "entry": entry}
+
+
+@app.post("/api/action-ledger/{entry_id}/undo")
+def action_ledger_undo(
+    entry_id: str,
+    x_hira_token: Optional[str] = Header(default=None),
+):
+    _require_token(x_hira_token)
+    entries = bot.gs.get_action_ledger(include_reviewed=True)
+    entry = next((item for item in entries if str(item.get("id", "")) == str(entry_id)), None)
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"Action ledger entry #{entry_id} not found")
+    try:
+        ok, result = _undo_action_ledger_entry(entry)
+    except Exception as exc:
+        ok, result = False, f"Undo failed: {exc}"
+    updated = bot.gs.update_action_ledger_entry(entry_id, {
+        "undo_status": "undone" if ok else "blocked",
+        "undo_result": result,
+        "reviewed": ok,
+    })
+    if ok:
+        _record_web_action(
+            "action_ledger.undo",
+            "saved",
+            subject=f"Undo #{entry_id}: {entry.get('action', '')}",
+            result=result,
+            metadata={"target_entry_id": entry_id},
+        )
+    return {"ok": ok, "result": result, "entry": updated or entry}
+
+
 def _classops_name_key(value: str) -> str:
     return classops_ai.classops_name_key(value)
 
@@ -2819,133 +2978,7 @@ def _classops_build_insights(class_name: str, roster: list[dict], assignments: l
 
 def _classops_student_report(class_name: str, students: list[dict], ledger: dict | None = None, today: date | None = None) -> dict:
     ledger = ledger if isinstance(ledger, dict) else bot.gs.get_classops_ledger()
-    today = today or datetime.now(bot.SGT).date()
-    record = _classops_record_for(ledger, class_name)
-    assignments = [item for item in record.get("assignments", []) if isinstance(item, dict)]
-    roster = []
-    for index, student in enumerate(students or [], start=1):
-        name = str(student.get("name") or "").strip()
-        if not name:
-            continue
-        roster.append({
-            "no": str(student.get("no") or index).strip(),
-            "class": str(student.get("class") or class_name).strip(),
-            "name": name,
-            "source": str(student.get("source") or "").strip(),
-            "submitted_count": 0,
-            "missing_count": 0,
-            "absent_count": 0,
-            "catchup_count": 0,
-            "risk_score": 0,
-            "risk_reasons": [],
-            "timing_patterns": {},
-            "status": "clear",
-        })
-    roster_by_key = {_classops_name_key(item["name"]): item for item in roster}
-    student_events = {key: {"missing": [], "absent": []} for key in roster_by_key}
-    unmatched = {"absent": [], "submitted": [], "non_submitted": []}
-    assignment_summaries = []
-    for assignment in assignments:
-        due_date = _classops_parse_date(assignment.get("collect_by", ""))
-        timing_context = _classops_timing_context(due_date)
-        event = _classops_make_event(assignment, timing_context)
-        submitted = {_classops_name_key(name) for name in assignment.get("submitted", []) if _classops_name_key(name)}
-        non_submitted = {_classops_name_key(name) for name in assignment.get("non_submitted", []) if _classops_name_key(name)}
-        absent = {_classops_name_key(name) for name in assignment.get("absent", []) if _classops_name_key(name)}
-        for raw in assignment.get("submitted", []) or []:
-            key = _classops_name_key(raw)
-            if key and key not in roster_by_key:
-                unmatched["submitted"].append({"assignment_id": assignment.get("id", ""), "name": str(raw)})
-        for raw in assignment.get("non_submitted", []) or []:
-            key = _classops_name_key(raw)
-            if key and key not in roster_by_key:
-                unmatched["non_submitted"].append({"assignment_id": assignment.get("id", ""), "name": str(raw)})
-        for raw in assignment.get("absent", []) or []:
-            key = _classops_name_key(raw)
-            if key and key not in roster_by_key:
-                unmatched["absent"].append({"assignment_id": assignment.get("id", ""), "name": str(raw)})
-        submitted_total = 0
-        missing_total = 0
-        absent_total = 0
-        for student in roster:
-            key = _classops_name_key(student["name"])
-            if key in absent:
-                absent_total += 1
-                student["absent_count"] += 1
-                student["catchup_count"] += 1
-                student_events[key]["absent"].append(event)
-            elif non_submitted:
-                if key in non_submitted:
-                    missing_total += 1
-                    student["missing_count"] += 1
-                    student_events[key]["missing"].append(event)
-                else:
-                    submitted_total += 1
-                    student["submitted_count"] += 1
-            elif key in submitted:
-                submitted_total += 1
-                student["submitted_count"] += 1
-            else:
-                missing_total += 1
-                student["missing_count"] += 1
-                student_events[key]["missing"].append(event)
-        assignment_summaries.append({
-            **assignment,
-            "roster_count": len(roster),
-            "submitted_count": submitted_total,
-            "missing_count": missing_total,
-            "absent_count": absent_total,
-            "timing_context": timing_context,
-        })
-    for student in roster:
-        key = _classops_name_key(student["name"])
-        events = student_events.get(key, {"missing": [], "absent": []})
-        overdue = 0
-        timing_patterns: dict[str, int] = {}
-        for event in events.get("missing", []):
-            due = _classops_parse_date(event.get("collect_by", ""))
-            if due and due < today:
-                overdue += 1
-            for timing in event.get("timing_context", []):
-                timing_key = timing.get("key", "")
-                if timing_key:
-                    timing_patterns[timing_key] = timing_patterns.get(timing_key, 0) + 1
-        reasons = []
-        if student["missing_count"] >= 2:
-            reasons.append(f"Repeated non-submission across {student['missing_count']} tracked assignments")
-        elif student["missing_count"] == 1:
-            reasons.append("One open non-submission")
-        if overdue:
-            reasons.append(f"{overdue} overdue item{'s' if overdue != 1 else ''}")
-        if student["catchup_count"] >= 1:
-            reasons.append(f"{student['catchup_count']} absence catch-up item{'s' if student['catchup_count'] != 1 else ''}")
-        if timing_patterns.get("after_weekend", 0) >= 2:
-            reasons.append("Pattern appears after weekends")
-        if timing_patterns.get("after_public_holiday", 0) >= 1:
-            reasons.append("Watch after school/public holiday")
-        student["timing_patterns"] = timing_patterns
-        student["risk_reasons"] = reasons
-        student["risk_score"] = student["missing_count"] * 3 + overdue * 2 + student["catchup_count"]
-        if student["missing_count"] >= 2:
-            student["status"] = "follow up"
-        elif student["catchup_count"] >= 1:
-            student["status"] = "catch up"
-        elif student["missing_count"] == 1:
-            student["status"] = "watch"
-    concerns = [student for student in roster if student["status"] != "clear"]
-    insights = _classops_build_insights(class_name, roster, assignments, today)
-    return {
-        "class_name": class_name,
-        "roster_count": len(roster),
-        "assignment_count": len(assignments),
-        "concern_count": len(concerns),
-        "insight_count": len(insights),
-        "students": roster,
-        "concerns": concerns,
-        "assignments": assignment_summaries[-12:],
-        "insights": insights,
-        "unmatched": unmatched,
-    }
+    return classops_ai.build_student_report(class_name, students, ledger, today=today or datetime.now(bot.SGT).date())
 
 
 def _classops_enrich_with_students(manifest: dict) -> dict:
@@ -2957,7 +2990,7 @@ def _classops_enrich_with_students(manifest: dict) -> dict:
         if not class_name:
             continue
         try:
-            students = bot.gs.get_classops_students(class_name)
+            students = bot.gs.get_classops_students(class_name, include_scores=True)
         except Exception as exc:
             students = []
             student_errors[class_name] = str(exc)
@@ -3022,6 +3055,45 @@ def _classops_status_summary() -> dict:
     )
 
 
+def _classops_extract_lesson_material(lesson: dict) -> dict:
+    item = dict(lesson or {})
+    path = str(item.get("path") or "").strip()
+    if not path:
+        return item
+    filename = Path(path).name
+    caption = " ".join(
+        part for part in (
+            "ClassOps lesson reflection worksheet",
+            str(item.get("title") or ""),
+            str(item.get("date") or ""),
+        )
+        if part
+    )
+    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    mime_by_ext = {
+        "pdf": "application/pdf",
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    }
+    mime = mime_by_ext.get(ext, "")
+    if not mime:
+        item["source_note"] = "Selected file type is not extractable yet; worksheet uses lesson metadata."
+        return item
+    try:
+        content = dropbox.download_file(path)
+        kind, index_note, excerpt = docs.extract_supported_document(content, mime, filename, caption=caption)
+    except Exception as exc:
+        item["source_note"] = f"Could not extract selected lesson file: {exc}"
+        return item
+    item.update({
+        "document_kind": kind,
+        "index_note": index_note,
+        "excerpt": excerpt[:9000],
+        "source_note": f"{kind}: {index_note}",
+    })
+    return item
+
+
 @app.post("/api/classops/dropbox/scan")
 def classops_dropbox_scan(x_hira_token: Optional[str] = Header(default=None)):
     _require_token(x_hira_token)
@@ -3048,7 +3120,7 @@ def classops_dashboard(x_hira_token: Optional[str] = Header(default=None)):
 def classops_students(class_name: str, x_hira_token: Optional[str] = Header(default=None)):
     _require_token(x_hira_token)
     try:
-        students = bot.gs.get_classops_students(class_name)
+        students = bot.gs.get_classops_students(class_name, include_scores=True)
         return {
             "ok": True,
             "class_name": class_name,
@@ -3060,7 +3132,11 @@ def classops_students(class_name: str, x_hira_token: Optional[str] = Header(defa
 
 
 @app.post("/api/classops/assignment")
-def classops_assignment(req: ClassOpsAssignmentRequest, x_hira_token: Optional[str] = Header(default=None)):
+def classops_assignment(
+    req: ClassOpsAssignmentRequest,
+    x_hira_token: Optional[str] = Header(default=None),
+    x_hira_client: Optional[str] = Header(default=None),
+):
     _require_token(x_hira_token)
     try:
         assignment = bot.gs.save_classops_assignment(
@@ -3075,7 +3151,16 @@ def classops_assignment(req: ClassOpsAssignmentRequest, x_hira_token: Optional[s
             non_submitted=req.non_submitted or [],
             notes=req.notes,
         )
-        students = bot.gs.get_classops_students(req.class_name)
+        _record_web_action(
+            "classops.assignment",
+            "saved",
+            subject=f"{req.class_name}: {req.assignment_title}",
+            date_value=req.collect_by or req.lesson_date,
+            result=f"Tracked ClassOps assignment #{assignment.get('id', '')}",
+            client_id=x_hira_client,
+            metadata={"assignment_id": str(assignment.get("id", "")), "class_name": req.class_name},
+        )
+        students = bot.gs.get_classops_students(req.class_name, include_scores=True)
         return {
             "ok": True,
             "assignment": assignment,
@@ -3086,13 +3171,39 @@ def classops_assignment(req: ClassOpsAssignmentRequest, x_hira_token: Optional[s
 
 
 @app.post("/api/classops/content-override")
-def classops_content_override(req: ClassOpsContentOverrideRequest, x_hira_token: Optional[str] = Header(default=None)):
+def classops_content_override(
+    req: ClassOpsContentOverrideRequest,
+    x_hira_token: Optional[str] = Header(default=None),
+    x_hira_client: Optional[str] = Header(default=None),
+):
     _require_token(x_hira_token)
     try:
         override = bot.gs.save_classops_content_override(req.path, title=req.title, hidden=req.hidden)
+        _record_web_action(
+            "classops.content_override",
+            "saved",
+            subject=req.title or req.path,
+            result=f"{'Hid' if req.hidden else 'Updated'} ClassOps content override",
+            client_id=x_hira_client,
+            metadata={"path": req.path, "hidden": str(bool(req.hidden))},
+        )
         return {"ok": True, "override": override}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"ClassOps content update failed: {exc}") from exc
+
+
+@app.post("/api/classops/reflection-worksheet")
+def classops_reflection_worksheet(req: ClassOpsReflectionRequest, x_hira_token: Optional[str] = Header(default=None)):
+    _require_token(x_hira_token)
+    try:
+        ledger = bot.gs.get_classops_ledger()
+        students = bot.gs.get_classops_students(req.class_name, include_scores=True)
+        report = _classops_student_report(req.class_name, students, ledger)
+        lesson = _classops_extract_lesson_material(req.lesson or {})
+        worksheet = classops_ai.build_lesson_reflection_worksheet(req.class_name, lesson, report)
+        return {"ok": True, "worksheet": worksheet}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"ClassOps reflection worksheet failed: {exc}") from exc
 
 
 @app.get("/api/classops/dropbox/file-link")
@@ -3238,6 +3349,22 @@ def notifications_action(
                 title=title,
             )
             bot.gs.archive_app_notifications([req.id])
+            if result.get("completed"):
+                ledger_meta = {"notification_id": str(req.id), "source": source, "kind": kind}
+                if task_match:
+                    ledger_meta["reminder_id"] = task_match.group(1)
+                elif followup_match:
+                    ledger_meta["followup_id"] = followup_match.group(1)
+                elif checkin_match:
+                    ledger_meta["checkin_id"] = checkin_match.group(1)
+                _record_web_action(
+                    "notification.done",
+                    "done",
+                    subject=title or body or f"Notification #{req.id}",
+                    result=f"Completed from notification #{req.id}",
+                    client_id=x_hira_client,
+                    metadata=ledger_meta,
+                )
         elif action == "snooze":
             minutes = max(5, min(1440, int(req.snooze_minutes or 30)))
             send_at = (datetime.now(bot.SGT) + bot.timedelta(minutes=minutes)).isoformat()
@@ -3254,6 +3381,20 @@ def notifications_action(
             )
             bot.gs.archive_app_notifications([req.id])
             result = {"snoozed_until": send_at, "nudge_id": nudge.get("id", "")}
+            _record_web_action(
+                "notification.snooze",
+                "snoozed",
+                subject=title or message,
+                date_value=send_at,
+                result=f"Snoozed notification #{req.id} for {minutes} minutes",
+                client_id=x_hira_client,
+                metadata={
+                    "notification_id": str(req.id),
+                    "source": source,
+                    "kind": kind,
+                    "nudge_id": str(nudge.get("id", "")),
+                },
+            )
         else:
             rating = "useful" if action == "useful" else action
             bot.gs.add_insight_feedback("notification", req.id, rating)
@@ -3345,7 +3486,11 @@ def gmail(req: GmailRequest, x_hira_token: Optional[str] = Header(default=None))
 
 
 @app.post("/api/gmail/draft")
-def gmail_draft(req: DraftRequest, x_hira_token: Optional[str] = Header(default=None)):
+def gmail_draft(
+    req: DraftRequest,
+    x_hira_token: Optional[str] = Header(default=None),
+    x_hira_client: Optional[str] = Header(default=None),
+):
     _require_token(x_hira_token)
     account = bot._normalise_gmail_account(req.account)
     if not bot.gs.gmail_ok(account):
@@ -3355,6 +3500,15 @@ def gmail_draft(req: DraftRequest, x_hira_token: Optional[str] = Header(default=
     except Exception as exc:
         bot.logger.warning("PWA Gmail draft failed for account=%s to=%r: %s", account, req.to, exc)
         raise _gmail_http_error(exc, account) from exc
+    draft_id = str(draft.get("id", "") or "")
+    _record_web_action(
+        "gmail.draft",
+        "saved",
+        subject=req.subject,
+        result=f"Created {bot.gs.gmail_label(account)} Gmail draft: {draft_id}",
+        client_id=x_hira_client,
+        metadata={"draft_id": draft_id, "account": account, "to": req.to},
+    )
     return {"account": account, "draft_id": draft.get("id", "")}
 
 

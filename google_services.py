@@ -1370,6 +1370,21 @@ def mark_done(reminder_id: str) -> bool:
     return False
 
 
+def mark_not_done(reminder_id: str) -> bool:
+    rows = _raw_reminders()
+    for i, row in enumerate(rows):
+        if row and str(row[0]) == str(reminder_id):
+            row_num = i + 2
+            _sheets().spreadsheets().values().update(
+                spreadsheetId=SHEET_ID,
+                range=f"Reminders!E{row_num}",
+                valueInputOption="RAW",
+                body={"values": [["FALSE"]]},
+            ).execute()
+            return True
+    return False
+
+
 def get_task_metadata() -> dict:
     raw = get_config("task_metadata")
     if not raw:
@@ -1648,12 +1663,12 @@ def _classops_sheet_matches(class_name: str, *values: str) -> bool:
     return any(_classops_class_matches(class_name, value) for value in values)
 
 
-def get_classops_students(class_name: str) -> list[dict]:
+def get_classops_students(class_name: str, include_scores: bool = False) -> list[dict]:
     lists = get_mtl_classlists(
         teacher_query="HERWANTO",
         class_query="",
         include_students=True,
-        include_scores=False,
+        include_scores=include_scores,
     )
     students = []
     seen = set()
@@ -1685,12 +1700,15 @@ def get_classops_students(class_name: str) -> list[dict]:
             if key in seen:
                 continue
             seen.add(key)
-            students.append({
+            row = {
                 "no": str(student.get("no") or "").strip(),
                 "class": str(student.get("class") or class_name or "").strip(),
                 "name": name,
                 "source": source,
-            })
+            }
+            if include_scores:
+                row["fields"] = student.get("fields") if isinstance(student.get("fields"), dict) else {}
+            students.append(row)
     return students
 
 
@@ -2311,6 +2329,99 @@ def add_insight_feedback(kind: str, target: str, rating: str, note: str = "") ->
     feedback = feedback[-120:]
     set_config("insight_feedback", json.dumps(feedback, ensure_ascii=False))
     return feedback
+
+
+def _clean_action_ledger_item(item: dict) -> dict:
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    return {
+        "id": str(item.get("id", "")).strip(),
+        "created": str(item.get("created", "")).strip(),
+        "action": str(item.get("action", "")).strip()[:80],
+        "status": str(item.get("status", "")).strip()[:40],
+        "subject": str(item.get("subject", "")).strip()[:240],
+        "date": str(item.get("date", "")).strip()[:120],
+        "result": str(item.get("result", "")).strip()[:900],
+        "source": str(item.get("source", "")).strip()[:80],
+        "client_id": str(item.get("client_id", "")).strip()[:120],
+        "undo_status": str(item.get("undo_status", "")).strip()[:40],
+        "undo_result": str(item.get("undo_result", "")).strip()[:500],
+        "reviewed": bool(item.get("reviewed", False)),
+        "metadata": {
+            str(key)[:80]: str(value).strip()[:240]
+            for key, value in metadata.items()
+            if str(key).strip() and str(value).strip()
+        },
+    }
+
+
+def get_action_ledger(include_reviewed: bool = True) -> list[dict]:
+    raw = get_config("action_ledger")
+    if not raw:
+        return []
+    try:
+        entries = json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(entries, list):
+        return []
+    clean = [_clean_action_ledger_item(item) for item in entries[-250:] if isinstance(item, dict)]
+    clean = [item for item in clean if item["id"] and item["action"]]
+    if not include_reviewed:
+        clean = [item for item in clean if not item.get("reviewed")]
+    return clean
+
+
+def set_action_ledger(entries: list[dict]):
+    clean = [_clean_action_ledger_item(item) for item in entries if isinstance(item, dict)]
+    set_config("action_ledger", json.dumps(clean[-250:], ensure_ascii=False))
+
+
+def add_action_ledger(
+    action: str,
+    status: str,
+    subject: str = "",
+    date: str = "",
+    result: str = "",
+    source: str = "assistant",
+    client_id: str = "",
+    metadata: dict | None = None,
+) -> dict:
+    entries = get_action_ledger(include_reviewed=True)
+    existing_ids = [int(item["id"]) for item in entries if str(item.get("id", "")).isdigit()]
+    entry = _clean_action_ledger_item({
+        "id": str((max(existing_ids) + 1) if existing_ids else 1),
+        "created": datetime.now(SGT).isoformat(),
+        "action": action,
+        "status": status,
+        "subject": subject,
+        "date": date,
+        "result": result,
+        "source": source,
+        "client_id": client_id,
+        "metadata": metadata or {},
+        "undo_status": "",
+        "undo_result": "",
+        "reviewed": False,
+    })
+    entries.append(entry)
+    set_action_ledger(entries)
+    return entry
+
+
+def update_action_ledger_entry(entry_id: str, updates: dict) -> dict | None:
+    entries = get_action_ledger(include_reviewed=True)
+    changed = None
+    for item in entries:
+        if str(item.get("id", "")) != str(entry_id):
+            continue
+        item.update(updates or {})
+        changed = _clean_action_ledger_item(item)
+        item.clear()
+        item.update(changed)
+        break
+    if changed:
+        set_action_ledger(entries)
+    return changed
 
 
 DEFAULT_TASTE_PROFILE = {

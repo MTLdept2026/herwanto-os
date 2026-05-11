@@ -10,6 +10,7 @@ from unittest.mock import ANY, patch
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
 import bot
+import classops_intelligence as classops_ai
 import dropbox_service
 import islamic_service
 import pdf_service
@@ -1866,6 +1867,95 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(gap["days"], 39)
         self.assertIn("not had tracked work", gap["title"])
 
+    def test_classops_student_report_flags_marks_watch(self):
+        students = [
+            {"no": "1", "class": "2G3", "name": "Siti Aminah", "fields": {"WA1 %": "72"}},
+            {"no": "2", "class": "2G3", "name": "Kumar Das", "fields": {"WA1 %": "45"}},
+        ]
+
+        report = web_app._classops_student_report("2G3", students, {"classes": {}})
+
+        by_name = {student["name"]: student for student in report["students"]}
+        self.assertEqual(by_name["Kumar Das"]["status"], "marks watch")
+        self.assertIn("Marks watch", by_name["Kumar Das"]["risk_reasons"][0])
+        self.assertTrue(any(insight["kind"] == "marks_watch" for insight in report["insights"]))
+        self.assertTrue(any(item["title"].startswith("Marks watch") for item in report["priority_items"]))
+        self.assertTrue(any(group["key"] == "reteach" for group in report["feed_forward_groups"]))
+
+    def test_classops_student_report_builds_student_timeline_and_groups(self):
+        ledger = {
+            "classes": {
+                "2G3": {
+                    "assignments": [{
+                        "id": "work-1",
+                        "assignment_title": "Latihan Lisan",
+                        "lesson_date": "2026-05-11",
+                        "collect_by": "2026-05-12",
+                        "non_submitted": ["Kumar Das"],
+                    }]
+                }
+            }
+        }
+        students = [
+            {"no": "1", "class": "2G3", "name": "Siti Aminah", "fields": {"WA1 %": "82"}},
+            {"no": "2", "class": "2G3", "name": "Kumar Das", "fields": {"WA1 %": "55"}},
+        ]
+
+        report = web_app._classops_student_report("2G3", students, ledger, today=date(2026, 5, 12))
+
+        by_name = {student["name"]: student for student in report["students"]}
+        self.assertEqual(by_name["Kumar Das"]["timeline"][0]["status"], "missing")
+        self.assertEqual(by_name["Siti Aminah"]["timeline"][0]["status"], "submitted")
+        practice = [group for group in report["feed_forward_groups"] if group["key"] == "practice"][0]
+        self.assertEqual(practice["students"][0]["name"], "Kumar Das")
+
+    def test_classops_reflection_worksheet_uses_lesson_and_watchlist(self):
+        report = {
+            "watchlist": [{
+                "name": "Kumar Das",
+                "risk_reasons": ["Marks watch: WA1 % 45"],
+            }]
+        }
+
+        worksheet = classops_ai.build_lesson_reflection_worksheet(
+            "2G3",
+            {"title": "Peribahasa", "date": "2026-05-11", "path": "2G3/11:5:26/peribahasa.pdf"},
+            report,
+        )
+
+        self.assertIn("Peribahasa", worksheet["summary"])
+        self.assertEqual(worksheet["source_path"], "2G3/11:5:26/peribahasa.pdf")
+        teacher_prompts = worksheet["sections"][-1]["prompts"]
+        self.assertTrue(any("Kumar Das" in prompt for prompt in teacher_prompts))
+
+    def test_classops_reflection_worksheet_uses_extracted_lesson_text(self):
+        worksheet = classops_ai.build_lesson_reflection_worksheet(
+            "2G3",
+            {
+                "title": "Peribahasa",
+                "date": "2026-05-11",
+                "path": "2G3/11:5:26/peribahasa.pdf",
+                "excerpt": "Peribahasa digunakan untuk menyampaikan nasihat. Murid perlu mengenal maksud tersirat.",
+                "index_note": "PDF has 2 pages; analysed pages: 1.",
+            },
+            {},
+        )
+
+        self.assertTrue(worksheet["extracted"])
+        self.assertIn("Peribahasa", worksheet["keywords"])
+        self.assertIn("PDF has 2 pages", worksheet["source_note"])
+        self.assertTrue(any("lesson evidence" in prompt.lower() for prompt in worksheet["sections"][1]["prompts"]))
+
+    def test_classops_extract_lesson_material_downloads_supported_dropbox_file(self):
+        with patch.object(web_app.dropbox, "download_file", return_value=b"%PDF") as download, \
+             patch.object(web_app.docs, "extract_supported_document", return_value=("PDF", "PDF has 1 page.", "Lesson text")) as extract:
+            lesson = web_app._classops_extract_lesson_material({"path": "2G3/11:5:26/peribahasa.pdf", "title": "Peribahasa"})
+
+        download.assert_called_once_with("2G3/11:5:26/peribahasa.pdf")
+        extract.assert_called_once()
+        self.assertEqual(lesson["excerpt"], "Lesson text")
+        self.assertEqual(lesson["document_kind"], "PDF")
+
     def test_classops_status_summary_rolls_up_hira_panel_metrics(self):
         today = datetime.now(web_app.bot.SGT).strftime("%Y-%m-%d")
         ledger = {
@@ -3316,6 +3406,7 @@ class AgenticClaudeTests(unittest.TestCase):
             patch.object(bot.gs, "add_nudge", return_value={"id": "44"}) as add_nudge,
             patch.object(bot, "_record_notification_outcome") as record,
             patch.object(bot.gs, "archive_app_notifications") as archive,
+            patch.object(bot.gs, "add_action_ledger") as ledger,
         ):
             result = web_app.notifications_action(req, x_hira_token="token", x_hira_client="phone")
 
@@ -3324,6 +3415,8 @@ class AgenticClaudeTests(unittest.TestCase):
         add_nudge.assert_called_once()
         archive.assert_called_once_with(["9"])
         self.assertEqual(record.call_args.args[0], "snoozed")
+        self.assertEqual(ledger.call_args.kwargs["action"], "notification.snooze")
+        self.assertEqual(ledger.call_args.kwargs["metadata"]["nudge_id"], "44")
 
     def test_notification_action_done_completes_linked_task(self):
         item = {
@@ -3341,6 +3434,7 @@ class AgenticClaudeTests(unittest.TestCase):
             patch.object(bot, "complete_reminder_by_id", return_value=(True, None)) as complete,
             patch.object(bot, "_record_notification_outcome") as record,
             patch.object(bot.gs, "archive_app_notifications") as archive,
+            patch.object(bot.gs, "add_action_ledger") as ledger,
         ):
             result = web_app.notifications_action(req, x_hira_token="token", x_hira_client="phone")
 
@@ -3348,6 +3442,8 @@ class AgenticClaudeTests(unittest.TestCase):
         complete.assert_called_once_with("31")
         archive.assert_called_once_with(["9"])
         self.assertEqual(record.call_args.args[0], "done")
+        self.assertEqual(ledger.call_args.kwargs["action"], "notification.done")
+        self.assertEqual(ledger.call_args.kwargs["metadata"]["reminder_id"], "31")
 
     def test_notification_action_done_completes_linked_checkin(self):
         item = {
@@ -3526,14 +3622,14 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIsNone(event)
         self.assertEqual(score, 0)
 
-    def test_work_gmail_request_is_removed(self):
+    def test_work_gmail_request_routes_to_work_account(self):
         account, query = bot._extract_gmail_account_from_text("show my last 5 work emails")
 
-        self.assertEqual(account, "personal")
-        self.assertEqual(query, "show my last 5 work emails")
-        self.assertTrue(bot.is_removed_work_gmail_request("show my last 5 work emails"))
+        self.assertEqual(account, "work")
+        self.assertEqual(query, "show my last 5")
+        self.assertFalse(bot.is_removed_work_gmail_request("show my last 5 work emails"))
 
-    def test_work_gmail_env_can_exist_but_request_is_blocked_above_service_layer(self):
+    def test_work_gmail_env_can_enable_service_layer(self):
         env = {
             "GOOGLE_GMAIL_CLIENT_ID": "client",
             "GOOGLE_GMAIL_CLIENT_SECRET": "secret",

@@ -352,10 +352,72 @@ h3 {
   background: var(--surface-muted);
 }
 
-.version-panel {
+.version-panel,
+.action-ledger-panel {
   display: grid;
   gap: 8px;
   padding-top: 6px;
+}
+
+.action-ledger-list {
+  display: grid;
+  gap: 8px;
+  max-height: 340px;
+  overflow: auto;
+}
+
+.action-ledger-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  padding: 10px;
+  border: 1px solid var(--border-visible);
+  background: var(--surface-muted);
+}
+
+.action-ledger-item.is-reviewed {
+  opacity: 0.68;
+}
+
+.action-ledger-item strong,
+.action-ledger-item p,
+.action-ledger-item small {
+  display: block;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.action-ledger-item p {
+  margin-top: 4px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.action-ledger-item small {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.action-ledger-meta {
+  display: inline-block;
+  margin-bottom: 4px;
+  font-family: var(--font-ui);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.action-ledger-actions {
+  display: grid;
+  gap: 6px;
+}
+
+.action-ledger-actions .ghost-btn {
+  min-height: 32px;
+  padding: 0 10px;
+  white-space: nowrap;
 }
 
 .notification-btn {

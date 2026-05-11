@@ -64,6 +64,73 @@ def _classops_make_event(assignment: dict, timing_context: list[dict]) -> dict:
     }
 
 
+def _number_from_mark(value: str) -> float | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    match = re.search(r"-?\d+(?:\.\d+)?", raw)
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None
+
+
+def _mark_watch_flags(fields: dict) -> list[dict]:
+    flags = []
+    if not isinstance(fields, dict):
+        return flags
+    protected = {"name", "class", "index", "s/n", "no", "student"}
+    for label, value in fields.items():
+        clean_label = str(label or "").strip()
+        if not clean_label or clean_label.lower() in protected:
+            continue
+        number = _number_from_mark(str(value or ""))
+        if number is None:
+            continue
+        flag = ""
+        if number < 50:
+            flag = "below 50"
+        elif number < 60:
+            flag = "near threshold"
+        if flag:
+            flags.append({
+                "label": clean_label,
+                "value": str(value),
+                "score": number,
+                "reason": flag,
+            })
+    return flags[:4]
+
+
+def _lesson_terms(lesson_text: str, title: str = "") -> list[str]:
+    stop = {
+        "about", "after", "akan", "atau", "because", "before", "dalam", "dengan", "from", "have",
+        "lesson", "murid", "pada", "that", "their", "there", "this", "untuk", "yang",
+    }
+    words = re.findall(r"[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'-]{3,}", f"{title} {lesson_text}")
+    counts: dict[str, int] = {}
+    display: dict[str, str] = {}
+    for word in words:
+        key = word.lower().strip("-'")
+        if key in stop or len(key) < 4:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+        display.setdefault(key, word.strip("-'"))
+    ranked = sorted(counts, key=lambda key: (counts[key], len(key)), reverse=True)
+    return [display[key] for key in ranked[:6]]
+
+
+def _lesson_snippets(lesson_text: str, max_items: int = 3) -> list[str]:
+    clean = re.sub(r"\s+", " ", str(lesson_text or "")).strip()
+    if not clean:
+        return []
+    parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+|\n+", clean) if part.strip()]
+    good = [part for part in parts if 28 <= len(part) <= 220]
+    return good[:max_items] or [clean[:180]]
+
+
 def build_classops_insights(class_name: str, roster: list[dict], assignments: list[dict], today: date) -> list[dict]:
     insights = []
     risky = sorted(
@@ -77,6 +144,20 @@ def build_classops_insights(class_name: str, roster: list[dict], assignments: li
             "severity": "critical" if risky[0].get("missing_count", 0) >= 2 else "watch",
             "kind": "student_risk",
             "title": f"{len(risky)} student{'s' if len(risky) != 1 else ''} need follow-up",
+            "detail": ", ".join(names),
+            "students": names,
+        })
+
+    mark_watch = [
+        student for student in roster
+        if any(flag.get("reason") == "below 50" for flag in (student.get("mark_flags") or []))
+    ]
+    if mark_watch:
+        names = [student["name"] for student in mark_watch[:3]]
+        insights.append({
+            "severity": "watch",
+            "kind": "marks_watch",
+            "title": f"{len(mark_watch)} student{'s' if len(mark_watch) != 1 else ''} have marks below threshold",
             "detail": ", ".join(names),
             "students": names,
         })
@@ -152,6 +233,8 @@ def build_student_report(class_name: str, students: list[dict], ledger: dict | N
             "risk_score": 0,
             "risk_reasons": [],
             "timing_patterns": {},
+            "marks": student.get("fields") if isinstance(student.get("fields"), dict) else {},
+            "mark_flags": _mark_watch_flags(student.get("fields") if isinstance(student.get("fields"), dict) else {}),
             "status": "clear",
         })
 
@@ -185,16 +268,19 @@ def build_student_report(class_name: str, students: list[dict], ledger: dict | N
         absent_total = 0
         for student in roster:
             key = classops_name_key(student["name"])
+            timeline_status = "submitted"
             if key in absent:
                 absent_total += 1
                 student["absent_count"] += 1
                 student["catchup_count"] += 1
                 student_events[key]["absent"].append(event)
+                timeline_status = "absent"
             elif non_submitted:
                 if key in non_submitted:
                     missing_total += 1
                     student["missing_count"] += 1
                     student_events[key]["missing"].append(event)
+                    timeline_status = "missing"
                 else:
                     submitted_total += 1
                     student["submitted_count"] += 1
@@ -205,6 +291,11 @@ def build_student_report(class_name: str, students: list[dict], ledger: dict | N
                 missing_total += 1
                 student["missing_count"] += 1
                 student_events[key]["missing"].append(event)
+                timeline_status = "missing"
+            student.setdefault("timeline", []).append({
+                **event,
+                "status": timeline_status,
+            })
 
         assignment_summaries.append({
             **assignment,
@@ -242,29 +333,251 @@ def build_student_report(class_name: str, students: list[dict], ledger: dict | N
             reasons.append("Pattern appears after weekends")
         if timing_patterns.get("after_public_holiday", 0) >= 1:
             reasons.append("Watch after school/public holiday")
+        if student.get("mark_flags"):
+            reasons.append(f"Marks watch: {student['mark_flags'][0]['label']} {student['mark_flags'][0]['value']}")
         student["timing_patterns"] = timing_patterns
         student["risk_reasons"] = reasons
-        student["risk_score"] = student["missing_count"] * 3 + overdue * 2 + student["catchup_count"]
+        student["risk_score"] = student["missing_count"] * 3 + overdue * 2 + student["catchup_count"] + len(student.get("mark_flags") or [])
         if student["missing_count"] >= 2:
             student["status"] = "follow up"
         elif student["catchup_count"] >= 1:
             student["status"] = "catch up"
         elif student["missing_count"] == 1:
             student["status"] = "watch"
+        elif student.get("mark_flags"):
+            student["status"] = "marks watch"
 
-    concerns = [student for student in roster if student["status"] != "clear"]
+    concerns = sorted(
+        [student for student in roster if student["status"] != "clear"],
+        key=lambda item: (int(item.get("risk_score", 0) or 0), int(item.get("missing_count", 0) or 0)),
+        reverse=True,
+    )
     insights = build_classops_insights(class_name, roster, assignments, today)
+    priority_items = build_priority_items(class_name, roster, assignment_summaries, insights, today)
+    blind_spots = build_blind_spots(class_name, roster, assignment_summaries, unmatched, insights, today)
+    feed_forward_groups = build_feed_forward_groups(roster)
     return {
         "class_name": class_name,
         "roster_count": len(roster),
         "assignment_count": len(assignments),
         "concern_count": len(concerns),
         "insight_count": len(insights),
+        "priority_items": priority_items,
+        "blind_spots": blind_spots,
+        "feed_forward_groups": feed_forward_groups,
+        "watchlist": concerns[:8],
         "students": roster,
         "concerns": concerns,
         "assignments": assignment_summaries[-12:],
         "insights": insights,
         "unmatched": unmatched,
+    }
+
+
+def build_feed_forward_groups(roster: list[dict]) -> list[dict]:
+    groups = [
+        {
+            "key": "reteach",
+            "label": "Reteach",
+            "trigger": "Low marks or repeated missing work",
+            "students": [],
+            "move": "Start with guided modelling and one worked example before independent practice.",
+        },
+        {
+            "key": "practice",
+            "label": "Practice",
+            "trigger": "One open submission or near-threshold marks",
+            "students": [],
+            "move": "Give short deliberate practice and check the first two answers quickly.",
+        },
+        {
+            "key": "catchup",
+            "label": "Catch-up",
+            "trigger": "Absent or missing submission history",
+            "students": [],
+            "move": "Recover the missed task before adding fresh extension work.",
+        },
+        {
+            "key": "extension",
+            "label": "Extension",
+            "trigger": "No visible submission or marks concern",
+            "students": [],
+            "move": "Offer a higher-order application or peer explanation prompt.",
+        },
+    ]
+    by_key = {item["key"]: item for item in groups}
+    for student in roster:
+        flags = student.get("mark_flags") or []
+        reasons = " ".join(student.get("risk_reasons") or [])
+        target = "extension"
+        if any(flag.get("reason") == "below 50" for flag in flags) or int(student.get("missing_count", 0) or 0) >= 2:
+            target = "reteach"
+        elif int(student.get("catchup_count", 0) or 0) or int(student.get("absent_count", 0) or 0):
+            target = "catchup"
+        elif int(student.get("missing_count", 0) or 0) or flags:
+            target = "practice"
+        by_key[target]["students"].append({
+            "name": student.get("name", ""),
+            "reason": reasons or student.get("status", "clear"),
+        })
+    return [
+        {**group, "count": len(group["students"]), "students": group["students"][:8]}
+        for group in groups
+        if group["students"]
+    ]
+
+
+def build_priority_items(class_name: str, roster: list[dict], assignments: list[dict], insights: list[dict], today: date) -> list[dict]:
+    items = []
+    for assignment in reversed(assignments or []):
+        missing = int(assignment.get("missing_count", 0) or 0)
+        if not missing:
+            continue
+        due = parse_classops_date(assignment.get("collect_by", ""))
+        if due and due < today:
+            tone = "critical"
+            action = "Clear overdue non-submissions before the next lesson."
+        elif due == today:
+            tone = "watch"
+            action = "Collect or confirm outstanding work today."
+        else:
+            tone = "watch"
+            action = "Keep this visible until collection closes."
+        items.append({
+            "tone": tone,
+            "title": f"{class_name}: {assignment.get('assignment_title') or 'Tracked work'}",
+            "detail": f"{missing} pending out of {assignment.get('roster_count', 0)} students.",
+            "action": action,
+        })
+    for student in roster:
+        flags = student.get("mark_flags") or []
+        if not flags:
+            continue
+        items.append({
+            "tone": "watch",
+            "title": f"Marks watch: {student.get('name', '')}",
+            "detail": f"{flags[0].get('label')}: {flags[0].get('value')} ({flags[0].get('reason')}).",
+            "action": "Check whether this needs remediation, retest, or targeted feedback.",
+        })
+    for insight in insights[:2]:
+        items.append({
+            "tone": "critical" if insight.get("severity") == "critical" else "watch",
+            "title": insight.get("title", "ClassOps signal"),
+            "detail": insight.get("detail", ""),
+            "action": "Review before planning the next lesson.",
+        })
+    return items[:6]
+
+
+def build_blind_spots(
+    class_name: str,
+    roster: list[dict],
+    assignments: list[dict],
+    unmatched: dict,
+    insights: list[dict],
+    today: date,
+) -> list[dict]:
+    spots = []
+    if roster and not assignments:
+        spots.append({
+            "tone": "watch",
+            "title": "No tracked submissions yet",
+            "detail": "Classlist is present, but no submission ledger exists for this class.",
+        })
+    if assignments:
+        latest = classops_assignment_date(assignments[-1])
+        if latest and (today - latest).days >= 10:
+            spots.append({
+                "tone": "watch",
+                "title": "Tracked work may be stale",
+                "detail": f"Last tracked item appears to be {(today - latest).days} days old.",
+            })
+    if roster and not any(student.get("marks") for student in roster):
+        spots.append({
+            "tone": "muted",
+            "title": "Marks not visible in roster feed",
+            "detail": "Google Drive classlist loaded names, but no mark columns were returned.",
+        })
+    unmatched_count = sum(len(values or []) for values in (unmatched or {}).values())
+    if unmatched_count:
+        spots.append({
+            "tone": "watch",
+            "title": "Names need reconciliation",
+            "detail": f"{unmatched_count} submission names did not match the classlist exactly.",
+        })
+    if not any(insight.get("kind") == "marks_watch" for insight in insights) and any(student.get("marks") for student in roster):
+        spots.append({
+            "tone": "muted",
+            "title": "Marks loaded, no low-mark alert",
+            "detail": "Scores are present and no below-threshold pattern was detected.",
+        })
+    return spots[:5]
+
+
+def build_lesson_reflection_worksheet(class_name: str, lesson: dict, report: dict | None = None) -> dict:
+    report = report if isinstance(report, dict) else {}
+    watchlist = [
+        student for student in (report.get("watchlist") or report.get("concerns") or [])
+        if isinstance(student, dict) and student.get("name")
+    ][:5]
+    title = str(lesson.get("title") or lesson.get("topic") or lesson.get("folder") or "Lesson").strip()
+    lesson_date = str(lesson.get("date") or lesson.get("lesson_date") or "").strip()
+    lesson_text = str(lesson.get("text") or lesson.get("excerpt") or "").strip()
+    source_note = str(lesson.get("index_note") or lesson.get("source_note") or "").strip()
+    terms = _lesson_terms(lesson_text, title)
+    snippets = _lesson_snippets(lesson_text)
+    student_line = ", ".join(student["name"] for student in watchlist) or "No specific student watchlist yet."
+    concept_line = ", ".join(terms[:5]) if terms else title
+    evidence_line = snippets[0] if snippets else "Use the selected lesson material as the reference text."
+    sections = [
+        {
+            "title": "Core recall",
+            "prompts": [
+                f"Write three key ideas from the lesson. Anchor your answer on: {concept_line}.",
+                "Circle the one idea you are least confident about.",
+            ],
+        },
+        {
+            "title": "Misconception check",
+            "prompts": [
+                f"Use this lesson evidence: {evidence_line}",
+                "Describe one mistake someone might make with today's skill.",
+                "Correct the mistake using a short example.",
+            ],
+        },
+        {
+            "title": "Feed-forward task",
+            "prompts": [
+                "Complete one similar question without looking at notes.",
+                "Write one next step that would improve your answer.",
+            ],
+        },
+        {
+            "title": "Teacher follow-up",
+            "prompts": [
+                f"Watchlist: {student_line}",
+                "Note one reteach point, one extension point, and one student to check in with next lesson.",
+            ],
+        },
+    ]
+    if len(snippets) > 1:
+        sections.insert(2, {
+            "title": "Evidence distillation",
+            "prompts": [
+                f"Explain this part in simpler words: {snippets[1]}",
+                "Turn it into one memory hook or exam-ready sentence.",
+            ],
+        })
+    return {
+        "class_name": class_name,
+        "lesson_title": title,
+        "lesson_date": lesson_date,
+        "source_path": str(lesson.get("path") or ""),
+        "source_note": source_note,
+        "keywords": terms,
+        "extracted": bool(lesson_text),
+        "summary": f"{class_name} post-lesson reflection for {title}{f' ({lesson_date})' if lesson_date else ''}.",
+        "sections": sections,
     }
 
 

@@ -4,7 +4,9 @@ const state = {
   selectedClass: "",
   selectedFolder: "",
   selectedContentItem: null,
+  selectedStudentName: "",
   nonSubmitted: new Set(),
+  latestWorksheet: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -252,6 +254,8 @@ function showContentInspector(item = {}) {
   state.selectedContentItem = item;
   const inspector = $("#contentInspector");
   inspector.hidden = false;
+  const reflectionPanel = $("#reflectionPanel");
+  if (reflectionPanel) reflectionPanel.hidden = true;
   $("#contentTitleInput").value = item.title || "";
   $("#contentInspectorMeta").textContent = [
     item.kind || "file",
@@ -265,8 +269,11 @@ function showContentInspector(item = {}) {
 
 function hideContentInspector() {
   state.selectedContentItem = null;
+  state.latestWorksheet = null;
   const inspector = $("#contentInspector");
   if (inspector) inspector.hidden = true;
+  const reflectionPanel = $("#reflectionPanel");
+  if (reflectionPanel) reflectionPanel.hidden = true;
   document.querySelectorAll(".contents-row.is-selected").forEach((row) => row.classList.remove("is-selected"));
 }
 
@@ -295,6 +302,10 @@ function renderStudentReport(report = {}) {
   const students = report.students || [];
   const concerns = report.concerns || [];
   const insights = report.insights || [];
+  const priorities = report.priority_items || [];
+  const blindSpots = report.blind_spots || [];
+  const feedForward = report.feed_forward_groups || [];
+  const selectedStudent = students.find((student) => student.name === state.selectedStudentName) || concerns[0] || null;
   $("#ledgerMeta").textContent = `${report.roster_count || 0} students · ${report.assignment_count || 0} tracked`;
   if (!students.length) {
     $("#studentReport").innerHTML = `<div class="empty">No roster returned yet. Check that the Google classlist sheets are shared with H.I.R.A.</div>`;
@@ -313,6 +324,55 @@ function renderStudentReport(report = {}) {
       <div>${segmentMarkup(health, 12, report.concern_count ? "warn" : "success")}</div>
       <strong>${report.concern_count ? "Intervention path active" : "Submission channel clear"}</strong>
     </div>
+    ${priorities.length ? `
+      <section class="teacher-intel-panel">
+        <div class="mini-section-head">
+          <span>Priority list</span>
+          <strong>${priorities.length}</strong>
+        </div>
+        ${priorities.map((item) => `
+          <article data-tone="${escapeHtml(item.tone || "watch")}">
+            <strong>${escapeHtml(item.title || "Priority")}</strong>
+            <p>${escapeHtml(item.detail || "")}</p>
+            <small>${escapeHtml(item.action || "")}</small>
+          </article>
+        `).join("")}
+      </section>
+    ` : ""}
+    ${blindSpots.length ? `
+      <section class="teacher-intel-panel blind-spots">
+        <div class="mini-section-head">
+          <span>Possible blind spots</span>
+          <strong>${blindSpots.length}</strong>
+        </div>
+        ${blindSpots.map((item) => `
+          <article data-tone="${escapeHtml(item.tone || "muted")}">
+            <strong>${escapeHtml(item.title || "Blind spot")}</strong>
+            <p>${escapeHtml(item.detail || "")}</p>
+          </article>
+        `).join("")}
+      </section>
+    ` : ""}
+    ${feedForward.length ? `
+      <section class="feed-forward-panel">
+        <div class="mini-section-head">
+          <span>Feed-forward groups</span>
+          <strong>${feedForward.length}</strong>
+        </div>
+        <div class="feed-forward-grid">
+          ${feedForward.map((group) => `
+            <article>
+              <div>
+                <strong>${escapeHtml(group.label || "Group")}</strong>
+                <span>${Number(group.count || 0)} student${Number(group.count || 0) === 1 ? "" : "s"}</span>
+              </div>
+              <p>${escapeHtml(group.move || "")}</p>
+              <small>${escapeHtml((group.students || []).map((student) => student.name).join(", ") || group.trigger || "")}</small>
+            </article>
+          `).join("")}
+        </div>
+      </section>
+    ` : ""}
     ${insights.length ? `
       <div class="insight-grid">
         ${insights.map((insight) => `
@@ -339,7 +399,7 @@ function renderStudentReport(report = {}) {
         <div>Name</div><div>Done</div><div>Missing</div><div>Absent</div><div>Catch-up</div><div>Status</div>
       </div>
       ${visible.map((student) => `
-        <article class="student-row" data-status="${escapeHtml(student.status || "clear")}">
+        <article class="student-row" data-status="${escapeHtml(student.status || "clear")}" data-student-name="${escapeHtml(student.name)}">
           <strong>${escapeHtml(student.name)}</strong>
           <div>${Number(student.submitted_count || 0)}</div>
           <div>${Number(student.missing_count || 0)}</div>
@@ -349,6 +409,28 @@ function renderStudentReport(report = {}) {
         </article>
       `).join("")}
     </div>
+    ${selectedStudent ? `
+      <section class="student-timeline-panel">
+        <div class="mini-section-head">
+          <span>Student timeline</span>
+          <strong>${escapeHtml(selectedStudent.name || "")}</strong>
+        </div>
+        <div class="student-timeline">
+          ${(selectedStudent.timeline || []).slice(-8).reverse().map((event) => `
+            <article data-status="${escapeHtml(event.status || "clear")}">
+              <strong>${escapeHtml(event.assignment_title || "Tracked work")}</strong>
+              <span>${escapeHtml(event.status || "clear")}${event.collect_by ? ` · due ${escapeHtml(event.collect_by)}` : ""}</span>
+            </article>
+          `).join("") || `<div class="empty">No submission timeline yet for this student.</div>`}
+          ${(selectedStudent.mark_flags || []).length ? `
+            <article data-status="marks watch">
+              <strong>Marks watch</strong>
+              <span>${escapeHtml((selectedStudent.mark_flags || []).map((flag) => `${flag.label} ${flag.value}`).join(" · "))}</span>
+            </article>
+          ` : ""}
+        </div>
+      </section>
+    ` : ""}
   `;
 }
 
@@ -454,9 +536,75 @@ async function openSelectedContentFile() {
   }
 }
 
+function worksheetText(worksheet = {}) {
+  const lines = [worksheet.summary || "Post-lesson reflection worksheet"];
+  for (const section of worksheet.sections || []) {
+    lines.push("", section.title || "Section");
+    for (const prompt of section.prompts || []) lines.push(`- ${prompt}`);
+  }
+  return lines.join("\n");
+}
+
+function renderReflectionWorksheet(worksheet = {}) {
+  state.latestWorksheet = worksheet;
+  const panel = $("#reflectionPanel");
+  if (!panel) return;
+  panel.hidden = false;
+  $("#reflectionTitle").textContent = worksheet.summary || "Post-lesson reflection worksheet";
+  const meta = [
+    worksheet.extracted ? "Extracted from lesson file" : "Metadata-based draft",
+    worksheet.source_note || "",
+    (worksheet.keywords || []).length ? `Keywords: ${(worksheet.keywords || []).slice(0, 5).join(", ")}` : "",
+  ].filter(Boolean);
+  $("#reflectionBody").innerHTML = `
+    ${meta.length ? `<p class="reflection-meta">${escapeHtml(meta.join(" · "))}</p>` : ""}
+    ${(worksheet.sections || []).map((section) => `
+      <article>
+        <strong>${escapeHtml(section.title || "Section")}</strong>
+        <ul>${(section.prompts || []).map((prompt) => `<li>${escapeHtml(prompt)}</li>`).join("")}</ul>
+      </article>
+    `).join("")}
+  `;
+}
+
+async function generateReflectionWorksheet() {
+  const item = state.selectedContentItem;
+  if (!state.selectedClass || !item?.path) return setStatus("Select a class lesson item first.", "warn");
+  $("#reflectionWorksheetBtn").disabled = true;
+  setStatus("Building post-lesson reflection worksheet...");
+  try {
+    const data = await api("/api/classops/reflection-worksheet", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        class_name: state.selectedClass,
+        lesson: item,
+      }),
+    });
+    renderReflectionWorksheet(data.worksheet || {});
+    setStatus("Reflection worksheet drafted.", "ok");
+  } catch (error) {
+    setStatus(error.message, "error");
+  } finally {
+    $("#reflectionWorksheetBtn").disabled = false;
+  }
+}
+
+async function copyReflectionWorksheet() {
+  const text = worksheetText(state.latestWorksheet || {});
+  if (!text.trim()) return setStatus("Generate a reflection worksheet first.", "warn");
+  try {
+    await navigator.clipboard.writeText(text);
+    setStatus("Worksheet copied.", "ok");
+  } catch (_) {
+    setStatus("Could not copy automatically. Select the worksheet text manually.", "warn");
+  }
+}
+
 function selectClass(className) {
   state.selectedClass = className;
   state.selectedFolder = "";
+  state.selectedStudentName = "";
   hideContentInspector();
   state.nonSubmitted = new Set();
   const classItem = (state.data?.classes || []).find((item) => item.class === className);
@@ -547,6 +695,8 @@ $("#closeContentInspectorBtn").addEventListener("click", hideContentInspector);
 $("#saveContentTitleBtn").addEventListener("click", () => saveContentOverride());
 $("#hideContentItemBtn").addEventListener("click", () => saveContentOverride({ hidden: true }));
 $("#openContentFileBtn").addEventListener("click", openSelectedContentFile);
+$("#reflectionWorksheetBtn").addEventListener("click", generateReflectionWorksheet);
+$("#copyReflectionBtn").addEventListener("click", copyReflectionWorksheet);
 $("#trackContentItemBtn").addEventListener("click", () => {
   if (!state.selectedContentItem) return setStatus("Select a contents item first.", "warn");
   prefillLessonFromItem(state.selectedContentItem);
@@ -562,6 +712,14 @@ $("#nonSubmissionRoster").addEventListener("change", (event) => {
     state.nonSubmitted.delete(input.value);
   }
   $("#nonSubmissionCount").textContent = `${state.nonSubmitted.size} selected`;
+});
+
+$("#studentReport").addEventListener("click", (event) => {
+  const row = event.target.closest("[data-student-name]");
+  if (!row) return;
+  state.selectedStudentName = row.dataset.studentName || "";
+  const report = currentClassItem()?.student_report || {};
+  renderStudentReport(report);
 });
 
 document.addEventListener("click", (event) => {
