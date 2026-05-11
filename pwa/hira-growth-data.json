@@ -1,23 +1,23 @@
 {
-  "updated": "2026-05-09",
+  "updated": "2026-05-11",
   "name": "H.I.R.A Growth Log",
   "subtitle": "How Herwanto Intelligent Response Agent grew from an installable assistant into a more reliable, visually coherent personal operating system.",
   "summary": {
     "start": "2026-04-28",
-    "current": "2026-05-09",
-    "commitsTracked": 173,
-    "majorPhases": 26,
-    "currentStage": "Trial-ready OS with calmer Work Gmail monitoring"
+    "current": "2026-05-11",
+    "commitsTracked": 174,
+    "majorPhases": 27,
+    "currentStage": "Trust-led ClassOps intelligence with lesson-aware feed-forward"
   },
   "metrics": [
     {
       "label": "Days of build acceleration",
-      "value": "11",
-      "note": "From first installable PWA commit to a sharper Nothing-style app identity with explicit trust rails and trial-ready intelligence surfaces."
+      "value": "13",
+      "note": "From first installable PWA commit to a sharper Nothing-style app identity with explicit trust rails, ClassOps intelligence, and lesson-aware feed-forward."
     },
     {
       "label": "Tracked upgrade commits",
-      "value": "173",
+      "value": "174",
       "note": "Grouped from git history through the growth-log minisite."
     },
     {
@@ -34,8 +34,8 @@
   "capabilityRings": [
     {
       "name": "Interface",
-      "score": 97,
-      "description": "Installable PWA, minimal Nothing-style home-screen icon, restored cockpit home, sharper glyph surfaces, mobile dashboard, always-visible chat composer, files, quick command deck, OS Intelligence panel, action-enabled push notifications, recovery health, and notification controls."
+      "score": 98,
+      "description": "Installable PWA, minimal Nothing-style home-screen icon, restored cockpit home, sharper glyph surfaces, mobile dashboard, always-visible chat composer, files, quick command deck, OS Intelligence panel, action-enabled push notifications, action ledger review, ClassOps dashboard, recovery health, and notification controls."
     },
     {
       "name": "Security",
@@ -44,8 +44,8 @@
     },
     {
       "name": "Context",
-      "score": 97,
-      "description": "Timetable, Google Calendar, reminder-worthy events, rough travel buffers, MTL classlists, checked availability slots, Drive references, file memory, topic profiles, conversation summaries, relevant-memory retrieval, intent lensing, short-lived working memory, and home intelligence synthesis."
+      "score": 98,
+      "description": "Timetable, Google Calendar, reminder-worthy events, rough travel buffers, MTL classlists and marks fields, Dropbox lesson folders, checked availability slots, Drive references, file memory, topic profiles, conversation summaries, relevant-memory retrieval, intent lensing, short-lived working memory, and home intelligence synthesis."
     },
     {
       "name": "Live Knowledge",
@@ -54,8 +54,8 @@
     },
     {
       "name": "Self-Improvement",
-      "score": 97,
-      "description": "Priority-weighted memory prompt, relevant recall, working memory, action validation/audits, intent lens, proactive workload insights, OS readiness scoring, forecast radar, adaptive planning, 7-day trial loop, notification feedback learning, implicit correction detection, weekly consolidation, and conversation summarisation."
+      "score": 98,
+      "description": "Priority-weighted memory prompt, relevant recall, working memory, action validation/audits, persistent action ledger, source/memory trace visibility, ClassOps blind-spot checks, intent lens, proactive workload insights, OS readiness scoring, forecast radar, adaptive planning, 7-day trial loop, notification feedback learning, implicit correction detection, weekly consolidation, and conversation summarisation."
     }
   ],
   "chapters": [
@@ -488,11 +488,31 @@
         "The README now states that Work Gmail monitoring defaults to 30 minutes while staying configurable."
       ],
       "impact": "H.I.R.A still watches for actionable work email, but the trial setup is gentler on Gmail quota, Railway background activity, and after-hours attention."
+    },
+    {
+      "date": "2026-05-11",
+      "era": "Trust + ClassOps Intelligence",
+      "title": "Hira gains receipts, lesson extraction, and feed-forward teaching intelligence",
+      "commit": "7146f87",
+      "tag": "ClassOps + Trust",
+      "summary": "H.I.R.A moved beyond a dashboard into a more accountable personal intelligence app: actions now leave reviewable receipts, chat traces expose memory sources, and ClassOps can turn lesson materials, submissions, and marks into teacher-facing next steps.",
+      "details": [
+        "A persistent action ledger now records state-changing saves from assistant tools and the PWA, with review and undo support for selected actions.",
+        "Chat traces now show relevant memory sources alongside live-source contracts so answers are easier to audit.",
+        "ClassOps now reads Dropbox lesson folders and Google Drive classlists/marks into one teacher dashboard.",
+        "Selected Dropbox lesson files can be extracted read-only when they are PDF, DOCX, or PPTX, then used to produce post-lesson reflection worksheets.",
+        "ClassOps now surfaces priority items, possible blind spots, student watchlists, per-student submission timelines, and marks-aware feed-forward groups such as reteach, practice, catch-up, and extension.",
+        "A dependency-free local check script now runs compile and unittest verification before shipping behavior changes."
+      ],
+      "impact": "H.I.R.A is now more trustworthy and more teacher-native: it can show what it changed, explain which memory shaped an answer, and help convert actual lesson evidence plus student signals into the next teaching move."
     }
   ],
   "currentCapabilities": [
     "Installable private PWA with minimal Nothing-style home-screen icon, sharper glyph surfaces, always-visible chat composer, chat, agenda, tasks, dual personal Gmail options, experimental Work Gmail, Work Gmail action monitoring, files, uploads, notifications, and dashboard views.",
     "Home OS Intelligence that synthesizes agenda, workload, tasks, marking load, proactive signals, service health, and file memory into a readiness score, operating mode, next best move, risks, openings, and one-tap actions.",
+    "Persistent action ledger with review and selected undo support for assistant/PWA writes, plus chat trace visibility for relevant memory sources.",
+    "ClassOps teacher dashboard that combines Dropbox lesson folders, Google Drive classlists and marks, submission tracking, priority items, blind-spot checks, student watchlists, student timelines, and feed-forward groups.",
+    "Lesson-aware reflection worksheet generation from selected Dropbox PDF/DOCX/PPTX lesson files using read-only extraction.",
     "Command Protocol that turns the current state into concrete Now, Next, and Later steps with confidence and evidence.",
     "Forecast Radar that highlights upcoming pressure from load spikes, due clusters, marking drag, or stable horizon signals.",
     "Adaptive Plan that creates live Prime, Build, Slice, and Stabilize work blocks from the current day state.",
