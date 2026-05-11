@@ -1719,6 +1719,7 @@ def save_classops_assignment(
     folder: str = "",
     assignment_title: str = "",
     collect_by: str = "",
+    source_path: str = "",
     absent=None,
     submitted=None,
     non_submitted=None,
@@ -1732,24 +1733,60 @@ def save_classops_assignment(
     if not str(assignment_title or "").strip():
         raise ValueError("Assignment title is required.")
     record = classes.setdefault(class_key, {"lessons": [], "assignments": []})
-    assignment_id = str(uuid.uuid4())
     now = datetime.now(SGT).isoformat()
+    clean_source_path = str(source_path or "").strip()
+    assignments = record.setdefault("assignments", [])
+    existing = None
+    if clean_source_path:
+        existing = next(
+            (
+                item for item in assignments
+                if isinstance(item, dict) and str(item.get("source_path") or "").strip() == clean_source_path
+            ),
+            None,
+        )
+    if existing is None:
+        match_key = "|".join([
+            str(lesson_date or "").strip(),
+            str(folder or "").strip(),
+            str(assignment_title or "").strip().lower(),
+        ])
+        existing = next(
+            (
+                item for item in assignments
+                if isinstance(item, dict)
+                and not str(item.get("source_path") or "").strip()
+                and "|".join([
+                    str(item.get("lesson_date") or "").strip(),
+                    str(item.get("folder") or "").strip(),
+                    str(item.get("assignment_title") or "").strip().lower(),
+                ]) == match_key
+            ),
+            None,
+        )
+    assignment_id = str(existing.get("id") or uuid.uuid4()) if isinstance(existing, dict) else str(uuid.uuid4())
     assignment = {
         "id": assignment_id,
         "class_name": class_key,
         "lesson_date": str(lesson_date or "").strip(),
         "topic": str(topic or "").strip(),
         "folder": str(folder or "").strip(),
+        "source_path": clean_source_path,
+        "tracking_mode": "non_submission_list",
         "assignment_title": str(assignment_title or "").strip(),
         "collect_by": str(collect_by or "").strip(),
         "absent": _normalise_classops_names(absent),
         "submitted": _normalise_classops_names(submitted),
         "non_submitted": _normalise_classops_names(non_submitted),
         "notes": str(notes or "").strip(),
-        "created_at": now,
+        "created_at": str(existing.get("created_at") or now) if isinstance(existing, dict) else now,
         "updated_at": now,
     }
-    record.setdefault("assignments", []).append(assignment)
+    if isinstance(existing, dict):
+        existing.clear()
+        existing.update(assignment)
+    else:
+        assignments.append(assignment)
     lesson_key = f"{assignment['lesson_date']}|{assignment['folder']}"
     lessons = record.setdefault("lessons", [])
     if not any(f"{lesson.get('date', '')}|{lesson.get('folder', '')}" == lesson_key for lesson in lessons):

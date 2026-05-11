@@ -459,6 +459,7 @@ function renderNonSubmissionRoster(classItem = currentClassItem()) {
 
 function prefillLessonFromItem(item = {}) {
   const date = item.date || "";
+  state.selectedContentItem = item.path ? item : state.selectedContentItem;
   state.selectedFolder = item.folder || "";
   state.nonSubmitted = new Set();
   $("#lessonDateInput").value = /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : "";
@@ -658,6 +659,7 @@ $("#assignmentForm").addEventListener("submit", async (event) => {
     lesson_date: $("#lessonDateInput").value,
     topic: $("#topicInput").value.trim(),
     folder: state.selectedFolder,
+    source_path: state.selectedContentItem?.path || "",
     assignment_title: $("#assignmentTitleInput").value.trim(),
     collect_by: $("#collectByInput").value,
     absent: [],

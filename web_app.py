@@ -794,6 +794,7 @@ class ClassOpsAssignmentRequest(BaseModel):
     lesson_date: str = ""
     topic: str = ""
     folder: str = ""
+    source_path: str = ""
     assignment_title: str
     collect_by: str = ""
     absent: Optional[list[str]] = None
@@ -3144,6 +3145,7 @@ def classops_assignment(
             lesson_date=req.lesson_date,
             topic=req.topic,
             folder=req.folder,
+            source_path=req.source_path,
             assignment_title=req.assignment_title,
             collect_by=req.collect_by,
             absent=req.absent or [],

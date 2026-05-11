@@ -249,6 +249,7 @@ def build_student_report(class_name: str, students: list[dict], ledger: dict | N
         submitted = {classops_name_key(name) for name in assignment.get("submitted", []) if classops_name_key(name)}
         non_submitted = {classops_name_key(name) for name in assignment.get("non_submitted", []) if classops_name_key(name)}
         absent = {classops_name_key(name) for name in assignment.get("absent", []) if classops_name_key(name)}
+        non_submission_mode = str(assignment.get("tracking_mode") or "") == "non_submission_list" or bool(assignment.get("source_path"))
 
         for raw in assignment.get("submitted", []) or []:
             key = classops_name_key(raw)
@@ -275,7 +276,7 @@ def build_student_report(class_name: str, students: list[dict], ledger: dict | N
                 student["catchup_count"] += 1
                 student_events[key]["absent"].append(event)
                 timeline_status = "absent"
-            elif non_submitted:
+            elif non_submission_mode or non_submitted:
                 if key in non_submitted:
                     missing_total += 1
                     student["missing_count"] += 1

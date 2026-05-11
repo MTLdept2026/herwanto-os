@@ -1758,6 +1758,40 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("2G3", ledger["classes"])
         self.assertEqual(ledger["classes"]["2G3"]["assignments"][0]["assignment_title"], "Latihan Lisan")
 
+    def test_classops_assignment_updates_same_source_path_when_cleared(self):
+        store = {}
+
+        def fake_set(key, value):
+            store[key] = value
+
+        with patch.object(bot.gs, "get_config", side_effect=lambda key: store.get(key)), \
+             patch.object(bot.gs, "set_config", side_effect=fake_set):
+            first = bot.gs.save_classops_assignment(
+                class_name="2g3",
+                lesson_date="2026-05-10",
+                topic="Lisan",
+                folder="10:5:26",
+                source_path="2G3/10:5:26/lisan.pdf",
+                assignment_title="Latihan Lisan",
+                non_submitted=["Kumar Das"],
+            )
+            second = bot.gs.save_classops_assignment(
+                class_name="2g3",
+                lesson_date="2026-05-10",
+                topic="Lisan",
+                folder="10:5:26",
+                source_path="2G3/10:5:26/lisan.pdf",
+                assignment_title="Latihan Lisan",
+                non_submitted=[],
+            )
+            ledger = bot.gs.get_classops_ledger()
+
+        assignments = ledger["classes"]["2G3"]["assignments"]
+        self.assertEqual(len(assignments), 1)
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(assignments[0]["non_submitted"], [])
+        self.assertEqual(assignments[0]["tracking_mode"], "non_submission_list")
+
     def test_classops_student_report_flags_missing_and_absent_followups(self):
         ledger = {
             "classes": {
@@ -1908,6 +1942,34 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(by_name["Siti Aminah"]["timeline"][0]["status"], "submitted")
         practice = [group for group in report["feed_forward_groups"] if group["key"] == "practice"][0]
         self.assertEqual(practice["students"][0]["name"], "Kumar Das")
+
+    def test_classops_student_report_cleared_source_path_counts_done(self):
+        ledger = {
+            "classes": {
+                "2G3": {
+                    "assignments": [{
+                        "id": "work-1",
+                        "assignment_title": "Latihan Lisan",
+                        "lesson_date": "2026-05-11",
+                        "source_path": "2G3/11:5:26/lisan.pdf",
+                        "tracking_mode": "non_submission_list",
+                        "non_submitted": [],
+                    }]
+                }
+            }
+        }
+        students = [
+            {"no": "1", "class": "2G3", "name": "Siti Aminah"},
+            {"no": "2", "class": "2G3", "name": "Kumar Das"},
+        ]
+
+        report = web_app._classops_student_report("2G3", students, ledger, today=date(2026, 5, 12))
+
+        by_name = {student["name"]: student for student in report["students"]}
+        self.assertEqual(by_name["Kumar Das"]["submitted_count"], 1)
+        self.assertEqual(by_name["Kumar Das"]["missing_count"], 0)
+        self.assertEqual(report["assignments"][0]["submitted_count"], 2)
+        self.assertEqual(report["assignments"][0]["missing_count"], 0)
 
     def test_classops_reflection_worksheet_uses_lesson_and_watchlist(self):
         report = {
