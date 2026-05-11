@@ -39,6 +39,44 @@ def classops_assignment_date(assignment: dict) -> date | None:
     )
 
 
+def _classops_assignment_legacy_key(assignment: dict) -> str:
+    return "|".join([
+        str(assignment.get("lesson_date") or "").strip(),
+        str(assignment.get("folder") or "").strip(),
+        str(assignment.get("assignment_title") or "").strip().lower(),
+    ])
+
+
+def _classops_assignment_updated_key(assignment: dict, index: int) -> tuple[str, int]:
+    updated = str(assignment.get("updated_at") or assignment.get("created_at") or "").strip()
+    return (updated, index)
+
+
+def normalise_classops_assignments(assignments: list[dict]) -> list[dict]:
+    source_by_legacy_key: dict[str, list[str]] = {}
+    for assignment in assignments:
+        source_path = str(assignment.get("source_path") or "").strip()
+        legacy_key = _classops_assignment_legacy_key(assignment)
+        if source_path and legacy_key.strip("|"):
+            source_by_legacy_key.setdefault(legacy_key, []).append(source_path)
+
+    deduped: dict[tuple[str, str], tuple[tuple[str, int], dict]] = {}
+    for index, assignment in enumerate(assignments):
+        source_path = str(assignment.get("source_path") or "").strip()
+        legacy_key = _classops_assignment_legacy_key(assignment)
+        if source_path:
+            key = ("source", source_path)
+        elif legacy_key in source_by_legacy_key and len(source_by_legacy_key[legacy_key]) == 1:
+            key = ("source", source_by_legacy_key[legacy_key][0])
+        else:
+            key = ("legacy", legacy_key or str(assignment.get("id") or index))
+        updated_key = _classops_assignment_updated_key(assignment, index)
+        if key not in deduped or updated_key >= deduped[key][0]:
+            deduped[key] = (updated_key, assignment)
+
+    return [item for _, item in sorted(deduped.values(), key=lambda value: value[0])]
+
+
 def classops_timing_context(target: date | None) -> list[dict]:
     if not target:
         return []
@@ -215,7 +253,7 @@ def build_student_report(class_name: str, students: list[dict], ledger: dict | N
     ledger = ledger if isinstance(ledger, dict) else {"classes": {}}
     today = today or datetime.now().date()
     record = classops_record_for(ledger, class_name)
-    assignments = [item for item in record.get("assignments", []) if isinstance(item, dict)]
+    assignments = normalise_classops_assignments([item for item in record.get("assignments", []) if isinstance(item, dict)])
     roster = []
     for index, student in enumerate(students or [], start=1):
         name = str(student.get("name") or "").strip()

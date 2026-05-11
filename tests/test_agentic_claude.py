@@ -2056,6 +2056,45 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(report["assignments"][0]["submitted_count"], 2)
         self.assertEqual(report["assignments"][0]["missing_count"], 0)
 
+    def test_classops_student_report_dedupes_stale_legacy_record_for_same_item(self):
+        ledger = {
+            "classes": {
+                "3G3": {
+                    "assignments": [
+                        {
+                            "id": "legacy-work",
+                            "assignment_title": "Latihan Lisan",
+                            "lesson_date": "2026-05-11",
+                            "folder": "11:5:26",
+                            "non_submitted": ["Umaira Alfrina Binte Johari"],
+                            "updated_at": "2026-05-11T08:00:00+08:00",
+                        },
+                        {
+                            "id": "source-work",
+                            "assignment_title": "Latihan Lisan",
+                            "lesson_date": "2026-05-11",
+                            "folder": "11:5:26",
+                            "source_path": "3G3/11:5:26/lisan.pdf",
+                            "tracking_mode": "non_submission_list",
+                            "non_submitted": [],
+                            "updated_at": "2026-05-11T14:00:00+08:00",
+                        },
+                    ]
+                }
+            }
+        }
+        students = [
+            {"no": "1", "class": "3G3", "name": "Umaira Alfrina Binte Johari"},
+            {"no": "2", "class": "3G3", "name": "Nina Ariqa Binte Andywira"},
+        ]
+
+        report = web_app._classops_student_report("3G3", students, ledger, today=date(2026, 5, 12))
+
+        self.assertEqual(report["assignment_count"], 1)
+        self.assertEqual(report["open_non_submission_count"], 0)
+        self.assertEqual(report["assignments"][0]["id"], "source-work")
+        self.assertTrue(all(student["missing_count"] == 0 for student in report["students"]))
+
     def test_classops_non_submission_count_stays_cumulative_across_files(self):
         ledger = {
             "classes": {
