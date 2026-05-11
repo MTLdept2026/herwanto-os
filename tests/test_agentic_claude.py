@@ -2024,6 +2024,32 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(gap["days"], 39)
         self.assertIn("not had tracked work", gap["title"])
 
+    def test_classops_empty_non_submission_list_does_not_mark_everyone_missing(self):
+        ledger = {
+            "classes": {
+                "3G3": {
+                    "assignments": [{
+                        "id": "work-1",
+                        "assignment_title": "Latihan Lisan",
+                        "lesson_date": "2026-05-11",
+                        "non_submitted": [],
+                    }]
+                }
+            }
+        }
+        students = [
+            {"no": "1", "class": "3G3", "name": "Umaira Alfrina Binte Johari"},
+            {"no": "2", "class": "3G3", "name": "Nina Ariqa Binte Andywira"},
+        ]
+
+        report = web_app._classops_student_report("3G3", students, ledger, today=date(2026, 5, 12))
+
+        self.assertEqual(report["open_non_submission_count"], 0)
+        self.assertEqual(report["concern_count"], 0)
+        self.assertEqual(report["assignments"][0]["submitted_count"], 2)
+        self.assertEqual(report["assignments"][0]["missing_count"], 0)
+        self.assertTrue(all(student["missing_count"] == 0 for student in report["students"]))
+
     def test_classops_student_report_flags_marks_watch(self):
         students = [
             {"no": "1", "class": "2G3", "name": "Siti Aminah", "fields": {"WA1 %": "72"}},
