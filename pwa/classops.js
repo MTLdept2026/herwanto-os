@@ -756,6 +756,36 @@ async function postAssignmentPayload(payload, label) {
   }
 }
 
+async function updateOpenSubmissions(mode, label) {
+  if (!state.selectedClass) return setStatus("Select a class first.", "warn");
+  setTrackingButtonsDisabled(true);
+  setStatus(`${label} for ${state.selectedClass}...`);
+  try {
+    const result = await api("/api/classops/assignment/open-submissions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        class_name: state.selectedClass,
+        mode,
+      }),
+    });
+    const classItem = currentClassItem();
+    if (classItem) classItem.student_report = result.report;
+    refreshStudentSummary();
+    renderMissionTelemetry(state.data || {});
+    renderStudentReport(result.report || {});
+    state.nonSubmitted = new Set();
+    renderNonSubmissionRoster(classItem);
+    renderContents(classItem);
+    const changed = result.result?.cleared_non_submission_count ?? result.result?.deleted_non_submission_count ?? 0;
+    setStatus(`${label} complete. Cleared ${Number(changed || 0)} open non-submission${Number(changed || 0) === 1 ? "" : "s"}.`, "ok");
+  } catch (error) {
+    setStatus(error.message, "error");
+  } finally {
+    setTrackingButtonsDisabled(false);
+  }
+}
+
 async function saveAssignmentTracking(nonSubmitted = [...state.nonSubmitted], label = "Tracking") {
   const payload = buildAssignmentPayload(nonSubmitted);
   if (!payload) return;
@@ -792,13 +822,20 @@ $("#assignmentForm").addEventListener("submit", async (event) => {
 $("#allSubmittedBtn").addEventListener("click", async () => {
   state.nonSubmitted = new Set();
   renderNonSubmissionRoster();
-  await saveAssignmentTracking([], "All submitted");
+  if (state.selectedContentItem?.path && $("#assignmentTitleInput").value.trim()) {
+    await saveAssignmentTracking([], "All submitted");
+  } else {
+    await updateOpenSubmissions("all_submitted", "All submitted");
+  }
 });
 
 $("#noSubmissionNeededBtn").addEventListener("click", async () => {
   if (!state.selectedClass) return setStatus("Select a class first.", "warn");
   const item = state.selectedContentItem;
-  if (!item?.path) return setStatus("Select a contents item first.", "warn");
+  if (!item?.path) {
+    await updateOpenSubmissions("no_submission_needed", "No submission needed");
+    return;
+  }
   setTrackingButtonsDisabled(true);
   setStatus("Marking item as no submission needed...");
   try {
