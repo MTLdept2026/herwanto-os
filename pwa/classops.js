@@ -125,7 +125,7 @@ function renderMissionTelemetry(data = {}) {
   $("#missionFollowUp").textContent = String(concernCount);
   $("#missionReadout").innerHTML = `
     <p>${classes} classes online · ${roster} students synced from Drive.</p>
-    <p>${contents} filing items · ${Number(students.assignment_count || 0)} tracked submissions.</p>
+    <p>${contents} filing items · ${Number(students.assignment_count || 0)} tracked submissions · ${Number(students.open_non_submission_count || 0)} open non-submissions.</p>
     ${undatedCount ? `<p>${undatedCount} folder${undatedCount === 1 ? "" : "s"} need date cleanup.</p>` : ""}
   `;
 }
@@ -318,6 +318,7 @@ function renderStudentReport(report = {}) {
     <div class="student-summary">
       <article><span>Roster</span><strong>${Number(report.roster_count || 0)}</strong></article>
       <article><span>Tracked work</span><strong>${Number(report.assignment_count || 0)}</strong></article>
+      <article><span>Open non-sub</span><strong>${Number(report.open_non_submission_count || 0)}</strong></article>
       <article><span>Follow up</span><strong>${Number(report.concern_count || 0)}</strong></article>
     </div>
     <div class="submission-gauge" aria-label="Submission health">
@@ -389,7 +390,7 @@ function renderStudentReport(report = {}) {
         ${latest.map((assignment) => `
           <article>
             <strong>${escapeHtml(assignment.assignment_title || "Tracked work")}</strong>
-            <span>${Number(assignment.submitted_count || 0)}/${Number(assignment.roster_count || 0)} submitted · ${Number(assignment.missing_count || 0)} pending${assignmentTimingText(assignment)}</span>
+            <span>${Number(assignment.submitted_count || 0)}/${Number(assignment.roster_count || 0)} submitted · ${Number((assignment.non_submitted || []).length)} non-submission${Number((assignment.non_submitted || []).length) === 1 ? "" : "s"}${assignmentTimingText(assignment)}</span>
           </article>
         `).join("")}
       </div>
@@ -438,6 +439,22 @@ function currentClassItem() {
   return (state.data?.classes || []).find((item) => item.class === state.selectedClass);
 }
 
+function assignmentForContentItem(item = state.selectedContentItem, classItem = currentClassItem()) {
+  const path = item?.path || "";
+  if (!path) return null;
+  return (classItem?.student_report?.assignments || [])
+    .find((assignment) => (assignment.source_path || "") === path) || null;
+}
+
+function refreshStudentSummary() {
+  if (!state.data?.student_summary) return;
+  const reports = (state.data.classes || []).map((item) => item.student_report || {});
+  state.data.student_summary.assignment_count = reports.reduce((total, report) => total + Number(report.assignment_count || 0), 0);
+  state.data.student_summary.open_non_submission_count = reports.reduce((total, report) => total + Number(report.open_non_submission_count || 0), 0);
+  state.data.student_summary.concern_count = reports.reduce((total, report) => total + Number(report.concern_count || 0), 0);
+  state.data.student_summary.insight_count = reports.reduce((total, report) => total + Number(report.insight_count || 0), 0);
+}
+
 function renderNonSubmissionRoster(classItem = currentClassItem()) {
   const students = classItem?.student_report?.students || classItem?.students || [];
   $("#nonSubmissionCount").textContent = `${state.nonSubmitted.size} selected`;
@@ -461,7 +478,8 @@ function prefillLessonFromItem(item = {}) {
   const date = item.date || "";
   state.selectedContentItem = item.path ? item : state.selectedContentItem;
   state.selectedFolder = item.folder || "";
-  state.nonSubmitted = new Set();
+  const existing = assignmentForContentItem(state.selectedContentItem);
+  state.nonSubmitted = new Set(existing?.non_submitted || []);
   $("#lessonDateInput").value = /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : "";
   $("#topicInput").value = item.title || "";
   const title = item.title || "";
@@ -677,10 +695,12 @@ $("#assignmentForm").addEventListener("submit", async (event) => {
     });
     const classItem = (state.data?.classes || []).find((item) => item.class === state.selectedClass);
     if (classItem) classItem.student_report = result.report;
+    refreshStudentSummary();
+    renderMissionTelemetry(state.data || {});
     renderStudentReport(result.report || {});
-    state.nonSubmitted = new Set();
+    state.nonSubmitted = new Set(result.assignment?.non_submitted || []);
     renderNonSubmissionRoster(classItem);
-    setStatus("Tracking saved.", "ok");
+    setStatus(`Tracking saved with ${state.nonSubmitted.size} open non-submission${state.nonSubmitted.size === 1 ? "" : "s"}.`, "ok");
   } catch (error) {
     setStatus(error.message, "error");
   } finally {

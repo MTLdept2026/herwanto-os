@@ -3003,6 +3003,7 @@ def _classops_enrich_with_students(manifest: dict) -> dict:
         "roster_count": sum(len(item.get("students") or []) for item in manifest.get("classes", []) or []),
         "concern_count": sum((item.get("student_report") or {}).get("concern_count", 0) for item in manifest.get("classes", []) or []),
         "assignment_count": sum((item.get("student_report") or {}).get("assignment_count", 0) for item in manifest.get("classes", []) or []),
+        "open_non_submission_count": sum((item.get("student_report") or {}).get("open_non_submission_count", 0) for item in manifest.get("classes", []) or []),
         "insight_count": sum((item.get("student_report") or {}).get("insight_count", 0) for item in manifest.get("classes", []) or []),
     }
     return manifest

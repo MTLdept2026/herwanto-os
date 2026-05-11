@@ -361,6 +361,7 @@ def build_student_report(class_name: str, students: list[dict], ledger: dict | N
         "class_name": class_name,
         "roster_count": len(roster),
         "assignment_count": len(assignments),
+        "open_non_submission_count": sum(len(item.get("non_submitted", []) or []) for item in assignments),
         "concern_count": len(concerns),
         "insight_count": len(insights),
         "priority_items": priority_items,

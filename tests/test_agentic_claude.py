@@ -1968,6 +1968,7 @@ class AgenticClaudeTests(unittest.TestCase):
         by_name = {student["name"]: student for student in report["students"]}
         self.assertEqual(by_name["Kumar Das"]["submitted_count"], 1)
         self.assertEqual(by_name["Kumar Das"]["missing_count"], 0)
+        self.assertEqual(report["open_non_submission_count"], 0)
         self.assertEqual(report["assignments"][0]["submitted_count"], 2)
         self.assertEqual(report["assignments"][0]["missing_count"], 0)
 
@@ -2014,6 +2015,7 @@ class AgenticClaudeTests(unittest.TestCase):
         by_name = {student["name"]: student for student in report["students"]}
         self.assertEqual(by_name["Kumar Das"]["submitted_count"], 1)
         self.assertEqual(by_name["Kumar Das"]["missing_count"], 2)
+        self.assertEqual(report["open_non_submission_count"], 2)
         self.assertEqual([event["status"] for event in by_name["Kumar Das"]["timeline"]], ["submitted", "missing", "missing"])
 
     def test_classops_reflection_worksheet_uses_lesson_and_watchlist(self):

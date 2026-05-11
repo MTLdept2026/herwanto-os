@@ -612,6 +612,10 @@ aside h2 {
   gap: var(--space-sm);
 }
 
+.student-summary {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .teacher-intel-panel,
 .feed-forward-panel,
 .student-timeline-panel {
