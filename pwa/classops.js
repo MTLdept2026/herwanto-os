@@ -265,6 +265,7 @@ function showContentInspector(item = {}) {
   ].filter(Boolean).join(" · ");
   document.querySelectorAll(".contents-row.is-selected").forEach((row) => row.classList.remove("is-selected"));
   selectedContentRow(item.path)?.classList.add("is-selected");
+  prefillLessonFromItem(item, { focus: false });
   $("#contentTitleInput").focus();
 }
 
@@ -399,12 +400,6 @@ function renderStudentReport(report = {}) {
           <article data-assignment-id="${escapeHtml(assignment.id || "")}">
             <strong>${escapeHtml(assignment.assignment_title || "Tracked work")}</strong>
             <span>${Number(assignment.submitted_count || 0)}/${Number(assignment.roster_count || 0)} submitted · ${Number((assignment.non_submitted || []).length)} non-submission${Number((assignment.non_submitted || []).length) === 1 ? "" : "s"}${assignmentTimingText(assignment)}</span>
-            ${assignment.source_path ? `
-              <div class="assignment-card-actions">
-                <button type="button" data-assignment-action="all-submitted" data-assignment-id="${escapeHtml(assignment.id || "")}">All Submitted</button>
-                <button type="button" class="ghost" data-assignment-action="no-submission-needed" data-assignment-id="${escapeHtml(assignment.id || "")}">No Submission Needed</button>
-              </div>
-            ` : ""}
           </article>
         `).join("")}
       </div>
@@ -488,7 +483,7 @@ function renderNonSubmissionRoster(classItem = currentClassItem()) {
   }).join("");
 }
 
-function prefillLessonFromItem(item = {}) {
+function prefillLessonFromItem(item = {}, { focus = true } = {}) {
   const date = item.date || "";
   state.selectedContentItem = item.path ? item : state.selectedContentItem;
   state.selectedFolder = item.folder || "";
@@ -499,7 +494,7 @@ function prefillLessonFromItem(item = {}) {
   const title = item.title || "";
   if (title) $("#assignmentTitleInput").value = title.trim();
   renderNonSubmissionRoster();
-  $("#assignmentTitleInput").focus();
+  if (focus) $("#assignmentTitleInput").focus();
 }
 
 function prefillLesson(button) {
@@ -685,12 +680,16 @@ $("#printBtn").addEventListener("click", () => window.print());
 
 function buildAssignmentPayload(nonSubmitted = [...state.nonSubmitted]) {
   if (!state.selectedClass) return setStatus("Select a class first.", "warn");
+  if (!state.selectedContentItem?.path) {
+    setStatus("Select an item from Contents before tracking submissions.", "warn");
+    return null;
+  }
   const payload = {
     class_name: state.selectedClass,
     lesson_date: $("#lessonDateInput").value,
     topic: $("#topicInput").value.trim(),
     folder: state.selectedFolder,
-    source_path: state.selectedContentItem?.path || "",
+    source_path: state.selectedContentItem.path,
     assignment_title: $("#assignmentTitleInput").value.trim(),
     collect_by: $("#collectByInput").value,
     absent: [],
@@ -708,82 +707,6 @@ function setTrackingButtonsDisabled(disabled) {
   $("#saveAssignmentBtn").disabled = disabled;
   $("#allSubmittedBtn").disabled = disabled;
   $("#noSubmissionNeededBtn").disabled = disabled;
-}
-
-function assignmentById(assignmentId) {
-  return (currentClassItem()?.student_report?.assignments || [])
-    .find((assignment) => String(assignment.id || "") === String(assignmentId || "")) || null;
-}
-
-function payloadFromAssignmentRecord(assignment, nonSubmitted = []) {
-  if (!assignment) return null;
-  return {
-    class_name: state.selectedClass,
-    lesson_date: assignment.lesson_date || "",
-    topic: assignment.topic || "",
-    folder: assignment.folder || "",
-    source_path: assignment.source_path || "",
-    assignment_title: assignment.assignment_title || "Tracked work",
-    collect_by: assignment.collect_by || "",
-    absent: assignment.absent || [],
-    submitted: [],
-    non_submitted: nonSubmitted,
-  };
-}
-
-async function postAssignmentPayload(payload, label) {
-  if (!payload) return;
-  setTrackingButtonsDisabled(true);
-  setStatus(`Saving ${label.toLowerCase()}...`);
-  try {
-    const result = await api("/api/classops/assignment", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const classItem = currentClassItem();
-    if (classItem) classItem.student_report = result.report;
-    if (payload.source_path) markContentItemSubmissionNeeded(payload.source_path, true);
-    refreshStudentSummary();
-    renderMissionTelemetry(state.data || {});
-    state.nonSubmitted = new Set(result.assignment?.non_submitted || []);
-    renderContents(classItem);
-    setStatus(`${label} saved with ${state.nonSubmitted.size} open non-submission${state.nonSubmitted.size === 1 ? "" : "s"}.`, "ok");
-  } catch (error) {
-    setStatus(error.message, "error");
-  } finally {
-    setTrackingButtonsDisabled(false);
-  }
-}
-
-async function updateOpenSubmissions(mode, label) {
-  if (!state.selectedClass) return setStatus("Select a class first.", "warn");
-  setTrackingButtonsDisabled(true);
-  setStatus(`${label} for ${state.selectedClass}...`);
-  try {
-    const result = await api("/api/classops/assignment/open-submissions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        class_name: state.selectedClass,
-        mode,
-      }),
-    });
-    const classItem = currentClassItem();
-    if (classItem) classItem.student_report = result.report;
-    refreshStudentSummary();
-    renderMissionTelemetry(state.data || {});
-    renderStudentReport(result.report || {});
-    state.nonSubmitted = new Set();
-    renderNonSubmissionRoster(classItem);
-    renderContents(classItem);
-    const changed = result.result?.cleared_non_submission_count ?? result.result?.deleted_non_submission_count ?? 0;
-    setStatus(`${label} complete. Cleared ${Number(changed || 0)} open non-submission${Number(changed || 0) === 1 ? "" : "s"}.`, "ok");
-  } catch (error) {
-    setStatus(error.message, "error");
-  } finally {
-    setTrackingButtonsDisabled(false);
-  }
 }
 
 async function saveAssignmentTracking(nonSubmitted = [...state.nonSubmitted], label = "Tracking") {
@@ -822,20 +745,13 @@ $("#assignmentForm").addEventListener("submit", async (event) => {
 $("#allSubmittedBtn").addEventListener("click", async () => {
   state.nonSubmitted = new Set();
   renderNonSubmissionRoster();
-  if (state.selectedContentItem?.path && $("#assignmentTitleInput").value.trim()) {
-    await saveAssignmentTracking([], "All submitted");
-  } else {
-    await updateOpenSubmissions("all_submitted", "All submitted");
-  }
+  await saveAssignmentTracking([], "All submitted");
 });
 
 $("#noSubmissionNeededBtn").addEventListener("click", async () => {
   if (!state.selectedClass) return setStatus("Select a class first.", "warn");
   const item = state.selectedContentItem;
-  if (!item?.path) {
-    await updateOpenSubmissions("no_submission_needed", "No submission needed");
-    return;
-  }
+  if (!item?.path) return setStatus("Select an item from Contents before marking no submission needed.", "warn");
   setTrackingButtonsDisabled(true);
   setStatus("Marking item as no submission needed...");
   try {
@@ -894,43 +810,6 @@ $("#nonSubmissionRoster").addEventListener("change", (event) => {
 });
 
 $("#studentReport").addEventListener("click", (event) => {
-  const actionButton = event.target.closest("[data-assignment-action]");
-  if (actionButton) {
-    const assignment = assignmentById(actionButton.dataset.assignmentId);
-    if (!assignment) return setStatus("Could not find that tracked assignment. Scan again and retry.", "warn");
-    if (actionButton.dataset.assignmentAction === "all-submitted") {
-      postAssignmentPayload(payloadFromAssignmentRecord(assignment, []), "All submitted");
-      return;
-    }
-    if (actionButton.dataset.assignmentAction === "no-submission-needed") {
-      if (!assignment.source_path) return setStatus("This assignment is not linked to a contents file.", "warn");
-      setTrackingButtonsDisabled(true);
-      setStatus("Marking item as no submission needed...");
-      api("/api/classops/assignment/no-submission-needed", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          class_name: state.selectedClass,
-          source_path: assignment.source_path,
-          assignment_title: assignment.assignment_title || "",
-        }),
-      }).then((result) => {
-        const classItem = currentClassItem();
-        if (classItem) classItem.student_report = result.report;
-        markContentItemSubmissionNeeded(assignment.source_path, false);
-        refreshStudentSummary();
-        renderMissionTelemetry(state.data || {});
-        state.nonSubmitted = new Set();
-        renderContents(classItem);
-        setStatus("Marked as no submission needed.", "ok");
-      }).catch((error) => {
-        setStatus(error.message, "error");
-      }).finally(() => {
-        setTrackingButtonsDisabled(false);
-      });
-      return;
-    }
-  }
   const row = event.target.closest("[data-student-name]");
   if (!row) return;
   state.selectedStudentName = row.dataset.studentName || "";

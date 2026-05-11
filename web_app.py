@@ -816,11 +816,6 @@ class ClassOpsNoSubmissionNeededRequest(BaseModel):
     assignment_title: str = ""
 
 
-class ClassOpsOpenSubmissionsRequest(BaseModel):
-    class_name: str
-    mode: str = "all_submitted"
-
-
 class ClassOpsReflectionRequest(BaseModel):
     class_name: str
     lesson: dict
@@ -3250,49 +3245,6 @@ def classops_no_submission_needed(
         }
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"ClassOps no-submission-needed update failed: {exc}") from exc
-
-
-@app.post("/api/classops/assignment/open-submissions")
-def classops_open_submissions(
-    req: ClassOpsOpenSubmissionsRequest,
-    x_hira_token: Optional[str] = Header(default=None),
-    x_hira_client: Optional[str] = Header(default=None),
-):
-    _require_token(x_hira_token)
-    try:
-        mode = str(req.mode or "").strip().lower()
-        if mode == "all_submitted":
-            result = bot.gs.clear_classops_open_non_submissions(req.class_name)
-            action_status = "all_submitted"
-            action_result = (
-                f"Cleared {result.get('cleared_non_submission_count', 0)} open non-submissions "
-                f"across {result.get('cleared_assignment_count', 0)} tracked assignments"
-            )
-        elif mode == "no_submission_needed":
-            result = bot.gs.remove_classops_open_non_submission_assignments(req.class_name)
-            action_status = "no_submission_needed"
-            action_result = (
-                f"Removed {result.get('deleted_count', 0)} open tracked assignments "
-                f"with {result.get('deleted_non_submission_count', 0)} non-submissions"
-            )
-        else:
-            raise ValueError("Mode must be all_submitted or no_submission_needed.")
-        _record_web_action(
-            "classops.assignment",
-            action_status,
-            subject=f"{req.class_name}: open non-submissions",
-            result=action_result,
-            client_id=x_hira_client,
-            metadata={"class_name": req.class_name, "mode": mode},
-        )
-        students = bot.gs.get_classops_students(req.class_name, include_scores=True)
-        return {
-            "ok": True,
-            "result": result,
-            "report": _classops_student_report(req.class_name, students),
-        }
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"ClassOps open-submission update failed: {exc}") from exc
 
 
 @app.post("/api/classops/reflection-worksheet")
