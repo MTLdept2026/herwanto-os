@@ -807,6 +807,13 @@ class ClassOpsContentOverrideRequest(BaseModel):
     path: str
     title: Optional[str] = None
     hidden: Optional[bool] = None
+    no_submission_needed: Optional[bool] = None
+
+
+class ClassOpsNoSubmissionNeededRequest(BaseModel):
+    class_name: str
+    source_path: str
+    assignment_title: str = ""
 
 
 class ClassOpsReflectionRequest(BaseModel):
@@ -3025,9 +3032,10 @@ def _classops_apply_content_overrides(manifest: dict, ledger: dict | None = None
             normalised[key] = {
                 "title": str(value.get("title") or "").strip(),
                 "hidden": bool(value.get("hidden", False)),
+                "no_submission_needed": bool(value.get("no_submission_needed", False)),
             }
         else:
-            normalised[key] = {"title": str(value or "").strip(), "hidden": False}
+            normalised[key] = {"title": str(value or "").strip(), "hidden": False, "no_submission_needed": False}
     for class_item in manifest.get("classes", []) or []:
         filtered = []
         for item in class_item.get("content_items", []) or []:
@@ -3039,6 +3047,8 @@ def _classops_apply_content_overrides(manifest: dict, ledger: dict | None = None
             if override.get("title"):
                 next_item["title"] = override["title"]
                 next_item["title_overridden"] = True
+            if override.get("no_submission_needed"):
+                next_item["no_submission_needed"] = True
             filtered.append(next_item)
         class_item["content_items"] = dropbox.sort_classops_content_items(filtered)
         class_item["content_item_count"] = len(filtered)
@@ -3181,18 +3191,60 @@ def classops_content_override(
 ):
     _require_token(x_hira_token)
     try:
-        override = bot.gs.save_classops_content_override(req.path, title=req.title, hidden=req.hidden)
+        override = bot.gs.save_classops_content_override(
+            req.path,
+            title=req.title,
+            hidden=req.hidden,
+            no_submission_needed=req.no_submission_needed,
+        )
         _record_web_action(
             "classops.content_override",
             "saved",
             subject=req.title or req.path,
             result=f"{'Hid' if req.hidden else 'Updated'} ClassOps content override",
             client_id=x_hira_client,
-            metadata={"path": req.path, "hidden": str(bool(req.hidden))},
+            metadata={
+                "path": req.path,
+                "hidden": str(bool(req.hidden)),
+                "no_submission_needed": str(bool(req.no_submission_needed)),
+            },
         )
         return {"ok": True, "override": override}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"ClassOps content update failed: {exc}") from exc
+
+
+@app.post("/api/classops/assignment/no-submission-needed")
+def classops_no_submission_needed(
+    req: ClassOpsNoSubmissionNeededRequest,
+    x_hira_token: Optional[str] = Header(default=None),
+    x_hira_client: Optional[str] = Header(default=None),
+):
+    _require_token(x_hira_token)
+    try:
+        deleted = bot.gs.delete_classops_assignment(class_name=req.class_name, source_path=req.source_path)
+        override = bot.gs.save_classops_content_override(req.source_path, no_submission_needed=True)
+        _record_web_action(
+            "classops.assignment",
+            "no_submission_needed",
+            subject=f"{req.class_name}: {req.assignment_title or req.source_path}",
+            result=f"Marked ClassOps item as no submission needed; removed {deleted.get('deleted_count', 0)} tracked records",
+            client_id=x_hira_client,
+            metadata={
+                "class_name": req.class_name,
+                "source_path": req.source_path,
+                "deleted_count": str(deleted.get("deleted_count", 0)),
+            },
+        )
+        students = bot.gs.get_classops_students(req.class_name, include_scores=True)
+        return {
+            "ok": True,
+            "deleted": deleted,
+            "override": override,
+            "report": _classops_student_report(req.class_name, students),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"ClassOps no-submission-needed update failed: {exc}") from exc
 
 
 @app.post("/api/classops/reflection-worksheet")

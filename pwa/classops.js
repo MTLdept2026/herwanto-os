@@ -218,10 +218,11 @@ function renderContents(classItem) {
       <div>No</div><div>Item</div><div>Tarikh</div>
     </div>
     ${contentItems.length ? contentItems.map((item, index) => {
+      const statusBadge = item.no_submission_needed ? ` <span class="override-mark">no submission</span>` : "";
       return `
         <article class="contents-row ${item.date_missing || !item.date ? "date-missing" : ""}" data-track-lesson="${escapeHtml(item.date || "")}" data-track-topic="${escapeHtml(item.title || "")}" data-track-folder="${escapeHtml(item.folder || "")}" data-track-title="${escapeHtml(item.title || "")}" data-content-path="${escapeHtml(item.path || "")}" data-content-kind="${escapeHtml(item.kind || "")}" data-date-missing="${item.date_missing || !item.date ? "1" : ""}">
           <div class="contents-no"><strong>${index + 1}</strong></div>
-          <div class="contents-title">${escapeHtml(item.title || "Untitled")}${item.title_overridden ? ` <span class="override-mark">edited</span>` : ""}</div>
+          <div class="contents-title">${escapeHtml(item.title || "Untitled")}${item.title_overridden ? ` <span class="override-mark">edited</span>` : ""}${statusBadge}</div>
           <div class="contents-date">${escapeHtml(contentDateLabel(item))}</div>
         </article>
       `;
@@ -288,6 +289,13 @@ function updateContentItemInState(path, updates = {}) {
   if (state.data?.summary) {
     state.data.summary.content_item_count = (state.data.classes || [])
       .reduce((total, item) => total + Number(item.content_item_count || 0), 0);
+  }
+}
+
+function markContentItemSubmissionNeeded(path, needed) {
+  updateContentItemInState(path, { no_submission_needed: !needed });
+  if (state.selectedContentItem?.path === path) {
+    state.selectedContentItem = { ...state.selectedContentItem, no_submission_needed: !needed };
   }
 }
 
@@ -388,9 +396,15 @@ function renderStudentReport(report = {}) {
     ${latest.length ? `
       <div class="assignment-tally">
         ${latest.map((assignment) => `
-          <article>
+          <article data-assignment-id="${escapeHtml(assignment.id || "")}">
             <strong>${escapeHtml(assignment.assignment_title || "Tracked work")}</strong>
             <span>${Number(assignment.submitted_count || 0)}/${Number(assignment.roster_count || 0)} submitted · ${Number((assignment.non_submitted || []).length)} non-submission${Number((assignment.non_submitted || []).length) === 1 ? "" : "s"}${assignmentTimingText(assignment)}</span>
+            ${assignment.source_path ? `
+              <div class="assignment-card-actions">
+                <button type="button" data-assignment-action="all-submitted" data-assignment-id="${escapeHtml(assignment.id || "")}">All Submitted</button>
+                <button type="button" class="ghost" data-assignment-action="no-submission-needed" data-assignment-id="${escapeHtml(assignment.id || "")}">No Submission Needed</button>
+              </div>
+            ` : ""}
           </article>
         `).join("")}
       </div>
@@ -669,8 +683,7 @@ $("#saveTokenBtn").addEventListener("click", () => {
 $("#scanBtn").addEventListener("click", loadDashboard);
 $("#printBtn").addEventListener("click", () => window.print());
 
-$("#assignmentForm").addEventListener("submit", async (event) => {
-  event.preventDefault();
+function buildAssignmentPayload(nonSubmitted = [...state.nonSubmitted]) {
   if (!state.selectedClass) return setStatus("Select a class first.", "warn");
   const payload = {
     class_name: state.selectedClass,
@@ -682,10 +695,71 @@ $("#assignmentForm").addEventListener("submit", async (event) => {
     collect_by: $("#collectByInput").value,
     absent: [],
     submitted: [],
-    non_submitted: [...state.nonSubmitted],
+    non_submitted: nonSubmitted,
   };
-  if (!payload.assignment_title) return setStatus("Add an assignment title before saving.", "warn");
-  $("#saveAssignmentBtn").disabled = true;
+  if (!payload.assignment_title) {
+    setStatus("Add an assignment title before saving.", "warn");
+    return null;
+  }
+  return payload;
+}
+
+function setTrackingButtonsDisabled(disabled) {
+  $("#saveAssignmentBtn").disabled = disabled;
+  $("#allSubmittedBtn").disabled = disabled;
+  $("#noSubmissionNeededBtn").disabled = disabled;
+}
+
+function assignmentById(assignmentId) {
+  return (currentClassItem()?.student_report?.assignments || [])
+    .find((assignment) => String(assignment.id || "") === String(assignmentId || "")) || null;
+}
+
+function payloadFromAssignmentRecord(assignment, nonSubmitted = []) {
+  if (!assignment) return null;
+  return {
+    class_name: state.selectedClass,
+    lesson_date: assignment.lesson_date || "",
+    topic: assignment.topic || "",
+    folder: assignment.folder || "",
+    source_path: assignment.source_path || "",
+    assignment_title: assignment.assignment_title || "Tracked work",
+    collect_by: assignment.collect_by || "",
+    absent: assignment.absent || [],
+    submitted: [],
+    non_submitted: nonSubmitted,
+  };
+}
+
+async function postAssignmentPayload(payload, label) {
+  if (!payload) return;
+  setTrackingButtonsDisabled(true);
+  setStatus(`Saving ${label.toLowerCase()}...`);
+  try {
+    const result = await api("/api/classops/assignment", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const classItem = currentClassItem();
+    if (classItem) classItem.student_report = result.report;
+    if (payload.source_path) markContentItemSubmissionNeeded(payload.source_path, true);
+    refreshStudentSummary();
+    renderMissionTelemetry(state.data || {});
+    state.nonSubmitted = new Set(result.assignment?.non_submitted || []);
+    renderContents(classItem);
+    setStatus(`${label} saved with ${state.nonSubmitted.size} open non-submission${state.nonSubmitted.size === 1 ? "" : "s"}.`, "ok");
+  } catch (error) {
+    setStatus(error.message, "error");
+  } finally {
+    setTrackingButtonsDisabled(false);
+  }
+}
+
+async function saveAssignmentTracking(nonSubmitted = [...state.nonSubmitted], label = "Tracking") {
+  const payload = buildAssignmentPayload(nonSubmitted);
+  if (!payload) return;
+  setTrackingButtonsDisabled(true);
   setStatus(`Saving ${state.selectedClass} tracking...`);
   try {
     const result = await api("/api/classops/assignment", {
@@ -695,16 +769,62 @@ $("#assignmentForm").addEventListener("submit", async (event) => {
     });
     const classItem = (state.data?.classes || []).find((item) => item.class === state.selectedClass);
     if (classItem) classItem.student_report = result.report;
+    if (payload.source_path) markContentItemSubmissionNeeded(payload.source_path, true);
     refreshStudentSummary();
     renderMissionTelemetry(state.data || {});
     renderStudentReport(result.report || {});
     state.nonSubmitted = new Set(result.assignment?.non_submitted || []);
     renderNonSubmissionRoster(classItem);
-    setStatus(`Tracking saved with ${state.nonSubmitted.size} open non-submission${state.nonSubmitted.size === 1 ? "" : "s"}.`, "ok");
+    if (payload.source_path) renderContents(classItem);
+    setStatus(`${label} saved with ${state.nonSubmitted.size} open non-submission${state.nonSubmitted.size === 1 ? "" : "s"}.`, "ok");
   } catch (error) {
     setStatus(error.message, "error");
   } finally {
-    $("#saveAssignmentBtn").disabled = false;
+    setTrackingButtonsDisabled(false);
+  }
+}
+
+$("#assignmentForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await saveAssignmentTracking([...state.nonSubmitted], "Non-submission tracking");
+});
+
+$("#allSubmittedBtn").addEventListener("click", async () => {
+  state.nonSubmitted = new Set();
+  renderNonSubmissionRoster();
+  await saveAssignmentTracking([], "All submitted");
+});
+
+$("#noSubmissionNeededBtn").addEventListener("click", async () => {
+  if (!state.selectedClass) return setStatus("Select a class first.", "warn");
+  const item = state.selectedContentItem;
+  if (!item?.path) return setStatus("Select a contents item first.", "warn");
+  setTrackingButtonsDisabled(true);
+  setStatus("Marking item as no submission needed...");
+  try {
+    const result = await api("/api/classops/assignment/no-submission-needed", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        class_name: state.selectedClass,
+        source_path: item.path,
+        assignment_title: $("#assignmentTitleInput").value.trim() || item.title || "",
+      }),
+    });
+    const classItem = (state.data?.classes || []).find((entry) => entry.class === state.selectedClass);
+    if (classItem) classItem.student_report = result.report;
+    markContentItemSubmissionNeeded(item.path, false);
+    refreshStudentSummary();
+    renderMissionTelemetry(state.data || {});
+    renderStudentReport(result.report || {});
+    state.nonSubmitted = new Set();
+    renderNonSubmissionRoster(classItem);
+    renderContents(classItem);
+    setStatus("Marked as no submission needed.", "ok");
+  } catch (error) {
+    setStatus(error.message, "error");
+  } finally {
+    setTrackingButtonsDisabled(false);
   }
 });
 
@@ -737,6 +857,43 @@ $("#nonSubmissionRoster").addEventListener("change", (event) => {
 });
 
 $("#studentReport").addEventListener("click", (event) => {
+  const actionButton = event.target.closest("[data-assignment-action]");
+  if (actionButton) {
+    const assignment = assignmentById(actionButton.dataset.assignmentId);
+    if (!assignment) return setStatus("Could not find that tracked assignment. Scan again and retry.", "warn");
+    if (actionButton.dataset.assignmentAction === "all-submitted") {
+      postAssignmentPayload(payloadFromAssignmentRecord(assignment, []), "All submitted");
+      return;
+    }
+    if (actionButton.dataset.assignmentAction === "no-submission-needed") {
+      if (!assignment.source_path) return setStatus("This assignment is not linked to a contents file.", "warn");
+      setTrackingButtonsDisabled(true);
+      setStatus("Marking item as no submission needed...");
+      api("/api/classops/assignment/no-submission-needed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          class_name: state.selectedClass,
+          source_path: assignment.source_path,
+          assignment_title: assignment.assignment_title || "",
+        }),
+      }).then((result) => {
+        const classItem = currentClassItem();
+        if (classItem) classItem.student_report = result.report;
+        markContentItemSubmissionNeeded(assignment.source_path, false);
+        refreshStudentSummary();
+        renderMissionTelemetry(state.data || {});
+        state.nonSubmitted = new Set();
+        renderContents(classItem);
+        setStatus("Marked as no submission needed.", "ok");
+      }).catch((error) => {
+        setStatus(error.message, "error");
+      }).finally(() => {
+        setTrackingButtonsDisabled(false);
+      });
+      return;
+    }
+  }
   const row = event.target.closest("[data-student-name]");
   if (!row) return;
   state.selectedStudentName = row.dataset.studentName || "";

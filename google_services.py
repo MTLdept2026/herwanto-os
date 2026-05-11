@@ -1615,13 +1615,19 @@ def get_classops_content_overrides() -> dict:
             normalised[key] = {
                 "title": str(value.get("title") or "").strip(),
                 "hidden": bool(value.get("hidden", False)),
+                "no_submission_needed": bool(value.get("no_submission_needed", False)),
             }
         else:
-            normalised[key] = {"title": str(value or "").strip(), "hidden": False}
+            normalised[key] = {"title": str(value or "").strip(), "hidden": False, "no_submission_needed": False}
     return normalised
 
 
-def save_classops_content_override(path: str, title: str | None = None, hidden: bool | None = None) -> dict:
+def save_classops_content_override(
+    path: str,
+    title: str | None = None,
+    hidden: bool | None = None,
+    no_submission_needed: bool | None = None,
+) -> dict:
     clean_path = str(path or "").strip()
     if not clean_path:
         raise ValueError("Content item path is required.")
@@ -1634,9 +1640,60 @@ def save_classops_content_override(path: str, title: str | None = None, hidden: 
         current["title"] = str(title or "").strip()
     if hidden is not None:
         current["hidden"] = bool(hidden)
+    if no_submission_needed is not None:
+        current["no_submission_needed"] = bool(no_submission_needed)
     overrides[clean_path] = current
     set_classops_ledger(ledger)
     return {"path": clean_path, **current}
+
+
+def delete_classops_assignment(
+    class_name: str,
+    source_path: str = "",
+    assignment_id: str = "",
+) -> dict:
+    ledger = get_classops_ledger()
+    classes = ledger.setdefault("classes", {})
+    class_key = str(class_name or "").strip().upper()
+    clean_source_path = str(source_path or "").strip()
+    clean_assignment_id = str(assignment_id or "").strip()
+    if not class_key:
+        raise ValueError("Class name is required.")
+    if not clean_source_path and not clean_assignment_id:
+        raise ValueError("Source path or assignment id is required.")
+
+    record = classes.get(class_key)
+    if not isinstance(record, dict):
+        return {"deleted": False, "deleted_count": 0, "class_name": class_key, "assignments": []}
+
+    assignments = [item for item in record.get("assignments", []) if isinstance(item, dict)]
+    removed = []
+    kept = []
+    for assignment in assignments:
+        source_matches = clean_source_path and str(assignment.get("source_path") or "").strip() == clean_source_path
+        id_matches = clean_assignment_id and str(assignment.get("id") or "").strip() == clean_assignment_id
+        if source_matches or id_matches:
+            removed.append(assignment)
+        else:
+            kept.append(assignment)
+
+    if not removed:
+        return {
+            "deleted": False,
+            "deleted_count": 0,
+            "class_name": class_key,
+            "assignments": assignments,
+        }
+
+    record["assignments"] = kept
+    set_classops_ledger(ledger)
+    return {
+        "deleted": True,
+        "deleted_count": len(removed),
+        "class_name": class_key,
+        "assignment": removed[0],
+        "assignments": kept,
+    }
 
 
 def _classops_canonical_class(value: str) -> str:
@@ -1787,6 +1844,13 @@ def save_classops_assignment(
         existing.update(assignment)
     else:
         assignments.append(assignment)
+    if clean_source_path:
+        overrides = ledger.setdefault("content_overrides", {})
+        current = overrides.get(clean_source_path)
+        if not isinstance(current, dict):
+            current = {"title": str(current or "").strip(), "hidden": False}
+        current["no_submission_needed"] = False
+        overrides[clean_source_path] = current
     lesson_key = f"{assignment['lesson_date']}|{assignment['folder']}"
     lessons = record.setdefault("lessons", [])
     if not any(f"{lesson.get('date', '')}|{lesson.get('folder', '')}" == lesson_key for lesson in lessons):

@@ -1612,12 +1612,15 @@ class AgenticClaudeTests(unittest.TestCase):
                 "2G3/24:2:26/latihan.pdf",
                 title="Latihan Peribahasa",
                 hidden=True,
+                no_submission_needed=True,
             )
             overrides = bot.gs.get_classops_content_overrides()
 
         self.assertTrue(override["hidden"])
+        self.assertTrue(override["no_submission_needed"])
         self.assertEqual(overrides["2G3/24:2:26/latihan.pdf"]["title"], "Latihan Peribahasa")
         self.assertTrue(overrides["2G3/24:2:26/latihan.pdf"]["hidden"])
+        self.assertTrue(overrides["2G3/24:2:26/latihan.pdf"]["no_submission_needed"])
 
     def test_classops_content_overrides_rename_and_hide_manifest_items(self):
         manifest = {
@@ -1644,6 +1647,28 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(updated["classes"][0]["content_item_count"], 1)
         self.assertEqual(updated["classes"][0]["content_items"][0]["title"], "Nota - Masa Senggang")
         self.assertTrue(updated["classes"][0]["content_items"][0]["title_overridden"])
+
+    def test_classops_content_overrides_mark_no_submission_needed(self):
+        manifest = {
+            "summary": {"content_item_count": 1},
+            "classes": [{
+                "class": "2G3",
+                "content_item_count": 1,
+                "content_items": [
+                    {"path": "2G3/24:2:26/raw.pdf", "title": "Raw", "date": "2026-02-24"},
+                ],
+            }],
+        }
+        ledger = {
+            "content_overrides": {
+                "2G3/24:2:26/raw.pdf": {"no_submission_needed": True},
+            }
+        }
+
+        updated = web_app._classops_apply_content_overrides(manifest, ledger)
+
+        self.assertEqual(updated["classes"][0]["content_item_count"], 1)
+        self.assertTrue(updated["classes"][0]["content_items"][0]["no_submission_needed"])
 
     def test_classops_content_overrides_keep_content_items_newest_first(self):
         manifest = {
@@ -1766,6 +1791,10 @@ class AgenticClaudeTests(unittest.TestCase):
 
         with patch.object(bot.gs, "get_config", side_effect=lambda key: store.get(key)), \
              patch.object(bot.gs, "set_config", side_effect=fake_set):
+            bot.gs.save_classops_content_override(
+                "2G3/10:5:26/lisan.pdf",
+                no_submission_needed=True,
+            )
             first = bot.gs.save_classops_assignment(
                 class_name="2g3",
                 lesson_date="2026-05-10",
@@ -1785,12 +1814,41 @@ class AgenticClaudeTests(unittest.TestCase):
                 non_submitted=[],
             )
             ledger = bot.gs.get_classops_ledger()
+            overrides = bot.gs.get_classops_content_overrides()
 
         assignments = ledger["classes"]["2G3"]["assignments"]
         self.assertEqual(len(assignments), 1)
         self.assertEqual(first["id"], second["id"])
         self.assertEqual(assignments[0]["non_submitted"], [])
         self.assertEqual(assignments[0]["tracking_mode"], "non_submission_list")
+        self.assertFalse(overrides["2G3/10:5:26/lisan.pdf"]["no_submission_needed"])
+
+    def test_classops_assignment_delete_by_source_path_removes_tracked_work(self):
+        store = {}
+
+        def fake_set(key, value):
+            store[key] = value
+
+        with patch.object(bot.gs, "get_config", side_effect=lambda key: store.get(key)), \
+             patch.object(bot.gs, "set_config", side_effect=fake_set):
+            bot.gs.save_classops_assignment(
+                class_name="2g3",
+                lesson_date="2026-05-10",
+                topic="Lisan",
+                folder="10:5:26",
+                source_path="2G3/10:5:26/lisan.pdf",
+                assignment_title="Latihan Lisan",
+                non_submitted=["Kumar Das"],
+            )
+            deleted = bot.gs.delete_classops_assignment(
+                class_name="2g3",
+                source_path="2G3/10:5:26/lisan.pdf",
+            )
+            ledger = bot.gs.get_classops_ledger()
+
+        self.assertTrue(deleted["deleted"])
+        self.assertEqual(deleted["deleted_count"], 1)
+        self.assertEqual(ledger["classes"]["2G3"]["assignments"], [])
 
     def test_classops_student_report_flags_missing_and_absent_followups(self):
         ledger = {
