@@ -139,6 +139,8 @@ _CLASSLIST_GRID_FIELDS = "properties(title),sheets(properties(sheetId,title),dat
 APP_NOTIFICATION_PUSH_BODY_LIMIT = max(240, min(1800, _int_env("HIRA_WEB_PUSH_BODY_LIMIT", 650)))
 APP_NOTIFICATION_SHEET = "AppNotifications"
 APP_NOTIFICATION_HEADERS = ["id", "kind", "title", "body", "created", "source", "seen_by", "archived"]
+MEMORY_LOG_SHEET = "MemoryLog"
+MEMORY_LOG_HEADERS = ["created", "category", "text", "source"]
 SCORE_STATUS_LABELS = {
     "AB": "absent",
     "VR": "valid reason",
@@ -4213,60 +4215,7 @@ DEFAULT_MEMORY = {
 }
 
 
-def _copy_memory(memory: dict) -> dict:
-    return {key: list(memory.get(key, [])) for key in DEFAULT_MEMORY}
-
-
-def _memory_cache_valid(now: float | None = None) -> bool:
-    if _MEMORY_CACHE_TTL_SECONDS <= 0:
-        return False
-    if _memory_cache.get("value") is None:
-        return False
-    return (now if now is not None else time.monotonic()) < float(_memory_cache.get("expires_at", 0.0) or 0.0)
-
-
-def _remember_memory_cache(memory: dict):
-    if _MEMORY_CACHE_TTL_SECONDS <= 0:
-        return
-    with _config_cache_lock:
-        _memory_cache["value"] = _copy_memory(memory)
-        _memory_cache["expires_at"] = time.monotonic() + _MEMORY_CACHE_TTL_SECONDS
-
-
-def get_memory() -> dict:
-    with _config_cache_lock:
-        if _memory_cache_valid():
-            return _copy_memory(_memory_cache.get("value") or {})
-    raw = get_config("assistant_memory")
-    if not raw:
-        memory = {k: list(v) for k, v in DEFAULT_MEMORY.items()}
-        _remember_memory_cache(memory)
-        return memory
-    try:
-        data = json.loads(raw)
-    except Exception:
-        memory = {k: list(v) for k, v in DEFAULT_MEMORY.items()}
-        _remember_memory_cache(memory)
-        return memory
-
-    memory = {k: list(v) for k, v in DEFAULT_MEMORY.items()}
-    for key, value in data.items():
-        if isinstance(value, list):
-            memory[key] = [str(item) for item in value if str(item).strip()]
-    _remember_memory_cache(memory)
-    return memory
-
-
-def set_memory(memory: dict):
-    clean = {}
-    for key in DEFAULT_MEMORY:
-        values = memory.get(key, [])
-        clean[key] = [str(item).strip() for item in values if str(item).strip()]
-    set_config("assistant_memory", json.dumps(clean, ensure_ascii=False))
-    _remember_memory_cache(clean)
-
-
-def add_memory(category: str, text: str) -> dict:
+def _normalise_memory_category(category: str) -> str:
     category = (category or "profile").lower().strip()
     aliases = {
         "preference": "preferences",
@@ -4313,10 +4262,151 @@ def add_memory(category: str, text: str) -> dict:
         "knowledge": "source_notes",
     }
     category = aliases.get(category, category)
-    if category not in DEFAULT_MEMORY:
-        category = "profile"
-    memory = get_memory()
+    return category if category in DEFAULT_MEMORY else "profile"
+
+
+def _copy_memory(memory: dict) -> dict:
+    return {key: list(memory.get(key, [])) for key in DEFAULT_MEMORY}
+
+
+def _memory_cache_valid(now: float | None = None) -> bool:
+    if _MEMORY_CACHE_TTL_SECONDS <= 0:
+        return False
+    if _memory_cache.get("value") is None:
+        return False
+    return (now if now is not None else time.monotonic()) < float(_memory_cache.get("expires_at", 0.0) or 0.0)
+
+
+def _remember_memory_cache(memory: dict):
+    if _MEMORY_CACHE_TTL_SECONDS <= 0:
+        return
+    with _config_cache_lock:
+        _memory_cache["value"] = _copy_memory(memory)
+        _memory_cache["expires_at"] = time.monotonic() + _MEMORY_CACHE_TTL_SECONDS
+
+
+def _is_sheets_read_quota_error(exc: Exception) -> bool:
+    text = str(exc)
+    return (
+        "RATE_LIMIT_EXCEEDED" in text
+        or ("Quota exceeded" in text and "Read requests" in text)
+        or "ReadRequestsPerMinutePerUser" in text
+        or "readrequests" in text.lower()
+    )
+
+
+def _ensure_memory_log_sheet():
+    try:
+        _sheets().spreadsheets().batchUpdate(
+            spreadsheetId=SHEET_ID,
+            body={"requests": [{"addSheet": {"properties": {"title": MEMORY_LOG_SHEET}}}]},
+        ).execute()
+    except Exception as exc:
+        if "already exists" not in str(exc).lower():
+            raise
+    _sheets().spreadsheets().values().update(
+        spreadsheetId=SHEET_ID,
+        range=f"{MEMORY_LOG_SHEET}!A1:D1",
+        valueInputOption="RAW",
+        body={"values": [MEMORY_LOG_HEADERS]},
+    ).execute()
+
+
+def _append_memory_log(category: str, text: str, source: str = "fallback") -> None:
+    row = [datetime.now(SGT).strftime("%Y-%m-%d %H:%M:%S %Z"), category, text, source]
+    try:
+        _sheets().spreadsheets().values().append(
+            spreadsheetId=SHEET_ID,
+            range=f"{MEMORY_LOG_SHEET}!A:D",
+            valueInputOption="RAW",
+            body={"values": [row]},
+        ).execute()
+    except Exception as exc:
+        if "Unable to parse range" not in str(exc) and "not found" not in str(exc).lower():
+            raise
+        _ensure_memory_log_sheet()
+        _sheets().spreadsheets().values().append(
+            spreadsheetId=SHEET_ID,
+            range=f"{MEMORY_LOG_SHEET}!A:D",
+            valueInputOption="RAW",
+            body={"values": [row]},
+        ).execute()
+
+
+def _merge_memory_log(memory: dict) -> dict:
+    try:
+        r = _sheets().spreadsheets().values().get(
+            spreadsheetId=SHEET_ID,
+            range=f"{MEMORY_LOG_SHEET}!A2:D",
+        ).execute()
+    except Exception as exc:
+        logger.debug(f"MemoryLog merge skipped: {exc}")
+        return memory
+    for row in r.get("values", []) or []:
+        if len(row) < 3:
+            continue
+        category = _normalise_memory_category(row[1])
+        item = str(row[2] or "").strip()
+        if item and item not in memory[category]:
+            memory[category].append(item)
+    return memory
+
+
+def get_memory() -> dict:
+    with _config_cache_lock:
+        if _memory_cache_valid():
+            return _copy_memory(_memory_cache.get("value") or {})
+    raw = get_config("assistant_memory")
+    if not raw:
+        memory = {k: list(v) for k, v in DEFAULT_MEMORY.items()}
+        memory = _merge_memory_log(memory)
+        _remember_memory_cache(memory)
+        return memory
+    try:
+        data = json.loads(raw)
+    except Exception:
+        memory = {k: list(v) for k, v in DEFAULT_MEMORY.items()}
+        memory = _merge_memory_log(memory)
+        _remember_memory_cache(memory)
+        return memory
+
+    memory = {k: list(v) for k, v in DEFAULT_MEMORY.items()}
+    for key, value in data.items():
+        if isinstance(value, list):
+            memory[key] = [str(item) for item in value if str(item).strip()]
+    memory = _merge_memory_log(memory)
+    _remember_memory_cache(memory)
+    return memory
+
+
+def set_memory(memory: dict):
+    clean = {}
+    for key in DEFAULT_MEMORY:
+        values = memory.get(key, [])
+        clean[key] = [str(item).strip() for item in values if str(item).strip()]
+    set_config("assistant_memory", json.dumps(clean, ensure_ascii=False))
+    _remember_memory_cache(clean)
+
+
+def add_memory(category: str, text: str) -> dict:
     item = text.strip()
+    category = _normalise_memory_category(category)
+    try:
+        memory = get_memory()
+    except Exception as exc:
+        if not item or not _is_sheets_read_quota_error(exc):
+            raise
+        try:
+            _append_memory_log(category, item, source="read_quota_fallback")
+        except Exception as append_exc:
+            raise RuntimeError(f"{exc}; MemoryLog fallback also failed: {append_exc}") from exc
+        with _config_cache_lock:
+            cached = _copy_memory(_memory_cache.get("value") or {})
+        memory = cached or {k: list(v) for k, v in DEFAULT_MEMORY.items()}
+        if item not in memory[category]:
+            memory[category].append(item)
+        _remember_memory_cache(memory)
+        return memory
     if item and item not in memory[category]:
         memory[category].append(item)
     set_memory(memory)

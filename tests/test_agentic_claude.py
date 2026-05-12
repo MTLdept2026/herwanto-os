@@ -5224,6 +5224,8 @@ class AgenticClaudeTests(unittest.TestCase):
 
             def get(self, spreadsheetId, range):
                 self.get_calls += 1
+                if str(range).startswith("MemoryLog!"):
+                    return Request({"values": []})
                 return Request({
                     "values": [[
                         "assistant_memory",
@@ -5261,10 +5263,56 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(first["profile"], ["My mum's name is Salwa."])
         self.assertEqual(second["profile"], ["My mum's name is Salwa."])
-        self.assertEqual(fake.values_api.get_calls, 1)
+        self.assertEqual(fake.values_api.get_calls, 2)
         self.assertEqual(fake.values_api.updates[0][0], "Config!B2")
         saved = json.loads(fake.values_api.updates[0][1]["values"][0][0])
         self.assertIn("Another durable fact.", saved["profile"])
+        bot.gs.invalidate_config_cache()
+
+    def test_add_memory_uses_memory_log_when_config_read_quota_is_capped(self):
+        class Request:
+            def __init__(self, payload=None):
+                self.payload = payload or {}
+
+            def execute(self):
+                return self.payload
+
+        class Values:
+            def __init__(self):
+                self.get_calls = 0
+                self.appends = []
+
+            def get(self, spreadsheetId, range):
+                self.get_calls += 1
+                raise RuntimeError("Quota exceeded for quota metric 'Read requests' reason: RATE_LIMIT_EXCEEDED")
+
+            def append(self, spreadsheetId, range, valueInputOption, body):
+                self.appends.append((range, body))
+                return Request()
+
+        class Sheets:
+            def __init__(self):
+                self.values_api = Values()
+
+            def spreadsheets(self):
+                return self
+
+            def values(self):
+                return self.values_api
+
+        fake = Sheets()
+        bot.gs.invalidate_config_cache()
+        with (
+            patch.object(bot.gs, "_sheets", return_value=fake),
+            patch.object(bot.gs, "_CONFIG_CACHE_TTL_SECONDS", 300),
+            patch.object(bot.gs, "_MEMORY_CACHE_TTL_SECONDS", 300),
+        ):
+            memory = bot.gs.add_memory("profile", "Quota fallback fact.")
+
+        self.assertEqual(fake.values_api.get_calls, 1)
+        self.assertEqual(fake.values_api.appends[0][0], "MemoryLog!A:D")
+        self.assertEqual(fake.values_api.appends[0][1]["values"][0][1:3], ["profile", "Quota fallback fact."])
+        self.assertIn("Quota fallback fact.", memory["profile"])
         bot.gs.invalidate_config_cache()
 
     def test_add_nudge_uses_redis_fallback_when_sheets_are_capped(self):
