@@ -191,6 +191,7 @@ git push -u origin main
    - `GOOGLE_SERVICE_ACCOUNT_JSON`
    - `GOOGLE_SHEET_ID`
    - `HIRA_ALLOWED_USER_IDS` with your numeric Telegram user ID(s)
+   - Optional but recommended for editing classlists as you: `GOOGLE_SHEETS_CLIENT_ID`, `GOOGLE_SHEETS_CLIENT_SECRET`, `GOOGLE_SHEETS_REFRESH_TOKEN`
    - Optional for editable generated Google Docs/Slides links: `GOOGLE_ARTIFACT_SHARE_EMAIL`
    - Optional for voice notes: `OPENAI_API_KEY`
    - Optional for Gmail: `GOOGLE_GMAIL_USER`
@@ -294,6 +295,33 @@ What's the NEA 4-day outlook?
 ```
 
 H.I.R.A fetches Singapore weather from NEA/MSS through data.gov.sg. If no area is specified, it defaults to Yishun for the latest 2-hour nowcast and includes the 24-hour general forecast.
+
+**Google Sheets user OAuth:**
+
+By default H.I.R.A uses the Google service account for Sheets. For classlists you personally can edit, configure user OAuth so H.I.R.A writes as your Google account instead:
+
+1. Google Cloud Console → APIs & Services → Library → enable **Google Sheets API**.
+2. APIs & Services → OAuth consent screen → add your Google account as a test user.
+3. APIs & Services → Credentials → Create credentials → OAuth client ID → **Desktop app**.
+4. Set these locally:
+```bash
+export GOOGLE_SHEETS_CLIENT_ID="..."
+export GOOGLE_SHEETS_CLIENT_SECRET="..."
+```
+5. Run:
+```bash
+python3 -m pip install -r requirements.txt
+GOOGLE_REFRESH_ENV=GOOGLE_SHEETS_REFRESH_TOKEN python3 scripts/get_gmail_refresh_token.py
+```
+6. Sign in with the Google account that can edit the classlist sheets.
+7. Add these Railway variables:
+```env
+GOOGLE_SHEETS_CLIENT_ID=...
+GOOGLE_SHEETS_CLIENT_SECRET=...
+GOOGLE_SHEETS_REFRESH_TOKEN=...
+```
+
+When `GOOGLE_SHEETS_REFRESH_TOKEN` is present, H.I.R.A uses user OAuth for Sheets and falls back to the service account only when that token is absent.
 
 Gmail support is optional. It requires the Gmail API and delegated access for `GOOGLE_GMAIL_USER`; for ordinary Gmail accounts this is not as simple as Calendar/Sheets service-account sharing. If Gmail is not configured, the commands fail gracefully.
 

@@ -118,6 +118,25 @@ class AgenticClaudeTests(unittest.TestCase):
     def setUp(self):
         bot.gs._invalidate_classlist_cache()
 
+    def test_google_ok_accepts_user_oauth_sheets_credentials(self):
+        env = {
+            "GOOGLE_SHEET_ID": "sheet-id",
+            "GOOGLE_SERVICE_ACCOUNT_JSON": "",
+            "GOOGLE_SHEETS_CLIENT_ID": "client-id",
+            "GOOGLE_SHEETS_CLIENT_SECRET": "client-secret",
+            "GOOGLE_SHEETS_REFRESH_TOKEN": "refresh-token",
+        }
+
+        with patch.dict(os.environ, env, clear=False):
+            self.assertTrue(bot.google_ok())
+            self.assertEqual(bot.gs._sheets_auth_mode(), "user_oauth")
+
+    def test_google_ok_still_accepts_service_account_sheets_credentials(self):
+        with patch.dict(os.environ, {"GOOGLE_SHEET_ID": "sheet-id", "GOOGLE_SERVICE_ACCOUNT_JSON": "encoded"}, clear=False):
+            with patch.object(bot.gs, "_user_google_oauth_configured", return_value=False):
+                self.assertTrue(bot.google_ok())
+                self.assertEqual(bot.gs._sheets_auth_mode(), "service_account")
+
     def test_tuesday_even_timetable_uses_hardcoded_source(self):
         result = bot._timetable_for_lookup("Tuesday", "Even")
 
@@ -220,6 +239,38 @@ class AgenticClaudeTests(unittest.TestCase):
         )
 
         self.assertEqual(forced, "fill_mtl_percentage_scores")
+
+    def test_retry_after_percentage_failure_forces_percentage_tool_from_context(self):
+        messages = [
+            {"role": "user", "content": "Fill in the percentage column of 2G3 WA2 pls"},
+            {"role": "assistant", "content": "Failed to fill MTL percentage scores: Google Sheets denied write access."},
+            {"role": "user", "content": "Try again"},
+        ]
+        forced = bot._forced_tool_for_current_turn(
+            messages,
+            [{"name": "fill_mtl_percentage_scores"}, {"name": "get_mtl_classlists"}],
+        )
+
+        self.assertEqual(forced, "fill_mtl_percentage_scores")
+
+    def test_pwa_retry_after_classlist_failure_is_not_quick_chat(self):
+        messages = [
+            {"role": "user", "content": "Fill in the percentage column of 2G3 WA2 pls"},
+            {"role": "assistant", "content": "Failed to fill MTL percentage scores: permission denied."},
+        ]
+
+        routed_quick = asyncio.run(bot.should_route_quick_pwa_chat(messages, "Try again"))
+
+        self.assertFalse(routed_quick)
+
+    def test_pwa_retry_after_classlist_failure_gets_classlist_tools(self):
+        tools = bot.pwa_tools_for_message(
+            "Try again",
+            recent_context="Fill in the percentage column of 2G3 WA2 pls\nFailed to fill MTL percentage scores.",
+        )
+        names = {tool["name"] for tool in tools}
+
+        self.assertIn("fill_mtl_percentage_scores", names)
 
     def test_score_analysis_request_forces_analysis_tool(self):
         forced = bot._forced_tool_for_text(

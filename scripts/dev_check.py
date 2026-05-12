@@ -23,6 +23,10 @@ COMPILE_TARGETS = [
     "dropbox_service.py",
 ]
 CRITICAL_UNIT_TESTS = [
+    "tests.test_agentic_claude.AgenticClaudeTests.test_google_ok_accepts_user_oauth_sheets_credentials",
+    "tests.test_agentic_claude.AgenticClaudeTests.test_retry_after_percentage_failure_forces_percentage_tool_from_context",
+    "tests.test_agentic_claude.AgenticClaudeTests.test_pwa_retry_after_classlist_failure_is_not_quick_chat",
+    "tests.test_agentic_claude.AgenticClaudeTests.test_pwa_retry_after_classlist_failure_gets_classlist_tools",
     "tests.test_agentic_claude.AgenticClaudeTests.test_medical_leave_context_becomes_teaching_memory",
     "tests.test_agentic_claude.AgenticClaudeTests.test_medical_leave_archives_active_school_calendar_notifications",
     "tests.test_agentic_claude.AgenticClaudeTests.test_not_on_duty_blocks_cca_calendar_reminder",

@@ -5,16 +5,31 @@ import os
 from google_auth_oauthlib.flow import InstalledAppFlow
 
 
-SCOPES = [
+GMAIL_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.compose",
+]
+SHEETS_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
 ]
 
 
 def main():
-    output_name = os.environ.get("GOOGLE_GMAIL_REFRESH_ENV", "GOOGLE_GMAIL_REFRESH_TOKEN").strip()
+    output_name = os.environ.get("GOOGLE_REFRESH_ENV", os.environ.get("GOOGLE_GMAIL_REFRESH_ENV", "GOOGLE_GMAIL_REFRESH_TOKEN")).strip()
     work_token_requested = output_name == "GOOGLE_WORK_GMAIL_REFRESH_TOKEN"
-    if work_token_requested:
+    sheets_token_requested = output_name in {"GOOGLE_SHEETS_REFRESH_TOKEN", "GOOGLE_USER_REFRESH_TOKEN"}
+    if sheets_token_requested:
+        client_id = (
+            os.environ.get("GOOGLE_SHEETS_CLIENT_ID", "").strip()
+            or os.environ.get("GOOGLE_USER_CLIENT_ID", "").strip()
+            or os.environ.get("GOOGLE_GMAIL_CLIENT_ID", "").strip()
+        )
+        client_secret = (
+            os.environ.get("GOOGLE_SHEETS_CLIENT_SECRET", "").strip()
+            or os.environ.get("GOOGLE_USER_CLIENT_SECRET", "").strip()
+            or os.environ.get("GOOGLE_GMAIL_CLIENT_SECRET", "").strip()
+        )
+    elif work_token_requested:
         client_id = (
             os.environ.get("GOOGLE_WORK_GMAIL_CLIENT_ID", "").strip()
             or os.environ.get("GOOGLE_GMAIL_CLIENT_ID", "").strip()
@@ -28,7 +43,7 @@ def main():
         client_secret = os.environ.get("GOOGLE_GMAIL_CLIENT_SECRET", "").strip()
     if not client_id or not client_secret:
         raise SystemExit(
-            "Set GOOGLE_GMAIL_CLIENT_ID/SECRET first, or GOOGLE_WORK_GMAIL_CLIENT_ID/SECRET for a work token."
+            "Set GOOGLE_GMAIL_CLIENT_ID/SECRET first, or the matching GOOGLE_*_CLIENT_ID/SECRET for this token."
         )
 
     client_config = {
@@ -40,7 +55,8 @@ def main():
             "redirect_uris": ["http://localhost"],
         }
     }
-    flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
+    scopes = SHEETS_SCOPES if sheets_token_requested else GMAIL_SCOPES
+    flow = InstalledAppFlow.from_client_config(client_config, scopes)
     creds = flow.run_local_server(
         host="localhost",
         port=0,

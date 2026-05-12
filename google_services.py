@@ -36,6 +36,10 @@ SCOPES = [
     'https://www.googleapis.com/auth/drive.file',
 ]
 
+SHEETS_SCOPES = [
+    'https://www.googleapis.com/auth/spreadsheets',
+]
+
 GMAIL_SCOPES = [
     'https://www.googleapis.com/auth/gmail.readonly',
     'https://www.googleapis.com/auth/gmail.compose',
@@ -178,6 +182,46 @@ def _service_account_email() -> str:
         return ""
 
 
+def _oauth_value(*names: str) -> str:
+    for name in names:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _user_google_oauth_configured() -> bool:
+    return bool(
+        _oauth_value("GOOGLE_SHEETS_REFRESH_TOKEN", "GOOGLE_USER_REFRESH_TOKEN")
+        and _oauth_value("GOOGLE_SHEETS_CLIENT_ID", "GOOGLE_USER_CLIENT_ID", "GOOGLE_GMAIL_CLIENT_ID")
+        and _oauth_value("GOOGLE_SHEETS_CLIENT_SECRET", "GOOGLE_USER_CLIENT_SECRET", "GOOGLE_GMAIL_CLIENT_SECRET")
+    )
+
+
+def _user_google_creds(scopes=None):
+    refresh_token = _oauth_value("GOOGLE_SHEETS_REFRESH_TOKEN", "GOOGLE_USER_REFRESH_TOKEN")
+    client_id = _oauth_value("GOOGLE_SHEETS_CLIENT_ID", "GOOGLE_USER_CLIENT_ID", "GOOGLE_GMAIL_CLIENT_ID")
+    client_secret = _oauth_value("GOOGLE_SHEETS_CLIENT_SECRET", "GOOGLE_USER_CLIENT_SECRET", "GOOGLE_GMAIL_CLIENT_SECRET")
+    if not (refresh_token and client_id and client_secret):
+        raise EnvironmentError("Google user OAuth credentials are not configured")
+    return Credentials(
+        None,
+        refresh_token=refresh_token,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=client_id,
+        client_secret=client_secret,
+        scopes=scopes or SHEETS_SCOPES,
+    )
+
+
+def _sheets_auth_mode() -> str:
+    return "user_oauth" if _user_google_oauth_configured() else "service_account"
+
+
+def google_sheets_configured() -> bool:
+    return bool(os.environ.get("GOOGLE_SHEET_ID", "") and (os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "") or _user_google_oauth_configured()))
+
+
 def _thread_cached_service(key: tuple, builder):
     cache = getattr(_thread_local, "google_services", None)
     if cache is None:
@@ -197,7 +241,9 @@ def _cal():
 
 
 def _sheets():
-    return _thread_cached_service(("sheets",), lambda: _build_service("sheets", "v4", _creds()))
+    mode = _sheets_auth_mode()
+    creds_builder = _user_google_creds if mode == "user_oauth" else _creds
+    return _thread_cached_service(("sheets", mode), lambda: _build_service("sheets", "v4", creds_builder(SHEETS_SCOPES)))
 
 
 def _drive():
@@ -1018,7 +1064,13 @@ def _classlist_permission_message(exc: HttpError, spreadsheet_ids: list[str], ta
         if spreadsheet_id:
             links.append(f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit")
     link_text = f" Target sheet: {'; '.join(links)}." if links else ""
-    account_text = f" Share it with {email} as Editor." if email else " Share it with H.I.R.A's Google service account as Editor."
+    if _sheets_auth_mode() == "user_oauth":
+        account_text = (
+            " H.I.R.A is using Google user OAuth for Sheets. Confirm that OAuth account can edit the sheet "
+            "and that the refresh token was granted the Google Sheets scope."
+        )
+    else:
+        account_text = f" Share it with {email} as Editor." if email else " Share it with H.I.R.A's Google service account as Editor."
     protected_hint = " If Editor access is already enabled, check whether the tab or WA/% columns are protected for only selected users."
     return (
         f"Google Sheets denied write access while filling {target_text}."

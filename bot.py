@@ -1600,7 +1600,7 @@ GMAIL_DRAFT_TOOL = {
 # ─── HELPERS ─────────────────────────────────────────────────────────────────
 
 def google_ok():
-    return bool(os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON") and os.environ.get("GOOGLE_SHEET_ID"))
+    return gs.google_sheets_configured()
 
 
 def build_classops_status_summary(now: datetime | None = None) -> dict:
@@ -6209,6 +6209,13 @@ def _forced_tool_for_current_turn(messages: list[dict], tools: list[dict]) -> st
         if isinstance(item.get("content"), str)
     ).lower()
     if (
+        "fill_mtl_percentage_scores" in available
+        and re.search(r"\b(?:try again|retry|again|nothing filled|not filled|didn'?t fill|did not fill|still blank|same permission|permissions?)\b", clean)
+        and re.search(r"\b(?:classlist|class list|2g3|3g3|1g2|wa1|wa2|fa1|fa2|percentage|percent|%)\b", recent_context)
+        and re.search(r"\b(?:fill|percentage|percent|%)\b", recent_context)
+    ):
+        return "fill_mtl_percentage_scores"
+    if (
         "get_liverpool_brief" in available
         and re.search(r"\b(match|result|recap|score|home|away|host(?:ed)?|fixture|game|details?|what was it like)\b", clean)
         and re.search(r"\b(liverpool|lfc|man utd|man united|manchester united|premier league|epl)\b", recent_context)
@@ -7542,6 +7549,10 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
     text = (text or "").lower()
     context = (recent_context or "").lower()
     combined = f"{context}\n{text}"
+    classlist_followup = (
+        re.search(r"\b(?:try again|retry|again|nothing filled|not filled|didn'?t fill|did not fill|still blank|same permission|permissions?)\b", text)
+        and re.search(r"\b(?:classlist|class list|2g3|3g3|1g2|wa1|wa2|fa1|fa2|percentage|percent|%)\b", context)
+    )
     tools: list[dict] = []
 
     def add(*items):
@@ -7553,7 +7564,7 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         add(GMAIL_BRIEF_TOOL, GMAIL_DRAFT_TOOL)
     if re.search(r"\b(timetable|lesson|period|odd week|even week|school week)\b", text):
         add(TIMETABLE_TOOL, WEEK_TYPE_TOOL)
-    if re.search(r"\b(classlist|class list|students?|names?|my classes|mtl group|grouping|1 flagship|2g3|3g3|4nt|4nt bml|scores?|marks?|results?|wa1|wa2|fa1|fa2|prelim|eoy|weighted assessment|formative assessment|exam|assessment|percentage|percent|%|analyse|analyze|analysis|graph|graphs|chart|charts|trend|mean|median|average|pass rate|underperforming|watchlist|most improved|progress|drop|dropped)\b", text):
+    if classlist_followup or re.search(r"\b(classlist|class list|students?|names?|my classes|mtl group|grouping|1 flagship|2g3|3g3|4nt|4nt bml|scores?|marks?|results?|wa1|wa2|fa1|fa2|prelim|eoy|weighted assessment|formative assessment|exam|assessment|percentage|percent|%|analyse|analyze|analysis|graph|graphs|chart|charts|trend|mean|median|average|pass rate|underperforming|watchlist|most improved|progress|drop|dropped)\b", text):
         add(CLASSLIST_TOOL, ANALYZE_MTL_SCORES_TOOL, GENERATE_MTL_TREND_REPORT_TOOL, UPDATE_CLASS_SCORE_TOOL, FILL_PERCENTAGE_SCORES_TOOL, TIMETABLE_TOOL)
     if re.search(r"\b(calendar|schedule|agenda|today|tomorrow|week|meeting|event|appointment|duty|training|match|cca|what'?s on)\b", text):
         add(CONTEXT_TOOL, CALENDAR_TOOL, DELETE_CALENDAR_TOOL, AVAILABILITY_SLOT_TOOL, REMINDER_TOOL, TIMETABLE_TOOL)
@@ -7731,13 +7742,18 @@ def _obvious_quick_chat(text: str) -> bool:
 
 async def should_route_quick_pwa_chat(messages: list[dict], message: str) -> bool:
     text = (message or "").strip()
-    if not text or len(text) > 120 or _looks_tool_heavy(text):
-        return False
     recent_context = "\n".join(
         str(item.get("content", ""))[:500]
         for item in messages[-4:]
         if isinstance(item.get("content"), str)
     ).lower()
+    if (
+        re.search(r"\b(?:try again|retry|again|nothing filled|not filled|didn'?t fill|did not fill|still blank|same permission|permissions?)\b", text, re.I)
+        and re.search(r"\b(?:classlist|class list|2g3|3g3|1g2|wa1|wa2|fa1|fa2|percentage|percent|%)\b", recent_context)
+    ):
+        return False
+    if not text or len(text) > 120 or _looks_tool_heavy(text):
+        return False
     if (
         re.search(r"\b(match|result|recap|score|home|away|host(?:ed)?|fixture|game|details?)\b", text, re.I)
         and re.search(r"\b(liverpool|lfc|man utd|man united|manchester united|f1|formula 1|grand prix)\b", recent_context)
