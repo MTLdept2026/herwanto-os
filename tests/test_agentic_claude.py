@@ -3709,6 +3709,44 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(review["buckets"]["source_notes"]["count"], 2)
         self.assertEqual(review["buckets"]["source_notes"]["recent"], ["Source note B"])
 
+    def test_system_prompt_keeps_plain_profile_memories_visible(self):
+        fake_memory = {category: [] for category in bot.MEMORY_DISPLAY_CATEGORIES}
+        fake_memory["profile"] = [f"profile fact {index}" for index in range(9)]
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "get_memory", return_value=fake_memory),
+        ):
+            prompt = bot.SYSTEM_PROMPT()
+
+        self.assertIn("profile fact 0", prompt)
+        self.assertIn("profile fact 8", prompt)
+
+    def test_profile_memory_surfaces_on_single_keyword_overlap(self):
+        fake_memory = {category: [] for category in bot.MEMORY_DISPLAY_CATEGORIES}
+        fake_memory["profile"] = ["My mum's name is Salwa."]
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "get_memory", return_value=fake_memory),
+        ):
+            recalled = bot.retrieve_relevant_memory("who is my mum", limit=1)
+
+        self.assertEqual(recalled[0]["category"], "profile")
+        self.assertIn("Salwa", recalled[0]["text"])
+
+    def test_memory_write_invalidates_system_prompt_cache(self):
+        bot._SYSTEM_PROMPT_CACHE["key"] = "cached"
+        bot._SYSTEM_PROMPT_CACHE["value"] = "old prompt"
+
+        with patch.object(bot.gs, "add_memory", return_value={"profile": ["Remember me."]}) as add_memory:
+            result = bot._add_memory("profile", "Remember me.")
+
+        add_memory.assert_called_once_with("profile", "Remember me.")
+        self.assertEqual(result, {"profile": ["Remember me."]})
+        self.assertIsNone(bot._SYSTEM_PROMPT_CACHE["key"])
+        self.assertIsNone(bot._SYSTEM_PROMPT_CACHE["value"])
+
     def test_relevant_memory_retrieval_prioritises_corrections(self):
         fake_memory = {category: [] for category in bot.MEMORY_DISPLAY_CATEGORIES}
         fake_memory["correction_ledger"] = [

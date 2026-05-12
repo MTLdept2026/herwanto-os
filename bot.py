@@ -84,6 +84,35 @@ claude = Anthropic(api_key=ANTHROPIC_API_KEY or "missing-key")
 async_claude = AsyncAnthropic(api_key=ANTHROPIC_API_KEY or "missing-key")
 _SYSTEM_PROMPT_CACHE = {"key": None, "value": None}
 
+
+def _invalidate_system_prompt_cache() -> None:
+    _SYSTEM_PROMPT_CACHE["key"] = None
+    _SYSTEM_PROMPT_CACHE["value"] = None
+
+
+def _add_memory(category: str, text: str) -> dict:
+    memory = gs.add_memory(category, text)
+    _invalidate_system_prompt_cache()
+    return memory
+
+
+def _clear_memory() -> dict:
+    memory = gs.clear_memory()
+    _invalidate_system_prompt_cache()
+    return memory
+
+
+def _add_source_note(entry: dict) -> dict:
+    note = gs.add_source_note(entry)
+    _invalidate_system_prompt_cache()
+    return note
+
+
+def _add_topic_profile(entry: dict) -> dict:
+    profile = gs.add_topic_profile(entry)
+    _invalidate_system_prompt_cache()
+    return profile
+
 # ─── TELEGRAM USER AUTHORIZATION ─────────────────────────────────────────────
 _raw_allowed = os.environ.get("HIRA_ALLOWED_USER_IDS", "").strip()
 TELEGRAM_OPEN_DEV_MODE = os.environ.get("HIRA_TELEGRAM_OPEN_DEV_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
@@ -272,6 +301,27 @@ MEMORY_DISPLAY_CATEGORIES = (
     "self_reflections",
     "source_notes",
 )
+
+# 2026-05-12: lifted from inside SYSTEM_PROMPT so /memcheck can render the same
+# numbers without drift. None means "always show all". See SYSTEM_PROMPT for context.
+MEMORY_PROMPT_LIMITS: dict[str, int | None] = {
+    "correction_ledger":  None,
+    "constraints":        None,
+    "self_reflections":   50,
+    "preferences":        60,
+    "topic_profiles":     40,
+    "people":             50,
+    "teaching":           40,
+    "profile":            60,
+    "business":           30,
+    "projects":           30,
+    "sports":             30,
+    "places":             30,
+    "source_notes":       20,
+    "recent_summaries":   15,
+    "templates":          20,
+    "files":              15,
+}
 
 def get_history(user_id):
     r = _get_redis()
@@ -583,28 +633,34 @@ def retrieve_relevant_memory(text: str, limit: int = 6) -> list[dict]:
         logger.debug(f"Relevant memory retrieval failed: {exc}")
         return []
 
+    # 2026-05-12: bumped profile (1→5) and people (3→5) priorities. Both store the
+    # arbitrary "remember X about me/family" facts that /remember defaults to, and the
+    # old weights meant a single keyword overlap (score 6) failed the threshold of 8.
+    # Result: bot would "forget" personal facts even though they were in the Sheet.
     priority = {
         "correction_ledger": 12,
         "constraints": 10,
         "self_reflections": 8,
         "preferences": 7,
         "topic_profiles": 7,
+        "profile": 5,    # was 1 — default /remember bucket, must surface on single keyword overlap
+        "people": 5,     # was 3 — names/relationships need to surface easily
         "recent_summaries": 5,
         "projects": 5,
         "teaching": 4,
         "business": 4,
         "sports": 4,
         "source_notes": 4,
-        "people": 3,
         "places": 2,
         "files": 1,
         "templates": 1,
-        "profile": 1,
     }
     scored = []
     for category in MEMORY_DISPLAY_CATEGORIES:
         items = list(memory.get(category, []))
-        for recency, item in enumerate(items[-60:]):
+        # 2026-05-12: scan last 200 items per category (was 60) so older durable facts
+        # remain retrievable. Sheets-backed memory; cheap to walk.
+        for recency, item in enumerate(items[-200:]):
             rendered = _clip_memory_text(_memory_item_text(item), 420)
             lower = rendered.lower()
             overlap = sum(1 for token in tokens if token in lower)
@@ -622,7 +678,11 @@ def retrieve_relevant_memory(text: str, limit: int = 6) -> list[dict]:
             ):
                 intent_bonus = 4
             score = priority.get(category, 0) + (overlap * 5) + intent_bonus + min(3, recency // 12)
-            if score >= 8 and (overlap or intent_bonus or category in {"constraints", "correction_ledger"}):
+            # 2026-05-12: threshold lowered 8→6 so a single keyword overlap on a boosted
+            # category (profile/people=5, +5 overlap = 10; ✓) or on preferences/topic_profiles
+            # (=7, +5 = 12; ✓) reliably surfaces relevant memory. Old threshold blocked profile
+            # entries entirely on single overlap (1+5=6, failed >=8).
+            if score >= 6 and (overlap or intent_bonus or category in {"constraints", "correction_ledger"}):
                 scored.append({
                     "category": category,
                     "text": rendered,
@@ -757,27 +817,8 @@ def SYSTEM_PROMPT():
     if google_ok():
         try:
             memory = gs.get_memory()
-            # Priority-weighted limits: high-signal buckets are never clipped to 8.
-            # Corrections and constraints are critical — always shown in full (up to cap).
-            # Low-signal buckets like files and summaries are trimmed more aggressively.
-            MEMORY_PROMPT_LIMITS: dict[str, int | None] = {
-                "correction_ledger":  20,   # always show all corrections — HIRA's primary learning signal
-                "constraints":        None,  # always show all — immutable rules Herwanto has set
-                "self_reflections":   15,   # HIRA's own learning journal
-                "preferences":        12,
-                "topic_profiles":     10,
-                "people":             10,
-                "teaching":           10,
-                "profile":             8,
-                "business":            8,
-                "projects":            8,
-                "sports":              8,
-                "places":              6,
-                "source_notes":        6,
-                "recent_summaries":    5,
-                "templates":           5,
-                "files":               4,   # low-priority in prompt; accessible via tool
-            }
+            # Limits live at module scope (MEMORY_PROMPT_LIMITS) so /memcheck can
+            # render them without duplication.
             memory_lines = []
             for category in MEMORY_DISPLAY_CATEGORIES:
                 items = memory.get(category, [])
@@ -1884,7 +1925,7 @@ def build_cca_schedule_brief(target_date: str = "") -> str:
             "1L5FGME5itmc3vknwL0xSsIrz4qJ3n6z1YfxffgeB3nU",
             "1961438111",
         )
-        gs.add_memory(
+        _add_memory(
             "teaching",
             (
                 "cca-schedule-source: Use Herwanto's CCA schedule sheet as the canonical CCA duty/training source: "
@@ -2099,7 +2140,7 @@ def _summarise_conversation_to_memory(history: list[dict]) -> None:
         summary = (summary_resp.content[0].text or "").strip()
         if summary:
             date_str = datetime.now(SGT).strftime("%Y-%m-%d")
-            gs.add_memory("recent_summaries", f"{date_str}: {summary}")
+            _add_memory("recent_summaries", f"{date_str}: {summary}")
             logger.info(f"Conversation summary saved to recent_summaries: {summary[:80]}")
     except Exception as exc:
         logger.warning(f"Conversation summarisation failed: {exc}")
@@ -2130,7 +2171,7 @@ def _remember_uploaded_file(kind: str, file_id: str, caption: str, extracted_sum
         parts.append(f"caption={_clip_memory_text(caption, 240)}")
     if extracted_summary:
         parts.append(f"extracted={_clip_memory_text(extracted_summary, 900)}")
-    gs.add_memory("files", " | ".join(parts))
+    _add_memory("files", " | ".join(parts))
 
 def build_context_snapshot(days: int = 7) -> str:
     days = max(1, min(int(days or 7), 14))
@@ -4195,7 +4236,7 @@ def absorb_ownership_signal(text: str) -> bool:
     if not item:
         return False
     try:
-        gs.add_topic_profile(ownership_topic_profile(item, source_text=text))
+        _add_topic_profile(ownership_topic_profile(item, source_text=text))
         return True
     except Exception as exc:
         logger.warning(f"Ownership signal capture failed: {exc}")
@@ -4281,7 +4322,7 @@ def absorb_relief_context(text: str, now: datetime | None = None) -> bool:
         existing = "\n".join(str(item) for item in memory.get("teaching", []) if item)
         if marker in existing:
             return True
-        gs.add_memory(
+        _add_memory(
             "teaching",
             (
                 f"{marker}: Herwanto said his lessons/classes are covered by relief on {target.isoformat()}. "
@@ -4406,7 +4447,7 @@ def absorb_duty_state_context(text: str, now: datetime | None = None) -> bool:
         memory = gs.get_memory()
         existing = "\n".join(str(item) for item in memory.get("teaching", []) if item)
         if marker not in existing:
-            gs.add_memory(
+            _add_memory(
                 "teaching",
                 (
                     f"{marker}: Herwanto said he is not on CCA duty on {target.isoformat()}. "
@@ -4445,7 +4486,7 @@ def absorb_day_state_context(text: str, now: datetime | None = None) -> bool:
         existing = "\n".join(str(item) for item in memory.get("teaching", []) if item)
         if marker in existing and reason.lower() in existing.lower():
             return True
-        gs.add_memory(
+        _add_memory(
             "teaching",
             (
                 f"{marker}: Herwanto said he is away from work/school on {target.isoformat()} because {reason}. "
@@ -4563,7 +4604,7 @@ def absorb_source_citation_preference(text: str) -> bool:
         existing = "\n".join(str(item) for item in memory.get("constraints", []) if item)
         if SOURCE_CITATION_PREF_PREFIX in existing:
             return True
-        gs.add_memory("constraints", rule)
+        _add_memory("constraints", rule)
         return True
     except Exception as exc:
         logger.warning(f"Source citation preference capture failed: {exc}")
@@ -4715,7 +4756,7 @@ def sync_f1_calendar_to_memory_and_calendar(now: datetime | None = None) -> dict
         return result
 
     try:
-        gs.add_memory("sports", _f1_calendar_memory_text(races, now=current))
+        _add_memory("sports", _f1_calendar_memory_text(races, now=current))
         result["memory_saved"] = True
     except Exception as exc:
         result["errors"].append(f"Memory write failed: {exc}")
@@ -7145,7 +7186,7 @@ async def doc_cmd(update, context):
         drive_file = _upload_artifact_if_possible(str(path), "doc", category="Documents")
         if google_ok():
             link_note = f" | google_doc={drive_file.get('webViewLink', '')}" if drive_file else ""
-            gs.add_memory("files", f"Generated DOCX {path.name} on {datetime.now(SGT).strftime('%Y-%m-%d %H:%M SGT')} | prompt={_clip_memory_text(instructions, 240)}{link_note}")
+            _add_memory("files", f"Generated DOCX {path.name} on {datetime.now(SGT).strftime('%Y-%m-%d %H:%M SGT')} | prompt={_clip_memory_text(instructions, 240)}{link_note}")
         with path.open("rb") as artifact_file:
             await update.message.reply_document(
                 document=artifact_file,
@@ -7173,7 +7214,7 @@ async def slides_cmd(update, context):
         drive_file = _upload_artifact_if_possible(str(path), "slides", category="Slides")
         if google_ok():
             link_note = f" | google_slides={drive_file.get('webViewLink', '')}" if drive_file else ""
-            gs.add_memory("files", f"Generated PPTX {path.name} on {datetime.now(SGT).strftime('%Y-%m-%d %H:%M SGT')} | prompt={_clip_memory_text(instructions, 240)}{link_note}")
+            _add_memory("files", f"Generated PPTX {path.name} on {datetime.now(SGT).strftime('%Y-%m-%d %H:%M SGT')} | prompt={_clip_memory_text(instructions, 240)}{link_note}")
         with path.open("rb") as artifact_file:
             await update.message.reply_document(
                 document=artifact_file,
@@ -7198,7 +7239,7 @@ async def template_cmd(update, context):
         return
     try:
         name, notes = [p.strip() for p in text.split("|", 1)]
-        gs.add_memory("templates", f"{name}: {notes}")
+        _add_memory("templates", f"{name}: {notes}")
         await update.message.reply_text(f"Template remembered: {name}")
     except Exception as e:
         await update.message.reply_text(f"Template memory error: {e}")
@@ -7490,7 +7531,7 @@ async def remember_cmd(update, context):
         inferred_week_type, inferred_week_number = _school_week_from_text(memory_text)
         if inferred_week_type:
             _set_current_school_week(inferred_week_type, inferred_week_number)
-        gs.add_memory(category, memory_text)
+        _add_memory(category, memory_text)
         if inferred_week_type:
             number_note = f" Week {inferred_week_number}," if inferred_week_number else ""
             await update.message.reply_text(
@@ -7511,6 +7552,70 @@ async def memory_cmd(update, context):
     except Exception as e:
         await update.message.reply_text(f"Memory error: {e}")
 
+
+async def memcheck_cmd(update, context):
+    """Diagnostic: shows what's stored vs. what Claude actually sees in the prompt.
+
+    Added 2026-05-12 after diagnosing that older memories were silently dropped from
+    Claude's view (truncation limits + retrieval thresholds) even though they were
+    persisted in the Sheet. Run this when the bot "seems to forget" something to verify
+    where the gap is: storage, prompt-window, or retrieval.
+    """
+    if not google_ok():
+        await update.message.reply_text("Google not connected — cannot read assistant_memory from Sheet.")
+        return
+    try:
+        memory = gs.get_memory()
+    except Exception as e:
+        await update.message.reply_text(
+            f"Failed to read memory from Sheet: {e}\n\n"
+            "This means /remember writes are also failing. Check service account access to GOOGLE_SHEET_ID."
+        )
+        return
+
+    total_stored = sum(len(memory.get(cat, [])) for cat in MEMORY_DISPLAY_CATEGORIES)
+    total_in_prompt = 0
+    lines = [
+        "Memory diagnostic",
+        "Source of truth: Google Sheet -> Config tab -> key assistant_memory.",
+        f"Total items stored: {total_stored}",
+        "",
+        "Per-category: stored / shown to Claude / limit",
+    ]
+    hidden_categories: list[str] = []
+    for category in MEMORY_DISPLAY_CATEGORIES:
+        items = memory.get(category, []) or []
+        stored = len(items)
+        limit = MEMORY_PROMPT_LIMITS.get(category, 8)
+        shown = stored if limit is None else min(stored, limit)
+        total_in_prompt += shown
+        limit_label = "all" if limit is None else str(limit)
+        marker = ""
+        if stored > 0 and shown < stored:
+            marker = f"  WARNING: {stored - shown} hidden from prompt"
+            hidden_categories.append(category)
+        if stored == 0:
+            continue
+        lines.append(f"- {category}: {stored} / {shown} / {limit_label}{marker}")
+
+    lines.append("")
+    lines.append(f"Total shown to Claude per chat: {total_in_prompt} of {total_stored}.")
+    if hidden_categories:
+        lines.append(
+            "\nSome categories have items the prompt does not include. They are still "
+            "retrievable on-demand via the relevance retriever when your message overlaps "
+            f"keywords. Hidden: {', '.join(hidden_categories)}."
+        )
+    else:
+        lines.append("\nEvery stored memory currently fits in Claude's prompt window.")
+
+    lines.append(
+        "\nTo verify a fresh /remember landed: run /remember <a fact>, then /memcheck. "
+        "The count for the matched category should go up by 1."
+    )
+
+    await update.message.reply_text("\n".join(lines))
+
 async def forget_cmd(update, context):
     if not google_ok():
         await update.message.reply_text("Google not connected.")
@@ -7528,7 +7633,7 @@ async def forget_cmd(update, context):
             return
         _FORGET_CONFIRM_PENDING.pop(user_id, None)
         try:
-            gs.clear_memory()
+            _clear_memory()
             await update.message.reply_text("Assistant memory cleared. All buckets wiped.")
         except Exception as e:
             await update.message.reply_text(f"Memory error: {e}")
@@ -8290,7 +8395,7 @@ async def _execute_tool(name: str, inp: dict) -> str:
         try:
             entry = dict(inp)
             entry["date"] = datetime.now(SGT).strftime("%Y-%m-%d %H:%M SGT")
-            note = gs.add_source_note(entry)
+            note = _add_source_note(entry)
             durability = note.get("durability") or "stable"
             source = f" from {note['source']}" if note.get("source") else ""
             return f"Stored source note for {note['topic']}{source} ({durability})."
@@ -8416,7 +8521,7 @@ async def _execute_tool(name: str, inp: dict) -> str:
             if inferred_week_type:
                 _set_current_school_week(inferred_week_type, inferred_week_number)
                 week_note = f" Also set current timetable week to {inferred_week_type.upper()}."
-            gs.add_memory(inp.get("category", "profile"), inp["text"])
+            _add_memory(inp.get("category", "profile"), inp["text"])
             return f"Remembered under {inp.get('category', 'profile')}: {inp['text']}.{week_note}"
         except Exception as e:
             try:
@@ -8431,7 +8536,7 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "create_topic_profile":
         try:
-            profile = gs.add_topic_profile(inp)
+            profile = _add_topic_profile(inp)
             track = ", ".join(profile.get("track") or []) or "general developments"
             live = ", ".join(profile.get("live_facts") or []) or "latest/current facts"
             return (
@@ -8635,7 +8740,7 @@ async def _execute_tool(name: str, inp: dict) -> str:
             drive_file = _upload_artifact_if_possible(str(path), "doc", category="Documents")
             if google_ok():
                 link_note = f" | google_doc={drive_file.get('webViewLink', '')}" if drive_file else ""
-                gs.add_memory("files", f"Generated DOCX {path.name} on {datetime.now(SGT).strftime('%Y-%m-%d %H:%M SGT')} | prompt={_clip_memory_text(inp['instructions'], 240)}{link_note}")
+                _add_memory("files", f"Generated DOCX {path.name} on {datetime.now(SGT).strftime('%Y-%m-%d %H:%M SGT')} | prompt={_clip_memory_text(inp['instructions'], 240)}{link_note}")
             return _artifact_result_text("DOCX", path, drive_file)
         except Exception as e:
             return f"Failed to create document artifact: {e}"
@@ -8653,14 +8758,14 @@ async def _execute_tool(name: str, inp: dict) -> str:
             drive_file = _upload_artifact_if_possible(str(path), "slides", category="Slides")
             if google_ok():
                 link_note = f" | google_slides={drive_file.get('webViewLink', '')}" if drive_file else ""
-                gs.add_memory("files", f"Generated PPTX {path.name} on {datetime.now(SGT).strftime('%Y-%m-%d %H:%M SGT')} | prompt={_clip_memory_text(inp['instructions'], 240)}{link_note}")
+                _add_memory("files", f"Generated PPTX {path.name} on {datetime.now(SGT).strftime('%Y-%m-%d %H:%M SGT')} | prompt={_clip_memory_text(inp['instructions'], 240)}{link_note}")
             return _artifact_result_text("PPTX", path, drive_file)
         except Exception as e:
             return f"Failed to create slide deck artifact: {e}"
 
     elif name == "remember_artifact_template":
         try:
-            gs.add_memory("templates", f"{inp['name']}: {inp['notes']}")
+            _add_memory("templates", f"{inp['name']}: {inp['notes']}")
             return f"Remembered artifact template: {inp['name']}"
         except Exception as e:
             return f"Failed to remember artifact template: {e}"
@@ -9777,7 +9882,7 @@ Rules: be conservative — only promote genuinely durable rules. Return ONLY JSO
             category = item.get("category", "preferences")
             text = item.get("text", "").strip()
             if text and category in MEMORY_DISPLAY_CATEGORIES:
-                gs.add_memory(category, f"[consolidated {datetime.now(SGT).strftime('%Y-%m-%d')}] {text}")
+                _add_memory(category, f"[consolidated {datetime.now(SGT).strftime('%Y-%m-%d')}] {text}")
 
         if growth_note:
             gs.add_self_reflection({
@@ -9998,6 +10103,7 @@ def main():
     app.add_handler(_cmd("agenda",   agenda_cmd))
     app.add_handler(_cmd("remember", remember_cmd))
     app.add_handler(_cmd("memory",   memory_cmd))
+    app.add_handler(_cmd("memcheck", memcheck_cmd))
     app.add_handler(_cmd("forget",   forget_cmd))
     app.add_handler(_cmd("search",   search_cmd))
     app.add_handler(_cmd("weather",  weather_cmd))
