@@ -11,7 +11,7 @@
       href="https://fonts.googleapis.com/css2?family=Doto:wght@400..900&family=Space+Grotesk:wght@300;400;500;700&family=VT323&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/classops.css?v=20260511-13" />
+    <link rel="stylesheet" href="/classops.css?v=20260512-purpose-1" />
   </head>
   <body>
     <main class="shell">
@@ -25,9 +25,9 @@
           </div>
         </div>
         <div class="topbar-actions">
-          <a class="ghost" href="/">H.I.R.A</a>
-          <button id="printBtn" type="button">Print</button>
-          <button id="scanBtn" type="button">Scan Dropbox</button>
+          <a class="ghost control-quiet" href="/">Home</a>
+          <button id="printBtn" class="control-quiet" type="button">Print</button>
+          <button id="scanBtn" class="control-primary" type="button">Sync</button>
         </div>
       </header>
 
@@ -65,7 +65,7 @@
           <span>H.I.R.A web token</span>
           <input id="tokenInput" type="password" placeholder="Paste token if this device has not saved it" />
         </label>
-        <button id="saveTokenBtn" type="button">Save</button>
+        <button id="saveTokenBtn" class="control-primary" type="button">Save token</button>
       </section>
 
       <section class="status-strip">
@@ -91,7 +91,16 @@
         </article>
       </section>
 
-      <p id="statusText" class="status-text">Ready.</p>
+      <div class="work-status">
+        <p id="statusText" class="status-text">Ready.</p>
+        <div id="taskIndicator" class="task-indicator" hidden>
+          <div class="task-indicator-head">
+            <span id="taskIndicatorLabel">Working</span>
+            <strong id="taskIndicatorState">Active</strong>
+          </div>
+          <div class="task-progress" aria-hidden="true"><span></span></div>
+        </div>
+      </div>
 
       <section id="classGrid" class="class-grid"></section>
 
@@ -117,7 +126,7 @@
                 <p class="eyebrow">Selected item</p>
                 <h2>Edit Contents Entry</h2>
               </div>
-              <button id="closeContentInspectorBtn" type="button" class="ghost">Close</button>
+              <button id="closeContentInspectorBtn" type="button" class="ghost control-quiet">Close</button>
             </div>
             <p id="contentInspectorMeta" class="content-inspector-meta">No item selected.</p>
             <label>
@@ -125,11 +134,11 @@
               <input id="contentTitleInput" type="text" />
             </label>
             <div class="content-inspector-actions">
-              <button id="openContentFileBtn" type="button">Open File</button>
-              <button id="saveContentTitleBtn" type="button">Save Title</button>
-              <button id="reflectionWorksheetBtn" type="button" class="ghost">Reflection Worksheet</button>
-              <button id="trackContentItemBtn" type="button" class="ghost">Track Submissions</button>
-              <button id="hideContentItemBtn" type="button" class="ghost danger">Hide From Contents</button>
+              <button id="saveContentTitleBtn" class="control-primary" type="button">Save title</button>
+              <button id="trackContentItemBtn" class="control-secondary" type="button">Track</button>
+              <button id="openContentFileBtn" class="control-secondary" type="button">Open file</button>
+              <button id="reflectionWorksheetBtn" type="button" class="control-secondary">Worksheet</button>
+              <button id="hideContentItemBtn" type="button" class="ghost danger control-danger">Hide</button>
             </div>
             <section id="reflectionPanel" class="reflection-panel" hidden>
               <div class="section-head compact">
@@ -137,7 +146,7 @@
                   <p class="eyebrow">Feed-forward</p>
                   <h2>Reflection Worksheet</h2>
                 </div>
-                <button id="copyReflectionBtn" type="button" class="ghost">Copy</button>
+                <button id="copyReflectionBtn" type="button" class="ghost control-quiet">Copy</button>
               </div>
               <p id="reflectionTitle" class="reflection-title">No worksheet generated.</p>
               <div id="reflectionBody" class="reflection-body"></div>
@@ -173,22 +182,22 @@
                   <span>Non submissions</span>
                   <strong id="nonSubmissionCount">0 selected</strong>
                 </div>
-                <button id="clearNonSubmissionBtn" type="button" class="ghost">Clear</button>
+                <button id="clearNonSubmissionBtn" type="button" class="ghost control-quiet">Clear picks</button>
               </div>
               <div id="nonSubmissionRoster" class="wide roster-picker">
                 <div class="empty">Choose a lesson, then select students who have not submitted.</div>
               </div>
               <div class="wide tracking-actions">
-                <button id="allSubmittedBtn" type="button">All Submitted</button>
-                <button id="noSubmissionNeededBtn" type="button" class="ghost">No Submission Needed</button>
+                <button id="allSubmittedBtn" class="control-secondary" type="button">All done</button>
+                <button id="noSubmissionNeededBtn" type="button" class="ghost control-quiet">No collection</button>
               </div>
-              <button id="saveAssignmentBtn" type="submit">Save Non-Submissions</button>
+              <button id="saveAssignmentBtn" class="control-primary" type="submit">Save gaps</button>
             </form>
             <div id="studentReport" class="student-report"></div>
           </section>
         </section>
       </section>
     </main>
-    <script src="/classops.js?v=20260511-17"></script>
+    <script src="/classops.js?v=20260512-purpose-1"></script>
   </body>
 </html>

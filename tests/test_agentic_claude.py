@@ -1761,6 +1761,67 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(class_item["collection_candidates"][0]["collection"]["due"], "next_lesson")
         self.assertEqual(class_item["content_items"][0]["title"], "Latihan Peribahasa")
         self.assertEqual(class_item["content_items"][0]["date"], "2026-02-24")
+        self.assertEqual(class_item["content_items"][0]["purpose_id"], "submission_task")
+        self.assertTrue(class_item["content_items"][0]["trackable"])
+
+    def test_classops_manifest_distinguishes_lesson_folder_content_purposes(self):
+        manifest = {
+            "ok": True,
+            "file_count": 5,
+            "classes": [{
+                "class": "2G3",
+                "file_count": 5,
+                "folder_count": 1,
+                "folders": [{
+                    "folder": "24:2:26 Peribahasa",
+                    "date": "2026-02-24",
+                    "topic": "Peribahasa",
+                    "files": [
+                        {"name": "peribahasa minisite.html", "path": "2G3/24:2:26/peribahasa.html"},
+                        {"name": "nota murid peribahasa.pdf", "path": "2G3/24:2:26/nota.pdf"},
+                        {"name": "latihan peribahasa worksheet.docx", "path": "2G3/24:2:26/worksheet.docx"},
+                        {"name": "slaid peribahasa.pptx", "path": "2G3/24:2:26/slides.pptx"},
+                        {"name": "karangan submit next lesson.pdf", "path": "2G3/24:2:26/karangan.pdf"},
+                    ],
+                }],
+            }],
+        }
+
+        enriched = dropbox_service.enrich_classops_manifest(manifest)
+        items = enriched["classes"][0]["content_items"]
+
+        self.assertEqual(
+            [(item["title"], item["purpose_id"]) for item in items],
+            [
+                ("Peribahasa Minisite", "lesson_page"),
+                ("Karangan", "submission_task"),
+                ("Latihan Peribahasa Worksheet", "worksheet"),
+                ("Nota Murid Peribahasa", "notes"),
+                ("Slaid Peribahasa", "slides"),
+            ],
+        )
+        self.assertEqual(items[0]["purpose_label"], "Lesson page")
+        self.assertEqual(items[1]["purpose_label"], "Submission task")
+        self.assertTrue(items[1]["trackable"])
+        self.assertFalse(items[-1]["trackable"])
+
+    def test_classops_content_purpose_uses_teacher_file_type_conventions(self):
+        examples = [
+            ({"name": "lesson-site.html", "kind": "mini-site"}, "lesson_page"),
+            ({"name": "peribahasa.pdf", "kind": "pdf"}, "slides"),
+            ({"name": "peribahasa.pptx", "kind": "slides"}, "slides"),
+            ({"name": "latihan peribahasa.docx", "kind": "worksheet/doc"}, "worksheet"),
+            ({"name": "latihan peribahasa.doc", "kind": "worksheet/doc"}, "worksheet"),
+            ({"name": "karangan submit next lesson.pdf", "kind": "pdf"}, "submission_task"),
+            ({"name": "nota murid.pdf", "kind": "pdf"}, "notes"),
+        ]
+
+        purposes = [
+            dropbox_service.infer_content_purpose(item, dropbox_service.infer_collection_hint(item["name"]))["id"]
+            for item, _ in examples
+        ]
+
+        self.assertEqual(purposes, [expected for _, expected in examples])
 
     def test_classops_manifest_content_items_sort_newest_first(self):
         manifest = {

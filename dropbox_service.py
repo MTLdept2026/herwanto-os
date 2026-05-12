@@ -52,6 +52,15 @@ REFERENCE_SKIP_TERMS = ("reference", "rujukan", "answer", "answers", "jawapan", 
 FILING_EXTENSIONS = {".html", ".htm", ".pdf", ".docx", ".doc", ".pptx", ".ppt"}
 TITLE_INSPECT_EXTENSIONS = {".html", ".htm", ".docx"}
 TITLE_MAX_BYTES = int(os.environ.get("DROPBOX_CLASSOPS_TITLE_MAX_BYTES", "2500000") or 2500000)
+CONTENT_PURPOSES = {
+    "lesson_page": {"label": "Lesson page", "tone": "lesson", "rank": 10},
+    "submission_task": {"label": "Submission task", "tone": "task", "rank": 20},
+    "worksheet": {"label": "Worksheet", "tone": "task", "rank": 30},
+    "notes": {"label": "Notes", "tone": "resource", "rank": 40},
+    "slides": {"label": "Slides", "tone": "resource", "rank": 50},
+    "media": {"label": "Media", "tone": "resource", "rank": 60},
+    "resource": {"label": "Resource", "tone": "resource", "rank": 90},
+}
 
 
 class _MiniSiteTitleParser(HTMLParser):
@@ -277,6 +286,7 @@ def classops_content_sort_key(item: dict) -> tuple:
         0 if parsed_date else 1,
         -parsed_date.toordinal() if parsed_date else 0,
         str(item.get("folder", "") or "").lower(),
+        int(item.get("purpose_rank") or 90),
         str(item.get("title", "") or item.get("name", "") or "").lower(),
         str(item.get("path", "") or "").lower(),
     )
@@ -295,6 +305,48 @@ def _file_extension(name: str) -> str:
 
 def _file_kind(name: str) -> str:
     return CONTENT_EXTENSIONS.get(_file_extension(name), "file")
+
+
+def _content_signal_text(*values: str) -> str:
+    text = " ".join(str(value or "") for value in values)
+    return " ".join(text.lower().replace("_", " ").replace("-", " ").split())
+
+
+def infer_content_purpose(file_item: dict, collection: dict | None = None) -> dict:
+    name = str(file_item.get("name") or "")
+    title = str(file_item.get("filing_title") or "")
+    kind = str(file_item.get("kind") or _file_kind(name))
+    ext = _file_extension(name)
+    signal = _content_signal_text(name, title)
+    collection = collection if isinstance(collection, dict) else file_item.get("collection")
+    is_collect = bool(collection.get("collect")) if isinstance(collection, dict) else False
+    explicit_collection = any(term in signal for term in ("collect", "collection", "submit", "submission", "homework"))
+
+    if is_collect and explicit_collection:
+        purpose = "submission_task"
+    elif ext in {".html", ".htm"} or any(term in signal for term in ("mini site", "minisite", "microsite")):
+        purpose = "lesson_page"
+    elif any(term in signal for term in ("note", "notes", "nota", "rujukan murid", "student notes", "handout", "bahan")):
+        purpose = "notes"
+    elif ext in {".doc", ".docx"}:
+        purpose = "worksheet"
+    elif kind == "slides" or ext == ".pdf" or any(term in signal for term in ("slides", "slide", "deck", "slaid")):
+        purpose = "slides"
+    elif any(term in signal for term in ("worksheet", "lembaran", "latihan", "tugasan", "karangan", "kefahaman")):
+        purpose = "worksheet"
+    elif kind in {"image", "video"}:
+        purpose = "media"
+    else:
+        purpose = "resource"
+
+    meta = CONTENT_PURPOSES[purpose]
+    return {
+        "id": purpose,
+        "label": meta["label"],
+        "tone": meta["tone"],
+        "rank": meta["rank"],
+        "trackable": purpose in {"submission_task", "worksheet"},
+    }
 
 
 def _clean_title_text(value: str) -> str:
@@ -468,6 +520,8 @@ def enrich_classops_manifest(manifest: dict) -> dict:
                 next_file["filing_title"] = infer_filing_title(next_file) if _is_filing_item(next_file) else ""
                 collection = infer_collection_hint(next_file.get("name", ""))
                 next_file["collection"] = collection
+                purpose = infer_content_purpose(next_file, collection)
+                next_file["purpose"] = purpose
                 if collection.get("collect"):
                     candidates.append(next_file)
                 if next_file.get("filing_title"):
@@ -477,6 +531,13 @@ def enrich_classops_manifest(manifest: dict) -> dict:
                         "folder": folder.get("folder", ""),
                         "path": next_file.get("path", ""),
                         "kind": next_file.get("kind", ""),
+                        "purpose": purpose,
+                        "purpose_id": purpose.get("id", "resource"),
+                        "purpose_label": purpose.get("label", "Resource"),
+                        "purpose_tone": purpose.get("tone", "resource"),
+                        "purpose_rank": purpose.get("rank", 90),
+                        "trackable": bool(purpose.get("trackable")),
+                        "collection": collection,
                         "date_missing": not bool(folder.get("date")),
                     })
                 files_out.append(next_file)

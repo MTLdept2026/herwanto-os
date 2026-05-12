@@ -10,6 +10,7 @@ const state = {
 };
 
 const $ = (selector) => document.querySelector(selector);
+let taskHideTimer = null;
 
 function escapeHtml(value = "") {
   return String(value)
@@ -24,6 +25,44 @@ function setStatus(message, tone = "muted") {
   const el = $("#statusText");
   el.textContent = message;
   el.dataset.tone = tone;
+}
+
+function setTask(message, taskState = "active") {
+  const indicator = $("#taskIndicator");
+  if (!indicator) return;
+  window.clearTimeout(taskHideTimer);
+  indicator.hidden = false;
+  indicator.dataset.state = taskState;
+  $("#taskIndicatorLabel").textContent = message;
+  $("#taskIndicatorState").textContent = taskState === "done" ? "Done" : taskState === "error" ? "Check" : "Active";
+}
+
+function settleTask(message = "Task complete", taskState = "done") {
+  setTask(message, taskState);
+  taskHideTimer = window.setTimeout(() => {
+    const indicator = $("#taskIndicator");
+    if (indicator) indicator.hidden = true;
+  }, taskState === "error" ? 2200 : 1100);
+}
+
+function flashControl(element) {
+  if (!element) return;
+  element.classList.remove("is-activated");
+  window.requestAnimationFrame(() => {
+    element.classList.add("is-activated");
+    window.setTimeout(() => element.classList.remove("is-activated"), 360);
+  });
+}
+
+function setButtonBusy(target, busy) {
+  const button = typeof target === "string" ? $(target) : target;
+  if (!button) return;
+  button.disabled = Boolean(busy);
+  if (busy) {
+    button.setAttribute("aria-busy", "true");
+  } else {
+    button.removeAttribute("aria-busy");
+  }
 }
 
 async function api(path, options = {}) {
@@ -70,6 +109,18 @@ function formatContentDate(value = "") {
 function contentDateLabel(item = {}) {
   if (item.date_missing || !item.date) return "Check date";
   return formatContentDate(item.date || "");
+}
+
+function contentPurpose(item = {}) {
+  const purpose = item.purpose && typeof item.purpose === "object" ? item.purpose : {};
+  const label = item.purpose_label || purpose.label || (item.kind ? item.kind : "Resource");
+  return {
+    id: item.purpose_id || purpose.id || "resource",
+    label,
+    tone: item.purpose_tone || purpose.tone || "resource",
+    rank: Number(item.purpose_rank || purpose.rank || 90),
+    trackable: Boolean(item.trackable ?? purpose.trackable),
+  };
 }
 
 function contentSortDateValue(value = "") {
@@ -152,7 +203,7 @@ function renderClassCards(classes = []) {
             <div><span>Watch</span><strong>${Number(item.student_report?.concern_count || 0)}</strong></div>
           </div>
           <div class="class-telemetry" aria-hidden="true">${segmentMarkup(Math.min(12, Number(item.lesson_count || 0)), 12, item.student_report?.concern_count ? "warn" : "accent")}</div>
-          <button type="button" data-select-class="${escapeHtml(item.class)}">Open</button>
+          <button class="control-secondary" type="button" data-select-class="${escapeHtml(item.class)}">Open</button>
         </article>
       `).join("")
     : `<div class="empty">No class folders detected yet.</div>`;
@@ -160,7 +211,7 @@ function renderClassCards(classes = []) {
 
 function renderClassList(classes = []) {
   $("#classList").innerHTML = classes.map((item) => `
-    <button type="button" class="${item.class === state.selectedClass ? "active" : ""}" data-select-class="${escapeHtml(item.class)}">
+    <button type="button" class="control-quiet ${item.class === state.selectedClass ? "active" : ""}" data-select-class="${escapeHtml(item.class)}">
       <span>${escapeHtml(item.class)}</span>
       <strong>${Number(item.student_report?.concern_count || 0)}</strong>
     </button>
@@ -219,10 +270,14 @@ function renderContents(classItem) {
     </div>
     ${contentItems.length ? contentItems.map((item, index) => {
       const statusBadge = item.no_submission_needed ? ` <span class="override-mark">no submission</span>` : "";
+      const purpose = contentPurpose(item);
       return `
-        <article class="contents-row ${item.date_missing || !item.date ? "date-missing" : ""}" data-track-lesson="${escapeHtml(item.date || "")}" data-track-topic="${escapeHtml(item.title || "")}" data-track-folder="${escapeHtml(item.folder || "")}" data-track-title="${escapeHtml(item.title || "")}" data-content-path="${escapeHtml(item.path || "")}" data-content-kind="${escapeHtml(item.kind || "")}" data-date-missing="${item.date_missing || !item.date ? "1" : ""}">
+        <article class="contents-row ${item.date_missing || !item.date ? "date-missing" : ""}" data-purpose="${escapeHtml(purpose.id)}" data-track-lesson="${escapeHtml(item.date || "")}" data-track-topic="${escapeHtml(item.title || "")}" data-track-folder="${escapeHtml(item.folder || "")}" data-track-title="${escapeHtml(item.title || "")}" data-content-path="${escapeHtml(item.path || "")}" data-content-kind="${escapeHtml(item.kind || "")}" data-content-purpose-id="${escapeHtml(purpose.id)}" data-content-purpose-label="${escapeHtml(purpose.label)}" data-content-purpose-tone="${escapeHtml(purpose.tone)}" data-content-purpose-rank="${escapeHtml(String(purpose.rank))}" data-content-trackable="${purpose.trackable ? "1" : ""}" data-date-missing="${item.date_missing || !item.date ? "1" : ""}">
           <div class="contents-no"><strong>${index + 1}</strong></div>
-          <div class="contents-title">${escapeHtml(item.title || "Untitled")}${item.title_overridden ? ` <span class="override-mark">edited</span>` : ""}${statusBadge}</div>
+          <div class="contents-title">
+            <span class="content-purpose" data-tone="${escapeHtml(purpose.tone)}">${escapeHtml(purpose.label)}</span>
+            <span>${escapeHtml(item.title || "Untitled")}${item.title_overridden ? ` <span class="override-mark">edited</span>` : ""}${statusBadge}</span>
+          </div>
           <div class="contents-date">${escapeHtml(contentDateLabel(item))}</div>
         </article>
       `;
@@ -241,6 +296,11 @@ function contentItemFromRow(row) {
     title: row.dataset.trackTitle || row.dataset.trackTopic || "",
     path: row.dataset.contentPath || "",
     kind: row.dataset.contentKind || "file",
+    purpose_id: row.dataset.contentPurposeId || "resource",
+    purpose_label: row.dataset.contentPurposeLabel || "Resource",
+    purpose_tone: row.dataset.contentPurposeTone || "resource",
+    purpose_rank: Number(row.dataset.contentPurposeRank || 90),
+    trackable: row.dataset.contentTrackable === "1",
     date_missing: row.dataset.dateMissing === "1",
   };
 }
@@ -258,7 +318,9 @@ function showContentInspector(item = {}) {
   const reflectionPanel = $("#reflectionPanel");
   if (reflectionPanel) reflectionPanel.hidden = true;
   $("#contentTitleInput").value = item.title || "";
+  const purpose = contentPurpose(item);
   $("#contentInspectorMeta").textContent = [
+    purpose.label,
     item.kind || "file",
     item.path || "",
     item.date_missing || !item.date ? "Check folder date" : formatContentDate(item.date),
@@ -409,7 +471,7 @@ function renderStudentReport(report = {}) {
         <div>Name</div><div>Done</div><div>Missing</div><div>Absent</div><div>Catch-up</div><div>Status</div>
       </div>
       ${visible.map((student) => `
-        <article class="student-row" data-status="${escapeHtml(student.status || "clear")}" data-student-name="${escapeHtml(student.name)}">
+        <article class="student-row ${selectedStudent?.name === student.name ? "is-selected" : ""}" data-status="${escapeHtml(student.status || "clear")}" data-student-name="${escapeHtml(student.name)}">
           <strong>${escapeHtml(student.name)}</strong>
           <div>${Number(student.submitted_count || 0)}</div>
           <div>${Number(student.missing_count || 0)}</div>
@@ -510,9 +572,10 @@ async function saveContentOverride({ hidden = null } = {}) {
   if (!item?.path) return setStatus("Select a contents item first.", "warn");
   const title = $("#contentTitleInput").value.trim();
   if (!title && !hidden) return setStatus("Add a display title before saving.", "warn");
-  $("#saveContentTitleBtn").disabled = true;
-  $("#hideContentItemBtn").disabled = true;
+  setButtonBusy(hidden ? "#hideContentItemBtn" : "#saveContentTitleBtn", true);
+  $(hidden ? "#saveContentTitleBtn" : "#hideContentItemBtn").disabled = true;
   setStatus(hidden ? "Hiding contents item..." : "Saving display title...");
+  setTask(hidden ? "Hiding contents item" : "Saving display title");
   try {
     const payload = {
       path: item.path,
@@ -531,6 +594,7 @@ async function saveContentOverride({ hidden = null } = {}) {
       renderClassList(state.data?.classes || []);
       renderContents(currentClassItem());
       setStatus("Item hidden from the printable contents page.", "ok");
+      settleTask("Contents item hidden");
       return;
     }
     const nextTitle = data.override?.title || title;
@@ -539,28 +603,33 @@ async function saveContentOverride({ hidden = null } = {}) {
     renderContents(currentClassItem());
     showContentInspector(updated);
     setStatus("Display title saved.", "ok");
+    settleTask("Display title saved");
   } catch (error) {
     setStatus(error.message, "error");
+    settleTask("Content update failed", "error");
   } finally {
-    $("#saveContentTitleBtn").disabled = false;
-    $("#hideContentItemBtn").disabled = false;
+    setButtonBusy("#saveContentTitleBtn", false);
+    setButtonBusy("#hideContentItemBtn", false);
   }
 }
 
 async function openSelectedContentFile() {
   const item = state.selectedContentItem;
   if (!item?.path) return setStatus("Select a contents item first.", "warn");
-  $("#openContentFileBtn").disabled = true;
+  setButtonBusy("#openContentFileBtn", true);
   setStatus("Opening Dropbox source file...");
+  setTask("Requesting Dropbox file link");
   try {
     const data = await api(`/api/classops/dropbox/file-link?path=${encodeURIComponent(item.path)}`);
     if (!data.url) throw new Error("Dropbox did not return a file link.");
     window.open(data.url, "_blank", "noopener");
     setStatus("Opened source file in Dropbox.", "ok");
+    settleTask("Dropbox file opened");
   } catch (error) {
     setStatus(error.message, "error");
+    settleTask("Could not open Dropbox file", "error");
   } finally {
-    $("#openContentFileBtn").disabled = false;
+    setButtonBusy("#openContentFileBtn", false);
   }
 }
 
@@ -598,8 +667,9 @@ function renderReflectionWorksheet(worksheet = {}) {
 async function generateReflectionWorksheet() {
   const item = state.selectedContentItem;
   if (!state.selectedClass || !item?.path) return setStatus("Select a class lesson item first.", "warn");
-  $("#reflectionWorksheetBtn").disabled = true;
+  setButtonBusy("#reflectionWorksheetBtn", true);
   setStatus("Building post-lesson reflection worksheet...");
+  setTask("Building reflection worksheet");
   try {
     const data = await api("/api/classops/reflection-worksheet", {
       method: "POST",
@@ -611,10 +681,12 @@ async function generateReflectionWorksheet() {
     });
     renderReflectionWorksheet(data.worksheet || {});
     setStatus("Reflection worksheet drafted.", "ok");
+    settleTask("Worksheet drafted");
   } catch (error) {
     setStatus(error.message, "error");
+    settleTask("Worksheet generation failed", "error");
   } finally {
-    $("#reflectionWorksheetBtn").disabled = false;
+    setButtonBusy("#reflectionWorksheetBtn", false);
   }
 }
 
@@ -657,15 +729,18 @@ async function loadDashboard() {
     setStatus("Save your H.I.R.A web token first.", "warn");
     return;
   }
-  $("#scanBtn").disabled = true;
+  setButtonBusy("#scanBtn", true);
   setStatus("Scanning Dropbox ClassOps folder...");
+  setTask("Scanning Dropbox ClassOps folder");
   try {
     const data = await api("/api/classops/dashboard");
     renderDashboard(data);
+    settleTask("Dropbox scan complete");
   } catch (error) {
     setStatus(error.message, "error");
+    settleTask("Dropbox scan failed", "error");
   } finally {
-    $("#scanBtn").disabled = false;
+    setButtonBusy("#scanBtn", false);
   }
 }
 
@@ -703,17 +778,25 @@ function buildAssignmentPayload(nonSubmitted = [...state.nonSubmitted]) {
   return payload;
 }
 
-function setTrackingButtonsDisabled(disabled) {
-  $("#saveAssignmentBtn").disabled = disabled;
-  $("#allSubmittedBtn").disabled = disabled;
-  $("#noSubmissionNeededBtn").disabled = disabled;
+function setTrackingButtonsDisabled(disabled, busyTarget = "") {
+  ["#saveAssignmentBtn", "#allSubmittedBtn", "#noSubmissionNeededBtn"].forEach((selector) => {
+    if (busyTarget === selector) {
+      setButtonBusy(selector, disabled);
+    } else {
+      const button = $(selector);
+      if (!button) return;
+      button.disabled = disabled;
+      if (!disabled) button.removeAttribute("aria-busy");
+    }
+  });
 }
 
-async function saveAssignmentTracking(nonSubmitted = [...state.nonSubmitted], label = "Tracking") {
+async function saveAssignmentTracking(nonSubmitted = [...state.nonSubmitted], label = "Tracking", busyTarget = "#saveAssignmentBtn") {
   const payload = buildAssignmentPayload(nonSubmitted);
   if (!payload) return;
-  setTrackingButtonsDisabled(true);
+  setTrackingButtonsDisabled(true, busyTarget);
   setStatus(`Saving ${state.selectedClass} tracking...`);
+  setTask(`Saving ${state.selectedClass} submission tracking`);
   try {
     const result = await api("/api/classops/assignment", {
       method: "POST",
@@ -730,8 +813,10 @@ async function saveAssignmentTracking(nonSubmitted = [...state.nonSubmitted], la
     renderNonSubmissionRoster(classItem);
     if (payload.source_path) renderContents(classItem);
     setStatus(`${label} saved with ${state.nonSubmitted.size} open non-submission${state.nonSubmitted.size === 1 ? "" : "s"}.`, "ok");
+    settleTask(`${label} saved`);
   } catch (error) {
     setStatus(error.message, "error");
+    settleTask("Submission tracking failed", "error");
   } finally {
     setTrackingButtonsDisabled(false);
   }
@@ -745,15 +830,16 @@ $("#assignmentForm").addEventListener("submit", async (event) => {
 $("#allSubmittedBtn").addEventListener("click", async () => {
   state.nonSubmitted = new Set();
   renderNonSubmissionRoster();
-  await saveAssignmentTracking([], "All submitted");
+  await saveAssignmentTracking([], "All submitted", "#allSubmittedBtn");
 });
 
 $("#noSubmissionNeededBtn").addEventListener("click", async () => {
   if (!state.selectedClass) return setStatus("Select a class first.", "warn");
   const item = state.selectedContentItem;
   if (!item?.path) return setStatus("Select an item from Contents before marking no submission needed.", "warn");
-  setTrackingButtonsDisabled(true);
+  setTrackingButtonsDisabled(true, "#noSubmissionNeededBtn");
   setStatus("Marking item as no submission needed...");
+  setTask("Marking item as no collection needed");
   try {
     const result = await api("/api/classops/assignment/no-submission-needed", {
       method: "POST",
@@ -774,8 +860,10 @@ $("#noSubmissionNeededBtn").addEventListener("click", async () => {
     renderNonSubmissionRoster(classItem);
     renderContents(classItem);
     setStatus("Marked as no submission needed.", "ok");
+    settleTask("No collection marker saved");
   } catch (error) {
     setStatus(error.message, "error");
+    settleTask("No collection update failed", "error");
   } finally {
     setTrackingButtonsDisabled(false);
   }
@@ -796,6 +884,23 @@ $("#trackContentItemBtn").addEventListener("click", () => {
   if (!state.selectedContentItem) return setStatus("Select a contents item first.", "warn");
   prefillLessonFromItem(state.selectedContentItem);
   setStatus("Loaded item into submission tracker.", "ok");
+});
+
+document.addEventListener("pointerdown", (event) => {
+  const control = event.target.closest("button, .ghost, .student-chip, .contents-row[data-content-path], .student-row[data-student-name]");
+  if (!control || control.matches(":disabled")) return;
+  control.classList.add("is-pressing");
+});
+
+document.addEventListener("pointerup", (event) => {
+  const control = event.target.closest("button, .ghost, .student-chip, .contents-row[data-content-path], .student-row[data-student-name]");
+  if (!control) return;
+  control.classList.remove("is-pressing");
+  flashControl(control);
+});
+
+document.addEventListener("pointercancel", () => {
+  document.querySelectorAll(".is-pressing").forEach((item) => item.classList.remove("is-pressing"));
 });
 
 $("#nonSubmissionRoster").addEventListener("change", (event) => {
