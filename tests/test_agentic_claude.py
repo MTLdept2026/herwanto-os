@@ -3812,6 +3812,23 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIsNone(bot._SYSTEM_PROMPT_CACHE["key"])
         self.assertIsNone(bot._SYSTEM_PROMPT_CACHE["value"])
 
+    def test_memory_tool_input_recovers_missing_text_from_user_message(self):
+        messages = [{"role": "user", "content": "Van Dijk is my all time fav player so losing him would be gutting"}]
+
+        normalised = bot._normalise_memory_tool_input({"category": "profile"}, messages)
+
+        self.assertEqual(normalised["text"], "Van Dijk is my all time fav player so losing him would be gutting")
+        self.assertEqual(normalised["category"], "sports")
+
+    def test_memory_tool_accepts_fact_alias_without_keyerror(self):
+        with patch.object(bot.gs, "add_memory", return_value={"sports": ["Van Dijk is my all time fav player."]}) as add_memory:
+            result = asyncio.run(bot._execute_tool("remember_user_info", {
+                "fact": "Van Dijk is my all time fav player.",
+            }))
+
+        add_memory.assert_called_once_with("sports", "Van Dijk is my all time fav player.")
+        self.assertIn("Remembered under sports", result)
+
     def test_relevant_memory_retrieval_prioritises_corrections(self):
         fake_memory = {category: [] for category in bot.MEMORY_DISPLAY_CATEGORIES}
         fake_memory["correction_ledger"] = [

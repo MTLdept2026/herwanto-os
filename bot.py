@@ -7997,6 +7997,59 @@ async def _execute_tool_offloop(name: str, inp: dict) -> str:
         return f"Failed to run {name}: tool timed out after {_tool_timeout_seconds()} seconds."
 
 
+def _latest_user_text(messages: list[dict]) -> str:
+    for message in reversed(messages or []):
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(str(item.get("text", "")).strip())
+            text = " ".join(part for part in parts if part)
+            if text:
+                return text
+    return ""
+
+
+def _memory_category_for_text(text: str, fallback: str = "profile") -> str:
+    fallback = fallback or "profile"
+    if fallback != "profile":
+        return fallback
+    clean = str(text or "").lower()
+    if re.search(r"\b(liverpool|lfc|football|f1|formula 1|van dijk|salah|player|match|team|club|driver|race)\b", clean):
+        return "sports"
+    if re.search(r"\b(prefer|preference|favourite|favorite|fav|like|dislike|colour|color|style)\b", clean):
+        return "preferences"
+    if re.search(r"\b(mum|mom|mother|dad|father|wife|son|daughter|friend|colleague|student)\b", clean):
+        return "people"
+    if re.search(r"\b(cca|class|lesson|teaching|school|student|timetable|duty)\b", clean):
+        return "teaching"
+    return fallback or "profile"
+
+
+def _normalise_memory_tool_input(inp: dict, messages: list[dict]) -> dict:
+    clean = dict(inp or {})
+    text = str(
+        clean.get("text")
+        or clean.get("memory")
+        or clean.get("fact")
+        or clean.get("note")
+        or clean.get("content")
+        or clean.get("value")
+        or ""
+    ).strip()
+    if not text:
+        text = _latest_user_text(messages)
+    if text:
+        clean["text"] = text
+    clean["category"] = _memory_category_for_text(text, clean.get("category", "profile"))
+    return clean
+
+
 async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
     tools = tools or _core_tools()
     reply_text = ""
@@ -8037,8 +8090,9 @@ async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
         tool_blocks = [block for block in resp.content if block.type == "tool_use"]
 
         async def run_tool(block):
-            logger.info(f"Tool call: {block.name} {block.input}")
-            result = await _execute_tool_offloop(block.name, block.input)
+            tool_input = _normalise_memory_tool_input(block.input, messages) if block.name == "remember_user_info" else block.input
+            logger.info(f"Tool call: {block.name} {tool_input}")
+            result = await _execute_tool_offloop(block.name, tool_input)
             return {
                 "type": "tool_result",
                 "tool_use_id": block.id,
@@ -8207,8 +8261,9 @@ async def stream_agentic_claude(messages, max_tokens=650, tools=None):
             yield {"type": "tool", "name": block.name}
 
         async def run_tool(block):
-            logger.info(f"Tool call: {block.name} {block.input}")
-            result = await _execute_tool_offloop(block.name, block.input)
+            tool_input = _normalise_memory_tool_input(block.input, messages) if block.name == "remember_user_info" else block.input
+            logger.info(f"Tool call: {block.name} {tool_input}")
+            result = await _execute_tool_offloop(block.name, tool_input)
             return {
                 "type": "tool_result",
                 "tool_use_id": block.id,
@@ -8542,13 +8597,25 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "remember_user_info":
         try:
-            inferred_week_type, inferred_week_number = _school_week_from_text(inp.get("text", ""))
+            memory_text = str(
+                inp.get("text")
+                or inp.get("memory")
+                or inp.get("fact")
+                or inp.get("note")
+                or inp.get("content")
+                or inp.get("value")
+                or ""
+            ).strip()
+            if not memory_text:
+                return "Failed to remember: tool input missing required text."
+            category = _memory_category_for_text(memory_text, inp.get("category", "profile"))
+            inferred_week_type, inferred_week_number = _school_week_from_text(memory_text)
             week_note = ""
             if inferred_week_type:
                 _set_current_school_week(inferred_week_type, inferred_week_number)
                 week_note = f" Also set current timetable week to {inferred_week_type.upper()}."
-            _add_memory(inp.get("category", "profile"), inp["text"])
-            return f"Remembered under {inp.get('category', 'profile')}: {inp['text']}.{week_note}"
+            _add_memory(category, memory_text)
+            return f"Remembered under {category}: {memory_text}.{week_note}"
         except Exception as e:
             try:
                 identity = gs.sheets_access_identity()
