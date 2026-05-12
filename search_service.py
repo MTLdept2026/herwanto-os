@@ -13,6 +13,7 @@ import re
 import hashlib
 import requests
 import feedparser
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 GOOGLE_NEWS_TIMEOUT = 8
 WEB_SEARCH_TIMEOUT = 8
+RESEARCH_WORKERS = 4
 
 # Google News RSS — one per digest topic, no API key needed
 # Format: news.google.com/rss/search?q=QUERY&hl=en-SG&gl=SG&ceid=SG:en
@@ -368,6 +370,110 @@ def _source_rank(result: dict) -> int:
     return score
 
 
+TRUSTED_PRIMARY_DOMAINS = (
+    "gov.sg", "moe.gov.sg", "data.gov.sg", "muis.gov.sg",
+    "formula1.com", "fia.com", "premierleague.com",
+    "openai.com", "platform.openai.com", "docs.anthropic.com",
+    "anthropic.com", "apple.com", "developer.apple.com",
+    "google.com", "developers.google.com", "android.com",
+)
+REPUTABLE_NEWS_DOMAINS = (
+    "reuters.com", "apnews.com", "bbc.com", "channelnewsasia.com", "cna.com",
+    "straitstimes.com", "businesstimes.com.sg", "theguardian.com",
+    "formula1.com", "skysports.com", "motorsport.com", "espn.com",
+)
+LOW_TRUST_DOMAINS = (
+    "reddit.com", "facebook.com", "instagram.com", "tiktok.com",
+    "pinterest.com", "quora.com", "medium.com",
+)
+
+
+def _source_type(domain: str) -> str:
+    clean = (domain or "").lower()
+    if any(clean.endswith(item) or item in clean for item in TRUSTED_PRIMARY_DOMAINS):
+        return "official/primary"
+    if clean.endswith(".gov") or clean.endswith(".edu") or ".gov." in clean or ".edu." in clean:
+        return "official/primary"
+    if any(item in clean for item in REPUTABLE_NEWS_DOMAINS):
+        return "reputable news"
+    if any(item in clean for item in LOW_TRUST_DOMAINS):
+        return "community/low-trust"
+    if clean:
+        return "web source"
+    return "unknown"
+
+
+def _parse_source_date(value: str) -> datetime | None:
+    clean = str(value or "").strip()
+    if not clean:
+        return None
+    try:
+        parsed = parsedate_to_datetime(clean)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except Exception:
+        pass
+    for fmt in ("%Y-%m-%d", "%d %B %Y", "%d %b %Y", "%B %d %Y", "%b %d %Y"):
+        try:
+            return datetime.strptime(clean.replace(",", ""), fmt).replace(tzinfo=timezone.utc)
+        except Exception:
+            continue
+    return None
+
+
+def _freshness_label(date_text: str, freshness: str = "latest", now: datetime | None = None) -> str:
+    parsed = _parse_source_date(date_text)
+    if not parsed:
+        return "unknown date"
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    age_hours = max(0.0, (current.astimezone(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds() / 3600)
+    if freshness == "stable":
+        return "dated source"
+    if age_hours <= 36:
+        return "fresh"
+    if age_hours <= 14 * 24:
+        return "recent"
+    if age_hours <= 90 * 24:
+        return "aging"
+    return "stale"
+
+
+def _source_grade(source: dict) -> str:
+    source_type = source.get("source_type", "")
+    fetched = bool(source.get("fetched"))
+    freshness = source.get("freshness", "")
+    if source_type == "official/primary" and fetched and freshness != "stale":
+        return "A"
+    if source_type in {"official/primary", "reputable news"} and (fetched or freshness in {"fresh", "recent"}):
+        return "B"
+    if source_type == "community/low-trust":
+        return "D"
+    return "C"
+
+
+def _select_diverse_sources(ranked: list[dict], max_sources: int) -> list[dict]:
+    limit = max(1, min(int(max_sources or 5), 8))
+    selected = []
+    used_domains = set()
+    for item in ranked:
+        domain = _domain_from_url(item.get("url", ""))
+        if domain and domain in used_domains:
+            continue
+        selected.append(item)
+        if domain:
+            used_domains.add(domain)
+        if len(selected) >= limit:
+            return selected
+    for item in ranked:
+        if item in selected:
+            continue
+        selected.append(item)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
 def _extract_source_date(text: str) -> str:
     sample = str(text or "")[:3000]
     patterns = (
@@ -410,17 +516,26 @@ def web_research(query: str, max_sources: int = 5, fetch_pages: int = 3, freshne
 
     queries = _research_query_variants(clean, freshness=freshness)
     pool = []
-    for variant in queries:
-        for result in web_search(variant, max_results=max(3, int(max_sources or 5))):
-            item = dict(result)
-            item["query"] = variant
-            pool.append(item)
+    per_query_limit = max(3, int(max_sources or 5))
+    with ThreadPoolExecutor(max_workers=min(RESEARCH_WORKERS, max(1, len(queries)))) as executor:
+        futures = {executor.submit(web_search, variant, per_query_limit): variant for variant in queries}
+        for future in as_completed(futures):
+            variant = futures[future]
+            try:
+                results = future.result()
+            except Exception as exc:
+                logger.warning(f"Research search variant failed for '{variant}': {exc}")
+                results = []
+            for result in results:
+                item = dict(result)
+                item["query"] = variant
+                pool.append(item)
 
     ranked = sorted(_dedupe_results(pool, max(8, int(max_sources or 5) * 3)), key=_source_rank, reverse=True)
-    selected = ranked[: max(1, min(int(max_sources or 5), 8))]
+    selected = _select_diverse_sources(ranked, max_sources=max_sources)
     fetch_limit = max(0, min(int(fetch_pages or 3), len(selected)))
-    sources = []
-    for index, result in enumerate(selected):
+    base_sources = []
+    for result in selected:
         source = {
             "title": result.get("title", ""),
             "url": result.get("url", ""),
@@ -432,8 +547,24 @@ def web_research(query: str, max_sources: int = 5, fetch_pages: int = 3, freshne
             "date": _extract_source_date(result.get("description", "")),
             "evidence": result.get("description", ""),
         }
-        if index < fetch_limit:
-            fetched = fetch_url(result.get("url", ""), max_chars=4500)
+        base_sources.append(source)
+
+    fetch_results = {}
+    fetch_jobs = base_sources[:fetch_limit]
+    if fetch_jobs:
+        with ThreadPoolExecutor(max_workers=min(RESEARCH_WORKERS, len(fetch_jobs))) as executor:
+            futures = {executor.submit(fetch_url, source.get("url", ""), 4500): idx for idx, source in enumerate(fetch_jobs)}
+            for future in as_completed(futures):
+                idx = futures[future]
+                try:
+                    fetch_results[idx] = future.result()
+                except Exception as exc:
+                    fetch_results[idx] = {"ok": False, "error": str(exc)}
+
+    sources = []
+    for index, source in enumerate(base_sources):
+        if index in fetch_results:
+            fetched = fetch_results[index]
             source["fetched"] = bool(fetched.get("ok"))
             if fetched.get("ok"):
                 source["resolved_url"] = fetched.get("url", "")
@@ -442,14 +573,38 @@ def web_research(query: str, max_sources: int = 5, fetch_pages: int = 3, freshne
                 source["evidence"] = _evidence_snippet(fetched.get("text", ""), clean)
             else:
                 source["fetch_error"] = fetched.get("error", "")
+        source["id"] = f"S{index + 1}"
+        source["source_type"] = _source_type(source.get("domain", ""))
+        source["freshness"] = _freshness_label(source.get("date", ""), freshness=freshness)
+        source["grade"] = _source_grade(source)
+        source["citation"] = f"[{source['id']}]"
         sources.append(source)
 
+    source_types = {source.get("source_type") for source in sources}
+    quality = {
+        "source_count": len(sources),
+        "fetched_count": sum(1 for source in sources if source.get("fetched")),
+        "official_count": sum(1 for source in sources if source.get("source_type") == "official/primary"),
+        "fresh_or_recent_count": sum(1 for source in sources if source.get("freshness") in {"fresh", "recent"}),
+        "domain_count": len({source.get("domain") for source in sources if source.get("domain")}),
+        "has_low_trust": "community/low-trust" in source_types,
+    }
+    quality["confidence"] = (
+        "strong" if quality["official_count"] and quality["fetched_count"] >= 2
+        else "moderate" if quality["fetched_count"] or quality["official_count"]
+        else "thin"
+    )
     return {
         "ok": bool(sources),
         "query": clean,
         "queries": queries,
         "sources": sources,
-        "fetched_count": sum(1 for source in sources if source.get("fetched")),
+        "quality": quality,
+        "fetched_count": quality["fetched_count"],
+        "answer_guidance": (
+            "Use citation IDs like [S1]. Lead with confirmed facts from A/B sources, "
+            "separate official sources from news/community sources, and call out stale or unfetched evidence."
+        ),
     }
 
 
@@ -458,11 +613,25 @@ def format_research_pack(pack: dict) -> str:
         return pack.get("error") or "No research sources found."
     lines = [f"Research query: {pack.get('query', '')}"]
     lines.append(f"Search variants: {', '.join(pack.get('queries') or [])}")
-    lines.append(f"Fetched pages: {pack.get('fetched_count', 0)}")
+    quality = pack.get("quality") or {}
+    lines.append(
+        "Quality: "
+        f"{quality.get('confidence', 'unknown')} | "
+        f"{quality.get('source_count', len(pack.get('sources') or []))} source(s), "
+        f"{quality.get('fetched_count', pack.get('fetched_count', 0))} fetched, "
+        f"{quality.get('official_count', 0)} official/primary, "
+        f"{quality.get('fresh_or_recent_count', 0)} fresh/recent"
+    )
+    if pack.get("answer_guidance"):
+        lines.append(f"Answer guidance: {pack['answer_guidance']}")
     lines.append("")
     for idx, source in enumerate(pack.get("sources") or [], start=1):
         meta = " · ".join(part for part in [source.get("domain", ""), source.get("date", "")] if part)
-        lines.append(f"{idx}. {source.get('title', '')}{f' ({meta})' if meta else ''}")
+        source_id = source.get("id") or f"S{idx}"
+        grade = source.get("grade", "?")
+        kind = source.get("source_type", "source")
+        freshness_label = source.get("freshness", "unknown date")
+        lines.append(f"[{source_id}] Grade {grade} · {kind} · {freshness_label}: {source.get('title', '')}{f' ({meta})' if meta else ''}")
         lines.append(f"URL: {source.get('resolved_url') or source.get('url', '')}")
         if source.get("fetched"):
             lines.append("Status: fetched")

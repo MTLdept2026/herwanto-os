@@ -2828,6 +2828,39 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("privacy", pack["sources"][0]["evidence"])
         fetch_url.assert_called_once()
 
+    def test_web_research_grades_sources_and_adds_citation_ids(self):
+        with (
+            patch.object(search_service, "web_search", return_value=[
+                {
+                    "title": "Official Formula 1 2026 calendar",
+                    "description": "Updated 2026 race schedule",
+                    "url": "https://www.formula1.com/en/racing/2026",
+                },
+                {
+                    "title": "Fan discussion of Formula 1 calendar",
+                    "description": "Reddit thread",
+                    "url": "https://www.reddit.com/r/formula1/comments/test",
+                },
+            ]),
+            patch.object(search_service, "fetch_url", return_value={
+                "ok": True,
+                "url": "https://www.formula1.com/en/racing/2026",
+                "title": "2026 F1 calendar",
+                "text": "2026 FIA Formula One World Championship Race Calendar. Canada 22 - 24 May. Abu Dhabi 04 - 06 Dec.",
+            }),
+        ):
+            pack = search_service.web_research("F1 2026 calendar", max_sources=2, fetch_pages=1)
+
+        self.assertEqual(pack["quality"]["confidence"], "moderate")
+        self.assertEqual(pack["sources"][0]["id"], "S1")
+        self.assertEqual(pack["sources"][0]["grade"], "A")
+        self.assertEqual(pack["sources"][0]["source_type"], "official/primary")
+        self.assertEqual(pack["sources"][1]["grade"], "D")
+        self.assertEqual(pack["sources"][1]["source_type"], "community/low-trust")
+        formatted = search_service.format_research_pack(pack)
+        self.assertIn("[S1] Grade A", formatted)
+        self.assertIn("Quality: moderate", formatted)
+
     def test_deep_model_selected_for_architecture_work_when_configured(self):
         with patch.object(bot, "DEEP_MODEL", "deep-model"), patch.object(bot, "AGENTIC_MODEL", "agentic-model"):
             selected = bot._agentic_model_for_messages([
