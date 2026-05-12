@@ -467,6 +467,33 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(entry["errors"], {"http_401": 1})
         self.assertIn("Unauthorized registration", entry["last_error"])
 
+    def test_duplicate_source_notification_refreshes_body_before_retry(self):
+        existing = {
+            "id": "7",
+            "kind": "briefing",
+            "title": "Morning briefing",
+            "body": "Old digest",
+            "created": "2026-05-12T06:45:00+08:00",
+            "source": "morning_briefing:2026-05-12",
+            "seen_by": [],
+            "archived": False,
+        }
+
+        with (
+            patch.object(bot.gs, "get_app_notifications", return_value=[existing]),
+            patch.object(bot.gs, "set_app_notifications") as set_notifications,
+        ):
+            item = bot.gs.enqueue_app_notification(
+                "briefing",
+                "Morning briefing",
+                "Fresh digest",
+                source="morning_briefing:2026-05-12",
+            )
+
+        self.assertTrue(item["_duplicate"])
+        self.assertEqual(item["body"], "Fresh digest")
+        set_notifications.assert_called_once()
+
     def test_web_push_recovery_sends_active_notification_without_confirmed_delivery(self):
         item = {
             "id": "31",
@@ -677,7 +704,7 @@ class AgenticClaudeTests(unittest.TestCase):
             patch.object(bot, "google_ok", return_value=True),
             patch.object(bot, "_acquire_job_lock", return_value=True),
             patch.object(bot.gs, "get_config", return_value=""),
-            patch.object(bot, "build_briefing", return_value="Morning digest body"),
+            patch.object(bot, "build_briefing", return_value="Morning digest body") as build_briefing,
             patch.object(bot, "_queue_app_notification", return_value={
                 "id": "1",
                 "kind": "briefing",
@@ -690,14 +717,19 @@ class AgenticClaudeTests(unittest.TestCase):
             sent = asyncio.run(bot.send_morning_briefing_once())
 
         self.assertFalse(sent)
+        build_briefing.assert_called_once_with(record_news_digest=False)
         set_config.assert_not_called()
 
     def test_morning_briefing_marks_done_after_phone_push(self):
+        pending_entry = {"key": "digest-1", "item": {"title": "Fresh headline"}}
+        pending_at = bot.datetime.now(bot.SGT)
+        bot._PENDING_NEWS_DIGEST_ENTRIES = [pending_entry]
+        bot._PENDING_NEWS_DIGEST_BUILT_AT = pending_at
         with (
             patch.object(bot, "google_ok", return_value=True),
             patch.object(bot, "_acquire_job_lock", return_value=True),
             patch.object(bot.gs, "get_config", return_value=""),
-            patch.object(bot, "build_briefing", return_value="Morning digest body"),
+            patch.object(bot, "build_briefing", return_value="Morning digest body") as build_briefing,
             patch.object(bot, "_queue_app_notification", return_value={
                 "id": "1",
                 "kind": "briefing",
@@ -705,11 +737,14 @@ class AgenticClaudeTests(unittest.TestCase):
                 "body": "Morning digest body",
                 "_push_sent": 1,
             }),
+            patch.object(bot, "_remember_news_digest_entries") as remember_digest,
             patch.object(bot.gs, "set_config") as set_config,
         ):
             sent = asyncio.run(bot.send_morning_briefing_once())
 
         self.assertTrue(sent)
+        build_briefing.assert_called_once_with(record_news_digest=False)
+        remember_digest.assert_called_once_with([pending_entry], now=pending_at)
         set_config.assert_called_once()
 
     def test_morning_briefing_retries_stale_sent_flag_without_push_log(self):
@@ -2255,6 +2290,21 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertIn("get_latest_news", names)
         self.assertIn("get_liverpool_brief", names)
+
+    def test_pwa_preferred_topics_followup_uses_news_tools(self):
+        text = "Nothing on my other preferred topics?"
+        tools = bot.pwa_tools_for_message(text)
+        names = {tool["name"] for tool in tools}
+
+        self.assertIn("get_latest_news", names)
+        self.assertEqual(bot._forced_tool_for_text(text, tools), "get_latest_news")
+        self.assertFalse(asyncio.run(bot.should_route_quick_pwa_chat([], text)))
+
+    def test_source_discipline_treats_preferred_topics_as_live(self):
+        discipline = bot.source_discipline_for_text("Nothing on my other preferred topics?")
+
+        self.assertTrue(discipline["needs_live_check"])
+        self.assertIn("get_latest_news", discipline["recommended_tools"])
 
     def test_pwa_lfc_correction_includes_structured_brief(self):
         tools = bot.pwa_tools_for_message("Liverpool didn't host Man Utd yesterday. Get your facts straight pls")

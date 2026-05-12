@@ -2221,7 +2221,14 @@ def enqueue_app_notification(kind: str, title: str, body: str, source: str = "")
         if item.get("archived"):
             continue
         if clean_source and str(item.get("source", "")).strip() == clean_source:
+            item.update({
+                "kind": clean_kind,
+                "title": clean_title,
+                "body": clean_body,
+                "created": now,
+            })
             item["_duplicate"] = True
+            set_app_notifications(notifications)
             return item
         if (
             not clean_source

@@ -71,6 +71,11 @@ try:
 except ValueError:
     logger.warning("Invalid HIRA_EVENING_BRIEFING_CATCHUP_MINUTES; using 90 minutes")
     EVENING_BRIEFING_CATCHUP_MINUTES = 90
+try:
+    MORNING_DIGEST_ITEM_LIMIT = max(4, min(8, int(os.environ.get("HIRA_MORNING_DIGEST_ITEM_LIMIT", "6") or 6)))
+except ValueError:
+    logger.warning("Invalid HIRA_MORNING_DIGEST_ITEM_LIMIT; using 6 items")
+    MORNING_DIGEST_ITEM_LIMIT = 6
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 if not ANTHROPIC_API_KEY:
@@ -392,8 +397,9 @@ VOLATILE_FACT_PATTERN = re.compile(
     r"\b("
     r"latest|current|today|tomorrow|now|live|result|results|score|scores|standings|table|"
     r"lineup|line-up|starting xi|fixture|fixtures|schedule|injury|injuries|transfer|rumou?r|"
-    r"price|prices|cost|weather|forecast|prayer|khutbah|news|headline|headlines|"
-    r"f1|formula 1|liverpool|lfc|epl|premier league"
+    r"price|prices|cost|weather|forecast|prayer|khutbah|news|headline|headlines|digest|briefing|"
+    r"shortlist|shortlisted|preferred topics|f1|formula 1|liverpool|lfc|epl|premier league|"
+    r"nothing phone|nothing os|nothing products|cmf|carl pei"
     r")\b",
     re.I,
 )
@@ -415,9 +421,9 @@ def source_discipline_for_text(text: str) -> dict:
         tools.append("get_nea_weather")
     if re.search(r"\b(prayer|solat|salah|subuh|fajr|zohor|asar|maghrib|isyak|khutbah|sermon)\b", lowered):
         tools.extend(["get_muis_prayer_times", "get_muis_friday_khutbah"])
-    if VOLATILE_FACT_PATTERN.search(clean):
+    if VOLATILE_FACT_PATTERN.search(clean) or re.search(r"\b(ai|apple|android|ios|macos|singapore education|moe)\b", lowered):
         tools.append("get_latest_news")
-    if re.search(r"\b(search|web|website|article|page|latest|current|news|headline|rumou?r)\b", lowered):
+    if re.search(r"\b(search|web|website|article|page|latest|current|news|headline|rumou?r|digest|shortlist|shortlisted|preferred topics)\b", lowered):
         tools.append("web_search")
 
     deduped_tools = list(dict.fromkeys(tools))
@@ -5467,6 +5473,14 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     ]):
         return "get_liverpool_brief"
 
+    if "get_latest_news" in available and has_any([
+        "digest", "briefing", "news", "latest", "headlines", "shortlist",
+        "shortlisted", "preferred topics", "nothing phone", "nothing os",
+        "nothing products", "cmf", "carl pei", "apple", "ai",
+        "singapore education",
+    ]):
+        return "get_latest_news"
+
     if (
         "update_project_status" in available
         and has_any(["gameplan", "ruh", "rūḥ", "app", "apps", "project", "client", "demo"])
@@ -6927,7 +6941,7 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         r"\b(football|f1|formula 1|liverpool|lfc|man utd|man united|manchester united|premier league|epl|grand prix|mercedes|ferrari|mclaren|red bull)\b",
         combined,
     )
-    if re.search(r"\b(digest|briefing|news|latest|current|headline|headlines|search|web|football|f1|liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|apple|ai|singapore education|nothing os)\b", text) or sports_followup or correction_followup:
+    if re.search(r"\b(digest|briefing|news|latest|current|headline|headlines|search|web|shortlist|shortlisted|preferred topics|football|f1|liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|apple|ai|singapore education|nothing phone|nothing os|nothing products|cmf|carl pei)\b", text) or sports_followup or correction_followup:
         add(NEWS_TOOL, SOURCE_NOTE_TOOL)
         if re.search(r"\b(liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|man utd|man united|manchester united)\b", combined):
             add(LIVERPOOL_BRIEF_TOOL)
@@ -7022,7 +7036,7 @@ async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
 def _looks_tool_heavy(text: str) -> bool:
     return bool(re.search(
         r"\b(calendar|schedule|meeting|event|remind|nudge|notify|notification|notifications|push|task|due|marking|scripts?|"
-        r"email|gmail|inbox|draft|reply|timetable|lesson|news|latest|search|remember|"
+        r"email|gmail|inbox|draft|reply|timetable|lesson|news|latest|search|digest|briefing|shortlist|shortlisted|preferred topics|remember|"
         r"classlist|class list|students?|my classes|mtl group|grouping|"
         r"prayer|prayers|pray|solat|salah|subuh|fajr|syuruk|zohor|zuhur|zuhr|dhuhr|asar|asr|maghrib|isyak|isha|muis|religion|religious|islam|islamic|halal|haram|fatwa|zakat|puasa|fasting|ramadan|qibla|wudhu|wudu|ablution|"
         r"location|where|journey|travel|route|directions|commute|drive|driving|mrt|bus|walk|walking|masjid|mosque|"
@@ -7031,6 +7045,7 @@ def _looks_tool_heavy(text: str) -> bool:
         r"milestone|launched|shipped|released|approved|rejected|submitted|blocked|"
         r"football|f1|liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|"
         r"match|recap|score|home|away|host(?:ed)?|line-?up|starting xi|standings|table|fixtures?|results?|transfers?|rumou?rs?|injur(?:y|ies)|"
+        r"nothing phone|nothing os|nothing products|cmf|carl pei|"
         r"salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|"
         r"facts straight|fact check|source check|actual details?|actual result|"
         r"document|worksheet|slides?|ppt|deck|follow\s*up|done|complete)\b",
@@ -8038,6 +8053,8 @@ MORNING_BRIEFING_SENT_KEY = "last_morning_briefing_date"
 EVENING_BRIEFING_SENT_KEY = "last_evening_briefing_date"
 NEWS_DIGEST_HISTORY_KEY = "news_digest_history"
 NEWS_DIGEST_FRESHNESS_HOURS = 48
+_PENDING_NEWS_DIGEST_ENTRIES: list[dict] = []
+_PENDING_NEWS_DIGEST_BUILT_AT: datetime | None = None
 NOTIFICATION_NEGATIVE_ACTIONS = {"dismissed", "not_now", "not_useful"}
 NOTIFICATION_COOLDOWN_HOURS = {
     "checkin": 8,
@@ -8497,9 +8514,30 @@ def _remember_news_digest_entries(entries: list[dict], now: datetime | None = No
 
 
 def _fresh_morning_digest(now: datetime | None = None, record: bool = False) -> str:
+    global _PENDING_NEWS_DIGEST_ENTRIES, _PENDING_NEWS_DIGEST_BUILT_AT
     current = now or datetime.now(SGT)
-    entries = build_curated_digest_entries(now=current, limit=4, fetch_limit=4, record=record)
+    entries = build_curated_digest_entries(
+        now=current,
+        limit=MORNING_DIGEST_ITEM_LIMIT,
+        fetch_limit=max(4, MORNING_DIGEST_ITEM_LIMIT),
+        record=False,
+    )
+    _PENDING_NEWS_DIGEST_ENTRIES = entries
+    _PENDING_NEWS_DIGEST_BUILT_AT = current
+    if record:
+        _remember_news_digest_entries(entries, now=current)
     return format_curated_digest(entries)
+
+
+def _commit_pending_morning_digest_entries():
+    global _PENDING_NEWS_DIGEST_ENTRIES, _PENDING_NEWS_DIGEST_BUILT_AT
+    entries = list(_PENDING_NEWS_DIGEST_ENTRIES or [])
+    built_at = _PENDING_NEWS_DIGEST_BUILT_AT or datetime.now(SGT)
+    if not entries:
+        return
+    _remember_news_digest_entries(entries, now=built_at)
+    _PENDING_NEWS_DIGEST_ENTRIES = []
+    _PENDING_NEWS_DIGEST_BUILT_AT = None
 
 
 async def send_morning_briefing_once(context=None, force: bool = False, source: str = "morning_briefing") -> bool:
@@ -8513,7 +8551,7 @@ async def send_morning_briefing_once(context=None, force: bool = False, source: 
     try:
         if not force and gs.get_config(MORNING_BRIEFING_SENT_KEY) == today_key and _web_push_delivered_for_source(source_key):
             return True
-        text = build_briefing(record_news_digest=True)
+        text = build_briefing(record_news_digest=False)
         if context is not None:
             await _send_telegram_notification(context, text)
         item = _queue_app_notification("briefing", "Morning briefing", text, source=source_key)
@@ -8523,6 +8561,7 @@ async def send_morning_briefing_once(context=None, force: bool = False, source: 
         if int(item.get("_push_sent", 0) or 0) <= 0:
             logger.warning("Morning briefing push had no confirmed phone deliveries; will retry during catch-up window")
             return False
+        _commit_pending_morning_digest_entries()
         gs.set_config(MORNING_BRIEFING_SENT_KEY, today_key)
         return True
     except Exception as e:
