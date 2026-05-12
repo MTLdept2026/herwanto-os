@@ -2755,6 +2755,29 @@ class AgenticClaudeTests(unittest.TestCase):
         names = {tool["name"] for tool in tools}
 
         self.assertIn("get_f1_brief", names)
+        self.assertIn("web_search", names)
+
+    def test_web_search_available_without_tavily_key(self):
+        with patch.dict(os.environ, {"TAVILY_API_KEY": ""}, clear=False):
+            self.assertTrue(search_service.search_enabled())
+
+    def test_web_search_uses_duckduckgo_fallback_when_tavily_missing(self):
+        with (
+            patch.object(search_service, "TAVILY_API_KEY", ""),
+            patch.object(search_service, "_duckduckgo_search", return_value=[
+                {"title": "Official F1 calendar", "description": "", "url": "https://www.formula1.com/en/racing/2026"},
+            ]) as duckduckgo,
+            patch.object(search_service, "_google_news_search_results", return_value=[]),
+        ):
+            results = search_service.web_search("2026 F1 calendar", max_results=3)
+
+        duckduckgo.assert_called_once()
+        self.assertEqual(results[0]["url"], "https://www.formula1.com/en/racing/2026")
+
+    def test_duckduckgo_redirect_url_is_cleaned(self):
+        raw = "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.formula1.com%2Fen%2Fracing%2F2026"
+
+        self.assertEqual(search_service._clean_search_url(raw), "https://www.formula1.com/en/racing/2026")
 
     def test_deep_model_selected_for_architecture_work_when_configured(self):
         with patch.object(bot, "DEEP_MODEL", "deep-model"), patch.object(bot, "AGENTIC_MODEL", "agentic-model"):

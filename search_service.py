@@ -16,12 +16,13 @@ import feedparser
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 logger = logging.getLogger(__name__)
 
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 GOOGLE_NEWS_TIMEOUT = 8
+WEB_SEARCH_TIMEOUT = 8
 
 # Google News RSS — one per digest topic, no API key needed
 # Format: news.google.com/rss/search?q=QUERY&hl=en-SG&gl=SG&ceid=SG:en
@@ -44,7 +45,7 @@ DIGEST_TOPICS = [
 
 
 def search_enabled():
-    return bool(TAVILY_API_KEY)
+    return os.environ.get("HIRA_DISABLE_WEB_SEARCH", "").strip().lower() not in {"1", "true", "yes"}
 
 
 class _ReadableHTMLParser(HTMLParser):
@@ -169,17 +170,96 @@ def format_url_fetch(result: dict) -> str:
     return "\n".join(lines).strip()
 
 
-# ─── WEB SEARCH (Tavily — optional) ─────────────────────────────────────────
+# ─── WEB SEARCH (Tavily optional, no-key fallback) ──────────────────────────
 
-def web_search(query, max_results=5):
-    """Search via Tavily API. Returns [] if key not set."""
+class _SearchResultParser(HTMLParser):
+    """Small parser for search result pages where links carry useful titles."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.results = []
+        self._current_href = ""
+        self._current_text = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() != "a":
+            return
+        attr = dict(attrs)
+        href = attr.get("href", "")
+        if not href:
+            return
+        cls = attr.get("class", "")
+        rel = attr.get("rel", "")
+        if "result" in cls or "nofollow" in rel or href.startswith("/l/?"):
+            self._current_href = href
+            self._current_text = []
+
+    def handle_data(self, data):
+        if self._current_href:
+            self._current_text.append(data)
+
+    def handle_endtag(self, tag):
+        if tag.lower() != "a" or not self._current_href:
+            return
+        title = " ".join(" ".join(self._current_text).split())
+        href = _clean_search_url(self._current_href)
+        if title and href:
+            self.results.append({"title": title, "description": "", "url": href})
+        self._current_href = ""
+        self._current_text = []
+
+
+def _clean_search_url(url: str) -> str:
+    value = (url or "").strip()
+    if not value:
+        return ""
+    parsed = urlparse(value)
+    if parsed.netloc.endswith("duckduckgo.com") and parsed.path.startswith("/l/"):
+        target = parse_qs(parsed.query).get("uddg", [""])[0]
+        return unquote(target)
+    if value.startswith("//"):
+        value = f"https:{value}"
+    if value.startswith("/"):
+        return ""
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    if "duckduckgo.com" in parsed.netloc and parsed.path in {"", "/"}:
+        return ""
+    return value
+
+
+def _dedupe_results(results: list[dict], max_results: int) -> list[dict]:
+    seen = set()
+    clean = []
+    for item in results:
+        url = str(item.get("url", "") or "").strip()
+        title = str(item.get("title", "") or "").strip()
+        if not url or not title:
+            continue
+        key = url.lower().rstrip("/")
+        if key in seen:
+            continue
+        seen.add(key)
+        clean.append({
+            "title": title,
+            "description": str(item.get("description", "") or "").strip()[:500],
+            "url": url,
+            "source": str(item.get("source", "") or "").strip(),
+        })
+        if len(clean) >= max(1, int(max_results or 5)):
+            break
+    return clean
+
+
+def _tavily_search(query: str, max_results: int = 5) -> list[dict]:
     if not TAVILY_API_KEY:
         return []
     try:
         resp = requests.post(
             "https://api.tavily.com/search",
             json={"api_key": TAVILY_API_KEY, "query": query, "max_results": max_results},
-            timeout=8,
+            timeout=WEB_SEARCH_TIMEOUT,
         )
         resp.raise_for_status()
         return [
@@ -191,13 +271,59 @@ def web_search(query, max_results=5):
         return []
 
 
+def _duckduckgo_search(query: str, max_results: int = 5) -> list[dict]:
+    try:
+        resp = requests.get(
+            "https://lite.duckduckgo.com/lite/",
+            params={"q": query},
+            headers={"User-Agent": "Mozilla/5.0 (compatible; HIRA/1.0; +https://example.com/hira)"},
+            timeout=WEB_SEARCH_TIMEOUT,
+        )
+        resp.raise_for_status()
+        parser = _SearchResultParser()
+        parser.feed(resp.text or "")
+        return _dedupe_results(parser.results, max_results)
+    except Exception as e:
+        logger.warning(f"DuckDuckGo search error for '{query}': {e}")
+        return []
+
+
+def _google_news_search_results(query: str, max_results: int = 5) -> list[dict]:
+    return [
+        {
+            "title": item.get("title", ""),
+            "description": " · ".join(part for part in [item.get("source", ""), item.get("published", "")] if part),
+            "url": item.get("url", ""),
+            "source": "Google News",
+        }
+        for item in google_news(query, max_items=max_results)
+    ]
+
+
+def web_search(query, max_results=5):
+    """Search the open web, using Tavily when configured and no-key fallbacks otherwise."""
+    clean = " ".join(str(query or "").split())
+    if not clean or not search_enabled():
+        return []
+    limit = max(1, min(int(max_results or 5), 10))
+    results = []
+    results.extend(_tavily_search(clean, max_results=limit))
+    if len(results) < limit:
+        results.extend(_duckduckgo_search(clean, max_results=limit * 2))
+    if len(results) < limit:
+        results.extend(_google_news_search_results(clean, max_results=limit))
+    return _dedupe_results(results, limit)
+
+
 def format_results(results):
     if not results:
         return "No results found."
     lines = []
     for r in results:
-        lines.append(f"Title: {r['title']}")
-        lines.append(f"Summary: {r['description']}")
+        source = f" ({r['source']})" if r.get("source") else ""
+        lines.append(f"Title: {r['title']}{source}")
+        if r.get("description"):
+            lines.append(f"Summary: {r['description']}")
         lines.append(f"URL: {r['url']}")
         lines.append("")
     return "\n".join(lines).strip()
