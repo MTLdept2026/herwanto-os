@@ -445,6 +445,19 @@ def _is_cca_schedule_query_text(text: str, recent_context: str = "") -> bool:
     return False
 
 
+def _is_memory_commit_query_text(text: str) -> bool:
+    clean = " ".join(str(text or "").lower().split())
+    if not clean:
+        return False
+    return bool(re.search(
+        r"\b(?:remember|note that|commit (?:this|that|it)?\s*(?:to )?(?:memory)?|"
+        r"save (?:this|that|it)?\s*(?:to|in)?\s*(?:memory)?|"
+        r"store (?:this|that|it)?\s*(?:to|in)?\s*(?:memory)?|"
+        r"permanent memory|make (?:this|that|it) permanent|don'?t forget)\b",
+        clean,
+    ))
+
+
 def source_discipline_for_text(text: str) -> dict:
     clean = " ".join((text or "").split())
     lowered = clean.lower()
@@ -901,7 +914,7 @@ Rules:
 - For broad research, use web_research first: it plans query variants, searches, fetches top sources, and returns evidence snippets. For quick lookups use web_search, then fetch_url on the best official/primary/recent result before giving conclusions. When the user pastes a web link or asks you to read/check a URL, call fetch_url. If fetch_url fails or the page is paywalled/dynamic, say what failed and use web_search/get_latest_news for corroborating public sources where available.
 - After web_search, fetch_url, get_latest_news, get_liverpool_brief, or get_f1_brief reveals useful knowledge H.I.R.A should retain, call remember_source_insight. Store stable background as durability=stable. Store current standings, line-ups, results, transfer rumours, prices, schedules, and laws/rules that may change as durability=live_check or rumour, so future answers know to verify again.
 - When the user asks about weather, temperature, high/low temp, hot/cold conditions, rain, forecast, haze, PSI, air quality, umbrella, or whether it will rain in Singapore — call get_nea_weather before answering. If no area is specified, use Yishun. Weather answers must include available temperature, humidity, PSI/PM2.5 air quality, 2-hour nowcast, and 24-hour forecast details.
-- When the user says "remember", "note that", or gives stable preferences/facts about himself — call remember_user_info.
+- When the user says "remember", "note that", "commit this to memory", "save this to memory", "don't forget", or gives stable preferences/facts about himself — call remember_user_info.
 - For permanent memory questions, be precise: long-term memory is backed by the app's configured storage, and a remember action only persisted if remember_user_info returned success. Never claim something was committed, lost, or blocked by Sheets/backend permissions without the tool result.
 - Treat Correction_Ledger memory as high-priority. If it conflicts with older memory, follow the correction and do not repeat the old mistake.
 - Treat Self_Reflections memory as your own learning journal: use it to improve future behaviour, source discipline, and follow-through.
@@ -6069,6 +6082,8 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
         and parse_delayed_digest_push_request(text)
     ):
         return "create_proactive_nudge"
+    if "remember_user_info" in available and _is_memory_commit_query_text(text):
+        return "remember_user_info"
 
     if (
         "get_gmail_brief" in available
@@ -7795,7 +7810,7 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         add(SLIDE_ARTIFACT_TOOL, TEMPLATE_MEMORY_TOOL)
     if re.search(r"\b(new interest|new topic|getting into|got into|picked up|i'?m into|i am into|deep dive|beginner map|track this|follow this|learn this|teach me about)\b", text):
         add(TOPIC_PROFILE_TOOL, MEMORY_TOOL)
-    if re.search(r"\b(remember|note that|preference|prefer|template|style|project status|milestone)\b", text):
+    if _is_memory_commit_query_text(text) or re.search(r"\b(preference|prefer|template|style|project status|milestone)\b", text):
         add(MEMORY_TOOL, PROJECT_TOOL, TEMPLATE_MEMORY_TOOL, TOPIC_PROFILE_TOOL)
     if re.search(r"\b(gameplan|ruh|rūḥ|app|apps|project|projects|product|products|app store|play store|review|approved|rejected|submitted|launched|shipped|released|blocked|progress|status|milestone|client|demo)\b", text):
         add(CONTEXT_TOOL, PROJECT_TOOL, MEMORY_TOOL)
@@ -7884,7 +7899,7 @@ async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
 def _looks_tool_heavy(text: str) -> bool:
     return bool(re.search(
         r"\b(calendar|schedule|meeting|event|duty|roster|rostered|nsg|n2a?|c\s*div|b\s*div|remind|nudge|notify|notification|notifications|push|task|due|marking|scripts?|"
-        r"email|gmail|inbox|draft|reply|timetable|lesson|news|latest|search|digest|briefing|shortlist|shortlisted|preferred topics|remember|"
+        r"email|gmail|inbox|draft|reply|timetable|lesson|news|latest|search|digest|briefing|shortlist|shortlisted|preferred topics|remember|memory|don'?t forget|"
         r"classlist|class list|students?|my classes|mtl group|grouping|colour|color|highlight|red fill|failures?|below 50|less than 50|"
         r"prayer|prayers|pray|solat|salah|subuh|fajr|syuruk|zohor|zuhur|zuhr|dhuhr|asar|asr|maghrib|isyak|isha|muis|religion|religious|islam|islamic|halal|haram|fatwa|zakat|puasa|fasting|ramadan|qibla|wudhu|wudu|ablution|"
         r"location|where|journey|travel|route|directions|commute|drive|driving|mrt|bus|walk|walking|masjid|mosque|"
@@ -7925,7 +7940,7 @@ async def should_route_quick_pwa_chat(messages: list[dict], message: str) -> boo
         and re.search(r"\b(?:classlist|class list|2g3|3g3|1g2|wa1|wa2|fa1|fa2|percentage|percent|%)\b", recent_context)
     ):
         return False
-    if _is_day_planning_query(text) or _is_cca_schedule_query_text(text, recent_context):
+    if _is_day_planning_query(text) or _is_cca_schedule_query_text(text, recent_context) or _is_memory_commit_query_text(text):
         return False
     if not text or len(text) > 120 or _looks_tool_heavy(text):
         return False

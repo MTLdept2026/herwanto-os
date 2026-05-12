@@ -1199,6 +1199,25 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(guarded, reply)
 
+    def test_commit_to_memory_forces_memory_tool(self):
+        forced = bot._forced_tool_for_text(
+            "Commit this to memory: once fixed, push immediately",
+            [{"name": "remember_user_info"}, {"name": "get_assistant_context"}],
+        )
+
+        self.assertEqual(forced, "remember_user_info")
+
+    def test_commit_to_memory_gets_memory_tool_in_pwa(self):
+        tools = bot.pwa_tools_for_message("Save this to memory: stop waiting around after fixes")
+        names = {tool["name"] for tool in tools}
+
+        self.assertIn("remember_user_info", names)
+
+    def test_commit_to_memory_is_not_quick_chat(self):
+        routed_quick = asyncio.run(bot.should_route_quick_pwa_chat([], "Commit this to memory"))
+
+        self.assertFalse(routed_quick)
+
     def test_daily_load_counts_relieved_lessons_as_zero(self):
         today_key = bot.datetime.now(bot.SGT).date().isoformat()
         agenda = {
