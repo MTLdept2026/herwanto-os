@@ -1178,6 +1178,40 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(snapshot["selected_tab"], "May")
         self.assertFalse(snapshot["assigned"])
 
+    def test_cca_source_parses_resource_key_from_full_link(self):
+        url = (
+            "https://docs.google.com/spreadsheets/d/sheet123/edit"
+            "?gid=987&resourcekey=0-abcDEF_123#gid=987"
+        )
+        with patch.object(bot.gs, "get_config", side_effect=lambda key: url if key == "cca_schedule_url" else ""):
+            source = bot.gs._cca_source_config()
+
+        self.assertEqual(source["spreadsheet_id"], "sheet123")
+        self.assertEqual(source["gid"], "987")
+        self.assertEqual(source["resource_key"], "0-abcDEF_123")
+        self.assertIn("resourcekey=0-abcDEF_123", source["url"])
+
+    def test_public_sheet_csv_uses_resource_key(self):
+        captured = {}
+
+        class FakeResponse:
+            status_code = 200
+            url = "https://docs.google.com/spreadsheets/d/sheet123/export"
+            text = "Date,Teacher\nThursday 14 May,Herwanto\n"
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            captured["url"] = url
+            captured["params"] = params
+            captured["headers"] = headers
+            return FakeResponse()
+
+        with patch.object(bot.gs.requests, "get", side_effect=fake_get):
+            rows = bot.gs._public_sheet_csv_values("sheet123", "987", "0-key")
+
+        self.assertEqual(rows[1][1], "Herwanto")
+        self.assertEqual(captured["params"]["resourcekey"], "0-key")
+        self.assertEqual(captured["headers"]["X-Goog-Drive-Resource-Keys"], "sheet123/0-key")
+
     def test_unsupported_memory_backend_claim_is_blocked(self):
         reply = (
             "The memory store is hitting a Sheets error on the backend. "

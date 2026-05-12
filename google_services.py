@@ -51,6 +51,7 @@ GMAIL_SCOPES = [
 SHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "")
 CCA_SCHEDULE_SPREADSHEET_ID = os.environ.get("CCA_SCHEDULE_SPREADSHEET_ID", "1L5FGME5itmc3vknwL0xSsIrz4qJ3n6z1YfxffgeB3nU")
 CCA_SCHEDULE_GID = os.environ.get("CCA_SCHEDULE_GID", "1961438111")
+CCA_SCHEDULE_RESOURCE_KEY = os.environ.get("CCA_SCHEDULE_RESOURCE_KEY", "")
 DEFAULT_CLASSLIST_SHEET_IDS = [
     "1wK1YTRzyjQ5a976D_Z4q886sZofTQnpXT4kMtf1LjKk",  # 2026 S1 MTL CLASSLIST
     "1kHvPV58jdk9mNRuQSpS4bWy93UsSvYFT-CPw0rimkvs",  # 2026 S2 MTL CLASSLIST
@@ -648,23 +649,28 @@ def _row_has_any(row: list[str], tokens: set[str]) -> bool:
     return any(token and token in text for token in tokens)
 
 
-def _sheet_values(spreadsheet_id: str, sheet_title: str, cell_range: str = "A1:Z220") -> list[list[str]]:
+def _sheet_values(spreadsheet_id: str, sheet_title: str, cell_range: str = "A1:Z220", resource_key: str = "") -> list[list[str]]:
     quoted = _quote_sheet_name(sheet_title)
-    result = _sheets().spreadsheets().values().get(
+    request = _sheets().spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
         range=f"{quoted}!{cell_range}",
-    ).execute()
+    )
+    if resource_key and hasattr(request, "headers"):
+        request.headers.update(_resource_key_headers(spreadsheet_id, resource_key))
+    result = request.execute()
     return [[str(cell).strip() for cell in row] for row in result.get("values", [])]
 
 
-def _public_sheet_csv_values(spreadsheet_id: str, gid: str = "", timeout: int = 12) -> list[list[str]]:
+def _public_sheet_csv_values(spreadsheet_id: str, gid: str = "", resource_key: str = "", timeout: int = 12) -> list[list[str]]:
     if not spreadsheet_id:
         return []
     params = {"format": "csv"}
     if str(gid or "").strip():
         params["gid"] = str(gid).strip()
+    if str(resource_key or "").strip():
+        params["resourcekey"] = str(resource_key).strip()
     url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/export"
-    response = requests.get(url, params=params, timeout=timeout)
+    response = requests.get(url, params=params, headers=_resource_key_headers(spreadsheet_id, resource_key), timeout=timeout)
     if response.status_code >= 400:
         raise RuntimeError(f"public CSV export returned HTTP {response.status_code}")
     text = response.text or ""
@@ -678,6 +684,33 @@ def _public_sheet_csv_values(spreadsheet_id: str, gid: str = "", timeout: int = 
     return rows
 
 
+def _parse_google_sheet_source(value: str) -> dict:
+    text = str(value or "").strip()
+    if not text:
+        return {}
+    result: dict[str, str] = {}
+    match = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", text)
+    if match:
+        result["spreadsheet_id"] = match.group(1)
+    elif re.fullmatch(r"[a-zA-Z0-9_-]{20,}", text):
+        result["spreadsheet_id"] = text
+    gid_match = re.search(r"[?&#]gid=([0-9]+)", text)
+    if gid_match:
+        result["gid"] = gid_match.group(1)
+    resource_match = re.search(r"[?&#]resourcekey=([^&#]+)", text)
+    if resource_match:
+        result["resource_key"] = resource_match.group(1)
+    return result
+
+
+def _resource_key_headers(spreadsheet_id: str, resource_key: str = "") -> dict:
+    clean_key = str(resource_key or "").strip()
+    clean_id = str(spreadsheet_id or "").strip()
+    if not (clean_id and clean_key):
+        return {}
+    return {"X-Goog-Drive-Resource-Keys": f"{clean_id}/{clean_key}"}
+
+
 def _cca_schedule_public_snapshot(
     source: dict,
     target: date,
@@ -685,7 +718,7 @@ def _cca_schedule_public_snapshot(
     user_name: str = "Herwanto",
     error: str = "",
 ) -> dict:
-    rows = _public_sheet_csv_values(source["spreadsheet_id"], source.get("gid", ""))
+    rows = _public_sheet_csv_values(source["spreadsheet_id"], source.get("gid", ""), source.get("resource_key", ""))
     tokens = _date_tokens_for_sheet(target)
     name_tokens = {str(user_name or "Herwanto").lower(), "herwanto"}
     date_rows = [row for row in rows if _row_has_any(row, tokens)]
@@ -712,23 +745,36 @@ def _cca_schedule_public_snapshot(
 
 
 def _cca_source_config() -> dict:
-    spreadsheet_id = get_config("cca_schedule_spreadsheet_id") or CCA_SCHEDULE_SPREADSHEET_ID
-    gid = get_config("cca_schedule_gid") or CCA_SCHEDULE_GID
+    source_url = get_config("cca_schedule_url") or os.environ.get("CCA_SCHEDULE_URL", "")
+    parsed = _parse_google_sheet_source(source_url)
+    spreadsheet_id = parsed.get("spreadsheet_id") or get_config("cca_schedule_spreadsheet_id") or CCA_SCHEDULE_SPREADSHEET_ID
+    gid = parsed.get("gid") or get_config("cca_schedule_gid") or CCA_SCHEDULE_GID
+    resource_key = parsed.get("resource_key") or get_config("cca_schedule_resource_key") or CCA_SCHEDULE_RESOURCE_KEY
+    resource_suffix = f"&resourcekey={resource_key}" if resource_key else ""
     return {
         "spreadsheet_id": spreadsheet_id,
         "gid": str(gid or ""),
-        "url": f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit?gid={gid}#gid={gid}",
+        "resource_key": str(resource_key or ""),
+        "url": f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit?gid={gid}{resource_suffix}#gid={gid}",
     }
 
 
-def set_cca_schedule_source(spreadsheet_id: str = CCA_SCHEDULE_SPREADSHEET_ID, gid: str = CCA_SCHEDULE_GID) -> dict:
-    clean_id = str(spreadsheet_id or "").strip()
-    clean_gid = str(gid or "").strip()
+def set_cca_schedule_source(
+    spreadsheet_id: str = CCA_SCHEDULE_SPREADSHEET_ID,
+    gid: str = CCA_SCHEDULE_GID,
+    resource_key: str = "",
+) -> dict:
+    parsed = _parse_google_sheet_source(spreadsheet_id)
+    clean_id = (parsed.get("spreadsheet_id") or str(spreadsheet_id or "")).strip()
+    clean_gid = (parsed.get("gid") or str(gid or "")).strip()
+    clean_resource_key = (parsed.get("resource_key") or str(resource_key or "")).strip()
     if not clean_id:
         raise ValueError("CCA schedule spreadsheet id is required.")
     set_config("cca_schedule_spreadsheet_id", clean_id)
     if clean_gid:
         set_config("cca_schedule_gid", clean_gid)
+    if clean_resource_key:
+        set_config("cca_schedule_resource_key", clean_resource_key)
     return _cca_source_config()
 
 
@@ -744,11 +790,14 @@ def get_cca_schedule_snapshot(target_date: date | str | None = None, week_label:
     gid = source["gid"]
     auth = sheets_access_identity()
     try:
-        book = _sheets().spreadsheets().get(
+        request = _sheets().spreadsheets().get(
             spreadsheetId=spreadsheet_id,
             includeGridData=False,
             fields="properties(title),sheets(properties(sheetId,title))",
-        ).execute()
+        )
+        if source.get("resource_key") and hasattr(request, "headers"):
+            request.headers.update(_resource_key_headers(spreadsheet_id, source.get("resource_key", "")))
+        book = request.execute()
     except HttpError as exc:
         status = getattr(exc.resp, "status", None)
         error = f"Sheets API access failed with HTTP {status or 'unknown'}"
@@ -767,6 +816,7 @@ def get_cca_schedule_snapshot(target_date: date | str | None = None, week_label:
                 "error": (
                     f"{error} for {auth.get('mode', 'unknown auth')} ({auth.get('identity', 'unknown identity')}); "
                     f"public CSV fallback also failed: {fallback_exc}. "
+                    f"Resource key present: {'yes' if source.get('resource_key') else 'no'}. "
                     "Official CCA duty status is unverified. Do not ask Herwanto to manually check the sheet; report the access block and use only calendar evidence as non-roster context."
                 ),
             }
@@ -782,7 +832,7 @@ def get_cca_schedule_snapshot(target_date: date | str | None = None, week_label:
         title_text = title.lower()
         rows = []
         try:
-            rows = _sheet_values(spreadsheet_id, title)
+            rows = _sheet_values(spreadsheet_id, title, resource_key=source.get("resource_key", ""))
         except Exception:
             rows = []
         top_text = " ".join(_row_text(row) for row in rows[:30])
