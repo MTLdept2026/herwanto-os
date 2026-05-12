@@ -49,6 +49,8 @@ GMAIL_SCOPES = [
 ]
 
 SHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "")
+DEFAULT_CCA_SCHEDULE_URL = "https://docs.google.com/spreadsheets/d/1L5FGME5itmc3vknwL0xSsIrz4qJ3n6z1YfxffgeB3nU/edit?usp=sharing"
+CCA_SCHEDULE_URL = os.environ.get("CCA_SCHEDULE_URL", DEFAULT_CCA_SCHEDULE_URL)
 CCA_SCHEDULE_SPREADSHEET_ID = os.environ.get("CCA_SCHEDULE_SPREADSHEET_ID", "1L5FGME5itmc3vknwL0xSsIrz4qJ3n6z1YfxffgeB3nU")
 CCA_SCHEDULE_GID = os.environ.get("CCA_SCHEDULE_GID", "1961438111")
 CCA_SCHEDULE_RESOURCE_KEY = os.environ.get("CCA_SCHEDULE_RESOURCE_KEY", "")
@@ -745,7 +747,7 @@ def _cca_schedule_public_snapshot(
 
 
 def _cca_source_config() -> dict:
-    source_url = get_config("cca_schedule_url") or os.environ.get("CCA_SCHEDULE_URL", "")
+    source_url = get_config("cca_schedule_url") or CCA_SCHEDULE_URL
     parsed = _parse_google_sheet_source(source_url)
     spreadsheet_id = parsed.get("spreadsheet_id") or get_config("cca_schedule_spreadsheet_id") or CCA_SCHEDULE_SPREADSHEET_ID
     gid = parsed.get("gid") or get_config("cca_schedule_gid") or CCA_SCHEDULE_GID

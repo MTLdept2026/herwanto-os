@@ -1191,6 +1191,14 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(source["resource_key"], "0-abcDEF_123")
         self.assertIn("resourcekey=0-abcDEF_123", source["url"])
 
+    def test_cca_source_has_backend_default_url(self):
+        with patch.object(bot.gs, "get_config", return_value=""):
+            source = bot.gs._cca_source_config()
+
+        self.assertEqual(source["spreadsheet_id"], "1L5FGME5itmc3vknwL0xSsIrz4qJ3n6z1YfxffgeB3nU")
+        self.assertEqual(source["gid"], "1961438111")
+        self.assertIn("docs.google.com/spreadsheets/d/1L5FGME5itmc3vknwL0xSsIrz4qJ3n6z1YfxffgeB3nU", source["url"])
+
     def test_public_sheet_csv_uses_resource_key(self):
         captured = {}
 
@@ -1250,6 +1258,20 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertIn("should not push", guarded)
         self.assertNotIn("tell me if your name", guarded)
+
+    def test_memory_tool_failure_reports_only_tool_error(self):
+        reply = (
+            "Annoyingly, the memory write is hitting the same 403 on the backend config sheet. "
+            "Open the config sheet and share it with the service account."
+        )
+        guarded = bot._memory_tool_failure_guardrail(
+            reply,
+            [{"content": "Failed to remember: Google Sheets denied write access while updating Config."}],
+        )
+
+        self.assertIn("Memory save failed: Google Sheets denied write access while updating Config.", guarded)
+        self.assertIn("have not written this", guarded)
+        self.assertNotIn("service account", guarded)
 
     def test_commit_to_memory_forces_memory_tool(self):
         forced = bot._forced_tool_for_text(

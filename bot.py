@@ -6491,6 +6491,18 @@ def _cca_sheet_user_burden_guardrail(reply_text: str, tool_results: list[dict]) 
     )
 
 
+def _memory_tool_failure_guardrail(reply_text: str, tool_results: list[dict]) -> str:
+    evidence = _tool_result_text(tool_results)
+    match = re.search(r"Failed to remember:\s*([^\n]+)", evidence, re.I)
+    if not match:
+        return str(reply_text or "")
+    error = match.group(1).strip()
+    return (
+        f"Memory save failed: {error}\n\n"
+        "I have not written this to permanent memory. I should not claim it is saved, diagnose the backend, or give config instructions unless the tool returned those details."
+    )
+
+
 async def _run_forced_weather_fallback(tool_choice: str | None) -> str | None:
     if tool_choice != "get_nea_weather":
         return None
@@ -7909,7 +7921,8 @@ async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
         if guarded:
             return guarded
 
-    guarded_reply = _backend_claim_guardrail(reply_text or "Done.", all_tool_results)
+    guarded_reply = _memory_tool_failure_guardrail(reply_text or "Done.", all_tool_results)
+    guarded_reply = _backend_claim_guardrail(guarded_reply, all_tool_results)
     guarded_reply = _cca_sheet_user_burden_guardrail(guarded_reply, all_tool_results)
     return _correct_weekday_date_mismatches(guarded_reply)
 
@@ -8085,7 +8098,8 @@ async def stream_agentic_claude(messages, max_tokens=650, tools=None):
             yield {"type": "done", "text": reply_text}
             return
 
-    guarded_reply = _backend_claim_guardrail(reply_text or "Done.", all_tool_results)
+    guarded_reply = _memory_tool_failure_guardrail(reply_text or "Done.", all_tool_results)
+    guarded_reply = _backend_claim_guardrail(guarded_reply, all_tool_results)
     guarded_reply = _cca_sheet_user_burden_guardrail(guarded_reply, all_tool_results)
     corrected = _correct_weekday_date_mismatches(guarded_reply)
     if corrected != (reply_text or "Done."):
@@ -8405,7 +8419,15 @@ async def _execute_tool(name: str, inp: dict) -> str:
             gs.add_memory(inp.get("category", "profile"), inp["text"])
             return f"Remembered under {inp.get('category', 'profile')}: {inp['text']}.{week_note}"
         except Exception as e:
-            return f"Failed to remember: {e}"
+            try:
+                identity = gs.sheets_access_identity()
+                sheet = getattr(gs, "SHEET_ID", "")
+                target = f" Memory sheet: https://docs.google.com/spreadsheets/d/{sheet}/edit" if sheet else ""
+                auth = f" Sheets auth: {identity.get('mode', '')} {identity.get('identity', '')}."
+            except Exception:
+                target = ""
+                auth = ""
+            return f"Failed to remember: {e}.{auth}{target}"
 
     elif name == "create_topic_profile":
         try:
