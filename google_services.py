@@ -1045,6 +1045,7 @@ def _score_sheet_matches(teacher_query: str, class_query: str) -> list[dict]:
                 "spreadsheet_id": spreadsheet_id,
                 "spreadsheet_title": spreadsheet_title,
                 "sheet_title": sheet_title,
+                "sheet_id": sheet_id,
                 "grouping": grouping,
                 "headers": headers,
                 "header_idx": header_idx,
@@ -1210,6 +1211,141 @@ def _score_columns_for_sheet(sheet: dict, column_query: str = "", prefer_percent
     if prefer_percent and any(column["is_percent"] for column in columns):
         return [column for column in columns if column["is_percent"]]
     return columns
+
+
+def _contiguous_row_ranges(row_indexes: list[int]) -> list[tuple[int, int]]:
+    rows = sorted({int(row) for row in row_indexes})
+    if not rows:
+        return []
+    ranges = []
+    start = prev = rows[0]
+    for row in rows[1:]:
+        if row == prev + 1:
+            prev = row
+            continue
+        ranges.append((start, prev + 1))
+        start = prev = row
+    ranges.append((start, prev + 1))
+    return ranges
+
+
+def apply_mtl_failure_highlighting(
+    class_query: str = "",
+    assessment_query: str = "",
+    failure_threshold: float = 50,
+    teacher_query: str = "HERWANTO",
+) -> dict:
+    sheets = _score_sheet_matches(teacher_query, class_query)
+    if not sheets:
+        raise ValueError("No matching MTL score sheets found.")
+    if len(sheets) > 1 and not _norm_cell(class_query):
+        options = [f"{item['grouping'] or item['sheet_title']} / {item['spreadsheet_title']}" for item in sheets[:8]]
+        raise ValueError("More than one classlist sheet matched. Specify the class/group: " + "; ".join(options))
+
+    try:
+        threshold = float(failure_threshold)
+    except (TypeError, ValueError):
+        raise ValueError("Failure threshold must be a number.") from None
+
+    targets = []
+    requests_by_sheet: dict[str, list[dict]] = {}
+    target_descriptions = []
+    for sheet in sheets:
+        sheet_id = sheet.get("sheet_id")
+        if sheet_id is None:
+            raise ValueError(f"Cannot format {sheet['sheet_title']} because the sheet id is missing.")
+        columns = [
+            column for column in _score_columns_for_sheet(sheet, assessment_query, prefer_percent=True)
+            if column.get("is_percent")
+        ]
+        if not columns:
+            continue
+        if len(columns) > 1 and not assessment_query:
+            options = [f"{sheet['grouping'] or sheet['sheet_title']} {column['label']}" for column in columns[:8]]
+            raise ValueError("More than one percentage column matched. Specify the assessment: " + "; ".join(options))
+
+        row_ranges = _contiguous_row_ranges([student["row_index"] for student in sheet["students"]])
+        if not row_ranges:
+            continue
+        for column in columns:
+            ranges = [
+                {
+                    "sheetId": int(sheet_id),
+                    "startRowIndex": start,
+                    "endRowIndex": end,
+                    "startColumnIndex": int(column["index"]),
+                    "endColumnIndex": int(column["index"]) + 1,
+                }
+                for start, end in row_ranges
+            ]
+            requests_by_sheet.setdefault(sheet["spreadsheet_id"], []).append({
+                "addConditionalFormatRule": {
+                    "rule": {
+                        "ranges": ranges,
+                        "booleanRule": {
+                            "condition": {
+                                "type": "NUMBER_LESS",
+                                "values": [{"userEnteredValue": f"{threshold:g}"}],
+                            },
+                            "format": {
+                                "backgroundColorStyle": {
+                                    "rgbColor": {"red": 0.86, "green": 0.0, "blue": 0.12}
+                                },
+                                "textFormat": {
+                                    "foregroundColorStyle": {
+                                        "rgbColor": {"red": 1, "green": 1, "blue": 1}
+                                    },
+                                    "bold": True,
+                                },
+                            },
+                        },
+                    },
+                    "index": 0,
+                }
+            })
+            target = {
+                "spreadsheet_id": sheet["spreadsheet_id"],
+                "spreadsheet_title": sheet["spreadsheet_title"],
+                "sheet_title": sheet["sheet_title"],
+                "grouping": sheet["grouping"],
+                "column": column["label"],
+                "threshold": threshold,
+                "student_rows": len(sheet["students"]),
+            }
+            targets.append(target)
+            target_descriptions.append(f"{sheet['grouping'] or sheet['sheet_title']} {column['label']}")
+
+    if not targets:
+        raise ValueError("No matching percentage columns found for failure highlighting.")
+
+    service = _sheets()
+    for spreadsheet_id, requests in requests_by_sheet.items():
+        try:
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={"requests": requests},
+            ).execute()
+        except HttpError as exc:
+            if getattr(exc.resp, "status", None) == 403:
+                raise PermissionError(_classlist_permission_message(exc, [spreadsheet_id], target_descriptions)) from exc
+            raise
+        _invalidate_classlist_cache(spreadsheet_id)
+
+    return {"highlighted_columns": len(targets), "threshold": threshold, "targets": targets}
+
+
+def format_mtl_failure_highlighting(
+    class_query: str = "",
+    assessment_query: str = "",
+    failure_threshold: float = 50,
+    teacher_query: str = "HERWANTO",
+) -> str:
+    result = apply_mtl_failure_highlighting(class_query, assessment_query, failure_threshold, teacher_query)
+    target_text = "; ".join(
+        f"{target['column']} in {target['spreadsheet_title']} / {target['sheet_title']}"
+        for target in result["targets"]
+    )
+    return f"Applied red failure highlighting below {result['threshold']:g}% to {target_text}."
 
 
 def _stats_for_values(values: list[dict]) -> dict:

@@ -824,7 +824,7 @@ Rules:
 - Never invent mosque or place locations. If a place location affects the answer and you do not have a verified source/tool result, say what you know and what is unverified. Be especially careful with Singapore masjid names that sound similar.
 - Known mosque correction: Masjid Al-Muttaqin is at 5140 Ang Mo Kio Ave 6, Singapore 569844, not Kovan.
 - For journey-time estimates, use the current device location context when it is provided. If it is not provided, use only explicit user-provided origin/destination or stable stored memory, and label any estimate as rough.
-- You have tools: create_calendar_event, delete_calendar_event_by_text, find_available_training_slots, get_cca_schedule, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_mtl_classlists, analyze_mtl_scores, generate_mtl_score_trend_report, update_mtl_class_score, fill_mtl_percentage_scores, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, create_topic_profile, remember_source_insight, update_project_status, get_nea_weather, get_muis_prayer_times, get_muis_friday_khutbah, get_latest_news, get_liverpool_brief, get_f1_brief, web_search, and fetch_url. Use them proactively.
+- You have tools: create_calendar_event, delete_calendar_event_by_text, find_available_training_slots, get_cca_schedule, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_mtl_classlists, analyze_mtl_scores, generate_mtl_score_trend_report, apply_mtl_failure_highlighting, update_mtl_class_score, fill_mtl_percentage_scores, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, create_topic_profile, remember_source_insight, update_project_status, get_nea_weather, get_muis_prayer_times, get_muis_friday_khutbah, get_latest_news, get_liverpool_brief, get_f1_brief, web_search, and fetch_url. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
 - When the user mentions marking scripts, papers, compositions, kefahaman, karangan, worksheets, or a marking stack, use marking tools instead of ordinary reminders: add_marking_task for a new stack, update_marking_progress when he says how many scripts are marked, reset_marking_load when he asks to reset/clear the marking load or board, and get_marking_brief when he asks what marking is outstanding. Marking tasks are mission-critical and must persist even at 0 outstanding; only complete one when he explicitly says that marking stack is done, completed, can be closed, reset, or cleared.
@@ -844,6 +844,7 @@ Rules:
 - When the user asks for his MTL classlists, class names, student names, students in a group, scores, marks, assessment results, or whether a named student is in his class — call get_mtl_classlists before answering. Set include_scores=true for score/mark/result questions.
 - When the user asks for score analysis, progress, mean, median, pass rate, underperforming students, strongest students, most improved, or drastic drops — call analyze_mtl_scores. Treat 0 as an attempted paper with zero marks. Treat AB as absent, VR as valid reason, and MC as medical certificate; these status codes are non-scoring and should be excluded from mean/median/pass-rate calculations but counted separately. For Sec 1G2, 2G3, and 3G3 aliases, resolve them to ML G2, 2G3 ML, and 3G3 ML if needed.
 - When the user asks for graphs, charts, visual trend analysis, or an analysis tab/report in the MTL classlist spreadsheet — call generate_mtl_score_trend_report. It should create or refresh a H.I.R.A trend tab in the same spreadsheet with summary tables, student trend rows, embedded charts, most improved/regressed lists, attention list, and affirmation list.
+- When the user asks to colour, color, highlight, or red-fill failures below the pass mark in an MTL percentage column — call apply_mtl_failure_highlighting. Default failure threshold is 50 unless Herwanto says another pass mark. If he asks for both failure colouring and sheet-side analysis/graphs, call apply_mtl_failure_highlighting and generate_mtl_score_trend_report in the same turn.
 - When the user asks to calculate and enter a score/mark/result into an MTL classlist sheet, calculate only from the numbers he gives or sheet values retrieved with include_scores=true, then call update_mtl_class_score. Do not guess a student or column; if the tool reports ambiguity, ask for the missing class/student/column detail.
 - When the user asks to fill or create percentage columns in an MTL classlist, call fill_mtl_percentage_scores. The tool can create a missing percentage column immediately after the raw score column, e.g. create/fill WA2 (100%) after WA2 (40). Use class_query and assessment_query if the user provides them; otherwise the tool will ask for specificity when multiple columns match.
 - When the user asks about latest news, current events, headlines, football, Liverpool/LFC, F1, AI, Singapore education, apps, Apple, Nothing OS, or his shortlisted topics — call get_latest_news and/or web_search before answering. Prefer get_liverpool_brief for Liverpool/LFC questions and get_f1_brief for Formula 1 questions because they gather structured source slices, but if those are thin, stale, or say "no items found", immediately run web_search with a targeted query.
@@ -1217,6 +1218,28 @@ GENERATE_MTL_TREND_REPORT_TOOL = {
             "assessment_query": {
                 "type": "string",
                 "description": "Optional assessment or family filter, e.g. WA, WA2, Pra-WA, FA, %, Prelim. Leave blank to include all comparable score columns."
+            }
+        }
+    }
+}
+
+APPLY_MTL_FAILURE_HIGHLIGHTING_TOOL = {
+    "name": "apply_mtl_failure_highlighting",
+    "description": "Apply red conditional formatting to failure scores in Herwanto's MTL percentage columns in Google Sheets. Use when the user asks to colour/color/highlight/red-fill failures, failed scores, below-pass scores, or marks below a threshold in a percentage column. Defaults to highlighting values below 50.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "class_query": {
+                "type": "string",
+                "description": "Optional class/group filter, e.g. S4-AN, 2G3, 3G3, 4NT BML. Strongly recommended if multiple classlists match."
+            },
+            "assessment_query": {
+                "type": "string",
+                "description": "Optional assessment or percentage column filter, e.g. WA2, WA2 %, FA2 %, Pra-WA2. Strongly recommended when multiple percentage columns exist."
+            },
+            "failure_threshold": {
+                "type": "number",
+                "description": "Scores strictly below this percentage are highlighted red. Default 50."
             }
         }
     }
@@ -6038,6 +6061,20 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     ]):
         return "fill_mtl_percentage_scores"
 
+    if "apply_mtl_failure_highlighting" in available and (
+        has_any([
+            "colour failure", "colour failures", "color failure", "color failures",
+            "highlight failure", "highlight failures", "red fill", "fill red",
+            "red for failures", "failures with red", "below 50", "less than 50",
+            "below pass", "below passing", "failed scores", "failure scores"
+        ])
+        or (
+            has_any(["colour", "color", "highlight", "red"])
+            and has_any(["failure", "failures", "failed", "below 50", "less than 50"])
+        )
+    ):
+        return "apply_mtl_failure_highlighting"
+
     if "create_topic_profile" in available and has_any([
         "new interest", "new topic", "getting into", "got into", "picked up",
         "i'm into", "im into", "i am into", "deep dive", "beginner map",
@@ -6249,6 +6286,13 @@ def _forced_tool_for_current_turn(messages: list[dict], tools: list[dict]) -> st
         and re.search(r"\b(?:fill|percentage|percent|%)\b", recent_context)
     ):
         return "fill_mtl_percentage_scores"
+    if (
+        "apply_mtl_failure_highlighting" in available
+        and re.search(r"\b(?:both|do both|same|that too)\b", clean)
+        and re.search(r"\b(?:colour|color|highlight|red|failure|failures|below 50|less than 50)\b", recent_context)
+        and re.search(r"\b(?:trend|analysis tab|report tab|graph|graphs|chart|charts)\b", recent_context)
+    ):
+        return "apply_mtl_failure_highlighting"
     if (
         "get_liverpool_brief" in available
         and re.search(r"\b(match|result|recap|score|home|away|host(?:ed)?|fixture|game|details?|what was it like)\b", clean)
@@ -7558,6 +7602,7 @@ def _core_tools():
         CLASSLIST_TOOL,
         ANALYZE_MTL_SCORES_TOOL,
         GENERATE_MTL_TREND_REPORT_TOOL,
+        APPLY_MTL_FAILURE_HIGHLIGHTING_TOOL,
         UPDATE_CLASS_SCORE_TOOL,
         FILL_PERCENTAGE_SCORES_TOOL,
         GMAIL_BRIEF_TOOL,
@@ -7598,8 +7643,8 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         add(GMAIL_BRIEF_TOOL, GMAIL_DRAFT_TOOL)
     if re.search(r"\b(timetable|lesson|period|odd week|even week|school week)\b", text):
         add(TIMETABLE_TOOL, WEEK_TYPE_TOOL)
-    if classlist_followup or re.search(r"\b(classlist|class list|students?|names?|my classes|mtl group|grouping|1 flagship|2g3|3g3|4nt|4nt bml|scores?|marks?|results?|wa1|wa2|fa1|fa2|prelim|eoy|weighted assessment|formative assessment|exam|assessment|percentage|percent|%|analyse|analyze|analysis|graph|graphs|chart|charts|trend|mean|median|average|pass rate|underperforming|watchlist|most improved|progress|drop|dropped)\b", text):
-        add(CLASSLIST_TOOL, ANALYZE_MTL_SCORES_TOOL, GENERATE_MTL_TREND_REPORT_TOOL, UPDATE_CLASS_SCORE_TOOL, FILL_PERCENTAGE_SCORES_TOOL, TIMETABLE_TOOL)
+    if classlist_followup or re.search(r"\b(classlist|class list|students?|names?|my classes|mtl group|grouping|1 flagship|2g3|3g3|4nt|4nt bml|scores?|marks?|results?|wa1|wa2|fa1|fa2|prelim|eoy|weighted assessment|formative assessment|exam|assessment|percentage|percent|%|analyse|analyze|analysis|graph|graphs|chart|charts|trend|mean|median|average|pass rate|underperforming|watchlist|most improved|progress|drop|dropped|colour|color|highlight|red|failures?|failed|below 50|less than 50)\b", text):
+        add(CLASSLIST_TOOL, ANALYZE_MTL_SCORES_TOOL, GENERATE_MTL_TREND_REPORT_TOOL, APPLY_MTL_FAILURE_HIGHLIGHTING_TOOL, UPDATE_CLASS_SCORE_TOOL, FILL_PERCENTAGE_SCORES_TOOL, TIMETABLE_TOOL)
     if re.search(r"\b(calendar|schedule|agenda|today|tomorrow|week|meeting|event|appointment|duty|training|match|cca|what'?s on)\b", text):
         add(CONTEXT_TOOL, CALENDAR_TOOL, DELETE_CALENDAR_TOOL, AVAILABILITY_SLOT_TOOL, REMINDER_TOOL, TIMETABLE_TOOL)
         if re.search(r"\b(cca|football cca|cca duty|training duty)\b", text):
@@ -7746,7 +7791,7 @@ def _looks_tool_heavy(text: str) -> bool:
     return bool(re.search(
         r"\b(calendar|schedule|meeting|event|remind|nudge|notify|notification|notifications|push|task|due|marking|scripts?|"
         r"email|gmail|inbox|draft|reply|timetable|lesson|news|latest|search|digest|briefing|shortlist|shortlisted|preferred topics|remember|"
-        r"classlist|class list|students?|my classes|mtl group|grouping|"
+        r"classlist|class list|students?|my classes|mtl group|grouping|colour|color|highlight|red fill|failures?|below 50|less than 50|"
         r"prayer|prayers|pray|solat|salah|subuh|fajr|syuruk|zohor|zuhur|zuhr|dhuhr|asar|asr|maghrib|isyak|isha|muis|religion|religious|islam|islamic|halal|haram|fatwa|zakat|puasa|fasting|ramadan|qibla|wudhu|wudu|ablution|"
         r"location|where|journey|travel|route|directions|commute|drive|driving|mrt|bus|walk|walking|masjid|mosque|"
         r"weather|forecast|temperature|temp|hot|cold|rain|raining|rainy|shower|showers|thunder|storm|umbrella|"
@@ -8169,6 +8214,17 @@ async def _execute_tool(name: str, inp: dict) -> str:
             )
         except Exception as e:
             return f"Failed to generate MTL trend report: {e}"
+
+    elif name == "apply_mtl_failure_highlighting":
+        try:
+            return gs.format_mtl_failure_highlighting(
+                teacher_query="HERWANTO",
+                class_query=inp.get("class_query", ""),
+                assessment_query=inp.get("assessment_query", ""),
+                failure_threshold=inp.get("failure_threshold", 50),
+            )
+        except Exception as e:
+            return f"Failed to apply MTL failure highlighting: {e}"
 
     elif name == "update_mtl_class_score":
         try:

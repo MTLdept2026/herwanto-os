@@ -294,6 +294,35 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(forced, "fill_mtl_percentage_scores")
 
+    def test_failure_highlighting_request_forces_highlighting_tool(self):
+        forced = bot._forced_tool_for_text(
+            "Colour in the failures with red so I can see it clearly in the percentage column",
+            [{"name": "apply_mtl_failure_highlighting"}, {"name": "get_mtl_classlists"}],
+        )
+
+        self.assertEqual(forced, "apply_mtl_failure_highlighting")
+
+    def test_sheet_analysis_graph_request_forces_trend_report_tool(self):
+        forced = bot._forced_tool_for_text(
+            "write the analysis and graphs on the spreadsheet as a new analysis tab",
+            [{"name": "generate_mtl_score_trend_report"}, {"name": "analyze_mtl_scores"}],
+        )
+
+        self.assertEqual(forced, "generate_mtl_score_trend_report")
+
+    def test_both_followup_after_highlight_and_graph_request_forces_highlighting_first(self):
+        messages = [
+            {"role": "user", "content": "Colour failures red and write analysis graphs on the spreadsheet"},
+            {"role": "assistant", "content": "Do you want failure highlighting or a trend analysis tab?"},
+            {"role": "user", "content": "Both"},
+        ]
+        forced = bot._forced_tool_for_current_turn(
+            messages,
+            [{"name": "apply_mtl_failure_highlighting"}, {"name": "generate_mtl_score_trend_report"}],
+        )
+
+        self.assertEqual(forced, "apply_mtl_failure_highlighting")
+
     def test_retry_after_percentage_failure_forces_percentage_tool_from_context(self):
         messages = [
             {"role": "user", "content": "Fill in the percentage column of 2G3 WA2 pls"},
@@ -3732,6 +3761,51 @@ class AgenticClaudeTests(unittest.TestCase):
                 ("'CG HERWANTO 2G3 ML'!E4", "50"),
                 ("'CG HERWANTO 2G3 ML'!E5", "AB"),
             ],
+        )
+
+    def test_apply_mtl_failure_highlighting_adds_red_conditional_format_rule(self):
+        book = {
+            "properties": {"title": "2026 S2 MTL CLASSLIST"},
+            "sheets": [{
+                "properties": {"title": "CG HERWANTO 2G3 ML", "sheetId": 123},
+                "data": [{
+                    "rowData": [
+                        sheet_row("TEACHER NAME:", "CG HERWANTO"),
+                        sheet_row("GROUPING:", "2G3 ML"),
+                        sheet_row("NO", "CLASS", "FULL NAME", "WA2 (40)", "WA2 (100%)"),
+                        sheet_row("1", "S2-AN", "AMELIA", "18", "45"),
+                        sheet_row("2", "S2-AN", "MYSHA", "28", "70"),
+                    ]
+                }]
+            }]
+        }
+        fake_service = FakeSheetsService(book)
+
+        with (
+            patch.object(bot.gs, "_sheets", return_value=fake_service),
+            patch.object(bot.gs, "_configured_classlist_sheet_ids", return_value=["sheet-1"]),
+        ):
+            result = bot.gs.apply_mtl_failure_highlighting("2G3", "WA2")
+
+        self.assertEqual(result["highlighted_columns"], 1)
+        spreadsheet_id, body = fake_service.spreadsheets_api.batch_updates[0]
+        self.assertEqual(spreadsheet_id, "sheet-1")
+        rule = body["requests"][0]["addConditionalFormatRule"]["rule"]
+        self.assertEqual(rule["ranges"], [{
+            "sheetId": 123,
+            "startRowIndex": 3,
+            "endRowIndex": 5,
+            "startColumnIndex": 4,
+            "endColumnIndex": 5,
+        }])
+        boolean_rule = rule["booleanRule"]
+        self.assertEqual(boolean_rule["condition"], {
+            "type": "NUMBER_LESS",
+            "values": [{"userEnteredValue": "50"}],
+        })
+        self.assertEqual(
+            boolean_rule["format"]["backgroundColorStyle"]["rgbColor"],
+            {"red": 0.86, "green": 0.0, "blue": 0.12},
         )
 
     def test_analyze_mtl_scores_reports_stats_and_progress(self):
