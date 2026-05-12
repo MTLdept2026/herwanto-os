@@ -131,11 +131,28 @@ class AgenticClaudeTests(unittest.TestCase):
             self.assertTrue(bot.google_ok())
             self.assertEqual(bot.gs._sheets_auth_mode(), "user_oauth")
 
+    def test_google_ok_prefers_work_oauth_sheets_credentials(self):
+        env = {
+            "GOOGLE_SHEET_ID": "sheet-id",
+            "GOOGLE_SERVICE_ACCOUNT_JSON": "",
+            "GOOGLE_WORK_SHEETS_CLIENT_ID": "work-client-id",
+            "GOOGLE_WORK_SHEETS_CLIENT_SECRET": "work-client-secret",
+            "GOOGLE_WORK_SHEETS_REFRESH_TOKEN": "work-refresh-token",
+            "GOOGLE_SHEETS_CLIENT_ID": "personal-client-id",
+            "GOOGLE_SHEETS_CLIENT_SECRET": "personal-client-secret",
+            "GOOGLE_SHEETS_REFRESH_TOKEN": "personal-refresh-token",
+        }
+
+        with patch.dict(os.environ, env, clear=False):
+            self.assertTrue(bot.google_ok())
+            self.assertEqual(bot.gs._sheets_auth_mode(), "work_user_oauth")
+
     def test_google_ok_still_accepts_service_account_sheets_credentials(self):
         with patch.dict(os.environ, {"GOOGLE_SHEET_ID": "sheet-id", "GOOGLE_SERVICE_ACCOUNT_JSON": "encoded"}, clear=False):
             with patch.object(bot.gs, "_user_google_oauth_configured", return_value=False):
-                self.assertTrue(bot.google_ok())
-                self.assertEqual(bot.gs._sheets_auth_mode(), "service_account")
+                with patch.object(bot.gs, "_work_google_oauth_configured", return_value=False):
+                    self.assertTrue(bot.google_ok())
+                    self.assertEqual(bot.gs._sheets_auth_mode(), "service_account")
 
     def test_notification_outcomes_are_capped_below_sheet_cell_limit(self):
         entries = [

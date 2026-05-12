@@ -192,6 +192,7 @@ git push -u origin main
    - `GOOGLE_SHEET_ID`
    - `HIRA_ALLOWED_USER_IDS` with your numeric Telegram user ID(s)
    - Optional but recommended for editing classlists as you: `GOOGLE_SHEETS_CLIENT_ID`, `GOOGLE_SHEETS_CLIENT_SECRET`, `GOOGLE_SHEETS_REFRESH_TOKEN`
+   - Optional for editing classlists as your work Google account: `GOOGLE_WORK_SHEETS_CLIENT_ID`, `GOOGLE_WORK_SHEETS_CLIENT_SECRET`, `GOOGLE_WORK_SHEETS_REFRESH_TOKEN`
    - Optional for editable generated Google Docs/Slides links: `GOOGLE_ARTIFACT_SHARE_EMAIL`
    - Optional for voice notes: `OPENAI_API_KEY`
    - Optional for Gmail: `GOOGLE_GMAIL_USER`
@@ -322,6 +323,24 @@ GOOGLE_SHEETS_REFRESH_TOKEN=...
 ```
 
 When `GOOGLE_SHEETS_REFRESH_TOKEN` is present, H.I.R.A uses user OAuth for Sheets and falls back to the service account only when that token is absent.
+
+For work classlists, use the work Google account explicitly. The account identity can be the same one you call "work Gmail", but the token must be generated with the Google Sheets scope:
+
+```bash
+export GOOGLE_WORK_SHEETS_CLIENT_ID="..."      # or reuse GOOGLE_WORK_GMAIL_CLIENT_ID
+export GOOGLE_WORK_SHEETS_CLIENT_SECRET="..."  # or reuse GOOGLE_WORK_GMAIL_CLIENT_SECRET
+GOOGLE_REFRESH_ENV=GOOGLE_WORK_SHEETS_REFRESH_TOKEN python3 scripts/get_gmail_refresh_token.py
+```
+
+Then add these Railway variables:
+
+```env
+GOOGLE_WORK_SHEETS_CLIENT_ID=...
+GOOGLE_WORK_SHEETS_CLIENT_SECRET=...
+GOOGLE_WORK_SHEETS_REFRESH_TOKEN=...
+```
+
+When `GOOGLE_WORK_SHEETS_REFRESH_TOKEN` is present, H.I.R.A prioritises the work Google account for Sheets writes.
 
 Gmail support is optional. It requires the Gmail API and delegated access for `GOOGLE_GMAIL_USER`; for ordinary Gmail accounts this is not as simple as Calendar/Sheets service-account sharing. If Gmail is not configured, the commands fail gracefully.
 

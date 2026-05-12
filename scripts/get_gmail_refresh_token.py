@@ -17,8 +17,27 @@ SHEETS_SCOPES = [
 def main():
     output_name = os.environ.get("GOOGLE_REFRESH_ENV", os.environ.get("GOOGLE_GMAIL_REFRESH_ENV", "GOOGLE_GMAIL_REFRESH_TOKEN")).strip()
     work_token_requested = output_name == "GOOGLE_WORK_GMAIL_REFRESH_TOKEN"
-    sheets_token_requested = output_name in {"GOOGLE_SHEETS_REFRESH_TOKEN", "GOOGLE_USER_REFRESH_TOKEN"}
-    if sheets_token_requested:
+    work_sheets_token_requested = output_name in {"GOOGLE_WORK_SHEETS_REFRESH_TOKEN", "GOOGLE_WORK_USER_REFRESH_TOKEN"}
+    sheets_token_requested = output_name in {
+        "GOOGLE_SHEETS_REFRESH_TOKEN",
+        "GOOGLE_USER_REFRESH_TOKEN",
+        "GOOGLE_WORK_SHEETS_REFRESH_TOKEN",
+        "GOOGLE_WORK_USER_REFRESH_TOKEN",
+    }
+    if work_sheets_token_requested:
+        client_id = (
+            os.environ.get("GOOGLE_WORK_SHEETS_CLIENT_ID", "").strip()
+            or os.environ.get("GOOGLE_WORK_GMAIL_CLIENT_ID", "").strip()
+            or os.environ.get("GOOGLE_SHEETS_CLIENT_ID", "").strip()
+            or os.environ.get("GOOGLE_GMAIL_CLIENT_ID", "").strip()
+        )
+        client_secret = (
+            os.environ.get("GOOGLE_WORK_SHEETS_CLIENT_SECRET", "").strip()
+            or os.environ.get("GOOGLE_WORK_GMAIL_CLIENT_SECRET", "").strip()
+            or os.environ.get("GOOGLE_SHEETS_CLIENT_SECRET", "").strip()
+            or os.environ.get("GOOGLE_GMAIL_CLIENT_SECRET", "").strip()
+        )
+    elif sheets_token_requested:
         client_id = (
             os.environ.get("GOOGLE_SHEETS_CLIENT_ID", "").strip()
             or os.environ.get("GOOGLE_USER_CLIENT_ID", "").strip()

@@ -190,18 +190,58 @@ def _oauth_value(*names: str) -> str:
     return ""
 
 
+def _work_google_oauth_configured() -> bool:
+    return bool(
+        _oauth_value("GOOGLE_WORK_SHEETS_REFRESH_TOKEN")
+        and _oauth_value(
+            "GOOGLE_WORK_SHEETS_CLIENT_ID",
+            "GOOGLE_WORK_GMAIL_CLIENT_ID",
+            "GOOGLE_SHEETS_CLIENT_ID",
+            "GOOGLE_USER_CLIENT_ID",
+            "GOOGLE_GMAIL_CLIENT_ID",
+        )
+        and _oauth_value(
+            "GOOGLE_WORK_SHEETS_CLIENT_SECRET",
+            "GOOGLE_WORK_GMAIL_CLIENT_SECRET",
+            "GOOGLE_SHEETS_CLIENT_SECRET",
+            "GOOGLE_USER_CLIENT_SECRET",
+            "GOOGLE_GMAIL_CLIENT_SECRET",
+        )
+    )
+
+
 def _user_google_oauth_configured() -> bool:
     return bool(
-        _oauth_value("GOOGLE_SHEETS_REFRESH_TOKEN", "GOOGLE_USER_REFRESH_TOKEN")
-        and _oauth_value("GOOGLE_SHEETS_CLIENT_ID", "GOOGLE_USER_CLIENT_ID", "GOOGLE_GMAIL_CLIENT_ID")
-        and _oauth_value("GOOGLE_SHEETS_CLIENT_SECRET", "GOOGLE_USER_CLIENT_SECRET", "GOOGLE_GMAIL_CLIENT_SECRET")
+        _work_google_oauth_configured()
+        or (
+            _oauth_value("GOOGLE_SHEETS_REFRESH_TOKEN", "GOOGLE_USER_REFRESH_TOKEN")
+            and _oauth_value("GOOGLE_SHEETS_CLIENT_ID", "GOOGLE_USER_CLIENT_ID", "GOOGLE_GMAIL_CLIENT_ID")
+            and _oauth_value("GOOGLE_SHEETS_CLIENT_SECRET", "GOOGLE_USER_CLIENT_SECRET", "GOOGLE_GMAIL_CLIENT_SECRET")
+        )
     )
 
 
 def _user_google_creds(scopes=None):
-    refresh_token = _oauth_value("GOOGLE_SHEETS_REFRESH_TOKEN", "GOOGLE_USER_REFRESH_TOKEN")
-    client_id = _oauth_value("GOOGLE_SHEETS_CLIENT_ID", "GOOGLE_USER_CLIENT_ID", "GOOGLE_GMAIL_CLIENT_ID")
-    client_secret = _oauth_value("GOOGLE_SHEETS_CLIENT_SECRET", "GOOGLE_USER_CLIENT_SECRET", "GOOGLE_GMAIL_CLIENT_SECRET")
+    if _work_google_oauth_configured():
+        refresh_token = _oauth_value("GOOGLE_WORK_SHEETS_REFRESH_TOKEN")
+        client_id = _oauth_value(
+            "GOOGLE_WORK_SHEETS_CLIENT_ID",
+            "GOOGLE_WORK_GMAIL_CLIENT_ID",
+            "GOOGLE_SHEETS_CLIENT_ID",
+            "GOOGLE_USER_CLIENT_ID",
+            "GOOGLE_GMAIL_CLIENT_ID",
+        )
+        client_secret = _oauth_value(
+            "GOOGLE_WORK_SHEETS_CLIENT_SECRET",
+            "GOOGLE_WORK_GMAIL_CLIENT_SECRET",
+            "GOOGLE_SHEETS_CLIENT_SECRET",
+            "GOOGLE_USER_CLIENT_SECRET",
+            "GOOGLE_GMAIL_CLIENT_SECRET",
+        )
+    else:
+        refresh_token = _oauth_value("GOOGLE_SHEETS_REFRESH_TOKEN", "GOOGLE_USER_REFRESH_TOKEN")
+        client_id = _oauth_value("GOOGLE_SHEETS_CLIENT_ID", "GOOGLE_USER_CLIENT_ID", "GOOGLE_GMAIL_CLIENT_ID")
+        client_secret = _oauth_value("GOOGLE_SHEETS_CLIENT_SECRET", "GOOGLE_USER_CLIENT_SECRET", "GOOGLE_GMAIL_CLIENT_SECRET")
     if not (refresh_token and client_id and client_secret):
         raise EnvironmentError("Google user OAuth credentials are not configured")
     return Credentials(
@@ -215,6 +255,8 @@ def _user_google_creds(scopes=None):
 
 
 def _sheets_auth_mode() -> str:
+    if _work_google_oauth_configured():
+        return "work_user_oauth"
     return "user_oauth" if _user_google_oauth_configured() else "service_account"
 
 
@@ -242,7 +284,7 @@ def _cal():
 
 def _sheets():
     mode = _sheets_auth_mode()
-    creds_builder = _user_google_creds if mode == "user_oauth" else _creds
+    creds_builder = _user_google_creds if mode in {"work_user_oauth", "user_oauth"} else _creds
     return _thread_cached_service(("sheets", mode), lambda: _build_service("sheets", "v4", creds_builder(SHEETS_SCOPES)))
 
 
@@ -1064,7 +1106,13 @@ def _classlist_permission_message(exc: HttpError, spreadsheet_ids: list[str], ta
         if spreadsheet_id:
             links.append(f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit")
     link_text = f" Target sheet: {'; '.join(links)}." if links else ""
-    if _sheets_auth_mode() == "user_oauth":
+    auth_mode = _sheets_auth_mode()
+    if auth_mode == "work_user_oauth":
+        account_text = (
+            " H.I.R.A is using the work Google account OAuth path for Sheets. Confirm that this work account "
+            "can edit the sheet and that GOOGLE_WORK_SHEETS_REFRESH_TOKEN was granted the Google Sheets scope."
+        )
+    elif auth_mode == "user_oauth":
         account_text = (
             " H.I.R.A is using Google user OAuth for Sheets. Confirm that OAuth account can edit the sheet "
             "and that the refresh token was granted the Google Sheets scope."
