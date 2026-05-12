@@ -1983,6 +1983,13 @@ def build_context_snapshot(days: int = 7) -> str:
                 "Relief memory: Herwanto said today's lessons/classes are covered by relief. "
                 "Do not flag timetable-vs-calendar overlaps for those lessons unless newer information contradicts this."
             )
+        absence_note = absence_memory_for_date(today)
+        if absence_note:
+            reason = _absence_reason_from_memory(absence_note)
+            lines.append(
+                f"Day-state memory: Herwanto said he is away from work/school today because {reason}. "
+                "Treat timetable lessons today as zero school-day workload unless newer information contradicts this."
+            )
 
     if not google_ok():
         lines.append("\nGoogle is not connected.")
@@ -2148,7 +2155,7 @@ def build_agenda_structured(days: int = 7) -> dict:
             "date": target.isoformat(),
             "label": target.strftime("%A, %-d %B"),
             "week": _agenda_week_display(target),
-            "relieved": bool(relief_memory_for_date(target)),
+            "relieved": bool(school_day_cleared_memory_for_date(target)),
             "lessons": [
                 {
                     "time": f"{lesson['start']}-{lesson['end']}",
@@ -3930,11 +3937,12 @@ def absorb_ownership_signal(text: str) -> bool:
 def absorb_taste_hint(text: str) -> bool:
     ownership_captured = absorb_ownership_signal(text)
     relief_captured = absorb_relief_context(text)
+    absence_captured = absorb_day_state_context(text)
     if not google_ok():
-        return ownership_captured or relief_captured
+        return ownership_captured or relief_captured or absence_captured
     clean = str(text or "").strip()
     if len(clean) < 12:
-        return ownership_captured or relief_captured
+        return ownership_captured or relief_captured or absence_captured
     lower = clean.lower()
     taste_markers = (
         "i like", "i prefer", "my taste", "my style", "i hate", "i dislike",
@@ -3942,7 +3950,7 @@ def absorb_taste_hint(text: str) -> bool:
         "too noisy", "too cluttered", "not my vibe", "my vibe",
     )
     if not any(marker in lower for marker in taste_markers):
-        return ownership_captured or relief_captured
+        return ownership_captured or relief_captured or absence_captured
     try:
         profile = gs.get_taste_profile()
         field = "quality_bar"
@@ -3954,16 +3962,17 @@ def absorb_taste_hint(text: str) -> bool:
         existing_text = ", ".join(existing) if isinstance(existing, list) else str(existing or "").strip()
         hint = clean[:240]
         if hint.lower() in existing_text.lower():
-            return ownership_captured
+            return ownership_captured or relief_captured or absence_captured
         profile[field] = f"{existing_text}\n- {hint}".strip() if existing_text else f"- {hint}"
         gs.set_taste_profile(profile)
         return True
     except Exception as exc:
         logger.warning(f"Taste hint capture failed: {exc}")
-        return ownership_captured or relief_captured
+        return ownership_captured or relief_captured or absence_captured
 
 
 RELIEF_MEMORY_PREFIX = "relief:"
+ABSENCE_MEMORY_PREFIX = "absence:"
 
 
 def _date_from_relative_text(text: str, now: datetime | None = None) -> date:
@@ -4016,6 +4025,77 @@ def absorb_relief_context(text: str, now: datetime | None = None) -> bool:
         return False
 
 
+def _absence_reason_from_text(text: str) -> str:
+    clean = " ".join(str(text or "").strip().split())
+    if len(clean) < 8:
+        return ""
+    lower = clean.lower()
+    medical_patterns = (
+        r"\bmedical\s+leave\b",
+        r"\bmedical\s+certificate\b",
+        r"\bmc\b",
+        r"\bsick\s+leave\b",
+        r"\bon\s+leave\s+for\s+medical\b",
+    )
+    if any(re.search(pattern, lower) for pattern in medical_patterns):
+        return "medical leave"
+    if re.search(r"\b(?:sick|unwell|ill|doctor|clinic)\b", lower) and re.search(
+        r"\b(?:not\s+(?:at\s+(?:work|school)|in\s+school)|away\s+from\s+(?:work|school)|absent|on\s+leave)\b",
+        lower,
+    ):
+        return "medical leave"
+
+    reason_patterns = (
+        r"\b(?:not\s+(?:at\s+(?:work|school)|in\s+school)|away\s+from\s+(?:work|school)|absent\s+from\s+(?:work|school))\b[^.\n]{0,80}?\b(?:because|cos|cause|due\s+to|as|for)\s+([^.\n;!?]{3,120})",
+        r"\b(?:on|taking|took)\s+leave\b[^.\n]{0,80}?\b(?:because|cos|cause|due\s+to|as|for)\s+([^.\n;!?]{3,120})",
+    )
+    for pattern in reason_patterns:
+        match = re.search(pattern, lower)
+        if match:
+            reason = match.group(1).strip(" ,.-")
+            if reason:
+                return _clip_memory_text(reason, 90)
+    return ""
+
+
+def absorb_day_state_context(text: str, now: datetime | None = None) -> bool:
+    if not google_ok():
+        return False
+    clean = str(text or "").strip()
+    if len(clean) < 8:
+        return False
+    lower = clean.lower()
+    if re.search(r"\b(?:not|no longer|wasn't|was not)\s+(?:on\s+)?(?:medical\s+leave|mc|sick\s+leave|leave)\b", lower):
+        return False
+    if not re.search(
+        r"\b(?:medical\s+leave|medical\s+certificate|mc|sick\s+leave|not\s+at\s+(?:work|school)|not\s+in\s+school|away\s+from\s+(?:work|school)|absent\s+from\s+(?:work|school)|on\s+leave)\b",
+        lower,
+    ):
+        return False
+    reason = _absence_reason_from_text(clean)
+    if not reason:
+        return False
+    target = _date_from_relative_text(clean, now=now)
+    marker = f"{ABSENCE_MEMORY_PREFIX}{target.isoformat()}"
+    try:
+        memory = gs.get_memory()
+        existing = "\n".join(str(item) for item in memory.get("teaching", []) if item)
+        if marker in existing and reason.lower() in existing.lower():
+            return True
+        gs.add_memory(
+            "teaching",
+            (
+                f"{marker}: Herwanto said he is away from work/school on {target.isoformat()} because {reason}. "
+                "Treat timetable lessons on this date as zero school-day workload unless newer user/calendar information contradicts this. "
+                f"Original wording: {_clip_memory_text(clean, 180)}"
+            ),
+        )
+        return True
+    except Exception as exc:
+        logger.warning(f"Day-state context capture failed: {exc}")
+        return False
+
+
 def relief_memory_for_date(target: date | datetime | str) -> str:
     try:
         if isinstance(target, datetime):
@@ -4038,8 +4118,76 @@ def relief_memory_for_date(target: date | datetime | str) -> str:
     return ""
 
 
+def absence_memory_for_date(target: date | datetime | str) -> str:
+    try:
+        if isinstance(target, datetime):
+            day = target.astimezone(SGT).date()
+        elif isinstance(target, date):
+            day = target
+        else:
+            day = date.fromisoformat(str(target)[:10])
+    except Exception:
+        return ""
+    marker = f"{ABSENCE_MEMORY_PREFIX}{day.isoformat()}"
+    try:
+        memory = gs.get_memory() if google_ok() else {}
+    except Exception:
+        return ""
+    for item in reversed(memory.get("teaching", []) or []):
+        text = str(item or "").strip()
+        if marker in text:
+            return text
+    return ""
+
+
+def _absence_reason_from_memory(memory_text: str) -> str:
+    match = re.search(r"\bbecause\s+([^.\n]+)", str(memory_text or ""), re.I)
+    if not match:
+        return "away from work/school"
+    return match.group(1).strip(" .")
+
+
+def school_day_cleared_memory_for_date(target: date | datetime | str) -> str:
+    return relief_memory_for_date(target) or absence_memory_for_date(target)
+
+
+def absence_memory_response(text: str, now: datetime | None = None, recent_context: str = "") -> str:
+    clean = str(text or "").strip()
+    if len(clean) < 6:
+        return ""
+    lower = clean.lower()
+    wants_recall = re.search(r"\b(?:remember|why|reason|know)\b", lower)
+    asks_absence = re.search(
+        r"\b(?:not\s+at\s+(?:work|school)|not\s+in\s+school|away\s+from\s+(?:work|school)|absent|medical\s+leave|mc|on\s+leave)\b",
+        lower,
+    )
+    if not (wants_recall and asks_absence):
+        return ""
+    target = _date_from_relative_text(clean, now=now)
+    memory_text = absence_memory_for_date(target)
+    reason = _absence_reason_from_memory(memory_text) if memory_text else ""
+    if not reason and recent_context:
+        reason = _absence_reason_from_text(recent_context)
+    if not reason:
+        return ""
+
+    current = (now or datetime.now(SGT)).astimezone(SGT).date()
+    if target == current:
+        day_label = "today"
+    elif target == current + timedelta(days=1):
+        day_label = "tomorrow"
+    elif target == current - timedelta(days=1):
+        day_label = "yesterday"
+    else:
+        day_label = target.isoformat()
+    return (
+        f"Yes - you told me you're on {reason} {day_label}. "
+        "I've got that as the reason you're not at work/school."
+    )
+
+
 def _effective_lesson_count(target: date, lessons: list) -> int:
-    return 0 if relief_memory_for_date(target) else len(lessons or [])
+    return 0 if school_day_cleared_memory_for_date(target) else len(lessons or [])
 
 
 def parse_delayed_digest_push_request(text: str, now: datetime | None = None) -> dict | None:

@@ -1599,7 +1599,7 @@ def _home_agenda_structured(days: int, snapshot: dict) -> dict:
     relief_cache = {}
     for offset in range(days):
         target = today + bot.timedelta(days=offset)
-        relief_cache[target.isoformat()] = bool(bot.relief_memory_for_date(target))
+        relief_cache[target.isoformat()] = bool(bot.school_day_cleared_memory_for_date(target))
         lessons, _wt_label = bot._lessons_for_date(target)
         day_map[target.isoformat()] = {
             "date": target.isoformat(),
@@ -2575,6 +2575,15 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
     if briefing_slot:
         reply = _briefing_replay_text(briefing_slot)
         return _quick_sse_response(reply, history_key, history, route_name="briefing_replay", tool_name=f"{briefing_slot}_briefing")
+
+    recent_context = "\n".join(
+        str(item.get("content", ""))[:600]
+        for item in history[-8:-1]
+        if isinstance(item, dict) and isinstance(item.get("content"), str)
+    )
+    absence_reply = bot.absence_memory_response(message, recent_context=recent_context)
+    if absence_reply:
+        return _quick_sse_response(absence_reply, history_key, history, route_name="memory_recall")
 
     quick_checkin_reply = ""
     if bot.google_ok() and bot._is_affirmative(message):

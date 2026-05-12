@@ -678,6 +678,44 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(category, "teaching")
         self.assertIn("relief:2026-05-06", text)
 
+    def test_medical_leave_context_becomes_teaching_memory(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 12, 8, 15))
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "get_memory", return_value={"teaching": []}),
+            patch.object(bot.gs, "add_memory") as add_memory,
+        ):
+            captured = bot.absorb_day_state_context("I'm on medical leave today.", now=now)
+
+        self.assertTrue(captured)
+        add_memory.assert_called_once()
+        category, text = add_memory.call_args.args
+        self.assertEqual(category, "teaching")
+        self.assertIn("absence:2026-05-12", text)
+        self.assertIn("medical leave", text)
+
+    def test_absence_memory_answers_why_not_at_work_without_agentic_route(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 12, 12, 8))
+        memory = {
+            "teaching": [
+                "absence:2026-05-12: Herwanto said he is away from work/school on 2026-05-12 because medical leave."
+            ]
+        }
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "get_memory", return_value=memory),
+        ):
+            reply = bot.absence_memory_response("Do you remember why im not at work today", now=now)
+
+        self.assertIn("Yes", reply)
+        self.assertIn("medical leave today", reply)
+
+    def test_absence_memory_counts_lessons_as_zero(self):
+        with patch.object(bot, "school_day_cleared_memory_for_date", return_value="absence:2026-05-12"):
+            count = bot._effective_lesson_count(bot.date(2026, 5, 12), [{"subject": "ML"}, {"subject": "ML"}])
+
+        self.assertEqual(count, 0)
+
     def test_daily_load_counts_relieved_lessons_as_zero(self):
         today_key = bot.datetime.now(bot.SGT).date().isoformat()
         agenda = {
