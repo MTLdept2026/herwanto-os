@@ -2,7 +2,9 @@ from __future__ import annotations
 
 """
 Google Calendar (read) + Google Sheets (read/write) via Service Account.
-Sheets acts as persistent storage for reminders, projects, and config.
+Postgres is the preferred durable store for H.I.R.A-owned state when
+DATABASE_URL is configured; Sheets remains the external/read-only source and
+temporary fallback during migration.
 """
 
 import os
@@ -29,6 +31,11 @@ from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 from google.oauth2.credentials import Credentials
 from google.oauth2 import service_account
+
+try:
+    import postgres_storage as pg_storage
+except Exception:  # pragma: no cover - import failure is reported at use-site
+    pg_storage = None
 
 SGT = pytz.timezone('Asia/Singapore')
 logger = logging.getLogger(__name__)
@@ -73,6 +80,7 @@ _config_cache = {
 _memory_cache = {
     "expires_at": 0.0,
     "value": None,
+    "source": "",
 }
 _classlist_cache_lock = threading.RLock()
 _classlist_cache: dict[str, dict] = {}
@@ -3330,14 +3338,34 @@ def invalidate_config_cache():
         _config_cache["stale_after_error"] = False
         _memory_cache["expires_at"] = 0.0
         _memory_cache["value"] = None
+        _memory_cache["source"] = ""
 
 
-def get_config(key: str):
+def _get_sheets_config(key: str):
     values, _, _ = _load_config_cache()
     return values.get(key)
 
 
-def set_config(key: str, value: str):
+def get_config(key: str):
+    if _postgres_available():
+        try:
+            value = pg_storage.get_config(key)
+            if value is not None:
+                return value
+        except Exception as exc:
+            logger.warning(f"Postgres config read failed for {key}; using Sheets fallback: {exc}")
+            return _get_sheets_config(key)
+        value = _get_sheets_config(key)
+        if value is not None:
+            try:
+                pg_storage.set_config(key, value)
+            except Exception as exc:
+                logger.warning(f"Could not backfill Postgres config key {key}: {exc}")
+        return value
+    return _get_sheets_config(key)
+
+
+def _set_sheets_config(key: str, value: str):
     # If we already know the Config row for an existing key, write directly.
     # This avoids a fresh read-before-write during active chats, which can hit
     # Google Sheets' per-user read quota and make memory saves fail even though
@@ -3376,6 +3404,17 @@ def set_config(key: str, value: str):
         body={"values": [[key, value]]},
     ).execute()
     _remember_config_cache_value(key, value, row_count + 2)
+
+
+def set_config(key: str, value: str):
+    if _postgres_available():
+        try:
+            pg_storage.set_config(key, value)
+            _remember_config_cache_value(key, value)
+            return
+        except Exception as exc:
+            raise RuntimeError(f"storage unavailable: Postgres config write failed for {key}: {exc}") from exc
+    _set_sheets_config(key, value)
 
 
 # ─── SHEETS: APP NOTIFICATIONS ───────────────────────────────────────────────
@@ -3492,6 +3531,37 @@ def _merge_app_notifications(primary: list, legacy: list) -> list:
 
 
 def get_app_notifications(include_archived=False) -> list:
+    if _postgres_available():
+        try:
+            clean = [_normalise_app_notification_row([
+                item.get("id", ""),
+                item.get("kind", ""),
+                item.get("title", ""),
+                item.get("body", ""),
+                item.get("created", ""),
+                item.get("source", ""),
+                json.dumps(item.get("seen_by", []), ensure_ascii=False),
+                "TRUE" if item.get("archived") else "FALSE",
+            ]) for item in pg_storage.load_app_notifications(include_archived=True)]
+            clean = [item for item in clean if item]
+            if clean:
+                return clean if include_archived else [item for item in clean if not item["archived"]]
+            if pg_storage.get_config("notification_state_initialized") == "1":
+                return []
+            try:
+                rows = _app_notification_rows()
+                sheet_clean = [_normalise_app_notification_row(row) for row in rows]
+                sheet_clean = [item for item in sheet_clean if item]
+            except Exception:
+                sheet_clean = []
+            legacy = _legacy_config_app_notifications(include_archived=True)
+            merged = _merge_app_notifications(sheet_clean, legacy)
+            if merged:
+                pg_storage.set_app_notifications(merged)
+                return merged if include_archived else [item for item in merged if not item["archived"]]
+            return []
+        except Exception as exc:
+            logger.warning(f"Postgres app notifications unavailable; using Sheets fallback: {exc}")
     try:
         rows = _app_notification_rows()
     except Exception:
@@ -3511,6 +3581,12 @@ def get_app_notifications(include_archived=False) -> list:
 
 
 def set_app_notifications(notifications: list):
+    if _postgres_available():
+        try:
+            pg_storage.set_app_notifications(notifications[-80:])
+            return
+        except Exception as exc:
+            raise RuntimeError(f"storage unavailable: Postgres notification write failed: {exc}") from exc
     try:
         _ensure_app_notifications_sheet()
     except Exception:
@@ -4011,6 +4087,31 @@ def _clean_web_push_delivery_log(entries) -> list:
 
 
 def get_web_push_subscriptions() -> list:
+    if _postgres_available():
+        try:
+            clean = _clean_web_push_subscriptions(pg_storage.load_web_push_subscriptions())
+            if clean:
+                _redis_json_set(_REDIS_WEB_PUSH_SUBSCRIPTIONS_KEY, clean)
+                return clean
+            if pg_storage.get_config("web_push_subscriptions_initialized") == "1":
+                return []
+            raw = _get_sheets_config("web_push_subscriptions")
+            if raw:
+                try:
+                    clean = _clean_web_push_subscriptions(json.loads(raw))
+                except Exception:
+                    clean = []
+                if clean:
+                    pg_storage.set_web_push_subscriptions(clean[-30:])
+                    _redis_json_set(_REDIS_WEB_PUSH_SUBSCRIPTIONS_KEY, clean[-30:])
+                    return clean[-30:]
+            return _clean_web_push_subscriptions(_redis_json_get(_REDIS_WEB_PUSH_SUBSCRIPTIONS_KEY, []))
+        except Exception as exc:
+            fallback = _clean_web_push_subscriptions(_redis_json_get(_REDIS_WEB_PUSH_SUBSCRIPTIONS_KEY, []))
+            if fallback:
+                logger.warning(f"Using Redis web push subscriptions after Postgres read failed: {exc}")
+                return fallback
+            logger.warning(f"Postgres web push subscriptions unavailable; using Sheets fallback: {exc}")
     try:
         raw = get_config("web_push_subscriptions")
     except Exception as exc:
@@ -4044,6 +4145,12 @@ def get_web_push_subscription(client_id: str) -> dict | None:
 def set_web_push_subscriptions(subscriptions: list):
     clean = _clean_web_push_subscriptions(subscriptions)[-30:]
     _redis_json_set(_REDIS_WEB_PUSH_SUBSCRIPTIONS_KEY, clean)
+    if _postgres_available():
+        try:
+            pg_storage.set_web_push_subscriptions(clean)
+            return
+        except Exception as exc:
+            raise RuntimeError(f"storage unavailable: Postgres web push subscription write failed: {exc}") from exc
     set_config("web_push_subscriptions", json.dumps(clean, ensure_ascii=False))
 
 
@@ -4092,6 +4199,31 @@ def _preferred_web_push_subscriptions(subscriptions: list) -> list:
 
 
 def get_web_push_delivery_log() -> list:
+    if _postgres_available():
+        try:
+            clean = _clean_web_push_delivery_log(pg_storage.load_web_push_delivery_log(limit=80))
+            if clean:
+                _redis_json_set(_REDIS_WEB_PUSH_DELIVERY_LOG_KEY, clean)
+                return clean
+            if pg_storage.get_config("web_push_delivery_log_initialized") == "1":
+                return []
+            raw = _get_sheets_config("web_push_delivery_log")
+            if raw:
+                try:
+                    clean = _clean_web_push_delivery_log(json.loads(raw))
+                except Exception:
+                    clean = []
+                if clean:
+                    pg_storage.set_web_push_delivery_log(clean)
+                    _redis_json_set(_REDIS_WEB_PUSH_DELIVERY_LOG_KEY, clean)
+                    return clean
+            return _clean_web_push_delivery_log(_redis_json_get(_REDIS_WEB_PUSH_DELIVERY_LOG_KEY, []))
+        except Exception as exc:
+            fallback = _clean_web_push_delivery_log(_redis_json_get(_REDIS_WEB_PUSH_DELIVERY_LOG_KEY, []))
+            if fallback:
+                logger.warning(f"Using Redis web push delivery log after Postgres read failed: {exc}")
+                return fallback
+            logger.warning(f"Postgres web push delivery log unavailable; using Sheets fallback: {exc}")
     try:
         raw = get_config("web_push_delivery_log")
     except Exception as exc:
@@ -4117,6 +4249,12 @@ def get_web_push_delivery_log() -> list:
 def set_web_push_delivery_log(entries: list):
     clean = _clean_web_push_delivery_log(entries)
     _redis_json_set(_REDIS_WEB_PUSH_DELIVERY_LOG_KEY, clean)
+    if _postgres_available():
+        try:
+            pg_storage.set_web_push_delivery_log(clean[-80:])
+            return
+        except Exception as exc:
+            raise RuntimeError(f"storage unavailable: Postgres web push delivery write failed: {exc}") from exc
     set_config("web_push_delivery_log", json.dumps(clean[-80:], ensure_ascii=False))
 
 
@@ -4371,20 +4509,35 @@ def _copy_memory(memory: dict) -> dict:
     return {key: list(memory.get(key, [])) for key in DEFAULT_MEMORY}
 
 
-def _memory_cache_valid(now: float | None = None) -> bool:
+def _postgres_available() -> bool:
+    return bool(pg_storage and pg_storage.enabled())
+
+
+def memory_storage_status() -> dict:
+    if pg_storage and pg_storage.enabled():
+        return pg_storage.storage_status()
+    if google_sheets_configured():
+        return {"enabled": False, "connected": True, "source": "sheets"}
+    return {"enabled": False, "connected": False, "source": "unavailable"}
+
+
+def _memory_cache_valid(now: float | None = None, source: str = "") -> bool:
     if _MEMORY_CACHE_TTL_SECONDS <= 0:
         return False
     if _memory_cache.get("value") is None:
         return False
+    if source and _memory_cache.get("source") != source:
+        return False
     return (now if now is not None else time.monotonic()) < float(_memory_cache.get("expires_at", 0.0) or 0.0)
 
 
-def _remember_memory_cache(memory: dict):
+def _remember_memory_cache(memory: dict, source: str = ""):
     if _MEMORY_CACHE_TTL_SECONDS <= 0:
         return
     with _config_cache_lock:
         _memory_cache["value"] = _copy_memory(memory)
         _memory_cache["expires_at"] = time.monotonic() + _MEMORY_CACHE_TTL_SECONDS
+        _memory_cache["source"] = source
 
 
 def _merge_memory_dict(base: dict, extra: dict) -> dict:
@@ -4493,9 +4646,9 @@ def _merge_memory_log(memory: dict) -> dict:
     return memory
 
 
-def get_memory() -> dict:
+def _get_sheets_memory() -> dict:
     with _config_cache_lock:
-        if _memory_cache_valid():
+        if _memory_cache_valid(source="sheets"):
             return _copy_memory(_memory_cache.get("value") or {})
     try:
         raw = get_config("assistant_memory")
@@ -4503,14 +4656,14 @@ def get_memory() -> dict:
         fallback = _redis_memory_fallback()
         if any(fallback.get(category) for category in DEFAULT_MEMORY):
             logger.warning(f"Using Redis assistant memory after Sheets read failed: {exc}")
-            _remember_memory_cache(fallback)
+            _remember_memory_cache(fallback, source="redis_fallback")
             return fallback
         raise
     if not raw:
         memory = {k: list(v) for k, v in DEFAULT_MEMORY.items()}
         memory = _merge_memory_log(memory)
         memory = _merge_memory_dict(memory, _redis_memory_fallback())
-        _remember_memory_cache(memory)
+        _remember_memory_cache(memory, source="sheets")
         return memory
     try:
         data = json.loads(raw)
@@ -4518,7 +4671,7 @@ def get_memory() -> dict:
         memory = {k: list(v) for k, v in DEFAULT_MEMORY.items()}
         memory = _merge_memory_log(memory)
         memory = _merge_memory_dict(memory, _redis_memory_fallback())
-        _remember_memory_cache(memory)
+        _remember_memory_cache(memory, source="sheets")
         return memory
 
     memory = {k: list(v) for k, v in DEFAULT_MEMORY.items()}
@@ -4527,8 +4680,38 @@ def get_memory() -> dict:
             memory[key] = [str(item) for item in value if str(item).strip()]
     memory = _merge_memory_log(memory)
     memory = _merge_memory_dict(memory, _redis_memory_fallback())
-    _remember_memory_cache(memory)
+    _remember_memory_cache(memory, source="sheets")
     return memory
+
+
+def get_memory() -> dict:
+    if _postgres_available():
+        with _config_cache_lock:
+            if _memory_cache_valid(source="postgres"):
+                return _copy_memory(_memory_cache.get("value") or {})
+        try:
+            memory, initialized = pg_storage.load_memory(DEFAULT_MEMORY)
+            if initialized:
+                _remember_memory_cache(memory, source="postgres")
+                return memory
+            sheets_memory = _get_sheets_memory()
+            pg_storage.import_memory(sheets_memory, DEFAULT_MEMORY, source="sheets_auto_import")
+            imported_memory, _ = pg_storage.load_memory(DEFAULT_MEMORY)
+            _remember_memory_cache(imported_memory, source="postgres")
+            return imported_memory
+        except Exception as exc:
+            logger.warning(f"Postgres memory unavailable; using Sheets/Redis fallback: {exc}")
+    return _get_sheets_memory()
+
+
+def import_sheet_memory_to_postgres() -> dict:
+    if not _postgres_available():
+        raise RuntimeError("Postgres storage is not enabled. Set DATABASE_URL first.")
+    memory = _get_sheets_memory()
+    result = pg_storage.import_memory(memory, DEFAULT_MEMORY, source="sheets_manual_import")
+    imported_memory, _ = pg_storage.load_memory(DEFAULT_MEMORY)
+    _remember_memory_cache(imported_memory, source="postgres")
+    return result
 
 
 def set_memory(memory: dict):
@@ -4536,6 +4719,14 @@ def set_memory(memory: dict):
     for key in DEFAULT_MEMORY:
         values = memory.get(key, [])
         clean[key] = [str(item).strip() for item in values if str(item).strip()]
+    if _postgres_available():
+        try:
+            saved = pg_storage.set_memory(clean, DEFAULT_MEMORY)
+            _set_redis_memory_fallback(saved)
+            _remember_memory_cache(saved, source="postgres")
+            return
+        except Exception as exc:
+            raise RuntimeError(f"storage unavailable: Postgres memory write failed: {exc}") from exc
     redis_saved = _set_redis_memory_fallback(clean)
     try:
         set_config("assistant_memory", json.dumps(clean, ensure_ascii=False))
@@ -4544,12 +4735,20 @@ def set_memory(memory: dict):
             logger.warning(f"Assistant memory persisted to Redis fallback after Sheets write failed: {exc}")
         else:
             raise
-    _remember_memory_cache(clean)
+    _remember_memory_cache(clean, source="sheets")
 
 
 def add_memory(category: str, text: str) -> dict:
     item = text.strip()
     category = _normalise_memory_category(category)
+    if _postgres_available():
+        try:
+            memory = pg_storage.add_memory(category, item, DEFAULT_MEMORY)
+            _set_redis_memory_fallback(memory)
+            _remember_memory_cache(memory, source="postgres")
+            return memory
+        except Exception as exc:
+            raise RuntimeError(f"storage unavailable: Postgres memory write failed: {exc}") from exc
     try:
         memory = get_memory()
     except Exception as exc:
@@ -4564,7 +4763,7 @@ def add_memory(category: str, text: str) -> dict:
         memory = cached or {k: list(v) for k, v in DEFAULT_MEMORY.items()}
         if item not in memory[category]:
             memory[category].append(item)
-        _remember_memory_cache(memory)
+        _remember_memory_cache(memory, source="sheets")
         return memory
     if item and item not in memory[category]:
         memory[category].append(item)

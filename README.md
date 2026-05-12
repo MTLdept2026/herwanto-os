@@ -196,8 +196,11 @@ git push -u origin main
    - Optional for editable generated Google Docs/Slides links: `GOOGLE_ARTIFACT_SHARE_EMAIL`
    - Optional for voice notes: `OPENAI_API_KEY`
    - Optional for Gmail: `GOOGLE_GMAIL_USER`
-4. Click **Deploy**
-5. Watch logs — you should see: `Herwanto OS running — scheduler active.`
+4. Add Railway Postgres to the same project. Railway injects `DATABASE_URL`; add it to both H.I.R.A services if they do not inherit shared variables.
+5. After the first Postgres deploy, run `python3 scripts/migrate_memory_to_postgres.py` once from an environment that has both `DATABASE_URL` and the old Google Sheets variables.
+6. Keep `HIRA_POSTGRES_ENABLED=1`. For rollback, set `HIRA_POSTGRES_ENABLED=0` and redeploy to use the legacy Sheets-backed state path.
+7. Click **Deploy**
+8. Watch logs — you should see: `Herwanto OS running — scheduler active.`
 
 ---
 
@@ -532,7 +535,7 @@ What should my next milestone for Rūḥ be?
 - **Voice messages** → Telegram voice → Whisper transcription → Claude
 - **Document upload** → Send PDFs/worksheets for Claude to read and summarise
 - **WhatsApp** → Same backend, swap to Meta WhatsApp Cloud API when you're ready
-- **Persistent AI memory** → Assistant memory is stored in the `Config` tab; Redis still improves chat history persistence
+- **Persistent AI memory** → Assistant memory/config/notifications use Postgres when `DATABASE_URL` is set; Redis is only cache/retry safety net, and Sheets stay for external classlists/schedules.
 
 ---
 
@@ -542,6 +545,7 @@ What should my next milestone for Rūḥ be?
 herwanto-os/
 ├── bot.py              # Bot handlers + scheduler
 ├── google_services.py  # Calendar + Sheets integration
+├── postgres_storage.py # Postgres schema + storage adapter
 ├── requirements.txt
 ├── railway.toml
 ├── .env.example

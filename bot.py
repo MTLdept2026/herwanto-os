@@ -358,6 +358,11 @@ def build_runtime_status() -> dict:
     delivery_log = []
     memory_error = ""
     google_connected = google_ok()
+    try:
+        memory_storage = gs.memory_storage_status()
+    except Exception as exc:
+        memory_storage = {"connected": False, "source": "unavailable", "error": str(exc)}
+    memory_connected = bool(memory_storage.get("connected")) or google_connected
     redis_guardrail = redis_guardrail_status()
     def safe_config(key: str) -> str:
         if not google_connected:
@@ -367,12 +372,13 @@ def build_runtime_status() -> dict:
         except Exception:
             return ""
 
-    if google_connected:
+    if memory_connected:
         try:
             memory = gs.get_memory()
             memory_counts = {category: len(memory.get(category, [])) for category in MEMORY_DISPLAY_CATEGORIES}
         except Exception as exc:
             memory_error = str(exc)
+    if google_connected:
         try:
             project_count = len(gs.get_projects())
         except Exception:
@@ -406,6 +412,7 @@ def build_runtime_status() -> dict:
             "redis_connected": redis is not None,
             "redis_required": redis_required(),
             "google_connected": google_connected,
+            "postgres_memory": bool(memory_storage.get("source") == "postgres" and memory_storage.get("connected")),
             "personal_gmail": gs.gmail_ok("personal"),
             "personal_gmail2": gs.gmail_ok("personal2"),
             "work_gmail": gs.gmail_ok("work"),
@@ -417,6 +424,7 @@ def build_runtime_status() -> dict:
                 "backend": "redis" if redis is not None else "local_memory",
                 "ttl_hours": 48,
             },
+            "assistant_memory": memory_storage,
         },
         "models": {
             "agentic": AGENTIC_MODEL,
@@ -583,8 +591,8 @@ def source_discipline_hint(text: str) -> str:
 
 def build_memory_review(limit: int = 5) -> dict:
     limit = max(1, min(int(limit or 5), 20))
-    if not google_ok():
-        return {"ok": False, "error": "Google memory is not connected.", "buckets": {}}
+    if not memory_ok():
+        return {"ok": False, "error": "Assistant memory storage is not connected.", "buckets": {}}
     memory = gs.get_memory()
     buckets = {}
     total = 0
@@ -635,7 +643,7 @@ def _intent_tokens(text: str) -> set[str]:
 
 
 def retrieve_relevant_memory(text: str, limit: int = 6) -> list[dict]:
-    if not google_ok():
+    if not memory_ok():
         return []
     tokens = _intent_tokens(text)
     if not tokens and len((text or "").strip()) < 8:
@@ -827,7 +835,7 @@ def SYSTEM_PROMPT():
     )
     if WORK_DRIVE_REFERENCES:
         memory_ctx += "\n\nKnown work Drive references:\n" + "\n".join(f"- {item}" for item in WORK_DRIVE_REFERENCES)
-    if google_ok():
+    if memory_ok():
         try:
             memory = gs.get_memory()
             # Limits live at module scope (MEMORY_PROMPT_LIMITS) so /memcheck can
@@ -1737,6 +1745,18 @@ GMAIL_DRAFT_TOOL = {
 
 def google_ok():
     return gs.google_sheets_configured()
+
+
+def memory_ok():
+    if google_ok():
+        return True
+    try:
+        status = gs.memory_storage_status()
+        if status.get("source") == "postgres" and status.get("connected"):
+            return True
+    except Exception:
+        pass
+    return google_ok()
 
 
 def build_classops_status_summary(now: datetime | None = None) -> dict:
@@ -6506,7 +6526,7 @@ def _backend_claim_guardrail(reply_text: str, tool_results: list[dict]) -> str:
         return text
     backend_claim = re.search(
         r"\b(?:permanent memory|memory store|session memory|backend fix|sheets error|service account|memory sheet|assistant_memory|"
-        r"google sheets|sheets api|sheet access|tool|quota|rate limit|403|permission|permissions|forbidden|oauth|credential|credentials)\b",
+        r"postgres|database|storage unavailable|google sheets|sheets api|sheet access|tool|quota|rate limit|403|permission|permissions|forbidden|oauth|credential|credentials)\b",
         text,
         re.I,
     )
@@ -6521,7 +6541,7 @@ def _backend_claim_guardrail(reply_text: str, tool_results: list[dict]) -> str:
     if re.search(
         r"\b(?:Failed to remember|Remembered under|Memory unavailable|Google memory is not connected|assistant_memory|Config|"
         r"Google Sheets denied|permission|permissions|forbidden|unauthorized|HTTP\s*403|403|rate limit|quota|Sheets API access failed|"
-        r"CCA schedule unavailable|public CSV fallback|tool timed out)\b",
+        r"storage unavailable|Postgres|database|CCA schedule unavailable|public CSV fallback|tool timed out)\b",
         evidence,
         re.I,
     ):
@@ -6886,6 +6906,7 @@ async def start(update, context):
         f"*Pro assistant*\n/tasks /taskmeta /donetask /followup /followups /files /classlists /evening /weekly\n\n"
         f"*Gmail*\n/gmail /gmaildraft (optional setup)\n\n"
         f"*Assistant*\n/agenda [days] /remember /memory /forget all\n\n"
+        f"*Ops*\n/storagecheck /digestcheck /memcheck\n\n"
         f"*Projects*\n/projects /update\n\n"
         f"*Search*\n/search [query]\n\n"
         f"*Weather*\n/weather [area]\n\n"
@@ -7515,6 +7536,15 @@ async def gmaildraft_cmd(update, context):
 async def briefing_cmd(update, context):
     await reply(update, build_briefing(), parse_mode="Markdown")
 
+
+async def storagecheck_cmd(update, context):
+    await update.message.reply_text(format_storage_check(build_storage_check()))
+
+
+async def digestcheck_cmd(update, context):
+    await update.message.reply_text(format_digest_delivery_status(build_digest_delivery_status()))
+
+
 async def prayers_cmd(update, context):
     await reply(update, build_islamic_brief(), parse_mode="Markdown")
 
@@ -7539,8 +7569,8 @@ async def agenda_cmd(update, context):
         await update.message.reply_text(f"Agenda error: {e}")
 
 async def remember_cmd(update, context):
-    if not google_ok():
-        await update.message.reply_text("Google not connected.")
+    if not memory_ok():
+        await update.message.reply_text("Assistant memory storage is not connected.")
         return
     text = " ".join(context.args).strip()
     if not text:
@@ -7587,23 +7617,30 @@ async def memcheck_cmd(update, context):
     persisted in the Sheet. Run this when the bot "seems to forget" something to verify
     where the gap is: storage, prompt-window, or retrieval.
     """
-    if not google_ok():
-        await update.message.reply_text("Google not connected — cannot read assistant_memory from Sheet.")
+    if not memory_ok():
+        await update.message.reply_text("Assistant memory storage is not connected.")
         return
     try:
         memory = gs.get_memory()
     except Exception as e:
         await update.message.reply_text(
-            f"Failed to read memory from Sheet: {e}\n\n"
-            "This means /remember writes are also failing. Check service account access to GOOGLE_SHEET_ID."
+            f"Failed to read assistant memory: {e}\n\n"
+            "This means /remember writes are also failing until storage recovers."
         )
         return
 
+    status = gs.memory_storage_status()
+    source_label = {
+        "postgres": "Postgres -> assistant_memory",
+        "sheets": "Google Sheet -> Config tab -> assistant_memory",
+        "sheets_fallback": "Sheets fallback while Postgres is unavailable",
+        "redis_fallback": "Redis fallback",
+    }.get(str(status.get("source", "")), str(status.get("source", "unknown")))
     total_stored = sum(len(memory.get(cat, [])) for cat in MEMORY_DISPLAY_CATEGORIES)
     total_in_prompt = 0
     lines = [
         "Memory diagnostic",
-        "Source of truth: Google Sheet -> Config tab -> key assistant_memory.",
+        f"Source of truth: {source_label}.",
         f"Total items stored: {total_stored}",
         "",
         "Per-category: stored / shown to Claude / limit",
@@ -8618,6 +8655,15 @@ async def _execute_tool(name: str, inp: dict) -> str:
             return f"Remembered under {category}: {memory_text}.{week_note}"
         except Exception as e:
             try:
+                storage_status = gs.memory_storage_status()
+            except Exception:
+                storage_status = {}
+            if storage_status.get("source") in {"postgres", "sheets_fallback"} or storage_status.get("enabled"):
+                detail = str(e).strip()
+                if len(detail) > 260:
+                    detail = detail[:257].rstrip() + "..."
+                return f"Failed to remember: storage unavailable. {detail}"
+            try:
                 identity = gs.sheets_access_identity()
                 sheet = getattr(gs, "SHEET_ID", "")
                 target = f" Memory sheet: https://docs.google.com/spreadsheets/d/{sheet}/edit" if sheet else ""
@@ -9360,6 +9406,286 @@ def _web_push_delivered_for_source(source: str, now: datetime | None = None) -> 
         if int(item.get("sent", 0) or 0) > 0:
             return True
     return False
+
+
+def _parse_sgt_datetime(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        return SGT.localize(parsed)
+    return parsed.astimezone(SGT)
+
+
+def _briefing_sources(slot: str, day_key: str) -> list[str]:
+    clean_slot = "evening" if str(slot or "").strip().lower() == "evening" else "morning"
+    return [f"{clean_slot}_briefing:{day_key}", f"web_{clean_slot}_briefing:{day_key}"]
+
+
+def _briefing_delivery_log_item(delivery_log: list, sources: list[str], day_key: str) -> dict:
+    source_set = {str(source or "").strip() for source in sources}
+    for item in reversed(delivery_log or []):
+        if str(item.get("source", "")).strip() not in source_set:
+            continue
+        created = _parse_sgt_datetime(str(item.get("created", "")))
+        if created and created.strftime("%Y-%m-%d") != day_key:
+            continue
+        if int(item.get("sent", 0) or 0) > 0:
+            return item
+    return {}
+
+
+def build_digest_delivery_status(delivery_log: list | None = None, queued: list | None = None, now: datetime | None = None) -> dict:
+    current = (now or datetime.now(SGT)).astimezone(SGT)
+    today_key = current.strftime("%Y-%m-%d")
+    if delivery_log is None:
+        try:
+            delivery_log = gs.get_web_push_delivery_log()
+        except Exception:
+            delivery_log = []
+    if queued is None:
+        try:
+            queued = gs.get_app_notifications(include_archived=False)
+        except Exception:
+            queued = []
+
+    specs = [
+        {
+            "slot": "morning",
+            "label": "Morning",
+            "time": MORNING_BRIEFING_TIME,
+            "catchup": MORNING_BRIEFING_CATCHUP_MINUTES,
+            "config_key": MORNING_BRIEFING_SENT_KEY,
+        },
+        {
+            "slot": "evening",
+            "label": "Evening",
+            "time": EVENING_BRIEFING_TIME,
+            "catchup": EVENING_BRIEFING_CATCHUP_MINUTES,
+            "config_key": EVENING_BRIEFING_SENT_KEY,
+        },
+    ]
+    slots = []
+    attention = False
+    watching = False
+    for spec in specs:
+        slot = spec["slot"]
+        target = current.replace(hour=spec["time"][0], minute=spec["time"][1], second=0, microsecond=0)
+        catchup_until = target + timedelta(minutes=spec["catchup"])
+        sources = _briefing_sources(slot, today_key)
+        delivered_item = _briefing_delivery_log_item(delivery_log, sources, today_key)
+        queued_item = next((item for item in queued or [] if str(item.get("source", "")).strip() in sources), {})
+        try:
+            config_marked = gs.get_config(spec["config_key"]) == today_key
+        except Exception:
+            config_marked = False
+
+        delivered_at = ""
+        if delivered_item:
+            created = _parse_sgt_datetime(str(delivered_item.get("created", "")))
+            delivered_at = created.strftime("%H:%M") if created else str(delivered_item.get("created", ""))
+            status = "delivered"
+            detail = f"confirmed at {delivered_at}" if delivered_at else "confirmed by push log"
+        elif config_marked:
+            status = "unconfirmed"
+            detail = "sent flag exists but no confirmed phone push"
+            attention = True
+        elif current < target:
+            status = "pending"
+            detail = f"due at {target.strftime('%H:%M')}"
+        elif queued_item:
+            status = "queued"
+            detail = "queued, awaiting phone push proof"
+            watching = True
+        elif current <= catchup_until:
+            status = "recovering"
+            detail = f"catch-up active until {catchup_until.strftime('%H:%M')}"
+            watching = True
+        else:
+            status = "missed"
+            detail = "no confirmed delivery today"
+            attention = True
+
+        slots.append({
+            "slot": slot,
+            "label": spec["label"],
+            "time": target.strftime("%H:%M"),
+            "catchup_until": catchup_until.strftime("%H:%M"),
+            "status": status,
+            "detail": detail,
+            "delivered_at": delivered_at,
+            "queued": bool(queued_item),
+            "config_marked": config_marked,
+            "sources": sources,
+        })
+
+    if attention:
+        overall = "attention"
+        summary = "Digest delivery needs attention"
+    elif watching:
+        overall = "watching"
+        summary = "Digest delivery is being watched"
+    else:
+        overall = "ok"
+        summary = "Digest delivery is on track"
+    return {
+        "today": today_key,
+        "generated_at": current.strftime("%H:%M SGT"),
+        "overall": overall,
+        "summary": summary,
+        "slots": slots,
+    }
+
+
+def format_digest_delivery_status(status: dict) -> str:
+    lines = [
+        "Digest check",
+        f"Date: {status.get('today', '')}",
+        f"Overall: {status.get('overall', 'unknown')}",
+        f"Summary: {status.get('summary', '')}",
+        "",
+    ]
+    for slot in status.get("slots", []) or []:
+        lines.append(
+            f"- {slot.get('label', slot.get('slot', 'Slot'))}: {slot.get('status', 'unknown')} "
+            f"({slot.get('detail', '')})"
+        )
+        lines.append(f"  key: {', '.join(slot.get('sources', []) or [])}")
+    return "\n".join(lines).strip()
+
+
+def _ops_state(ok: bool, unavailable: bool = False) -> str:
+    if ok:
+        return "ok"
+    if unavailable:
+        return "unavailable"
+    return "attention"
+
+
+def build_storage_check() -> dict:
+    checks = {}
+
+    try:
+        memory_status = gs.memory_storage_status()
+    except Exception as exc:
+        memory_status = {"source": "unavailable", "connected": False, "error": str(exc)}
+    checks["memory"] = {
+        "status": _ops_state(bool(memory_status.get("connected"))),
+        "source": memory_status.get("source", "unknown"),
+        "detail": memory_status.get("error", ""),
+    }
+
+    config_detail = ""
+    try:
+        gs.set_config("ops_storagecheck_last_run", datetime.now(SGT).isoformat())
+        config_ok = True
+    except Exception as exc:
+        config_ok = False
+        config_detail = str(exc)
+    checks["config"] = {
+        "status": _ops_state(config_ok, unavailable=not config_ok),
+        "source": "postgres" if memory_status.get("source") == "postgres" else "sheets",
+        "detail": config_detail[:220],
+    }
+
+    redis_ok = _get_redis() is not None
+    checks["redis"] = {
+        "status": _ops_state(redis_ok, unavailable=not redis_ok),
+        "source": "redis",
+        "detail": "cache/retry safety net" if redis_ok else "Redis unavailable",
+    }
+
+    sheets_ok = google_ok()
+    checks["sheets"] = {
+        "status": _ops_state(sheets_ok, unavailable=not sheets_ok),
+        "source": "google_sheets",
+        "detail": "external source reads" if sheets_ok else "Google Sheets not configured",
+    }
+
+    try:
+        subscriptions = gs.get_web_push_subscriptions()
+        subscription_error = ""
+    except Exception as exc:
+        subscriptions = []
+        subscription_error = str(exc)
+    checks["push_subscriptions"] = {
+        "status": _ops_state(bool(subscriptions), unavailable=bool(subscription_error)),
+        "source": "web_push_subscriptions",
+        "count": len(subscriptions),
+        "detail": subscription_error[:220] if subscription_error else f"{len(subscriptions)} active subscription(s)",
+    }
+
+    try:
+        delivery_log = gs.get_web_push_delivery_log()
+        latest_delivery = delivery_log[-1] if delivery_log else {}
+        delivery_error = ""
+    except Exception as exc:
+        latest_delivery = {}
+        delivery_error = str(exc)
+    delivery_ok = bool(latest_delivery) and int(latest_delivery.get("sent", 0) or 0) > 0
+    checks["push_delivery"] = {
+        "status": _ops_state(delivery_ok, unavailable=bool(delivery_error)),
+        "source": str(latest_delivery.get("source", "") or "web_push_delivery_log"),
+        "detail": delivery_error[:220] if delivery_error else (
+            f"last sent={int(latest_delivery.get('sent', 0) or 0)} attempted={int(latest_delivery.get('attempted', 0) or 0)}"
+            if latest_delivery else "no delivery attempts logged"
+        ),
+    }
+
+    try:
+        snapshot = gs.get_cca_schedule_snapshot(datetime.now(SGT).date())
+        source_ok = not bool(snapshot.get("error") or snapshot.get("access_blocked"))
+        source_detail = snapshot.get("selected_tab") or snapshot.get("access_warning") or snapshot.get("error", "")
+    except Exception as exc:
+        source_ok = False
+        source_detail = str(exc)
+    checks["cca_source"] = {
+        "status": _ops_state(source_ok, unavailable=not source_ok),
+        "source": "cca_schedule",
+        "detail": str(source_detail or "")[:220],
+    }
+
+    statuses = [item.get("status") for item in checks.values()]
+    if any(status == "attention" for status in statuses):
+        overall = "attention"
+    elif any(status == "unavailable" for status in statuses):
+        overall = "degraded"
+    else:
+        overall = "ok"
+    return {
+        "overall": overall,
+        "generated_at": datetime.now(SGT).strftime("%Y-%m-%d %H:%M SGT"),
+        "checks": checks,
+    }
+
+
+def format_storage_check(status: dict) -> str:
+    lines = [
+        "Storage check",
+        f"Overall: {status.get('overall', 'unknown')}",
+        f"Generated: {status.get('generated_at', '')}",
+        "",
+    ]
+    labels = {
+        "memory": "Memory",
+        "config": "Config",
+        "redis": "Redis",
+        "sheets": "Sheets",
+        "push_subscriptions": "Push subscriptions",
+        "push_delivery": "Push delivery",
+        "cca_source": "CCA source",
+    }
+    for key, label in labels.items():
+        item = (status.get("checks") or {}).get(key, {})
+        count = f" count={item.get('count')}" if "count" in item else ""
+        detail = item.get("detail", "")
+        suffix = f" - {detail}" if detail else ""
+        lines.append(f"- {label}: {item.get('status', 'unknown')} ({item.get('source', '')}{count}){suffix}")
+    return "\n".join(lines).strip()
 
 
 WORK_GMAIL_MONITOR_SEEN_KEY = "work_gmail_monitor_seen_ids"
@@ -10191,6 +10517,8 @@ def main():
     app.add_handler(_cmd("gmail",    gmail_cmd))
     app.add_handler(_cmd("gmaildraft", gmaildraft_cmd))
     app.add_handler(_cmd("briefing", briefing_cmd))
+    app.add_handler(_cmd("storagecheck", storagecheck_cmd))
+    app.add_handler(_cmd("digestcheck", digestcheck_cmd))
     app.add_handler(_cmd("prayers",  prayers_cmd))
     app.add_handler(_cmd("khutbah",  khutbah_cmd))
     app.add_handler(_cmd("agenda",   agenda_cmd))

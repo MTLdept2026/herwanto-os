@@ -1639,6 +1639,42 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(status["slots"][1]["slot"], "evening")
         self.assertEqual(status["slots"][1]["status"], "recovering")
 
+    def test_bot_digestcheck_reports_confirmed_delivery_keys(self):
+        today_key = "2026-05-10"
+        now = bot.SGT.localize(datetime(2026, 5, 10, 21, 10))
+        delivery_log = [
+            {"created": "2026-05-10T06:50:00+08:00", "source": f"morning_briefing:{today_key}", "sent": 1},
+            {"created": "2026-05-10T21:03:00+08:00", "source": f"web_evening_briefing:{today_key}", "sent": 1},
+        ]
+
+        with patch.object(bot.gs, "get_config", return_value=today_key):
+            status = bot.build_digest_delivery_status(delivery_log, [], now=now)
+
+        self.assertEqual(status["overall"], "ok")
+        self.assertEqual([slot["status"] for slot in status["slots"]], ["delivered", "delivered"])
+        text = bot.format_digest_delivery_status(status)
+        self.assertIn(f"morning_briefing:{today_key}", text)
+        self.assertIn(f"web_evening_briefing:{today_key}", text)
+
+    def test_storagecheck_collapses_operations_into_clear_states(self):
+        with (
+            patch.object(bot.gs, "memory_storage_status", return_value={"connected": True, "source": "postgres"}),
+            patch.object(bot.gs, "set_config"),
+            patch.object(bot, "_get_redis", return_value=object()),
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "get_web_push_subscriptions", return_value=[{"client_id": "phone", "subscription": {"endpoint": "x"}}]),
+            patch.object(bot.gs, "get_web_push_delivery_log", return_value=[{"source": "morning_briefing:2026-05-10", "sent": 1, "attempted": 1}]),
+            patch.object(bot.gs, "get_cca_schedule_snapshot", return_value={"selected_tab": "Week 8"}),
+        ):
+            status = bot.build_storage_check()
+
+        self.assertEqual(status["overall"], "ok")
+        self.assertEqual(status["checks"]["memory"]["source"], "postgres")
+        self.assertEqual(status["checks"]["push_subscriptions"]["count"], 1)
+        text = bot.format_storage_check(status)
+        self.assertIn("Storage check", text)
+        self.assertIn("Memory: ok", text)
+
     def test_proactive_v2_queue_prefers_higher_score_ready_items(self):
         now = bot.datetime.now(bot.SGT)
         with patch("bot.google_ok", return_value=False), \
