@@ -420,6 +420,8 @@ def source_discipline_for_text(text: str) -> dict:
     tools: list[str] = []
     if re.search(r"https?://\S+", clean):
         tools.append("fetch_url")
+    if re.search(r"\b(cca|football cca|cca duty|training duty)\b", lowered):
+        tools.append("get_cca_schedule")
     if re.search(r"\b(liverpool|lfc|epl|premier league|anfield|salah|wirtz|isak|transfer|rumou?r|lineup|starting xi)\b", lowered):
         tools.append("get_liverpool_brief")
     if re.search(r"\b(f1|formula 1|grand prix|mercedes|russell|antonelli|hamilton|qualifying|driver standings|constructor standings)\b", lowered):
@@ -801,6 +803,7 @@ Rules:
 - For timetable or lesson lookups, use get_timetable. TIMETABLE in timetable.py is the source of truth for lessons; Google Calendar is only for events/appointments.
 - HBL guardrail: Never infer HBL from Friday, Even-week Friday, a free day, or "no timetabled lessons". Say it is HBL only when a dated source explicitly marks that date as HBL. If the assistant context says "HBL status: Not HBL", treat that as authoritative over stale/general HBL memories or generic recurring labels.
 - If Stored memory says Herwanto's lessons/classes are covered by relief for a date, treat those timetable lessons as covered for workload and overlap warnings. Do not warn that a calendar item clashes with relieved lessons unless newer user/calendar information clearly contradicts the relief memory.
+- For CCA schedule/duty questions, use get_cca_schedule. The canonical source is Herwanto's CCA schedule Google Sheet. Select the tab by the requested/current date and school week. If Herwanto's name is not on that day's schedule, do not prompt him and do not add a CCA duty/event to his calendar.
 - For availability planning ("best slots", "free slots", "when can I schedule", "after school", "not during CCA day"), call find_available_training_slots before suggesting times. Do not suggest a slot until timetable lessons and Google Calendar conflicts have been checked.
 - For MTL classlists, student names, scores, marks, WA/weighted assessment, FA/formative assessment, prelim, EOY, assessment columns, progress analysis, or who is in Herwanto's classes, call get_mtl_classlists or analyze_mtl_scores as appropriate. His classlist tabs in the 2026 MTL classlist sheets include CG HERWANTO or CG HERWANTO/CG KADIR.
 - Score-sheet layouts: Sec 1 uses WA1 (40) and WA1 %, plus PreWA2 (20), WA2, WA3, EOY. Sec 2 uses WA1, Pra/Prg-WA2 mock/pre-WA columns, then actual WA2, WA3, EOY; Pra/Prg-WA means pre-WA/mock tests, not the actual WA2 result. Sec 3 uses WA1 (20), WA1 %, then WA2, WA3, EOY. Sec 4 FA layout uses component columns and a total followed by %, e.g. FA1 15/30/45/% and FA2 10/25/35/%; compare the % columns for progress unless the user asks for raw marks.
@@ -821,7 +824,7 @@ Rules:
 - Never invent mosque or place locations. If a place location affects the answer and you do not have a verified source/tool result, say what you know and what is unverified. Be especially careful with Singapore masjid names that sound similar.
 - Known mosque correction: Masjid Al-Muttaqin is at 5140 Ang Mo Kio Ave 6, Singapore 569844, not Kovan.
 - For journey-time estimates, use the current device location context when it is provided. If it is not provided, use only explicit user-provided origin/destination or stable stored memory, and label any estimate as rough.
-- You have tools: create_calendar_event, delete_calendar_event_by_text, find_available_training_slots, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_mtl_classlists, analyze_mtl_scores, update_mtl_class_score, fill_mtl_percentage_scores, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, create_topic_profile, remember_source_insight, update_project_status, get_nea_weather, get_muis_prayer_times, get_muis_friday_khutbah, get_latest_news, get_liverpool_brief, get_f1_brief, web_search, and fetch_url. Use them proactively.
+- You have tools: create_calendar_event, delete_calendar_event_by_text, find_available_training_slots, get_cca_schedule, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_mtl_classlists, analyze_mtl_scores, update_mtl_class_score, fill_mtl_percentage_scores, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, create_topic_profile, remember_source_insight, update_project_status, get_nea_weather, get_muis_prayer_times, get_muis_friday_khutbah, get_latest_news, get_liverpool_brief, get_f1_brief, web_search, and fetch_url. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
 - When the user mentions marking scripts, papers, compositions, kefahaman, karangan, worksheets, or a marking stack, use marking tools instead of ordinary reminders: add_marking_task for a new stack, update_marking_progress when he says how many scripts are marked, reset_marking_load when he asks to reset/clear the marking load or board, and get_marking_brief when he asks what marking is outstanding. Marking tasks are mission-critical and must persist even at 0 outstanding; only complete one when he explicitly says that marking stack is done, completed, can be closed, reset, or cleared.
@@ -984,6 +987,17 @@ AVAILABILITY_SLOT_TOOL = {
                 "description": "Calendar keywords to avoid entirely on that day, e.g. CCA, football"
             },
             "purpose": {"type": "string", "description": "Short reason for the slot search, e.g. Sahibba training"}
+        }
+    }
+}
+
+CCA_SCHEDULE_TOOL = {
+    "name": "get_cca_schedule",
+    "description": "Read Herwanto's canonical Football CCA schedule Google Sheet and check whether his name appears for the requested/current date. Use for CCA schedule, CCA duty, football CCA, training duty, or whether to prompt/add CCA calendar events. If Herwanto is not listed for that day, do not prompt him and do not add the event to his calendar.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "date": {"type": "string", "description": "YYYY-MM-DD. Leave empty for today/current week."}
         }
     }
 }
@@ -1755,6 +1769,36 @@ def _agenda_week_display(target: date) -> str:
     if official_week["is_school_holiday"]:
         return f"School holiday, {base}"
     return f"{tt.week_type_label(official_week['week_type'])} week, {base}"
+
+
+def build_cca_schedule_brief(target_date: str = "") -> str:
+    if not google_ok():
+        return "Google is not connected, so I cannot read the CCA schedule sheet."
+    try:
+        target = date.fromisoformat(str(target_date)[:10]) if str(target_date or "").strip() else datetime.now(SGT).date()
+    except Exception:
+        target = datetime.now(SGT).date()
+    try:
+        source = gs.set_cca_schedule_source(
+            "1L5FGME5itmc3vknwL0xSsIrz4qJ3n6z1YfxffgeB3nU",
+            "1961438111",
+        )
+        gs.add_memory(
+            "teaching",
+            (
+                "cca-schedule-source: Use Herwanto's CCA schedule sheet as the canonical CCA duty/training source: "
+                f"{source['url']}. Select the tab by current/requested date and school week. "
+                "If Herwanto's name is not on that day's schedule, do not prompt him or add a CCA event to his calendar."
+            ),
+        )
+    except Exception as exc:
+        logger.warning(f"CCA schedule source save failed: {exc}")
+    try:
+        snapshot = gs.get_cca_schedule_snapshot(target, week_label=_agenda_week_display(target), user_name="Herwanto")
+        return gs.format_cca_schedule_snapshot(snapshot)
+    except Exception as exc:
+        return f"CCA schedule lookup failed: {exc}"
+
 
 def _hbl_status_line(target: date) -> str:
     official_week = tt.get_school_week_info(target)
@@ -5824,6 +5868,9 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     if "fetch_url" in available and re.search(r"https?://\S+", text or "", re.I):
         return "fetch_url"
 
+    if "get_cca_schedule" in available and has_any(["cca", "football cca", "cca duty", "training duty"]):
+        return "get_cca_schedule"
+
     if "web_research" in available and has_any([
         "research", "deep dive", "investigate", "compare", "comparison",
         "find out", "look up", "sources", "official", "policy",
@@ -7239,6 +7286,7 @@ def _core_tools():
         CALENDAR_TOOL,
         DELETE_CALENDAR_TOOL,
         AVAILABILITY_SLOT_TOOL,
+        CCA_SCHEDULE_TOOL,
         REMINDER_TOOL,
         NUDGE_TOOL,
         DAILY_CHECKIN_TOOL,
@@ -7298,6 +7346,8 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         add(CLASSLIST_TOOL, ANALYZE_MTL_SCORES_TOOL, UPDATE_CLASS_SCORE_TOOL, FILL_PERCENTAGE_SCORES_TOOL, TIMETABLE_TOOL)
     if re.search(r"\b(calendar|schedule|agenda|today|tomorrow|week|meeting|event|appointment|duty|training|match|cca|what'?s on)\b", text):
         add(CONTEXT_TOOL, CALENDAR_TOOL, DELETE_CALENDAR_TOOL, AVAILABILITY_SLOT_TOOL, REMINDER_TOOL, TIMETABLE_TOOL)
+        if re.search(r"\b(cca|football cca|cca duty|training duty)\b", text):
+            add(CCA_SCHEDULE_TOOL)
     if re.search(r"\b(task|tasks|due|deadline|remind|reminder|prepare|submit|complete|done|priority|prioritise|prioritize|focus)\b", text):
         add(CONTEXT_TOOL, TASK_BRIEF_TOOL, REMINDER_TOOL, COMPLETE_TASK_TOOL)
         if re.search(r"\bremind(?: me)?\b", text) and re.search(
@@ -7819,6 +7869,12 @@ async def _execute_tool(name: str, inp: dict) -> str:
             )
         except Exception as e:
             return f"Failed to find available slots: {e}"
+
+    elif name == "get_cca_schedule":
+        try:
+            return build_cca_schedule_brief(inp.get("date", ""))
+        except Exception as e:
+            return f"Failed to read CCA schedule: {e}"
 
     elif name == "get_mtl_classlists":
         try:

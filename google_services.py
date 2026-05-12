@@ -42,6 +42,8 @@ GMAIL_SCOPES = [
 ]
 
 SHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "")
+CCA_SCHEDULE_SPREADSHEET_ID = os.environ.get("CCA_SCHEDULE_SPREADSHEET_ID", "1L5FGME5itmc3vknwL0xSsIrz4qJ3n6z1YfxffgeB3nU")
+CCA_SCHEDULE_GID = os.environ.get("CCA_SCHEDULE_GID", "1961438111")
 DEFAULT_CLASSLIST_SHEET_IDS = [
     "1wK1YTRzyjQ5a976D_Z4q886sZofTQnpXT4kMtf1LjKk",  # 2026 S1 MTL CLASSLIST
     "1kHvPV58jdk9mNRuQSpS4bWy93UsSvYFT-CPw0rimkvs",  # 2026 S2 MTL CLASSLIST
@@ -383,6 +385,179 @@ def _column_letter(index: int) -> str:
 
 def _quote_sheet_name(title: str) -> str:
     return "'" + str(title or "").replace("'", "''") + "'"
+
+
+def _sheet_title_for_gid(spreadsheet_id: str, gid: str = "") -> tuple[str, str]:
+    book = _sheets().spreadsheets().get(
+        spreadsheetId=spreadsheet_id,
+        includeGridData=False,
+        fields="properties(title),sheets(properties(sheetId,title))",
+    ).execute()
+    spreadsheet_title = book.get("properties", {}).get("title", spreadsheet_id)
+    clean_gid = str(gid or "").strip()
+    sheets = book.get("sheets", []) or []
+    if clean_gid:
+        for sheet in sheets:
+            props = sheet.get("properties", {})
+            if str(props.get("sheetId", "")) == clean_gid:
+                return str(props.get("title", "") or ""), spreadsheet_title
+    first_title = sheets[0].get("properties", {}).get("title", "") if sheets else ""
+    return str(first_title or ""), spreadsheet_title
+
+
+def _date_tokens_for_sheet(target: date) -> set[str]:
+    month_full = target.strftime("%B").lower()
+    month_short = target.strftime("%b").lower()
+    return {
+        target.isoformat(),
+        target.strftime("%d/%m/%Y").lstrip("0").replace("/0", "/"),
+        target.strftime("%d/%m").lstrip("0").replace("/0", "/"),
+        target.strftime("%-d %B").lower() if os.name != "nt" else f"{target.day} {month_full}",
+        target.strftime("%-d %b").lower() if os.name != "nt" else f"{target.day} {month_short}",
+        target.strftime("%A").lower(),
+        target.strftime("%a").lower(),
+    }
+
+
+def _row_text(row: list[str]) -> str:
+    return " ".join(str(cell or "").strip() for cell in row if str(cell or "").strip()).lower()
+
+
+def _row_has_any(row: list[str], tokens: set[str]) -> bool:
+    text = _row_text(row)
+    return any(token and token in text for token in tokens)
+
+
+def _sheet_values(spreadsheet_id: str, sheet_title: str, cell_range: str = "A1:Z220") -> list[list[str]]:
+    quoted = _quote_sheet_name(sheet_title)
+    result = _sheets().spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"{quoted}!{cell_range}",
+    ).execute()
+    return [[str(cell).strip() for cell in row] for row in result.get("values", [])]
+
+
+def _cca_source_config() -> dict:
+    spreadsheet_id = get_config("cca_schedule_spreadsheet_id") or CCA_SCHEDULE_SPREADSHEET_ID
+    gid = get_config("cca_schedule_gid") or CCA_SCHEDULE_GID
+    return {
+        "spreadsheet_id": spreadsheet_id,
+        "gid": str(gid or ""),
+        "url": f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit?gid={gid}#gid={gid}",
+    }
+
+
+def set_cca_schedule_source(spreadsheet_id: str = CCA_SCHEDULE_SPREADSHEET_ID, gid: str = CCA_SCHEDULE_GID) -> dict:
+    clean_id = str(spreadsheet_id or "").strip()
+    clean_gid = str(gid or "").strip()
+    if not clean_id:
+        raise ValueError("CCA schedule spreadsheet id is required.")
+    set_config("cca_schedule_spreadsheet_id", clean_id)
+    if clean_gid:
+        set_config("cca_schedule_gid", clean_gid)
+    return _cca_source_config()
+
+
+def get_cca_schedule_snapshot(target_date: date | str | None = None, week_label: str = "", user_name: str = "Herwanto") -> dict:
+    if isinstance(target_date, date):
+        target = target_date
+    elif target_date:
+        target = date.fromisoformat(str(target_date)[:10])
+    else:
+        target = datetime.now(SGT).date()
+    source = _cca_source_config()
+    spreadsheet_id = source["spreadsheet_id"]
+    gid = source["gid"]
+    book = _sheets().spreadsheets().get(
+        spreadsheetId=spreadsheet_id,
+        includeGridData=False,
+        fields="properties(title),sheets(properties(sheetId,title))",
+    ).execute()
+    spreadsheet_title = book.get("properties", {}).get("title", spreadsheet_id)
+    tokens = _date_tokens_for_sheet(target)
+    week_tokens = {str(week_label or "").lower()}
+    candidates = []
+    for sheet in book.get("sheets", []) or []:
+        props = sheet.get("properties", {})
+        title = str(props.get("title", "") or "")
+        sheet_id = str(props.get("sheetId", "") or "")
+        title_text = title.lower()
+        rows = []
+        try:
+            rows = _sheet_values(spreadsheet_id, title)
+        except Exception:
+            rows = []
+        top_text = " ".join(_row_text(row) for row in rows[:30])
+        score = 0
+        reasons = []
+        if sheet_id == gid:
+            score += 2
+            reasons.append("configured gid")
+        if any(token and token in title_text for token in tokens):
+            score += 12
+            reasons.append("date in tab title")
+        if any(token and token in top_text for token in tokens):
+            score += 8
+            reasons.append("date/day in tab rows")
+        if any(token and token in title_text for token in week_tokens):
+            score += 8
+            reasons.append("week label in tab title")
+        if any(token and token in top_text for token in week_tokens):
+            score += 5
+            reasons.append("week label in tab rows")
+        candidates.append({
+            "sheet_id": sheet_id,
+            "sheet_title": title,
+            "rows": rows,
+            "score": score,
+            "reasons": reasons,
+        })
+
+    if not candidates:
+        return {**source, "spreadsheet_title": spreadsheet_title, "date": target.isoformat(), "assigned": False, "error": "No tabs found."}
+    selected = max(candidates, key=lambda item: item["score"])
+    if selected["score"] <= 0:
+        selected = next((item for item in candidates if item["sheet_id"] == gid), selected)
+
+    name_tokens = {str(user_name or "Herwanto").lower(), "herwanto"}
+    date_rows = [row for row in selected["rows"] if _row_has_any(row, tokens)]
+    candidate_rows = date_rows or selected["rows"]
+    assigned_rows = [
+        row for row in candidate_rows
+        if any(token and token in _row_text(row) for token in name_tokens)
+    ]
+    return {
+        **source,
+        "spreadsheet_title": spreadsheet_title,
+        "date": target.isoformat(),
+        "week_label": week_label,
+        "selected_tab": selected["sheet_title"],
+        "selected_gid": selected["sheet_id"],
+        "selection_score": selected["score"],
+        "selection_reasons": selected["reasons"],
+        "day_specific_rows_found": bool(date_rows),
+        "assigned": bool(assigned_rows),
+        "assigned_rows": assigned_rows[:12],
+        "row_count": len(selected["rows"]),
+    }
+
+
+def format_cca_schedule_snapshot(snapshot: dict) -> str:
+    if snapshot.get("error"):
+        return f"CCA schedule unavailable: {snapshot['error']}"
+    lines = [
+        f"CCA schedule source: {snapshot.get('url', '')}",
+        f"Date: {snapshot.get('date', '')}",
+        f"Selected tab: {snapshot.get('selected_tab', '')} ({', '.join(snapshot.get('selection_reasons') or ['fallback'])})",
+        f"Herwanto on schedule: {'YES' if snapshot.get('assigned') else 'NO'}",
+    ]
+    if not snapshot.get("assigned"):
+        lines.append("Hard stop: if Herwanto is not on this day's schedule, do not prompt him and do not add a CCA duty/event to his calendar.")
+        return "\n".join(lines)
+    lines.append("Matching row(s):")
+    for row in snapshot.get("assigned_rows", [])[:8]:
+        lines.append("- " + " | ".join(str(cell) for cell in row if str(cell).strip()))
+    return "\n".join(lines)
 
 
 def _first_after_label(rows: list[list[str]], label: str, max_rows: int = 12) -> str:

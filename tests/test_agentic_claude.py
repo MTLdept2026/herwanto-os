@@ -67,10 +67,14 @@ class FakeSheetsRequest:
 
 
 class FakeSheetsValues:
-    def __init__(self):
+    def __init__(self, ranges=None):
         self.batch_updates = []
         self.updates = []
         self.appends = []
+        self.ranges = ranges or {}
+
+    def get(self, spreadsheetId, range):
+        return FakeSheetsRequest({"values": self.ranges.get(range, [])})
 
     def batchUpdate(self, spreadsheetId, body):
         self.batch_updates.append((spreadsheetId, body))
@@ -86,11 +90,11 @@ class FakeSheetsValues:
 
 
 class FakeSheetsSpreadsheets:
-    def __init__(self, book):
+    def __init__(self, book, ranges=None):
         self.book = book
-        self.values_api = FakeSheetsValues()
+        self.values_api = FakeSheetsValues(ranges=ranges)
 
-    def get(self, spreadsheetId, includeGridData, fields):
+    def get(self, spreadsheetId, includeGridData=False, fields=""):
         return FakeSheetsRequest(self.book)
 
     def values(self):
@@ -98,8 +102,8 @@ class FakeSheetsSpreadsheets:
 
 
 class FakeSheetsService:
-    def __init__(self, book):
-        self.spreadsheets_api = FakeSheetsSpreadsheets(book)
+    def __init__(self, book, ranges=None):
+        self.spreadsheets_api = FakeSheetsSpreadsheets(book, ranges=ranges)
 
     def spreadsheets(self):
         return self.spreadsheets_api
@@ -786,6 +790,66 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("Saved the season list to sports memory", reply)
         self.assertIn("Calendar: created 2 event", reply)
         self.assertNotIn("No recent Google News items", reply)
+
+    def test_cca_schedule_selects_current_week_tab_and_blocks_when_name_absent(self):
+        book = {
+            "properties": {"title": "CCA Calendar"},
+            "sheets": [
+                {"properties": {"sheetId": 111, "title": "T2 Week 7"}},
+                {"properties": {"sheetId": 1961438111, "title": "T2 Week 8"}},
+            ],
+        }
+        ranges = {
+            "'T2 Week 7'!A1:Z220": [["Monday", "Coach", "Herwanto"]],
+            "'T2 Week 8'!A1:Z220": [
+                ["Odd week, Term 2 Week 8"],
+                ["Tuesday 12 May", "Football CCA", "Coach A"],
+            ],
+        }
+        fake_service = FakeSheetsService(book, ranges=ranges)
+        with (
+            patch.object(bot.gs, "_sheets", return_value=fake_service),
+            patch.object(bot.gs, "get_config", side_effect=lambda key: {
+                "cca_schedule_spreadsheet_id": "1L5FGME5itmc3vknwL0xSsIrz4qJ3n6z1YfxffgeB3nU",
+                "cca_schedule_gid": "1961438111",
+            }.get(key, "")),
+        ):
+            snapshot = bot.gs.get_cca_schedule_snapshot(bot.date(2026, 5, 12), week_label="Odd week, Term 2 Week 8")
+
+        self.assertEqual(snapshot["selected_tab"], "T2 Week 8")
+        self.assertFalse(snapshot["assigned"])
+        text = bot.gs.format_cca_schedule_snapshot(snapshot)
+        self.assertIn("Hard stop", text)
+        self.assertIn("do not prompt", text)
+
+    def test_cca_schedule_reports_matching_herwanto_row(self):
+        book = {
+            "properties": {"title": "CCA Calendar"},
+            "sheets": [{"properties": {"sheetId": 1961438111, "title": "T2 Week 8"}}],
+        }
+        ranges = {
+            "'T2 Week 8'!A1:Z220": [
+                ["Odd week, Term 2 Week 8"],
+                ["Tuesday 12 May", "Football CCA", "Herwanto", "1530-1800"],
+            ],
+        }
+        fake_service = FakeSheetsService(book, ranges=ranges)
+        with (
+            patch.object(bot.gs, "_sheets", return_value=fake_service),
+            patch.object(bot.gs, "get_config", return_value=""),
+        ):
+            snapshot = bot.gs.get_cca_schedule_snapshot(bot.date(2026, 5, 12), week_label="Odd week, Term 2 Week 8")
+
+        self.assertTrue(snapshot["assigned"])
+        self.assertIn("Herwanto", bot.gs.format_cca_schedule_snapshot(snapshot))
+
+    def test_cca_schedule_prompt_forces_sheet_tool(self):
+        forced = bot._forced_tool_for_text(
+            "am I on CCA duty today?",
+            [{"name": "get_cca_schedule"}, {"name": "create_calendar_event"}],
+        )
+
+        self.assertEqual(forced, "get_cca_schedule")
 
     def test_daily_load_counts_relieved_lessons_as_zero(self):
         today_key = bot.datetime.now(bot.SGT).date().isoformat()
