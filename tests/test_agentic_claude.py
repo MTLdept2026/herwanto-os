@@ -92,10 +92,15 @@ class FakeSheetsValues:
 class FakeSheetsSpreadsheets:
     def __init__(self, book, ranges=None):
         self.book = book
+        self.batch_updates = []
         self.values_api = FakeSheetsValues(ranges=ranges)
 
     def get(self, spreadsheetId, includeGridData=False, fields=""):
         return FakeSheetsRequest(self.book)
+
+    def batchUpdate(self, spreadsheetId, body):
+        self.batch_updates.append((spreadsheetId, body))
+        return FakeSheetsRequest()
 
     def values(self):
         return self.values_api
@@ -110,6 +115,9 @@ class FakeSheetsService:
 
 
 class AgenticClaudeTests(unittest.TestCase):
+    def setUp(self):
+        bot.gs._invalidate_classlist_cache()
+
     def test_tuesday_even_timetable_uses_hardcoded_source(self):
         result = bot._timetable_for_lookup("Tuesday", "Even")
 
@@ -749,6 +757,49 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(category, "teaching")
         self.assertIn("absence:2026-05-12", text)
         self.assertIn("medical leave", text)
+
+    def test_medical_leave_archives_active_school_calendar_notifications(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 12, 8, 15))
+        notifications = [{
+            "id": "7",
+            "kind": "reminder",
+            "title": "Calendar reminder",
+            "body": "C Div Training starts in 89 min (15:00).",
+            "source": "calendar_reminder:2026-05-12:evt-cdiv",
+            "archived": False,
+        }]
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "get_memory", return_value={"teaching": []}),
+            patch.object(bot.gs, "add_memory"),
+            patch.object(bot.gs, "get_app_notifications", return_value=notifications),
+            patch.object(bot.gs, "archive_app_notifications", return_value=1) as archive,
+            patch.object(bot, "_record_notification_outcome"),
+        ):
+            captured = bot.absorb_day_state_context("I'm on MC today.", now=now)
+
+        self.assertTrue(captured)
+        archive.assert_called_once_with(["7"])
+
+    def test_not_on_duty_blocks_cca_calendar_reminder(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 12, 13, 31))
+        event = {
+            "id": "evt-cdiv",
+            "summary": "C Div Training",
+            "start": {"dateTime": "2026-05-12T15:00:00+08:00"},
+            "end": {"dateTime": "2026-05-12T18:00:00+08:00"},
+            "_calendar_id": "primary",
+        }
+
+        with (
+            patch.object(bot, "_notification_feedback_bias", return_value=0),
+            patch.object(bot, "_should_suppress_notification", return_value=False),
+            patch.object(bot, "_action_reminder_was_delivered", return_value=False),
+            patch.object(bot, "cca_duty_cleared_memory_for_date", return_value="cca-duty-cleared:2026-05-12"),
+        ):
+            candidate = bot._calendar_event_reminder_candidate(event, now=now)
+
+        self.assertIsNone(candidate)
 
     def test_absence_memory_answers_why_not_at_work_without_agentic_route(self):
         now = bot.SGT.localize(bot.datetime(2026, 5, 12, 12, 8))
@@ -1404,14 +1455,15 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(queue[0]["source"], "task_reminder:2026-05-05:31")
 
     def test_dispatch_marks_action_reminder_after_confirmed_push(self):
+        future_start = (bot.datetime.now(bot.SGT) + bot.timedelta(minutes=30)).isoformat()
         candidate = {
             "family": "calendar_reminder",
-            "source": "calendar_reminder:2026-05-05:evt-duty",
+            "source": "calendar_reminder:2026-05-12:evt-duty",
             "kind": "reminder",
             "title": "Calendar reminder",
             "body": "CCA duty briefing starts in 30 min.",
             "suppressed": False,
-            "metadata": {},
+            "metadata": {"start": future_start},
         }
 
         with (
@@ -1422,6 +1474,24 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(sent, 1)
         mark_delivered.assert_called_once()
+
+    def test_dispatch_skips_stale_calendar_reminder(self):
+        stale_start = (bot.datetime.now(bot.SGT) - bot.timedelta(minutes=30)).isoformat()
+        candidate = {
+            "family": "calendar_reminder",
+            "source": "calendar_reminder:2026-05-12:evt-duty",
+            "kind": "reminder",
+            "title": "Calendar reminder",
+            "body": "CCA duty briefing starts in 30 min.",
+            "suppressed": False,
+            "metadata": {"start": stale_start},
+        }
+
+        with patch.object(bot, "_queue_app_notification") as queue:
+            sent = asyncio.run(bot._dispatch_proactive_candidates(None, [candidate], limit=1))
+
+        self.assertEqual(sent, 0)
+        queue.assert_not_called()
 
     def test_user_nudge_pushes_during_quiet_hours(self):
         now = bot.SGT.localize(bot.datetime(2026, 5, 5, 23, 30))
@@ -3470,6 +3540,42 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(
             [(item["range"], item["values"][0][0]) for item in data],
             [("'CG HERWANTO S4-AN'!K3", "49"), ("'CG HERWANTO S4-AN'!K4", "54"), ("'CG HERWANTO S4-AN'!K5", "AB")],
+        )
+
+    def test_fill_mtl_percentage_scores_reuses_blank_column_after_raw_score(self):
+        book = {
+            "properties": {"title": "2026 S2 MTL CLASSLIST"},
+            "sheets": [{
+                "properties": {"title": "CG HERWANTO 2G3 ML", "sheetId": 123},
+                "data": [{
+                    "rowData": [
+                        sheet_row("TEACHER NAME:", "CG HERWANTO"),
+                        sheet_row("GROUPING:", "2G3 ML"),
+                        sheet_row("NO", "CLASS", "FULL NAME", "WA2 (20)", "", "WA3"),
+                        sheet_row("1", "S2-AN", "AMELIA", "10", "", ""),
+                        sheet_row("2", "S2-AN", "MYSHA", "AB", "", ""),
+                    ]
+                }]
+            }]
+        }
+        fake_service = FakeSheetsService(book)
+
+        with (
+            patch.object(bot.gs, "_sheets", return_value=fake_service),
+            patch.object(bot.gs, "_configured_classlist_sheet_ids", return_value=["sheet-1"]),
+        ):
+            result = bot.gs.fill_mtl_percentage_scores("2G3", "WA2")
+
+        self.assertEqual(result["created_columns"], 1)
+        self.assertEqual(fake_service.spreadsheets_api.batch_updates, [])
+        data = fake_service.spreadsheets_api.values_api.batch_updates[0][1]["data"]
+        self.assertEqual(
+            [(item["range"], item["values"][0][0]) for item in data],
+            [
+                ("'CG HERWANTO 2G3 ML'!E3", "WA2 (100%)"),
+                ("'CG HERWANTO 2G3 ML'!E4", "50"),
+                ("'CG HERWANTO 2G3 ML'!E5", "AB"),
+            ],
         )
 
     def test_analyze_mtl_scores_reports_stats_and_progress(self):

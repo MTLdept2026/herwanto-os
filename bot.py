@@ -2788,17 +2788,23 @@ def _calendar_event_requires_reminder(event: dict) -> bool:
     return any(term in text for term in _calendar_reminder_terms())
 
 
+def _text_is_cca_like(text: str) -> bool:
+    return bool(re.search(r"\b(?:cca|c\s*div|b\s*div|football|training|match)\b", str(text or "").lower()))
+
+
 def _calendar_event_is_cca_like(event: dict) -> bool:
-    text = _event_text(event).lower()
-    return bool(re.search(r"\b(?:cca|c\s*div|b\s*div|football|training|match)\b", text))
+    return _text_is_cca_like(_event_text(event))
+
+
+def _text_is_work_school_like(text: str) -> bool:
+    return bool(re.search(
+        r"\b(?:school|lesson|class|cca|c\s*div|b\s*div|football|training|duty|briefing|meeting|workshop|staff|relief|exam|invigilation)\b",
+        str(text or "").lower(),
+    ))
 
 
 def _calendar_event_is_work_school_like(event: dict) -> bool:
-    text = _event_text(event).lower()
-    return bool(re.search(
-        r"\b(?:school|lesson|class|cca|c\s*div|b\s*div|football|training|duty|briefing|meeting|workshop|staff|relief|exam|invigilation)\b",
-        text,
-    ))
+    return _text_is_work_school_like(_event_text(event))
 
 
 def _cca_roster_assignment_confirmed(target: date) -> bool:
@@ -2811,6 +2817,9 @@ def _cca_roster_assignment_confirmed(target: date) -> bool:
 
 
 def _calendar_event_block_reason(event: dict, start_dt: datetime) -> str:
+    duty_memory = cca_duty_cleared_memory_for_date(start_dt.date())
+    if duty_memory and _calendar_event_is_cca_like(event):
+        return "not on CCA duty"
     if _calendar_event_is_cca_like(event) and not _cca_roster_assignment_confirmed(start_dt.date()):
         return "not on CCA schedule"
     absence = school_day_cleared_memory_for_date(start_dt.date())
@@ -3365,10 +3374,33 @@ def build_proactive_v2_snapshot(now: datetime | None = None, days: int = 7, limi
     }
 
 
+def _calendar_candidate_is_stale(candidate: dict, now: datetime | None = None) -> bool:
+    if str(candidate.get("family", "")).strip() != "calendar_reminder":
+        return False
+    current = now or datetime.now(SGT)
+    metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
+    raw_start = str(metadata.get("start", "") or candidate.get("event_date", "") or "").strip()
+    if not raw_start:
+        return False
+    try:
+        start_dt = datetime.fromisoformat(raw_start)
+        if start_dt.tzinfo is None:
+            start_dt = SGT.localize(start_dt)
+        else:
+            start_dt = start_dt.astimezone(SGT)
+    except Exception:
+        return False
+    catchup = _env_int("HIRA_CALENDAR_REMINDER_CATCHUP_MINUTES", 10, 0)
+    return current > start_dt + timedelta(minutes=catchup)
+
+
 async def _dispatch_proactive_candidates(context, candidates: list[dict], limit: int = 3) -> int:
     sent_count = 0
+    current = datetime.now(SGT)
     for candidate in candidates:
         if candidate.get("suppressed"):
+            continue
+        if _calendar_candidate_is_stale(candidate, now=current):
             continue
         if sent_count >= max(1, int(limit or 3)):
             break
@@ -4059,12 +4091,13 @@ def absorb_taste_hint(text: str) -> bool:
     ownership_captured = absorb_ownership_signal(text)
     relief_captured = absorb_relief_context(text)
     absence_captured = absorb_day_state_context(text)
+    duty_captured = absorb_duty_state_context(text)
     source_pref_captured = absorb_source_citation_preference(text)
     if not google_ok():
-        return ownership_captured or relief_captured or absence_captured or source_pref_captured
+        return ownership_captured or relief_captured or absence_captured or duty_captured or source_pref_captured
     clean = str(text or "").strip()
     if len(clean) < 12:
-        return ownership_captured or relief_captured or absence_captured or source_pref_captured
+        return ownership_captured or relief_captured or absence_captured or duty_captured or source_pref_captured
     lower = clean.lower()
     taste_markers = (
         "i like", "i prefer", "my taste", "my style", "i hate", "i dislike",
@@ -4072,7 +4105,7 @@ def absorb_taste_hint(text: str) -> bool:
         "too noisy", "too cluttered", "not my vibe", "my vibe",
     )
     if not any(marker in lower for marker in taste_markers):
-        return ownership_captured or relief_captured or absence_captured or source_pref_captured
+        return ownership_captured or relief_captured or absence_captured or duty_captured or source_pref_captured
     try:
         profile = gs.get_taste_profile()
         field = "quality_bar"
@@ -4180,6 +4213,99 @@ def _absence_reason_from_text(text: str) -> str:
     return ""
 
 
+DUTY_CLEAR_MEMORY_PREFIX = "cca-duty-cleared:"
+
+
+def _source_date(source: str) -> date | None:
+    match = re.match(r"^(?:calendar_reminder|calendar_travel|task_reminder):(\d{4}-\d{2}-\d{2}):", str(source or "").strip())
+    if not match:
+        return None
+    try:
+        return date.fromisoformat(match.group(1))
+    except Exception:
+        return None
+
+
+def _archive_conflicting_day_notifications(target: date, *, duty_only: bool = False) -> int:
+    try:
+        notifications = gs.get_app_notifications(include_archived=True)
+    except Exception as exc:
+        logger.warning(f"Could not inspect active notifications after day-state update: {exc}")
+        return 0
+    archive_ids = []
+    for item in notifications:
+        if item.get("archived"):
+            continue
+        source = str(item.get("source", "") or "").strip()
+        if not source.startswith(("calendar_reminder:", "calendar_travel:")):
+            continue
+        if _source_date(source) != target:
+            continue
+        text = " ".join([
+            str(item.get("title", "") or ""),
+            str(item.get("body", "") or ""),
+            source,
+        ])
+        if duty_only:
+            if not _text_is_cca_like(text):
+                continue
+        elif not _text_is_work_school_like(text):
+            continue
+        item_id = str(item.get("id", "") or "").strip()
+        if item_id:
+            archive_ids.append(item_id)
+    if not archive_ids:
+        return 0
+    try:
+        archived = gs.archive_app_notifications(archive_ids)
+        for item_id in archive_ids:
+            _record_notification_outcome(
+                "not_now",
+                notification_id=item_id,
+                source=f"{'cca_absence' if duty_only else 'school_absence'}:{target.isoformat()}",
+                kind="reminder",
+                title="Suppressed after day-state update",
+            )
+        return archived
+    except Exception as exc:
+        logger.warning(f"Could not archive conflicting calendar notifications: {exc}")
+        return 0
+
+
+def absorb_duty_state_context(text: str, now: datetime | None = None) -> bool:
+    if not google_ok():
+        return False
+    clean = str(text or "").strip()
+    if len(clean) < 8:
+        return False
+    lower = clean.lower()
+    is_off_duty = re.search(
+        r"\b(?:not|no longer|wasn't|was not|isn't|is not|won't|will not)\s+(?:on\s+)?(?:cca\s+)?(?:duty|roster|schedule|training)\b",
+        lower,
+    ) or re.search(r"\b(?:not\s+my\s+duty|not\s+rostered|off\s+duty|no\s+cca\s+duty)\b", lower)
+    if not is_off_duty or not (_text_is_cca_like(clean) or "duty" in lower):
+        return False
+    target = _date_from_relative_text(clean, now=now)
+    marker = f"{DUTY_CLEAR_MEMORY_PREFIX}{target.isoformat()}"
+    try:
+        memory = gs.get_memory()
+        existing = "\n".join(str(item) for item in memory.get("teaching", []) if item)
+        if marker not in existing:
+            gs.add_memory(
+                "teaching",
+                (
+                    f"{marker}: Herwanto said he is not on CCA duty on {target.isoformat()}. "
+                    "Do not send CCA duty/training calendar reminders for this date unless newer user/calendar information contradicts this. "
+                    f"Original wording: {_clip_memory_text(clean, 180)}"
+                ),
+            )
+        _archive_conflicting_day_notifications(target, duty_only=True)
+        return True
+    except Exception as exc:
+        logger.warning(f"Duty-state context capture failed: {exc}")
+        return False
+
+
 def absorb_day_state_context(text: str, now: datetime | None = None) -> bool:
     if not google_ok():
         return False
@@ -4212,6 +4338,7 @@ def absorb_day_state_context(text: str, now: datetime | None = None) -> bool:
                 f"Original wording: {_clip_memory_text(clean, 180)}"
             ),
         )
+        _archive_conflicting_day_notifications(target)
         return True
     except Exception as exc:
         logger.warning(f"Day-state context capture failed: {exc}")
@@ -4251,6 +4378,28 @@ def absence_memory_for_date(target: date | datetime | str) -> str:
     except Exception:
         return ""
     marker = f"{ABSENCE_MEMORY_PREFIX}{day.isoformat()}"
+    try:
+        memory = gs.get_memory() if google_ok() else {}
+    except Exception:
+        return ""
+    for item in reversed(memory.get("teaching", []) or []):
+        text = str(item or "").strip()
+        if marker in text:
+            return text
+    return ""
+
+
+def cca_duty_cleared_memory_for_date(target: date | datetime | str) -> str:
+    try:
+        if isinstance(target, datetime):
+            day = target.astimezone(SGT).date()
+        elif isinstance(target, date):
+            day = target
+        else:
+            day = date.fromisoformat(str(target)[:10])
+    except Exception:
+        return ""
+    marker = f"{DUTY_CLEAR_MEMORY_PREFIX}{day.isoformat()}"
     try:
         memory = gs.get_memory() if google_ok() else {}
     except Exception:

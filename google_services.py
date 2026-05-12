@@ -168,6 +168,16 @@ def _creds(scopes=None, subject: str = ""):
     return creds
 
 
+def _service_account_email() -> str:
+    raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+    if not raw:
+        return ""
+    try:
+        return str(_service_account_info(raw).get("client_email", "") or "").strip()
+    except Exception:
+        return ""
+
+
 def _thread_cached_service(key: tuple, builder):
     cache = getattr(_thread_local, "google_services", None)
     if cache is None:
@@ -998,6 +1008,22 @@ def _score_query_parts(column_query: str) -> dict:
         "assessment_norms": assessment_norms,
         "remainder": " ".join(remainder.split()),
     }
+
+
+def _classlist_permission_message(exc: HttpError, spreadsheet_ids: list[str], targets: list[str]) -> str:
+    email = _service_account_email()
+    target_text = ", ".join(targets) if targets else "the matching MTL classlist"
+    links = []
+    for spreadsheet_id in dict.fromkeys(spreadsheet_ids):
+        if spreadsheet_id:
+            links.append(f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit")
+    link_text = f" Target sheet: {'; '.join(links)}." if links else ""
+    account_text = f" Share it with {email} as Editor." if email else " Share it with H.I.R.A's Google service account as Editor."
+    protected_hint = " If Editor access is already enabled, check whether the tab or WA/% columns are protected for only selected users."
+    return (
+        f"Google Sheets denied write access while filling {target_text}."
+        f"{account_text}{protected_hint}{link_text}"
+    )
 
 
 def _score_columns_for_sheet(sheet: dict, column_query: str = "", prefer_percent: bool = False) -> list[dict]:
@@ -1848,6 +1874,10 @@ def fill_mtl_percentage_scores(
                     "assessment": assessment_label or header_label,
                     "header": header_label,
                     "create_column": True,
+                    "insert_column": not (
+                        idx + 1 < len(headers)
+                        and not str(headers[idx + 1] or "").strip()
+                    ),
                 })
             existing_sources = {col["source_col"] for col in percent_cols}
             create_cols = [
@@ -1904,19 +1934,20 @@ def fill_mtl_percentage_scores(
         class_col = item["class_col"]
         for col_info in item["percent_cols"]:
             if col_info.get("create_column"):
-                if item.get("sheet_id") is None:
+                if col_info.get("insert_column") and item.get("sheet_id") is None:
                     raise ValueError(f"Cannot create a percentage column in {item['sheet_title']} because the sheet id is missing.")
-                insert_requests_by_sheet.setdefault(item["spreadsheet_id"], []).append({
-                    "insertDimension": {
-                        "range": {
-                            "sheetId": item["sheet_id"],
-                            "dimension": "COLUMNS",
-                            "startIndex": col_info["percent_col"],
-                            "endIndex": col_info["percent_col"] + 1,
-                        },
-                        "inheritFromBefore": True,
-                    }
-                })
+                if col_info.get("insert_column"):
+                    insert_requests_by_sheet.setdefault(item["spreadsheet_id"], []).append({
+                        "insertDimension": {
+                            "range": {
+                                "sheetId": item["sheet_id"],
+                                "dimension": "COLUMNS",
+                                "startIndex": col_info["percent_col"],
+                                "endIndex": col_info["percent_col"] + 1,
+                            },
+                            "inheritFromBefore": True,
+                        }
+                    })
                 header_range = (
                     f"{_quote_sheet_name(item['sheet_title'])}!"
                     f"{_column_letter(col_info['percent_col'])}{item['header_idx'] + 1}"
@@ -1935,7 +1966,7 @@ def fill_mtl_percentage_scores(
                 if class_filter and not _class_query_matches(class_query, item["grouping"], class_name):
                     skipped += 1
                     continue
-                current = "" if col_info.get("create_column") else (row[col_info["percent_col"]].strip() if col_info["percent_col"] < len(row) else "")
+                current = "" if col_info.get("insert_column") else (row[col_info["percent_col"]].strip() if col_info["percent_col"] < len(row) else "")
                 source = row[col_info["source_col"]].strip() if col_info["source_col"] < len(row) else ""
                 if only_blank and current:
                     skipped += 1
@@ -1963,10 +1994,15 @@ def fill_mtl_percentage_scores(
             target_descriptions.append(f"{item['grouping'] or item['sheet_title']} {col_info['assessment']}")
 
     for spreadsheet_id, requests in insert_requests_by_sheet.items():
-        service.spreadsheets().batchUpdate(
-            spreadsheetId=spreadsheet_id,
-            body={"requests": requests},
-        ).execute()
+        try:
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={"requests": requests},
+            ).execute()
+        except HttpError as exc:
+            if getattr(exc.resp, "status", None) == 403:
+                raise PermissionError(_classlist_permission_message(exc, [spreadsheet_id], target_descriptions)) from exc
+            raise
 
     updates_by_sheet = {}
     for update in updates:
@@ -1975,10 +2011,15 @@ def fill_mtl_percentage_scores(
             "values": update["values"],
         })
     for spreadsheet_id, data in updates_by_sheet.items():
-        service.spreadsheets().values().batchUpdate(
-            spreadsheetId=spreadsheet_id,
-            body={"valueInputOption": "USER_ENTERED", "data": data},
-        ).execute()
+        try:
+            service.spreadsheets().values().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={"valueInputOption": "USER_ENTERED", "data": data},
+            ).execute()
+        except HttpError as exc:
+            if getattr(exc.resp, "status", None) == 403:
+                raise PermissionError(_classlist_permission_message(exc, [spreadsheet_id], target_descriptions)) from exc
+            raise
         _invalidate_classlist_cache(spreadsheet_id)
 
     return {
