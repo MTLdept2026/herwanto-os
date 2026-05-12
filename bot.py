@@ -423,6 +423,8 @@ def source_discipline_for_text(text: str) -> dict:
         tools.extend(["get_muis_prayer_times", "get_muis_friday_khutbah"])
     if VOLATILE_FACT_PATTERN.search(clean) or re.search(r"\b(ai|apple|android|ios|macos|singapore education|moe)\b", lowered):
         tools.append("get_latest_news")
+    if re.search(r"\b(research|deep dive|investigate|compare|comparison|find out|look up|source|sources|official|policy|documentation|docs|evidence)\b", lowered):
+        tools.append("web_research")
     if re.search(r"\b(search|web|website|article|page|latest|current|news|headline|rumou?r|digest|shortlist|shortlisted|preferred topics)\b", lowered):
         tools.append("web_search")
 
@@ -840,7 +842,7 @@ Rules:
 - After giving verified Liverpool or F1 scores/match details, add a short supporter-read: infer Herwanto's likely mood from his known loyalties and the result. Keep it humble ("I imagine", "this probably lands as") and concrete, not melodramatic. For Liverpool losses, acknowledge frustration, defensive/selection worries, or rivalry pain before any tactical note. For wins, share the lift and what he will probably enjoy. Do not let mood-reading replace the verified facts.
 - Liverpool FC is a first-class interest. Herwanto supports Liverpool. Track the current squad/line-ups, Premier League standing, progress in every competition Liverpool are still in, injuries/suspensions, fixtures/results, and transfer news/rumours. As of the 2025-26 squad context, Liverpool are managed by Arne Slot and the first-team group includes Alisson, Giorgi Mamardashvili, Freddie Woodman, Virgil van Dijk, Ibrahima Konate, Joe Gomez, Milos Kerkez, Conor Bradley, Andy Robertson, Jeremie Frimpong, Giovanni Leoni, Wataru Endo, Florian Wirtz, Dominik Szoboszlai, Alexis Mac Allister, Curtis Jones, Ryan Gravenberch, Trey Nyoni, Alexander Isak, Mohamed Salah, Federico Chiesa, Cody Gakpo, Hugo Ekitike, and Rio Ngumoha. If Herwanto mentions Wirtz, Isak, or "lfc big match", assume Liverpool context and do not correct him back to old clubs without first checking current sources. For current starting XIs, matchday line-ups, EPL table position, points, goal difference, form, Champions League/FA Cup/Carabao Cup progress, injuries, contract situations, departures, signings, or rumours, always use get_latest_news/web_search/fetch_url and cite the source. Clearly label transfer items as confirmed, reported, or rumour/speculation.
 - F1 is a first-class interest. Herwanto supports Mercedes, especially Kimi Antonelli and George Russell; Lewis Hamilton is still one of his favourites even at Ferrari. As of the 2026 season, the official F1 line-up is: Mercedes — George Russell, Kimi Antonelli; Ferrari — Charles Leclerc, Lewis Hamilton; McLaren — Lando Norris, Oscar Piastri; Red Bull Racing — Max Verstappen, Isack Hadjar; Racing Bulls — Liam Lawson, Arvid Lindblad; Williams — Carlos Sainz, Alexander Albon; Aston Martin — Fernando Alonso, Lance Stroll; Haas — Esteban Ocon, Oliver Bearman; Alpine — Pierre Gasly, Franco Colapinto; Audi — Nico Hulkenberg, Gabriel Bortoleto; Cadillac — Sergio Perez, Valtteri Bottas. For live F1 results, championship standings, race-weekend timings, current team stats, driver stats, rumours, penalties, or upgrades, use get_latest_news/web_search/fetch_url and cite what you found instead of relying on memory.
-- For broad research, use web_search first, then fetch_url on the best official/primary/recent result before giving conclusions. When the user pastes a web link or asks you to read/check a URL, call fetch_url. If fetch_url fails or the page is paywalled/dynamic, say what failed and use web_search/get_latest_news for corroborating public sources where available.
+- For broad research, use web_research first: it plans query variants, searches, fetches top sources, and returns evidence snippets. For quick lookups use web_search, then fetch_url on the best official/primary/recent result before giving conclusions. When the user pastes a web link or asks you to read/check a URL, call fetch_url. If fetch_url fails or the page is paywalled/dynamic, say what failed and use web_search/get_latest_news for corroborating public sources where available.
 - After web_search, fetch_url, get_latest_news, get_liverpool_brief, or get_f1_brief reveals useful knowledge H.I.R.A should retain, call remember_source_insight. Store stable background as durability=stable. Store current standings, line-ups, results, transfer rumours, prices, schedules, and laws/rules that may change as durability=live_check or rumour, so future answers know to verify again.
 - When the user asks about weather, temperature, high/low temp, hot/cold conditions, rain, forecast, haze, PSI, air quality, umbrella, or whether it will rain in Singapore — call get_nea_weather before answering. If no area is specified, use Yishun. Weather answers must include available temperature, humidity, PSI/PM2.5 air quality, 2-hour nowcast, and 24-hour forecast details.
 - When the user says "remember", "note that", or gives stable preferences/facts about himself — call remember_user_info.
@@ -878,6 +880,21 @@ SEARCH_TOOL = {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "The search query"}
+        },
+        "required": ["query"]
+    }
+}
+
+WEB_RESEARCH_TOOL = {
+    "name": "web_research",
+    "description": "Run a deeper internet research pass: create query variants, search the open web, prefer official/current sources, fetch top pages, and return source-backed evidence snippets. Use for educator/developer research, comparisons, current facts, policy, APIs, products, sports calendars/results, and questions where a shallow headline search is not enough.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "The research question or information target."},
+            "max_sources": {"type": "integer", "description": "Number of sources to return, usually 4 to 6."},
+            "fetch_pages": {"type": "integer", "description": "Number of top pages to fetch/read, usually 2 to 4."},
+            "freshness": {"type": "string", "description": "latest, recent, today, or stable. Use latest for current facts."},
         },
         "required": ["query"]
     }
@@ -5755,6 +5772,13 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     if "fetch_url" in available and re.search(r"https?://\S+", text or "", re.I):
         return "fetch_url"
 
+    if "web_research" in available and has_any([
+        "research", "deep dive", "investigate", "compare", "comparison",
+        "find out", "look up", "sources", "official", "policy",
+        "documentation", "docs", "evidence", "study", "review"
+    ]):
+        return "web_research"
+
     if "get_f1_brief" in available and has_any([
         "f1", "formula 1", "grand prix", "qualifying", "race result",
         "standings", "driver standings", "constructor standings", "lineup",
@@ -7194,6 +7218,7 @@ def _core_tools():
         PRAYER_TIME_TOOL,
         KHUTBAH_TOOL,
         NEWS_TOOL,
+        WEB_RESEARCH_TOOL,
         LIVERPOOL_BRIEF_TOOL,
         F1_BRIEF_TOOL,
         FETCH_URL_TOOL,
@@ -7234,6 +7259,10 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         add(NUDGE_TOOL, DAILY_CHECKIN_TOOL, BREAK_AWARE_CHECKIN_TOOL)
     if re.search(r"\b(follow[- ]?up|follow up|owe replies|chase)\b", text):
         add(FOLLOWUP_TOOL, COMPLETE_FOLLOWUP_TOOL, GMAIL_BRIEF_TOOL, TASK_BRIEF_TOOL)
+    if re.search(r"\b(research|deep dive|investigate|compare|comparison|find out|look up|source|sources|official|policy|documentation|docs|evidence|study|review)\b", text):
+        add(WEB_RESEARCH_TOOL, FETCH_URL_TOOL, SOURCE_NOTE_TOOL)
+        if ss.search_enabled():
+            add(SEARCH_TOOL)
     sports_followup = (
         re.search(r"\b(match|result|results|recap|details?|score|home|away|host(?:ed)?|fixture|game|what was it like)\b", text)
         and re.search(r"\b(football|f1|formula 1|liverpool|lfc|man utd|man united|manchester united|premier league|epl|grand prix|mercedes|ferrari|mclaren|red bull)\b", combined)
@@ -7243,7 +7272,7 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         combined,
     )
     if re.search(r"\b(digest|briefing|news|latest|current|headline|headlines|search|web|shortlist|shortlisted|preferred topics|football|f1|liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|apple|ai|singapore education|nothing phone|nothing os|nothing products|cmf|carl pei)\b", text) or sports_followup or correction_followup:
-        add(NEWS_TOOL, SOURCE_NOTE_TOOL)
+        add(NEWS_TOOL, WEB_RESEARCH_TOOL, SOURCE_NOTE_TOOL)
         if re.search(r"\b(liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|man utd|man united|manchester united)\b", combined):
             add(LIVERPOOL_BRIEF_TOOL)
         if re.search(r"\b(f1|formula 1|grand prix|qualifying|driver standings|constructor standings|mercedes|ferrari|mclaren|red bull|kimi|antonelli|russell|hamilton)\b", combined):
@@ -7689,6 +7718,15 @@ async def _execute_tool(name: str, inp: dict) -> str:
     if name == "web_search":
         results = ss.web_search(inp.get("query", ""), max_results=5)
         return ss.format_results(results)
+
+    elif name == "web_research":
+        pack = ss.web_research(
+            inp.get("query", ""),
+            max_sources=inp.get("max_sources", 5),
+            fetch_pages=inp.get("fetch_pages", 3),
+            freshness=inp.get("freshness", "latest"),
+        )
+        return ss.format_research_pack(pack)
 
     elif name == "fetch_url":
         result = ss.fetch_url(inp.get("url", ""), max_chars=inp.get("max_chars", 6000))

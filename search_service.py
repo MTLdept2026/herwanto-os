@@ -329,6 +329,154 @@ def format_results(results):
     return "\n".join(lines).strip()
 
 
+def _domain_from_url(url: str) -> str:
+    try:
+        return urlparse(url).netloc.lower().removeprefix("www.")
+    except Exception:
+        return ""
+
+
+def _research_query_variants(query: str, freshness: str = "latest") -> list[str]:
+    clean = " ".join(str(query or "").split())
+    if not clean:
+        return []
+    lowered = clean.lower()
+    variants = [clean]
+    if freshness in {"latest", "today", "recent"} and not re.search(r"\b(latest|today|recent|current|2026|news)\b", lowered):
+        variants.append(f"{clean} latest")
+    if not re.search(r"\b(official|site:)\b", lowered):
+        variants.append(f"{clean} official")
+    if re.search(r"\b(research|policy|education|teaching|curriculum|moe|developer|api|docs|framework|standard|law|rule|regulation)\b", lowered):
+        variants.append(f"{clean} source official documentation")
+    if re.search(r"\b(f1|formula 1|grand prix|liverpool|lfc|football|sports)\b", lowered):
+        variants.append(f"{clean} official results schedule")
+    return list(dict.fromkeys(variants))[:4]
+
+
+def _source_rank(result: dict) -> int:
+    domain = _domain_from_url(result.get("url", ""))
+    title = str(result.get("title", "")).lower()
+    score = 0
+    if any(domain.endswith(suffix) for suffix in (".gov", ".edu", ".int")):
+        score += 20
+    if any(term in domain for term in ("gov.sg", "moe.gov.sg", "data.gov.sg", "formula1.com", "fia.com", "premierleague.com", "openai.com", "anthropic.com", "apple.com", "google.com", "muis.gov.sg")):
+        score += 18
+    if any(term in title for term in ("official", "documentation", "calendar", "schedule", "results", "release notes")):
+        score += 8
+    if any(term in domain for term in ("reddit.com", "facebook.com", "instagram.com", "tiktok.com", "pinterest.com")):
+        score -= 10
+    return score
+
+
+def _extract_source_date(text: str) -> str:
+    sample = str(text or "")[:3000]
+    patterns = (
+        r"\b(?:published|updated|last updated|date)\s*[:\-]?\s*([A-Z][a-z]{2,8}\s+\d{1,2},?\s+20\d{2})",
+        r"\b(\d{1,2}\s+[A-Z][a-z]{2,8}\s+20\d{2})\b",
+        r"\b(20\d{2}-\d{2}-\d{2})\b",
+        r"\b([A-Z][a-z]{2},\s+\d{1,2}\s+[A-Z][a-z]{2}\s+20\d{2})\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, sample, re.I)
+        if match:
+            return match.group(1).strip()
+    return ""
+
+
+def _evidence_snippet(text: str, query: str, limit: int = 650) -> str:
+    clean = " ".join(str(text or "").split())
+    if not clean:
+        return ""
+    terms = [term for term in re.findall(r"[a-zA-Z0-9]{4,}", query.lower())[:8]]
+    lower = clean.lower()
+    start = 0
+    for term in terms:
+        index = lower.find(term)
+        if index >= 0:
+            start = max(0, index - 160)
+            break
+    snippet = clean[start:start + max(250, int(limit or 650))]
+    return snippet.rsplit(" ", 1)[0].strip()
+
+
+def web_research(query: str, max_sources: int = 5, fetch_pages: int = 3, freshness: str = "latest") -> dict:
+    """
+    Build a source pack for a research question: multiple searches, source ranking,
+    and readable excerpts from top pages.
+    """
+    clean = " ".join(str(query or "").split())
+    if not clean or not search_enabled():
+        return {"ok": False, "query": clean, "error": "Web research is disabled or the query is empty.", "queries": [], "sources": []}
+
+    queries = _research_query_variants(clean, freshness=freshness)
+    pool = []
+    for variant in queries:
+        for result in web_search(variant, max_results=max(3, int(max_sources or 5))):
+            item = dict(result)
+            item["query"] = variant
+            pool.append(item)
+
+    ranked = sorted(_dedupe_results(pool, max(8, int(max_sources or 5) * 3)), key=_source_rank, reverse=True)
+    selected = ranked[: max(1, min(int(max_sources or 5), 8))]
+    fetch_limit = max(0, min(int(fetch_pages or 3), len(selected)))
+    sources = []
+    for index, result in enumerate(selected):
+        source = {
+            "title": result.get("title", ""),
+            "url": result.get("url", ""),
+            "domain": _domain_from_url(result.get("url", "")),
+            "description": result.get("description", ""),
+            "query": result.get("query", ""),
+            "source_rank": _source_rank(result),
+            "fetched": False,
+            "date": _extract_source_date(result.get("description", "")),
+            "evidence": result.get("description", ""),
+        }
+        if index < fetch_limit:
+            fetched = fetch_url(result.get("url", ""), max_chars=4500)
+            source["fetched"] = bool(fetched.get("ok"))
+            if fetched.get("ok"):
+                source["resolved_url"] = fetched.get("url", "")
+                source["page_title"] = fetched.get("title", "")
+                source["date"] = _extract_source_date(fetched.get("text", "")) or source["date"]
+                source["evidence"] = _evidence_snippet(fetched.get("text", ""), clean)
+            else:
+                source["fetch_error"] = fetched.get("error", "")
+        sources.append(source)
+
+    return {
+        "ok": bool(sources),
+        "query": clean,
+        "queries": queries,
+        "sources": sources,
+        "fetched_count": sum(1 for source in sources if source.get("fetched")),
+    }
+
+
+def format_research_pack(pack: dict) -> str:
+    if not pack.get("ok"):
+        return pack.get("error") or "No research sources found."
+    lines = [f"Research query: {pack.get('query', '')}"]
+    lines.append(f"Search variants: {', '.join(pack.get('queries') or [])}")
+    lines.append(f"Fetched pages: {pack.get('fetched_count', 0)}")
+    lines.append("")
+    for idx, source in enumerate(pack.get("sources") or [], start=1):
+        meta = " · ".join(part for part in [source.get("domain", ""), source.get("date", "")] if part)
+        lines.append(f"{idx}. {source.get('title', '')}{f' ({meta})' if meta else ''}")
+        lines.append(f"URL: {source.get('resolved_url') or source.get('url', '')}")
+        if source.get("fetched"):
+            lines.append("Status: fetched")
+        elif source.get("fetch_error"):
+            lines.append(f"Status: search result only; fetch failed: {source.get('fetch_error')}")
+        else:
+            lines.append("Status: search result only")
+        evidence = source.get("evidence", "")
+        if evidence:
+            lines.append(f"Evidence: {evidence[:900]}")
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
 # ─── MORNING DIGEST (Google News RSS — always free) ──────────────────────────
 
 def _parse_google_news_rss(query: str):

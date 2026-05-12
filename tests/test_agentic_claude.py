@@ -225,6 +225,14 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(forced, "fetch_url")
 
+    def test_research_question_forces_web_research_tool(self):
+        forced = bot._forced_tool_for_text(
+            "research the latest MOE AI policy sources for lesson planning",
+            [{"name": "web_research"}, {"name": "web_search"}, {"name": "get_latest_news"}],
+        )
+
+        self.assertEqual(forced, "web_research")
+
     def test_f1_current_question_forces_structured_sports_tool(self):
         forced = bot._forced_tool_for_text(
             "current F1 driver standings after the latest grand prix",
@@ -2756,6 +2764,15 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertIn("get_f1_brief", names)
         self.assertIn("web_search", names)
+        self.assertIn("web_research", names)
+
+    def test_pwa_research_prompt_includes_web_research_tool(self):
+        tools = bot.pwa_tools_for_message("research current AI tools for teaching and cite sources")
+        names = {tool["name"] for tool in tools}
+
+        self.assertIn("web_research", names)
+        self.assertIn("fetch_url", names)
+        self.assertIn("remember_source_insight", names)
 
     def test_web_search_available_without_tavily_key(self):
         with patch.dict(os.environ, {"TAVILY_API_KEY": ""}, clear=False):
@@ -2778,6 +2795,38 @@ class AgenticClaudeTests(unittest.TestCase):
         raw = "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.formula1.com%2Fen%2Fracing%2F2026"
 
         self.assertEqual(search_service._clean_search_url(raw), "https://www.formula1.com/en/racing/2026")
+
+    def test_web_research_plans_variants_fetches_top_source(self):
+        def fake_web_search(query, max_results=5):
+            if "official" in query:
+                return [{
+                    "title": "Official AI guidance for schools",
+                    "description": "Updated 2026 guidance",
+                    "url": "https://www.moe.gov.sg/ai-guidance",
+                }]
+            return [{
+                "title": "AI tools for teaching roundup",
+                "description": "A recent overview",
+                "url": "https://example.com/ai-tools",
+            }]
+
+        with (
+            patch.object(search_service, "web_search", side_effect=fake_web_search),
+            patch.object(search_service, "fetch_url", return_value={
+                "ok": True,
+                "url": "https://www.moe.gov.sg/ai-guidance",
+                "title": "Official AI guidance",
+                "text": "Updated 2026. Schools should evaluate AI tools for privacy, accuracy, and teaching purpose before classroom use.",
+            }) as fetch_url,
+        ):
+            pack = search_service.web_research("AI tools for teaching", max_sources=2, fetch_pages=1)
+
+        self.assertTrue(pack["ok"])
+        self.assertGreaterEqual(len(pack["queries"]), 2)
+        self.assertEqual(pack["sources"][0]["domain"], "moe.gov.sg")
+        self.assertTrue(pack["sources"][0]["fetched"])
+        self.assertIn("privacy", pack["sources"][0]["evidence"])
+        fetch_url.assert_called_once()
 
     def test_deep_model_selected_for_architecture_work_when_configured(self):
         with patch.object(bot, "DEEP_MODEL", "deep-model"), patch.object(bot, "AGENTIC_MODEL", "agentic-model"):
