@@ -60,6 +60,8 @@ _config_cache = {
     "row_count": 0,
     "stale_after_error": False,
 }
+_classlist_cache_lock = threading.RLock()
+_classlist_cache: dict[str, dict] = {}
 _REDIS_NUDGE_KEY = "hira:proactive_nudges:fallback"
 _app_notifications_mutation_lock = threading.RLock()
 _nudges_mutation_lock = threading.RLock()
@@ -117,6 +119,8 @@ def _int_env(name: str, default: int) -> int:
 
 
 _CONFIG_CACHE_TTL_SECONDS = max(0, _int_env("HIRA_CONFIG_CACHE_TTL_SECONDS", 45))
+_CLASSLIST_CACHE_TTL_SECONDS = max(0, _int_env("HIRA_CLASSLIST_CACHE_TTL_SECONDS", 120))
+_CLASSLIST_GRID_FIELDS = "properties(title),sheets(properties(sheetId,title),data(rowData(values(formattedValue,effectiveValue))))"
 APP_NOTIFICATION_PUSH_BODY_LIMIT = max(240, min(1800, _int_env("HIRA_WEB_PUSH_BODY_LIMIT", 650)))
 APP_NOTIFICATION_SHEET = "AppNotifications"
 APP_NOTIFICATION_HEADERS = ["id", "kind", "title", "body", "created", "source", "seen_by", "archived"]
@@ -314,6 +318,73 @@ def format_events(events, show_date=False):
 def _configured_classlist_sheet_ids() -> list[str]:
     ids = _split_ids(os.environ.get("GOOGLE_CLASSLIST_SHEET_IDS", ""))
     return ids or list(DEFAULT_CLASSLIST_SHEET_IDS)
+
+
+def _is_google_rate_limit_error(exc: Exception) -> bool:
+    if not isinstance(exc, HttpError):
+        return False
+    status = getattr(exc.resp, "status", None)
+    if status in {429, 500, 502, 503, 504}:
+        return True
+    content = getattr(exc, "content", b"") or b""
+    if isinstance(content, bytes):
+        content = content.decode("utf-8", errors="ignore")
+    return any(token in str(content).lower() for token in ("ratelimit", "rate limit", "quota", "user_rate_limit_exceeded"))
+
+
+def _execute_with_rate_limit_retry(request, *, attempts: int = 3):
+    last_error = None
+    for attempt in range(max(1, attempts)):
+        try:
+            return request.execute()
+        except Exception as exc:
+            last_error = exc
+            if attempt >= attempts - 1 or not _is_google_rate_limit_error(exc):
+                raise
+            time.sleep(0.8 * (2 ** attempt))
+    raise last_error
+
+
+def _read_classlist_book(spreadsheet_id: str) -> dict:
+    return _execute_with_rate_limit_retry(
+        _sheets().spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            includeGridData=True,
+            fields=_CLASSLIST_GRID_FIELDS,
+        )
+    )
+
+
+def _classlist_book(spreadsheet_id: str, force: bool = False) -> dict:
+    if _CLASSLIST_CACHE_TTL_SECONDS <= 0:
+        return _read_classlist_book(spreadsheet_id)
+    with _classlist_cache_lock:
+        now = time.monotonic()
+        cached = _classlist_cache.get(spreadsheet_id)
+        if not force and cached and now < float(cached.get("expires_at", 0.0) or 0.0):
+            return cached["book"]
+        try:
+            book = _read_classlist_book(spreadsheet_id)
+        except Exception:
+            if cached:
+                logger.warning("Using stale classlist cache for %s after Sheets read failed.", spreadsheet_id)
+                return cached["book"]
+            raise
+        _classlist_cache[spreadsheet_id] = {
+            "book": book,
+            "expires_at": time.monotonic() + _CLASSLIST_CACHE_TTL_SECONDS,
+        }
+        return book
+
+
+def _invalidate_classlist_cache(spreadsheet_id: str = ""):
+    if _CLASSLIST_CACHE_TTL_SECONDS <= 0:
+        return
+    with _classlist_cache_lock:
+        if spreadsheet_id:
+            _classlist_cache.pop(spreadsheet_id, None)
+        else:
+            _classlist_cache.clear()
 
 
 def _norm_cell(value: str) -> str:
@@ -672,19 +743,15 @@ def get_mtl_classlists(
     include_students: bool = True,
     include_scores: bool = False,
 ) -> list[dict]:
-    service = _sheets()
     class_filter = _norm_cell(class_query)
     lists = []
-    fields = "properties(title),sheets(properties(title),data(rowData(values(formattedValue,effectiveValue))))"
     for spreadsheet_id in _configured_classlist_sheet_ids():
-        book = service.spreadsheets().get(
-            spreadsheetId=spreadsheet_id,
-            includeGridData=True,
-            fields=fields,
-        ).execute()
+        book = _classlist_book(spreadsheet_id)
         title = book.get("properties", {}).get("title", spreadsheet_id)
         for sheet in book.get("sheets", []):
-            sheet_title = sheet.get("properties", {}).get("title", "")
+            props = sheet.get("properties", {})
+            sheet_title = props.get("title", "")
+            sheet_id = props.get("sheetId")
             row_data = []
             for data in sheet.get("data", []):
                 row_data.extend(data.get("rowData", []))
@@ -768,11 +835,26 @@ def _matching_header_columns(headers: list[str], query: str, protected_cols: set
 
 
 def _number_from_header(value: str) -> float | None:
-    match = re.search(r"\d+(?:\.\d+)?", str(value or ""))
+    text = str(value or "")
+    match = re.search(r"\(\s*(\d+(?:\.\d+)?)\s*\)", text)
+    if not match:
+        match = re.search(r"/\s*(\d+(?:\.\d+)?)\b", text)
+    if not match:
+        numbers = re.findall(r"\d+(?:\.\d+)?", text)
+        if not numbers:
+            return None
+        candidate = numbers[-1]
+        try:
+            # Avoid treating assessment labels such as WA2 or Pra-WA A2 as max marks.
+            if float(candidate) <= 4:
+                return None
+        except ValueError:
+            return None
+        match = re.search(rf"{re.escape(candidate)}(?!.*\d)", text)
     if not match:
         return None
     try:
-        return float(match.group(0))
+        return float(match.group(1) if match.lastindex else match.group(0))
     except ValueError:
         return None
 
@@ -790,6 +872,20 @@ def _number_from_cell(value: str) -> float | None:
 def _format_percentage(value: float) -> str:
     rounded = round(value)
     return str(int(rounded))
+
+
+def _percentage_header_for_source(header: str, assessment: str = "") -> str:
+    source = str(header or "").strip()
+    label = re.sub(r"\s*\(\s*\d+(?:\.\d+)?\s*\)\s*$", "", source).strip()
+    if not label:
+        label = str(assessment or "").strip()
+    return f"{label or 'Percentage'} (100%)"
+
+
+def _is_percentage_header(value: str) -> bool:
+    text = str(value or "")
+    norm = _norm_cell(text)
+    return "%" in text or norm in {"PERCENT", "PERCENTAGE"}
 
 
 def _assessment_label_for_column(rows: list[list[str]], header_idx: int, col_idx: int) -> str:
@@ -811,19 +907,15 @@ def _student_identity_text(student: dict) -> str:
 
 
 def _score_sheet_matches(teacher_query: str, class_query: str) -> list[dict]:
-    service = _sheets()
     class_filter = _norm_cell(class_query)
     matches = []
-    fields = "properties(title),sheets(properties(title),data(rowData(values(formattedValue,effectiveValue))))"
     for spreadsheet_id in _configured_classlist_sheet_ids():
-        book = service.spreadsheets().get(
-            spreadsheetId=spreadsheet_id,
-            includeGridData=True,
-            fields=fields,
-        ).execute()
+        book = _classlist_book(spreadsheet_id)
         spreadsheet_title = book.get("properties", {}).get("title", spreadsheet_id)
         for sheet in book.get("sheets", []):
-            sheet_title = sheet.get("properties", {}).get("title", "")
+            props = sheet.get("properties", {})
+            sheet_title = props.get("title", "")
+            sheet_id = props.get("sheetId")
             row_data = []
             for data in sheet.get("data", []):
                 row_data.extend(data.get("rowData", []))
@@ -920,7 +1012,7 @@ def _score_columns_for_sheet(sheet: dict, column_query: str = "", prefer_percent
         header_norm = _norm_cell(header)
         label_norm = _norm_cell(label)
         assessment_norm = _norm_cell(assessment)
-        is_percent = "%" in str(header) or header_norm in {"PERCENT", "PERCENTAGE"}
+        is_percent = _is_percentage_header(header)
         is_pre_wa = _is_pre_wa_label(label)
         if query["wants_percent"] and not is_percent:
             continue
@@ -945,6 +1037,26 @@ def _score_columns_for_sheet(sheet: dict, column_query: str = "", prefer_percent
                 numeric_count += 1
             elif _norm_cell(value) in SCORE_STATUS_LABELS:
                 status_count += 1
+        derived_percent_from_index = None
+        max_score = _number_from_header(header)
+        if is_percent and not numeric_count and idx > 0:
+            source_header = sheet["headers"][idx - 1] if idx - 1 < len(sheet["headers"]) else ""
+            source_max_score = _number_from_header(source_header)
+            source_numeric_count = 0
+            source_status_count = 0
+            if source_max_score:
+                for student in sheet["students"]:
+                    row = sheet["rows"][student["row_index"]] if student["row_index"] < len(sheet["rows"]) else []
+                    source_value = row[idx - 1].strip() if idx - 1 < len(row) else ""
+                    if _number_from_cell(source_value) is not None:
+                        source_numeric_count += 1
+                    elif _norm_cell(source_value) in SCORE_STATUS_LABELS:
+                        source_status_count += 1
+            if source_numeric_count or source_status_count:
+                derived_percent_from_index = idx - 1
+                max_score = source_max_score
+                numeric_count = source_numeric_count
+                status_count = source_status_count
         if not numeric_count and not status_count:
             continue
         columns.append({
@@ -954,7 +1066,8 @@ def _score_columns_for_sheet(sheet: dict, column_query: str = "", prefer_percent
             "assessment": assessment,
             "is_percent": is_percent,
             "is_pre_wa": is_pre_wa,
-            "max_score": _number_from_header(header),
+            "max_score": max_score,
+            "derived_percent_from_index": derived_percent_from_index,
             "numeric_count": numeric_count,
             "status_count": status_count,
         })
@@ -984,13 +1097,26 @@ def _stats_for_values(values: list[dict]) -> dict:
     }
 
 
-def _student_score_values(sheet: dict, col_idx: int) -> tuple[list[dict], dict]:
+def _score_from_row(row: list[str], column: dict) -> tuple[float | None, str]:
+    col_idx = int(column["index"])
+    raw = row[col_idx].strip() if col_idx < len(row) else ""
+    source_idx = column.get("derived_percent_from_index")
+    if source_idx is not None:
+        source_raw = row[source_idx].strip() if source_idx < len(row) else ""
+        source_score = _number_from_cell(source_raw)
+        max_score = column.get("max_score")
+        if source_score is not None and max_score:
+            return round((source_score / float(max_score)) * 100, 1), source_raw
+        return None, source_raw
+    return _number_from_cell(raw), raw
+
+
+def _student_score_values(sheet: dict, column: dict) -> tuple[list[dict], dict]:
     values = []
     statuses = {}
     for student in sheet["students"]:
         row = sheet["rows"][student["row_index"]] if student["row_index"] < len(sheet["rows"]) else []
-        raw = row[col_idx].strip() if col_idx < len(row) else ""
-        score = _number_from_cell(raw)
+        score, raw = _score_from_row(row, column)
         if score is not None:
             values.append({
                 "student": student,
@@ -1039,7 +1165,7 @@ def analyze_mtl_scores(
             "progress": [],
         }
         for column in columns[:12]:
-            values, statuses = _student_score_values(sheet, column["index"])
+            values, statuses = _student_score_values(sheet, column)
             stats = _stats_for_values(values)
             if not stats:
                 continue
@@ -1060,6 +1186,7 @@ def analyze_mtl_scores(
             ]
             sheet_analysis["columns"].append({
                 "label": column["label"],
+                "computed_percent": bool(column.get("derived_percent_from_index") is not None),
                 "stats": stats,
                 "statuses": statuses,
                 "underperforming": underperforming,
@@ -1079,8 +1206,8 @@ def analyze_mtl_scores(
             changes = []
             for student in sheet["students"]:
                 row = sheet["rows"][student["row_index"]] if student["row_index"] < len(sheet["rows"]) else []
-                start = _number_from_cell(row[start_col["index"]].strip() if start_col["index"] < len(row) else "")
-                end = _number_from_cell(row[end_col["index"]].strip() if end_col["index"] < len(row) else "")
+                start, _ = _score_from_row(row, start_col)
+                end, _ = _score_from_row(row, end_col)
                 if start is None or end is None:
                     continue
                 changes.append({
@@ -1155,6 +1282,387 @@ def format_mtl_score_analysis(
     return "\n".join(lines)
 
 
+def _trend_score_from_row(row: list[str], column: dict) -> tuple[float | None, str]:
+    score, raw = _score_from_row(row, column)
+    if score is None:
+        return None, raw
+    if column.get("is_percent"):
+        return round(score, 1), raw
+    max_score = column.get("max_score")
+    if max_score:
+        return round((score / float(max_score)) * 100, 1), raw
+    return round(score, 1), raw
+
+
+def _trend_columns_for_sheet(sheet: dict, column_query: str = "") -> list[dict]:
+    columns = _score_columns_for_sheet(sheet, column_query, prefer_percent=False)
+    if not columns:
+        return []
+    percent_source_indexes = {
+        column.get("derived_percent_from_index", column["index"] - 1)
+        for column in columns
+        if column.get("is_percent")
+    }
+    trend_columns = []
+    for column in columns:
+        if column.get("is_percent"):
+            trend_columns.append(column)
+            continue
+        if column["index"] in percent_source_indexes:
+            continue
+        if column.get("max_score"):
+            trend_columns.append(column)
+    return sorted(trend_columns, key=lambda item: item["index"])
+
+
+def _trend_insight(recent: float | None, change: float | None) -> str:
+    if recent is None:
+        return "No current score"
+    if recent < 50 and change is not None and change <= -10:
+        return "Immediate attention: below 50 and declining"
+    if recent < 50:
+        return "Attention: below 50"
+    if change is not None and change <= -10:
+        return "Check-in: significant regression"
+    if change is not None and change >= 10 and recent >= 75:
+        return "Affirmation: strong improvement into high band"
+    if change is not None and change >= 10:
+        return "Affirmation: strong improvement"
+    if recent >= 75 and (change is None or change >= 0):
+        return "Affirmation: sustaining strong performance"
+    if change is not None and change >= 5:
+        return "Encourage: improving"
+    if change is not None and change <= -5:
+        return "Monitor: mild regression"
+    return "Steady"
+
+
+def _safe_sheet_title(value: str) -> str:
+    title = re.sub(r"[\[\]\*\?/\\:]", " ", str(value or "")).strip()
+    title = re.sub(r"\s+", " ", title)
+    return title[:90] or "HIRA Analysis"
+
+
+def _spreadsheet_sheet_ids(spreadsheet_id: str) -> tuple[str, dict[str, int]]:
+    book = _sheets().spreadsheets().get(
+        spreadsheetId=spreadsheet_id,
+        includeGridData=False,
+        fields="properties(title),sheets(properties(sheetId,title))",
+    ).execute()
+    title = book.get("properties", {}).get("title", spreadsheet_id)
+    ids = {}
+    for sheet in book.get("sheets", []) or []:
+        props = sheet.get("properties", {})
+        ids[str(props.get("title", "") or "")] = int(props.get("sheetId"))
+    return title, ids
+
+
+def _build_trend_report_values(sheet: dict, columns: list[dict]) -> tuple[list[list], dict]:
+    value_sets = []
+    summary_rows = []
+    for column in columns:
+        values = []
+        statuses = {}
+        for student in sheet["students"]:
+            row = sheet["rows"][student["row_index"]] if student["row_index"] < len(sheet["rows"]) else []
+            score, raw = _trend_score_from_row(row, column)
+            if score is not None:
+                values.append({"student": student, "score": score})
+            else:
+                norm = _norm_cell(raw)
+                if norm:
+                    statuses[norm] = statuses.get(norm, 0) + 1
+        stats = _stats_for_values(values)
+        if not stats:
+            continue
+        value_sets.append((column, values, statuses, stats))
+        summary_rows.append([
+            column["label"],
+            stats["count"],
+            stats["mean"],
+            stats["median"],
+            round((stats["pass_count"] / stats["count"]) * 100, 1) if stats["count"] else 0,
+            round((stats["distinction_count"] / stats["count"]) * 100, 1) if stats["count"] else 0,
+            stats["below_50_count"],
+            ", ".join(f"{key}:{value}" for key, value in sorted(statuses.items())),
+        ])
+
+    labels = [item[0]["label"] for item in value_sets]
+    score_by_student = {}
+    for column, values, _statuses, _stats in value_sets:
+        for item in values:
+            key = item["student"]["row_index"]
+            score_by_student.setdefault(key, {})[column["index"]] = item["score"]
+
+    student_rows = []
+    for student in sheet["students"]:
+        score_map = score_by_student.get(student["row_index"], {})
+        scores = [score_map.get(column["index"]) for column, _values, _statuses, _stats in value_sets]
+        numeric_scores = [score for score in scores if score is not None]
+        if not numeric_scores:
+            continue
+        first = numeric_scores[0]
+        recent = numeric_scores[-1]
+        change = round(recent - first, 1) if len(numeric_scores) >= 2 else None
+        student_rows.append([
+            student.get("no", ""),
+            student.get("class", ""),
+            student.get("name", ""),
+            *["" if score is None else score for score in scores],
+            "" if change is None else change,
+            _trend_insight(recent, change),
+        ])
+
+    change_index = 3 + len(labels)
+    students_with_change = [row for row in student_rows if row[change_index] != ""]
+    improved = sorted(
+        [row for row in students_with_change if row[change_index] > 0],
+        key=lambda row: row[change_index],
+        reverse=True,
+    )[:10]
+    regressed = sorted(
+        [row for row in students_with_change if row[change_index] < 0],
+        key=lambda row: row[change_index],
+    )[:10]
+    attention = [
+        row for row in student_rows
+        if "Attention" in str(row[-1]) or "Immediate attention" in str(row[-1]) or "Check-in" in str(row[-1])
+    ][:12]
+    affirmation = [row for row in student_rows if "Affirmation" in str(row[-1])][:12]
+
+    rows: list[list] = []
+    rows.append([f"H.I.R.A score trend report: {sheet['grouping'] or sheet['sheet_title']}"])
+    rows.append([f"Generated {datetime.now(SGT).strftime('%Y-%m-%d %H:%M')} SGT", "Scores normalised to percentage where raw max marks are available."])
+    rows.append([])
+    rows.append(["Assessment", "Count", "Mean %", "Median %", "Pass %", "Distinction %", "Below 50", "Statuses"])
+    rows.extend(summary_rows)
+    rows.append([])
+    rows.append(["Most improved", "Change"])
+    rows.extend([[row[2], row[change_index]] for row in improved[:8]])
+    rows.append([])
+    rows.append(["Most regressed", "Change"])
+    rows.extend([[row[2], row[change_index]] for row in regressed[:8]])
+    rows.append([])
+    rows.append(["Needs attention", "Latest insight"])
+    rows.extend([[row[2], row[-1]] for row in attention[:8]])
+    rows.append([])
+    rows.append(["Affirmation candidates", "Latest insight"])
+    rows.extend([[row[2], row[-1]] for row in affirmation[:8]])
+    rows.append([])
+    student_table_row = len(rows)
+    rows.append(["No", "Class", "Student", *labels, "Change", "Insight"])
+    rows.extend(student_rows)
+
+    return rows, {
+        "summary_start_row": 3,
+        "summary_count": len(summary_rows),
+        "student_table_row": student_table_row,
+        "student_count": len(student_rows),
+        "assessment_count": len(labels),
+        "most_improved": [{"student": row[2], "change": row[change_index]} for row in improved[:5]],
+        "most_regressed": [{"student": row[2], "change": row[change_index]} for row in regressed[:5]],
+        "attention_count": len(attention),
+        "affirmation_count": len(affirmation),
+    }
+
+
+def _trend_chart_requests(report_sheet_id: int, meta: dict) -> list[dict]:
+    requests = []
+    summary_start = meta["summary_start_row"] + 1
+    summary_end = summary_start + meta["summary_count"]
+    if meta["summary_count"] >= 1:
+        requests.append({
+            "addChart": {
+                "chart": {
+                    "spec": {
+                        "title": "Mean by Assessment",
+                        "basicChart": {
+                            "chartType": "COLUMN",
+                            "legendPosition": "NO_LEGEND",
+                            "axis": [
+                                {"position": "BOTTOM_AXIS", "title": "Assessment"},
+                                {"position": "LEFT_AXIS", "title": "Mean %"},
+                            ],
+                            "domains": [{
+                                "domain": {"sourceRange": {"sources": [{
+                                    "sheetId": report_sheet_id,
+                                    "startRowIndex": summary_start,
+                                    "endRowIndex": summary_end,
+                                    "startColumnIndex": 0,
+                                    "endColumnIndex": 1,
+                                }]}}
+                            }],
+                            "series": [{
+                                "series": {"sourceRange": {"sources": [{
+                                    "sheetId": report_sheet_id,
+                                    "startRowIndex": summary_start,
+                                    "endRowIndex": summary_end,
+                                    "startColumnIndex": 2,
+                                    "endColumnIndex": 3,
+                                }]}},
+                                "targetAxis": "LEFT_AXIS",
+                            }],
+                            "headerCount": 0,
+                        },
+                    },
+                    "position": {
+                        "overlayPosition": {
+                            "anchorCell": {"sheetId": report_sheet_id, "rowIndex": 2, "columnIndex": 9},
+                            "widthPixels": 620,
+                            "heightPixels": 360,
+                        }
+                    },
+                }
+            }
+        })
+    student_start = meta["student_table_row"] + 1
+    student_end = min(student_start + meta["student_count"], student_start + 20)
+    change_col = 3 + meta["assessment_count"]
+    if meta["student_count"] >= 1 and meta["assessment_count"] >= 2:
+        requests.append({
+            "addChart": {
+                "chart": {
+                    "spec": {
+                        "title": "Student Change (first to latest)",
+                        "basicChart": {
+                            "chartType": "COLUMN",
+                            "legendPosition": "NO_LEGEND",
+                            "axis": [
+                                {"position": "BOTTOM_AXIS", "title": "Change"},
+                                {"position": "LEFT_AXIS", "title": "Student"},
+                            ],
+                            "domains": [{
+                                "domain": {"sourceRange": {"sources": [{
+                                    "sheetId": report_sheet_id,
+                                    "startRowIndex": student_start,
+                                    "endRowIndex": student_end,
+                                    "startColumnIndex": 2,
+                                    "endColumnIndex": 3,
+                                }]}}
+                            }],
+                            "series": [{
+                                "series": {"sourceRange": {"sources": [{
+                                    "sheetId": report_sheet_id,
+                                    "startRowIndex": student_start,
+                                    "endRowIndex": student_end,
+                                    "startColumnIndex": change_col,
+                                    "endColumnIndex": change_col + 1,
+                                }]}},
+                                "targetAxis": "LEFT_AXIS",
+                            }],
+                            "headerCount": 0,
+                        },
+                    },
+                    "position": {
+                        "overlayPosition": {
+                            "anchorCell": {"sheetId": report_sheet_id, "rowIndex": 21, "columnIndex": 9},
+                            "widthPixels": 620,
+                            "heightPixels": 380,
+                        }
+                    },
+                }
+            }
+        })
+    return requests
+
+
+def generate_mtl_score_trend_report(
+    class_query: str = "",
+    assessment_query: str = "",
+    teacher_query: str = "HERWANTO",
+) -> dict:
+    sheets = _score_sheet_matches(teacher_query, class_query)
+    if not sheets:
+        raise ValueError("No matching MTL score sheets found.")
+    if len(sheets) > 1 and not _norm_cell(class_query):
+        options = [f"{item['grouping'] or item['sheet_title']} / {item['spreadsheet_title']}" for item in sheets[:8]]
+        raise ValueError("More than one classlist sheet matched. Specify the class/group: " + "; ".join(options))
+
+    reports = []
+    service = _sheets()
+    for sheet in sheets:
+        columns = _trend_columns_for_sheet(sheet, assessment_query)
+        if len(columns) < 2:
+            raise ValueError("Need at least two matching score columns to build a trend report.")
+        rows, meta = _build_trend_report_values(sheet, columns)
+        if meta["assessment_count"] < 2 or meta["student_count"] < 1:
+            raise ValueError("Need at least two populated score columns and one student score to build a trend report.")
+        report_title = _safe_sheet_title(f"HIRA Trends - {sheet['grouping'] or sheet['sheet_title']}")
+        _spreadsheet_title, existing_sheet_ids = _spreadsheet_sheet_ids(sheet["spreadsheet_id"])
+        report_sheet_id = int(uuid.uuid4().int % 900000000) + 1000000
+        requests = []
+        if report_title in existing_sheet_ids:
+            requests.append({"deleteSheet": {"sheetId": existing_sheet_ids[report_title]}})
+        requests.append({
+            "addSheet": {
+                "properties": {
+                    "sheetId": report_sheet_id,
+                    "title": report_title,
+                    "gridProperties": {"rowCount": 220, "columnCount": 18},
+                }
+            }
+        })
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=sheet["spreadsheet_id"],
+            body={"requests": requests},
+        ).execute()
+
+        service.spreadsheets().values().update(
+            spreadsheetId=sheet["spreadsheet_id"],
+            range=f"{_quote_sheet_name(report_title)}!A1",
+            valueInputOption="USER_ENTERED",
+            body={"values": rows},
+        ).execute()
+        chart_requests = _trend_chart_requests(report_sheet_id, meta)
+        if chart_requests:
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=sheet["spreadsheet_id"],
+                body={"requests": chart_requests},
+            ).execute()
+        reports.append({
+            "spreadsheet_id": sheet["spreadsheet_id"],
+            "spreadsheet_title": sheet["spreadsheet_title"],
+            "sheet_title": report_title,
+            "source_sheet_title": sheet["sheet_title"],
+            "grouping": sheet["grouping"],
+            "assessments": [column["label"] for column in columns],
+            "student_count": meta["student_count"],
+            "attention_count": meta["attention_count"],
+            "affirmation_count": meta["affirmation_count"],
+            "most_improved": meta["most_improved"],
+            "most_regressed": meta["most_regressed"],
+            "url": f"https://docs.google.com/spreadsheets/d/{sheet['spreadsheet_id']}/edit#gid={report_sheet_id}",
+        })
+        _invalidate_classlist_cache(sheet["spreadsheet_id"])
+    return {"reports": reports}
+
+
+def format_mtl_score_trend_report(
+    class_query: str = "",
+    assessment_query: str = "",
+    teacher_query: str = "HERWANTO",
+) -> str:
+    result = generate_mtl_score_trend_report(class_query, assessment_query, teacher_query)
+    lines = ["Created MTL trend report:"]
+    for report in result["reports"]:
+        lines.append(
+            f"- {report['sheet_title']} in {report['spreadsheet_title']} "
+            f"({report['student_count']} students, {len(report['assessments'])} assessments)."
+        )
+        lines.append(f"  Link: {report['url']}")
+        if report["most_improved"]:
+            improved = "; ".join(f"{item['student']} +{item['change']}" for item in report["most_improved"][:3])
+            lines.append(f"  Most improved: {improved}.")
+        if report["most_regressed"]:
+            regressed = "; ".join(f"{item['student']} {item['change']}" for item in report["most_regressed"][:3])
+            lines.append(f"  Most regressed: {regressed}.")
+        lines.append(
+            f"  Flagged {report['attention_count']} for attention and "
+            f"{report['affirmation_count']} for affirmation."
+        )
+    return "\n".join(lines)
+
+
 def update_mtl_class_score(
     class_query: str,
     student_query: str,
@@ -1171,16 +1679,13 @@ def update_mtl_class_score(
     class_filter = _norm_cell(class_query)
     student_filter = _norm_cell(student_query)
     matches = []
-    fields = "properties(title),sheets(properties(title),data(rowData(values(formattedValue,effectiveValue))))"
     for spreadsheet_id in _configured_classlist_sheet_ids():
-        book = service.spreadsheets().get(
-            spreadsheetId=spreadsheet_id,
-            includeGridData=True,
-            fields=fields,
-        ).execute()
+        book = _classlist_book(spreadsheet_id)
         spreadsheet_title = book.get("properties", {}).get("title", spreadsheet_id)
         for sheet in book.get("sheets", []):
-            sheet_title = sheet.get("properties", {}).get("title", "")
+            props = sheet.get("properties", {})
+            sheet_title = props.get("title", "")
+            sheet_id = props.get("sheetId")
             row_data = []
             for data in sheet.get("data", []):
                 row_data.extend(data.get("rowData", []))
@@ -1250,6 +1755,7 @@ def update_mtl_class_score(
         valueInputOption="USER_ENTERED",
         body={"values": [[str(score_value)]]},
     ).execute()
+    _invalidate_classlist_cache(target["spreadsheet_id"])
     return {
         "spreadsheet_title": target["spreadsheet_title"],
         "sheet_title": target["sheet_title"],
@@ -1271,17 +1777,17 @@ def fill_mtl_percentage_scores(
     service = _sheets()
     class_filter = _norm_cell(class_query)
     assessment_filter = _norm_cell(assessment_query)
+    assessment_parts = _score_query_parts(assessment_query)
+    if assessment_parts["assessment_norms"]:
+        assessment_filter = " ".join(assessment_parts["assessment_norms"])
     sheet_matches = []
-    fields = "properties(title),sheets(properties(title),data(rowData(values(formattedValue,effectiveValue))))"
     for spreadsheet_id in _configured_classlist_sheet_ids():
-        book = service.spreadsheets().get(
-            spreadsheetId=spreadsheet_id,
-            includeGridData=True,
-            fields=fields,
-        ).execute()
+        book = _classlist_book(spreadsheet_id)
         spreadsheet_title = book.get("properties", {}).get("title", spreadsheet_id)
         for sheet in book.get("sheets", []):
-            sheet_title = sheet.get("properties", {}).get("title", "")
+            props = sheet.get("properties", {})
+            sheet_title = props.get("title", "")
+            sheet_id = props.get("sheetId")
             row_data = []
             for data in sheet.get("data", []):
                 row_data.extend(data.get("rowData", []))
@@ -1304,31 +1810,62 @@ def fill_mtl_percentage_scores(
                     continue
             headers = [str(cell or "").strip() for cell in rows[header_idx]]
             percent_cols = []
+            raw_score_cols = []
             for idx, header_label in enumerate(headers):
-                if _norm_cell(header_label) not in {"", "PERCENT", "PERCENTAGE"} and str(header_label).strip() != "%":
+                assessment_label = _assessment_label_for_column(rows, header_idx, idx)
+                if _is_percentage_header(header_label):
+                    source_col = idx - 1
+                    if source_col < 0:
+                        continue
+                    source_header = headers[source_col] if source_col < len(headers) else ""
+                    max_score = _number_from_header(source_header)
+                    if not max_score:
+                        continue
+                    filter_haystack = _norm_cell(" ".join([assessment_label, header_label, source_header]))
+                    if assessment_filter and assessment_filter not in filter_haystack:
+                        continue
+                    percent_cols.append({
+                        "percent_col": idx,
+                        "source_col": source_col,
+                        "max_score": max_score,
+                        "assessment": assessment_label or header_label,
+                        "header": header_label,
+                        "create_column": False,
+                    })
                     continue
-                if str(header_label).strip() != "%" and _norm_cell(header_label) not in {"PERCENT", "PERCENTAGE"}:
+                if idx in {name_col, class_col, no_col}:
                     continue
-                source_col = idx - 1
-                if source_col < 0:
-                    continue
-                max_score = _number_from_header(headers[source_col])
+                max_score = _number_from_header(header_label)
                 if not max_score:
                     continue
-                assessment_label = _assessment_label_for_column(rows, header_idx, idx)
-                if assessment_filter and assessment_filter not in _norm_cell(assessment_label):
+                filter_haystack = _norm_cell(" ".join([assessment_label, header_label]))
+                if assessment_filter and assessment_filter not in filter_haystack:
                     continue
-                percent_cols.append({
-                    "percent_col": idx,
-                    "source_col": source_col,
+                raw_score_cols.append({
+                    "percent_col": idx + 1,
+                    "source_col": idx,
                     "max_score": max_score,
-                    "assessment": assessment_label,
+                    "assessment": assessment_label or header_label,
+                    "header": header_label,
+                    "create_column": True,
                 })
+            existing_sources = {col["source_col"] for col in percent_cols}
+            create_cols = [
+                col for col in raw_score_cols
+                if col["source_col"] not in existing_sources
+                and not (
+                    col["source_col"] + 1 < len(headers)
+                    and _is_percentage_header(headers[col["source_col"] + 1])
+                )
+            ]
+            if not percent_cols:
+                percent_cols = create_cols
             if percent_cols:
                 sheet_matches.append({
                     "spreadsheet_id": spreadsheet_id,
                     "spreadsheet_title": spreadsheet_title,
                     "sheet_title": sheet_title,
+                    "sheet_id": sheet_id,
                     "rows": rows,
                     "header_idx": header_idx,
                     "name_col": name_col,
@@ -1348,9 +1885,16 @@ def fill_mtl_percentage_scores(
             for col in item["percent_cols"]:
                 options.append(f"{item['grouping'] or item['sheet_title']} {col['assessment'] or '%'}")
         raise ValueError("More than one percentage column matched. Specify the assessment, e.g. FA1 or FA2: " + "; ".join(options[:8]))
+    for item in sheet_matches:
+        created_in_sheet = [col for col in item["percent_cols"] if col.get("create_column")]
+        if len(created_in_sheet) > 1:
+            options = [f"{item['grouping'] or item['sheet_title']} {col['header']}" for col in created_in_sheet]
+            raise ValueError("More than one raw score column needs a new percentage column. Specify the assessment: " + "; ".join(options[:8]))
 
     updates = []
+    insert_requests_by_sheet = {}
     changed = 0
+    created_columns = 0
     skipped = 0
     copied_codes = 0
     filled_numbers = 0
@@ -1359,6 +1903,30 @@ def fill_mtl_percentage_scores(
         rows = item["rows"]
         class_col = item["class_col"]
         for col_info in item["percent_cols"]:
+            if col_info.get("create_column"):
+                if item.get("sheet_id") is None:
+                    raise ValueError(f"Cannot create a percentage column in {item['sheet_title']} because the sheet id is missing.")
+                insert_requests_by_sheet.setdefault(item["spreadsheet_id"], []).append({
+                    "insertDimension": {
+                        "range": {
+                            "sheetId": item["sheet_id"],
+                            "dimension": "COLUMNS",
+                            "startIndex": col_info["percent_col"],
+                            "endIndex": col_info["percent_col"] + 1,
+                        },
+                        "inheritFromBefore": True,
+                    }
+                })
+                header_range = (
+                    f"{_quote_sheet_name(item['sheet_title'])}!"
+                    f"{_column_letter(col_info['percent_col'])}{item['header_idx'] + 1}"
+                )
+                updates.append({
+                    "range": header_range,
+                    "values": [[_percentage_header_for_source(col_info.get("header", ""), col_info.get("assessment", ""))]],
+                    "spreadsheet_id": item["spreadsheet_id"],
+                })
+                created_columns += 1
             for row_idx, row in enumerate(rows[item["header_idx"] + 1:], start=item["header_idx"] + 1):
                 name = row[item["name_col"]].strip() if item["name_col"] < len(row) else ""
                 class_name = row[class_col].strip() if class_col >= 0 and class_col < len(row) else ""
@@ -1367,7 +1935,7 @@ def fill_mtl_percentage_scores(
                 if class_filter and not _class_query_matches(class_query, item["grouping"], class_name):
                     skipped += 1
                     continue
-                current = row[col_info["percent_col"]].strip() if col_info["percent_col"] < len(row) else ""
+                current = "" if col_info.get("create_column") else (row[col_info["percent_col"]].strip() if col_info["percent_col"] < len(row) else "")
                 source = row[col_info["source_col"]].strip() if col_info["source_col"] < len(row) else ""
                 if only_blank and current:
                     skipped += 1
@@ -1394,6 +1962,12 @@ def fill_mtl_percentage_scores(
                 changed += 1
             target_descriptions.append(f"{item['grouping'] or item['sheet_title']} {col_info['assessment']}")
 
+    for spreadsheet_id, requests in insert_requests_by_sheet.items():
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"requests": requests},
+        ).execute()
+
     updates_by_sheet = {}
     for update in updates:
         updates_by_sheet.setdefault(update["spreadsheet_id"], []).append({
@@ -1405,9 +1979,11 @@ def fill_mtl_percentage_scores(
             spreadsheetId=spreadsheet_id,
             body={"valueInputOption": "USER_ENTERED", "data": data},
         ).execute()
+        _invalidate_classlist_cache(spreadsheet_id)
 
     return {
         "updated_cells": changed,
+        "created_columns": created_columns,
         "filled_numbers": filled_numbers,
         "copied_codes": copied_codes,
         "skipped": skipped,
