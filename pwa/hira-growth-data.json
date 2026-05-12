@@ -1,29 +1,29 @@
 {
-  "updated": "2026-05-11",
+  "updated": "2026-05-13",
   "name": "H.I.R.A Growth Log",
   "subtitle": "How Herwanto Intelligent Response Agent grew from an installable assistant into a more reliable, visually coherent personal operating system.",
   "summary": {
     "start": "2026-04-28",
-    "current": "2026-05-11",
-    "commitsTracked": 174,
-    "majorPhases": 27,
-    "currentStage": "Trust-led ClassOps intelligence with lesson-aware feed-forward"
+    "current": "2026-05-13",
+    "commitsTracked": 177,
+    "majorPhases": 28,
+    "currentStage": "Postgres-backed operations with verifiable memory and service health"
   },
   "metrics": [
     {
       "label": "Days of build acceleration",
-      "value": "13",
-      "note": "From first installable PWA commit to a sharper Nothing-style app identity with explicit trust rails, ClassOps intelligence, and lesson-aware feed-forward."
+      "value": "15",
+      "note": "From first installable PWA commit to a sharper Nothing-style app identity with explicit trust rails, ClassOps intelligence, and Postgres-backed operational memory."
     },
     {
       "label": "Tracked upgrade commits",
-      "value": "174",
+      "value": "177",
       "note": "Grouped from git history through the growth-log minisite."
     },
     {
       "label": "Memory buckets",
       "value": "16",
-      "note": "Profile, preferences, teaching, business, sports, topic profiles, corrections, reflections, source notes, and more — now with priority-weighted prompt injection."
+      "note": "Profile, preferences, teaching, business, sports, topic profiles, corrections, reflections, source notes, and more, now Postgres-backed with priority-weighted prompt injection."
     },
     {
       "label": "Specialist live domains",
@@ -39,23 +39,23 @@
     },
     {
       "name": "Security",
-      "score": 94,
-      "description": "Telegram fail-closed allowlist, web API token throttling, constant-time auth checks, safer rate-limit keys, /forget confirmation, file size guards, and Redis job locks."
+      "score": 95,
+      "description": "Telegram fail-closed allowlist, web API token throttling, constant-time auth checks, safer rate-limit keys, /forget confirmation, file size guards, Redis job locks, and clearer saved/not-saved storage failure states."
     },
     {
       "name": "Context",
-      "score": 98,
-      "description": "Timetable, Google Calendar, reminder-worthy events, rough travel buffers, MTL classlists and marks fields, Dropbox lesson folders, checked availability slots, Drive references, file memory, topic profiles, conversation summaries, relevant-memory retrieval, intent lensing, short-lived working memory, and home intelligence synthesis."
+      "score": 99,
+      "description": "Timetable, Google Calendar, reminder-worthy events, rough travel buffers, MTL classlists and marks fields, Dropbox lesson folders, checked availability slots, Drive references, file memory, Postgres-backed long-term memory, topic profiles, conversation summaries, relevant-memory retrieval, intent lensing, short-lived working memory, and home intelligence synthesis."
     },
     {
       "name": "Live Knowledge",
-      "score": 88,
-      "description": "Weather, MUIS, dual personal Gmail inbox support, experimental Work Gmail OAuth, Work Gmail action monitoring, Google News, Tavily search, fetch URL, source notes, live-check hints, structured Liverpool and F1 briefers."
+      "score": 90,
+      "description": "Weather, MUIS, dual personal Gmail inbox support, experimental Work Gmail OAuth, Work Gmail action monitoring with runtime health, Google News, Tavily search, fetch URL, source notes, live-check hints, structured Liverpool and F1 briefers."
     },
     {
       "name": "Self-Improvement",
-      "score": 98,
-      "description": "Priority-weighted memory prompt, relevant recall, working memory, action validation/audits, persistent action ledger, source/memory trace visibility, ClassOps blind-spot checks, intent lens, proactive workload insights, OS readiness scoring, forecast radar, adaptive planning, 7-day trial loop, notification feedback learning, implicit correction detection, weekly consolidation, and conversation summarisation."
+      "score": 99,
+      "description": "Postgres-backed memory commits, priority-weighted memory prompt, relevant recall, working memory, action validation/audits, persistent action ledger, source/memory trace visibility, ClassOps blind-spot checks, intent lens, proactive workload insights, OS readiness scoring, forecast radar, adaptive planning, 7-day trial loop, notification feedback learning, implicit correction detection, weekly consolidation, and conversation summarisation."
     }
   ],
   "chapters": [
@@ -505,12 +505,29 @@
         "A dependency-free local check script now runs compile and unittest verification before shipping behavior changes."
       ],
       "impact": "H.I.R.A is now more trustworthy and more teacher-native: it can show what it changed, explain which memory shaped an answer, and help convert actual lesson evidence plus student signals into the next teaching move."
+    },
+    {
+      "date": "2026-05-13",
+      "era": "Operational Memory",
+      "title": "Hira gets a Postgres spine",
+      "commit": "c99165e + d9db150 + c940842",
+      "tag": "Storage + Ops",
+      "summary": "H.I.R.A moved its durable brain out of Google Sheets and into Postgres, then gained clearer operational checks so memory, config, notification state, delivery logs, and Work Gmail health can be inspected instead of guessed.",
+      "details": [
+        "A Postgres storage layer now owns assistant memory, memory logs, app config, push subscriptions, push delivery logs, and notification state, with Sheets kept as a temporary fallback and as a read-only external source for human-maintained data.",
+        "The existing Sheet memory was imported into Postgres once, preserving 57 memory items across profile, preferences, teaching, projects, corrections, reflections, source notes, and other buckets.",
+        "Memory writes now commit through Postgres first, so H.I.R.A only says something was remembered after the database save succeeds.",
+        "/memcheck now reports the Postgres truth, while /storagecheck and /digestcheck expose storage health, fallback status, notification state, and digest delivery evidence.",
+        "The PWA connection card now treats a revoked Work Gmail token as a real reconnect state, and successful Work Gmail fetches or drafts clear stale reconnect warnings."
+      ],
+      "impact": "H.I.R.A now has a sturdier operational backbone: durable memory is no longer hostage to Sheets quota or formatting, delivery behavior has receipts, and integration health can say connected, reconnect, unavailable, or failed with less guesswork."
     }
   ],
   "currentCapabilities": [
     "Installable private PWA with minimal Nothing-style home-screen icon, sharper glyph surfaces, always-visible chat composer, chat, agenda, tasks, dual personal Gmail options, experimental Work Gmail, Work Gmail action monitoring, files, uploads, notifications, and dashboard views.",
     "Home OS Intelligence that synthesizes agenda, workload, tasks, marking load, proactive signals, service health, and file memory into a readiness score, operating mode, next best move, risks, openings, and one-tap actions.",
     "Persistent action ledger with review and selected undo support for assistant/PWA writes, plus chat trace visibility for relevant memory sources.",
+    "Postgres-backed durable storage for assistant memory, memory logs, app config, push subscriptions, push delivery logs, and notification state, with Sheets demoted to fallback and read-only external sources.",
     "ClassOps teacher dashboard that combines Dropbox lesson folders, Google Drive classlists and marks, submission tracking, priority items, blind-spot checks, student watchlists, student timelines, and feed-forward groups.",
     "Lesson-aware reflection worksheet generation from selected Dropbox PDF/DOCX/PPTX lesson files using read-only extraction.",
     "Command Protocol that turns the current state into concrete Now, Next, and Later steps with confidence and evidence.",
@@ -519,15 +536,15 @@
     "7-Day Trial Loop with checkpoints and a trial-note action to measure whether H.I.R.A reduces decision friction in real life.",
     "Telegram-compatible tool brain with calendar, reminders, marking, MTL classlists, dual personal Gmail brief/draft support, experimental Work Gmail brief/draft support, work-email action monitoring, artifacts, weather, MUIS prayer/khutbah, news, web search, and URL reading.",
     "Structured sports intelligence for Liverpool and F1.",
-    "Railway Hobby runtime profile with upload queue, memory guardrails, worker split, Redis production option, and admin status.",
-    "Long-term memory buckets, topic profiles for new interests, correction ledger, self-reflection notes, source-backed research notes, and conversation summaries.",
+    "Railway Hobby runtime profile with upload queue, memory guardrails, worker split, Redis production option, admin status, /memcheck, /storagecheck, and /digestcheck.",
+    "Postgres-backed long-term memory buckets, topic profiles for new interests, correction ledger, self-reflection notes, source-backed research notes, and conversation summaries.",
     "Intent lens with relevant-memory retrieval before answers, including quick PWA replies.",
     "Proactive intelligence scanner for workload pinch points, marking pressure, follow-ups, quiet windows, and upcoming packed days.",
     "Unified Proactive Intelligence v2 queue that ranks nudges, check-ins, follow-ups, prayers, tasks, digest picks, and internal intelligence with suppression and feedback learning.",
     "Short-lived PWA working memory that tracks the current subject, latest correction, pending action, and older competing subjects during follow-up chats.",
     "Action validation and audit receipts for state-changing tools so vague calendar/reminder/nudge/follow-up saves are blocked or reviewable.",
     "Restored cockpit-style home surface with local time, tabs, dashboard panels, workload context, marking, file memory, chat, refreshed identity assets, and preserved dotted H.I.R.A display typography.",
-    "Recoverable push notification system with delivery logs, recovery status, confirmed-push completion checks, and catch-up retry behavior for daily briefings.",
+    "Recoverable push notification system with Postgres delivery logs, notification state, recovery status, confirmed-push completion checks, and catch-up retry behavior for daily briefings.",
     "Action-enabled push notifications: Done, Snooze 30m, Useful, and Not useful feed back into task/check-in/follow-up completion, proactive nudges, and notification outcome memory.",
     "Calendar and task reminder push layer with reminder confidence levels and rough time-to-leave estimates from explicit notes, place overrides, or default travel buffers.",
     "Curated live digest that gathers multiple shortlist candidates, ranks them for quality and relevance, and adds a short why-it-matters layer.",
