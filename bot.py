@@ -3617,7 +3617,7 @@ async def _dispatch_proactive_candidates(context, candidates: list[dict], limit:
             continue
         push_sent = int(queued.get("_push_sent", 0) or 0)
         if family == "nudge":
-            if context is not None or push_sent > 0:
+            if context is not None or push_sent > 0 or queued.get("_already_active"):
                 gs.mark_nudge_sent(candidate.get("metadata", {}).get("nudge_id", ""))
             else:
                 logger.warning("Nudge %s kept pending until phone push is confirmed", candidate.get("metadata", {}).get("nudge_id", ""))
@@ -9201,6 +9201,11 @@ def _queue_app_notification(kind: str, title: str, body: str, source: str = ""):
         item = gs.enqueue_app_notification(kind, title, body, source=source)
         duplicate = bool(item.get("_duplicate"))
         if duplicate:
+            if str(source or "").strip().startswith("nudge:"):
+                logger.info(f"Nudge notification already active for source={source}; not sending a duplicate push")
+                item["_already_active"] = True
+                item["_push_sent"] = 0
+                return item
             logger.info(f"Notification already active for source={source or kind}; retrying push delivery")
         if item.get("id") and not duplicate:
             _record_notification_outcome(

@@ -1988,6 +1988,39 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(sent, 1)
         mark_sent.assert_called_once_with("42")
 
+    def test_duplicate_active_nudge_is_not_pushed_twice(self):
+        existing = {"id": "1", "source": "nudge:42", "_duplicate": True}
+
+        with (
+            patch.object(bot.gs, "enqueue_app_notification", return_value=existing),
+            patch.object(bot.gs, "send_web_push_notification") as push,
+        ):
+            item = bot._queue_app_notification("reminder", "H.I.R.A nudge", "Go to bed.", source="nudge:42")
+
+        self.assertTrue(item["_already_active"])
+        self.assertEqual(item["_push_sent"], 0)
+        push.assert_not_called()
+
+    def test_dispatch_marks_duplicate_active_nudge_sent(self):
+        candidate = {
+            "family": "nudge",
+            "source": "nudge:42",
+            "kind": "reminder",
+            "title": "H.I.R.A nudge",
+            "body": "Go to bed.",
+            "suppressed": False,
+            "metadata": {"nudge_id": "42"},
+        }
+
+        with (
+            patch.object(bot, "_queue_app_notification", return_value={"id": "1", "_push_sent": 0, "_already_active": True}),
+            patch.object(bot.gs, "mark_nudge_sent") as mark_sent,
+        ):
+            sent = asyncio.run(bot._dispatch_proactive_candidates(None, [candidate], limit=1))
+
+        self.assertEqual(sent, 1)
+        mark_sent.assert_called_once_with("42")
+
     def test_dispatch_skips_digest_only_reminder_confidence(self):
         candidate = {
             "family": "task",
@@ -4875,6 +4908,42 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(record.call_args.args[0], "snoozed")
         self.assertEqual(ledger.call_args.kwargs["action"], "notification.snooze")
         self.assertEqual(ledger.call_args.kwargs["metadata"]["nudge_id"], "44")
+
+    def test_pwa_nudges_command_lists_pending_nudges(self):
+        nudges = [
+            {
+                "id": "7",
+                "message": "Sahibba tournament",
+                "send_at": "2026-05-14T07:30:00+08:00",
+                "status": "pending",
+            }
+        ]
+
+        with patch.object(bot.gs, "get_nudges", return_value=nudges):
+            reply, tool = web_app._pwa_nudge_command_reply("/nudges")
+
+        self.assertEqual(tool, "list_nudges")
+        self.assertIn("Pending nudges", reply)
+        self.assertIn("Sahibba tournament", reply)
+        self.assertIn("/cancelnudge <id>", reply)
+
+    def test_pwa_cancelnudge_command_cancels_and_archives_notification(self):
+        notifications = [
+            {"id": "9", "source": "nudge:7", "archived": False},
+            {"id": "10", "source": "nudge:8", "archived": False},
+        ]
+
+        with (
+            patch.object(bot.gs, "cancel_nudge", return_value=True) as cancel,
+            patch.object(bot.gs, "get_app_notifications", return_value=notifications),
+            patch.object(bot.gs, "archive_app_notifications", return_value=1) as archive,
+        ):
+            reply, tool = web_app._pwa_nudge_command_reply("/cancelnudge 7")
+
+        self.assertEqual(tool, "cancel_nudge")
+        self.assertIn("Nudge #7 cancelled", reply)
+        cancel.assert_called_once_with("7")
+        archive.assert_called_once_with(["9"])
 
     def test_notification_action_done_completes_linked_task(self):
         item = {

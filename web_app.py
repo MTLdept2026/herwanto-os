@@ -2587,6 +2587,53 @@ def _quick_sse_response(reply: str, history_key: str, history: list, route_name:
     return StreamingResponse(events(), media_type="text/event-stream")
 
 
+def _archive_nudge_notifications(nudge_id: str) -> int:
+    source = f"nudge:{str(nudge_id or '').strip()}"
+    if source == "nudge:":
+        return 0
+    notifications = bot.gs.get_app_notifications(include_archived=True)
+    ids = [
+        str(item.get("id", "")).strip()
+        for item in notifications
+        if str(item.get("source", "")).strip() == source and not item.get("archived")
+    ]
+    ids = [item_id for item_id in ids if item_id]
+    return bot.gs.archive_app_notifications(ids) if ids else 0
+
+
+def _pwa_nudge_command_reply(message: str) -> tuple[str, str] | None:
+    clean = str(message or "").strip()
+    if not clean:
+        return None
+    lower = clean.lower()
+    if lower in {"/nudges", "nudges"}:
+        try:
+            nudges = sorted(bot.gs.get_nudges(), key=lambda n: str(n.get("send_at", "")))
+        except Exception as exc:
+            return f"Nudges unavailable: {exc}", "list_nudges"
+        if not nudges:
+            return "No pending nudges.", "list_nudges"
+        lines = ["Pending nudges"]
+        for nudge in nudges:
+            lines.append(bot._format_nudge(nudge))
+        lines.append("\nUse `/cancelnudge <id>` to cancel one.")
+        return "\n".join(lines), "list_nudges"
+
+    match = re.match(r"^/(?:cancelnudge|cancel_nudge)\s+(\S+)\s*$", clean, re.I)
+    if not match:
+        return None
+    nudge_id = match.group(1)
+    try:
+        ok = bot.gs.cancel_nudge(nudge_id)
+        archived = _archive_nudge_notifications(nudge_id) if ok else 0
+    except Exception as exc:
+        return f"Could not cancel nudge #{nudge_id}: {exc}", "cancel_nudge"
+    if not ok:
+        return f"Nudge #{nudge_id} was not found, or it was already sent.", "cancel_nudge"
+    extra = f" I also removed {archived} matching app notification{'s' if archived != 1 else ''} from H.I.R.A." if archived else ""
+    return f"Nudge #{nudge_id} cancelled.{extra}", "cancel_nudge"
+
+
 @app.post("/api/chat")
 async def chat(
     request: Request,
@@ -2660,6 +2707,11 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
     f1_sync_reply = bot.f1_calendar_sync_response(message)
     if f1_sync_reply:
         return _quick_sse_response(f1_sync_reply, history_key, history, route_name="f1_calendar_sync", tool_name="sync_f1_calendar")
+
+    nudge_command = _pwa_nudge_command_reply(message)
+    if nudge_command:
+        reply, tool_name = nudge_command
+        return _quick_sse_response(reply, history_key, history, route_name="nudge_admin", tool_name=tool_name)
 
     quick_checkin_reply = ""
     if bot.google_ok() and bot._is_affirmative(message):
