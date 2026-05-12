@@ -6445,33 +6445,49 @@ def _tool_result_text(tool_results: list[dict]) -> str:
     return "\n".join(str(item.get("content", "")) for item in tool_results or [] if isinstance(item, dict))
 
 
-def _memory_backend_claim_guardrail(reply_text: str, tool_results: list[dict]) -> str:
-    """Block unsupported invented backend/memory diagnoses before the user sees them."""
+def _backend_claim_guardrail(reply_text: str, tool_results: list[dict]) -> str:
+    """Block unsupported invented backend/tool diagnoses before the user sees them."""
     text = str(reply_text or "")
     if not text:
         return text
-    suspicious = re.search(
-        r"\b(?:permanent memory|memory store|session memory|backend fix|sheets error|service account|memory sheet|assistant_memory)\b",
+    backend_claim = re.search(
+        r"\b(?:permanent memory|memory store|session memory|backend fix|sheets error|service account|memory sheet|assistant_memory|"
+        r"google sheets|sheets api|sheet access|tool|quota|rate limit|403|permission|permissions|forbidden|oauth|credential|credentials)\b",
         text,
         re.I,
     )
     failure_claim = re.search(
-        r"\b(?:cannot|can't|couldn'?t|unable|failed|failing|blocked|needs?\s+(?:a\s+)?backend|permission|access)\b",
+        r"\b(?:cannot|can't|couldn'?t|unable|failed|failing|blocked|needs?\s+(?:a\s+)?backend|permission|access|rate limit|quota|403|forbidden|denied)\b",
         text,
         re.I,
     )
-    if not (suspicious and failure_claim):
+    if not (backend_claim and failure_claim):
         return text
     evidence = _tool_result_text(tool_results)
     if re.search(
-        r"\b(?:Failed to remember|Remembered under|Memory unavailable|Google memory is not connected|assistant_memory|Config|Google Sheets denied|permission|forbidden|unauthorized)\b",
+        r"\b(?:Failed to remember|Remembered under|Memory unavailable|Google memory is not connected|assistant_memory|Config|"
+        r"Google Sheets denied|permission|permissions|forbidden|unauthorized|HTTP\s*403|403|rate limit|quota|Sheets API access failed|"
+        r"CCA schedule unavailable|public CSV fallback|tool timed out)\b",
         evidence,
         re.I,
     ):
         return text
     return (
-        "I need to be precise: I cannot verify that memory/backend diagnosis from the tool results in this turn. "
-        "Permanent memory only counts as saved when the memory tool reports success. If it fails, I should show the exact error instead of inventing a cause."
+        "I need to be precise: I cannot verify that backend/tool diagnosis from the tool results in this turn. "
+        "I should show the exact tool result if there is one; otherwise I should say I have not verified the cause instead of inventing it."
+    )
+
+
+def _cca_sheet_user_burden_guardrail(reply_text: str, tool_results: list[dict]) -> str:
+    text = str(reply_text or "")
+    evidence = _tool_result_text(tool_results)
+    if not evidence or not re.search(r"\bCCA schedule unavailable|Sheets API access failed|Official CCA duty status is unverified\b", evidence, re.I):
+        return text
+    if not re.search(r"\b(check|open|tell me|let me know|send|share)\b.{0,80}\b(sheet|calendar|name|says|screenshot)\b", text, re.I | re.S):
+        return text
+    return (
+        "Official CCA duty status is unverified because H.I.R.A could not read the CCA schedule source. "
+        "I should not push the lookup back to you. Calendar evidence can only confirm the match exists; it cannot confirm roster duty."
     )
 
 
@@ -7893,7 +7909,8 @@ async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
         if guarded:
             return guarded
 
-    guarded_reply = _memory_backend_claim_guardrail(reply_text or "Done.", all_tool_results)
+    guarded_reply = _backend_claim_guardrail(reply_text or "Done.", all_tool_results)
+    guarded_reply = _cca_sheet_user_burden_guardrail(guarded_reply, all_tool_results)
     return _correct_weekday_date_mismatches(guarded_reply)
 
 def _looks_tool_heavy(text: str) -> bool:
@@ -8068,7 +8085,8 @@ async def stream_agentic_claude(messages, max_tokens=650, tools=None):
             yield {"type": "done", "text": reply_text}
             return
 
-    guarded_reply = _memory_backend_claim_guardrail(reply_text or "Done.", all_tool_results)
+    guarded_reply = _backend_claim_guardrail(reply_text or "Done.", all_tool_results)
+    guarded_reply = _cca_sheet_user_burden_guardrail(guarded_reply, all_tool_results)
     corrected = _correct_weekday_date_mismatches(guarded_reply)
     if corrected != (reply_text or "Done."):
         yield {"type": "replace", "text": corrected}

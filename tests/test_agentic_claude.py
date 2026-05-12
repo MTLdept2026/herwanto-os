@@ -1184,20 +1184,38 @@ class AgenticClaudeTests(unittest.TestCase):
             "This means I am running with session memory only and the service account needs access."
         )
 
-        guarded = bot._memory_backend_claim_guardrail(reply, [])
+        guarded = bot._backend_claim_guardrail(reply, [])
 
         self.assertIn("cannot verify", guarded)
-        self.assertIn("exact error", guarded)
+        self.assertIn("exact tool result", guarded)
         self.assertNotIn("service account needs access", guarded)
 
     def test_memory_backend_claim_allowed_with_tool_evidence(self):
         reply = "Permanent memory failed because Google Sheets denied permission."
-        guarded = bot._memory_backend_claim_guardrail(
+        guarded = bot._backend_claim_guardrail(
             reply,
             [{"content": "Failed to remember: Google Sheets denied write access while updating Config."}],
         )
 
         self.assertEqual(guarded, reply)
+
+    def test_unsupported_google_sheets_rate_limit_claim_is_blocked(self):
+        reply = "Rate limit — Google Sheets hit its per-minute quota cap. Try again in about 60 seconds."
+
+        guarded = bot._backend_claim_guardrail(reply, [])
+
+        self.assertIn("cannot verify", guarded)
+        self.assertNotIn("per-minute quota", guarded)
+
+    def test_cca_access_failure_does_not_push_sheet_check_to_user(self):
+        reply = "Try again in 60 seconds. Or if you have the sheet open, just tell me if your name is on Thursday."
+        guarded = bot._cca_sheet_user_burden_guardrail(
+            reply,
+            [{"content": "CCA schedule unavailable: Sheets API access failed with HTTP 403. Official CCA duty status is unverified."}],
+        )
+
+        self.assertIn("should not push", guarded)
+        self.assertNotIn("tell me if your name", guarded)
 
     def test_commit_to_memory_forces_memory_tool(self):
         forced = bot._forced_tool_for_text(

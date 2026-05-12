@@ -8,6 +8,8 @@ Sheets acts as persistent storage for reminders, projects, and config.
 import os
 import json
 import base64
+import csv
+import io
 import logging
 import re
 import tempfile
@@ -21,6 +23,7 @@ from datetime import date, datetime, timedelta
 from email.message import EmailMessage
 from pathlib import Path
 
+import requests
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
@@ -258,6 +261,17 @@ def _sheets_auth_mode() -> str:
     if _work_google_oauth_configured():
         return "work_user_oauth"
     return "user_oauth" if _user_google_oauth_configured() else "service_account"
+
+
+def sheets_access_identity() -> dict:
+    mode = _sheets_auth_mode()
+    if mode == "service_account":
+        identity = _service_account_email()
+    elif mode == "work_user_oauth":
+        identity = "work Google Sheets OAuth user"
+    else:
+        identity = "personal Google Sheets OAuth user"
+    return {"mode": mode, "identity": identity}
 
 
 def google_sheets_configured() -> bool:
@@ -643,6 +657,60 @@ def _sheet_values(spreadsheet_id: str, sheet_title: str, cell_range: str = "A1:Z
     return [[str(cell).strip() for cell in row] for row in result.get("values", [])]
 
 
+def _public_sheet_csv_values(spreadsheet_id: str, gid: str = "", timeout: int = 12) -> list[list[str]]:
+    if not spreadsheet_id:
+        return []
+    params = {"format": "csv"}
+    if str(gid or "").strip():
+        params["gid"] = str(gid).strip()
+    url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/export"
+    response = requests.get(url, params=params, timeout=timeout)
+    if response.status_code >= 400:
+        raise RuntimeError(f"public CSV export returned HTTP {response.status_code}")
+    text = response.text or ""
+    if "ServiceLogin" in response.url or "Sign in" in text[:500]:
+        raise RuntimeError("public CSV export requires sign-in")
+    rows = []
+    for row in csv.reader(io.StringIO(text)):
+        cleaned = [str(cell).strip() for cell in row]
+        if any(cleaned):
+            rows.append(cleaned)
+    return rows
+
+
+def _cca_schedule_public_snapshot(
+    source: dict,
+    target: date,
+    week_label: str = "",
+    user_name: str = "Herwanto",
+    error: str = "",
+) -> dict:
+    rows = _public_sheet_csv_values(source["spreadsheet_id"], source.get("gid", ""))
+    tokens = _date_tokens_for_sheet(target)
+    name_tokens = {str(user_name or "Herwanto").lower(), "herwanto"}
+    date_rows = [row for row in rows if _row_has_any(row, tokens)]
+    candidate_rows = date_rows or rows
+    assigned_rows = [
+        row for row in candidate_rows
+        if any(token and token in _row_text(row) for token in name_tokens)
+    ]
+    return {
+        **source,
+        "spreadsheet_title": source["spreadsheet_id"],
+        "date": target.isoformat(),
+        "week_label": week_label,
+        "selected_tab": f"public CSV gid {source.get('gid', '')}",
+        "selected_gid": source.get("gid", ""),
+        "selection_score": 0,
+        "selection_reasons": ["public CSV fallback after Sheets API access failed"],
+        "day_specific_rows_found": bool(date_rows),
+        "assigned": bool(assigned_rows),
+        "assigned_rows": assigned_rows[:12],
+        "row_count": len(rows),
+        "access_warning": error,
+    }
+
+
 def _cca_source_config() -> dict:
     spreadsheet_id = get_config("cca_schedule_spreadsheet_id") or CCA_SCHEDULE_SPREADSHEET_ID
     gid = get_config("cca_schedule_gid") or CCA_SCHEDULE_GID
@@ -674,11 +742,34 @@ def get_cca_schedule_snapshot(target_date: date | str | None = None, week_label:
     source = _cca_source_config()
     spreadsheet_id = source["spreadsheet_id"]
     gid = source["gid"]
-    book = _sheets().spreadsheets().get(
-        spreadsheetId=spreadsheet_id,
-        includeGridData=False,
-        fields="properties(title),sheets(properties(sheetId,title))",
-    ).execute()
+    auth = sheets_access_identity()
+    try:
+        book = _sheets().spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            includeGridData=False,
+            fields="properties(title),sheets(properties(sheetId,title))",
+        ).execute()
+    except HttpError as exc:
+        status = getattr(exc.resp, "status", None)
+        error = f"Sheets API access failed with HTTP {status or 'unknown'}"
+        try:
+            return _cca_schedule_public_snapshot(source, target, week_label, user_name, error=error)
+        except Exception as fallback_exc:
+            return {
+                **source,
+                "spreadsheet_title": spreadsheet_id,
+                "date": target.isoformat(),
+                "week_label": week_label,
+                "assigned": False,
+                "access_blocked": True,
+                "auth_mode": auth.get("mode", ""),
+                "auth_identity": auth.get("identity", ""),
+                "error": (
+                    f"{error} for {auth.get('mode', 'unknown auth')} ({auth.get('identity', 'unknown identity')}); "
+                    f"public CSV fallback also failed: {fallback_exc}. "
+                    "Official CCA duty status is unverified. Do not ask Herwanto to manually check the sheet; report the access block and use only calendar evidence as non-roster context."
+                ),
+            }
     spreadsheet_title = book.get("properties", {}).get("title", spreadsheet_id)
     tokens = _date_tokens_for_sheet(target)
     selection_tokens = _date_selection_tokens_for_sheet(target, week_label)
@@ -738,6 +829,8 @@ def get_cca_schedule_snapshot(target_date: date | str | None = None, week_label:
         "spreadsheet_title": spreadsheet_title,
         "date": target.isoformat(),
         "week_label": week_label,
+        "auth_mode": auth.get("mode", ""),
+        "auth_identity": auth.get("identity", ""),
         "selected_tab": selected["sheet_title"],
         "selected_gid": selected["sheet_id"],
         "selection_score": selected["score"],
@@ -755,9 +848,12 @@ def format_cca_schedule_snapshot(snapshot: dict) -> str:
     lines = [
         f"CCA schedule source: {snapshot.get('url', '')}",
         f"Date: {snapshot.get('date', '')}",
+        f"Sheets auth: {snapshot.get('auth_mode', '')} {snapshot.get('auth_identity', '')}".strip(),
         f"Selected tab: {snapshot.get('selected_tab', '')} ({', '.join(snapshot.get('selection_reasons') or ['fallback'])})",
         f"Herwanto on schedule: {'YES' if snapshot.get('assigned') else 'NO'}",
     ]
+    if snapshot.get("access_warning"):
+        lines.append(f"Access warning: {snapshot.get('access_warning')}")
     if not snapshot.get("assigned"):
         lines.append("Hard stop: if Herwanto is not on this day's schedule, do not prompt him and do not add a CCA duty/event to his calendar.")
         return "\n".join(lines)
