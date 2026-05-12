@@ -77,6 +77,9 @@ _memory_cache = {
 _classlist_cache_lock = threading.RLock()
 _classlist_cache: dict[str, dict] = {}
 _REDIS_NUDGE_KEY = "hira:proactive_nudges:fallback"
+_REDIS_ASSISTANT_MEMORY_KEY = "hira:assistant_memory:fallback"
+_REDIS_WEB_PUSH_SUBSCRIPTIONS_KEY = "hira:web_push_subscriptions:fallback"
+_REDIS_WEB_PUSH_DELIVERY_LOG_KEY = "hira:web_push_delivery_log:fallback"
 _app_notifications_mutation_lock = threading.RLock()
 _nudges_mutation_lock = threading.RLock()
 
@@ -223,19 +226,26 @@ def _work_google_oauth_configured() -> bool:
     )
 
 
-def _user_google_oauth_configured() -> bool:
+def _personal_google_oauth_configured() -> bool:
     return bool(
-        _work_google_oauth_configured()
-        or (
-            _oauth_value("GOOGLE_SHEETS_REFRESH_TOKEN", "GOOGLE_USER_REFRESH_TOKEN")
-            and _oauth_value("GOOGLE_SHEETS_CLIENT_ID", "GOOGLE_USER_CLIENT_ID", "GOOGLE_GMAIL_CLIENT_ID")
-            and _oauth_value("GOOGLE_SHEETS_CLIENT_SECRET", "GOOGLE_USER_CLIENT_SECRET", "GOOGLE_GMAIL_CLIENT_SECRET")
-        )
+        _oauth_value("GOOGLE_SHEETS_REFRESH_TOKEN", "GOOGLE_USER_REFRESH_TOKEN")
+        and _oauth_value("GOOGLE_SHEETS_CLIENT_ID", "GOOGLE_USER_CLIENT_ID", "GOOGLE_GMAIL_CLIENT_ID")
+        and _oauth_value("GOOGLE_SHEETS_CLIENT_SECRET", "GOOGLE_USER_CLIENT_SECRET", "GOOGLE_GMAIL_CLIENT_SECRET")
     )
 
 
-def _user_google_creds(scopes=None):
-    if _work_google_oauth_configured():
+def _user_google_oauth_configured() -> bool:
+    return bool(
+        _work_google_oauth_configured()
+        or _personal_google_oauth_configured()
+    )
+
+
+def _user_google_creds(scopes=None, account: str = "personal"):
+    account = (account or "personal").strip().lower()
+    if account == "work":
+        if not _work_google_oauth_configured():
+            raise EnvironmentError("Work Google Sheets OAuth credentials are not configured")
         refresh_token = _oauth_value("GOOGLE_WORK_SHEETS_REFRESH_TOKEN")
         client_id = _oauth_value(
             "GOOGLE_WORK_SHEETS_CLIENT_ID",
@@ -252,6 +262,8 @@ def _user_google_creds(scopes=None):
             "GOOGLE_GMAIL_CLIENT_SECRET",
         )
     else:
+        if not _personal_google_oauth_configured():
+            raise EnvironmentError("Personal Google Sheets OAuth credentials are not configured")
         refresh_token = _oauth_value("GOOGLE_SHEETS_REFRESH_TOKEN", "GOOGLE_USER_REFRESH_TOKEN")
         client_id = _oauth_value("GOOGLE_SHEETS_CLIENT_ID", "GOOGLE_USER_CLIENT_ID", "GOOGLE_GMAIL_CLIENT_ID")
         client_secret = _oauth_value("GOOGLE_SHEETS_CLIENT_SECRET", "GOOGLE_USER_CLIENT_SECRET", "GOOGLE_GMAIL_CLIENT_SECRET")
@@ -267,14 +279,27 @@ def _user_google_creds(scopes=None):
     )
 
 
-def _sheets_auth_mode() -> str:
+def _sheets_auth_mode(account: str = "app") -> str:
+    account = (account or "app").strip().lower()
+    if account == "work":
+        if _work_google_oauth_configured():
+            return "work_user_oauth"
+        if _personal_google_oauth_configured():
+            return "user_oauth"
+        return "service_account"
+    if _personal_google_oauth_configured():
+        return "user_oauth"
+    return "service_account"
+
+
+def _work_sheets_auth_mode() -> str:
     if _work_google_oauth_configured():
         return "work_user_oauth"
-    return "user_oauth" if _user_google_oauth_configured() else "service_account"
+    return _sheets_auth_mode("app")
 
 
-def sheets_access_identity() -> dict:
-    mode = _sheets_auth_mode()
+def sheets_access_identity(account: str = "app") -> dict:
+    mode = _work_sheets_auth_mode() if (account or "").strip().lower() == "work" else _sheets_auth_mode("app")
     if mode == "service_account":
         identity = _service_account_email()
     elif mode == "work_user_oauth":
@@ -306,10 +331,20 @@ def _cal():
     return _thread_cached_service(("calendar",), lambda: _build_service("calendar", "v3", _creds()))
 
 
-def _sheets():
-    mode = _sheets_auth_mode()
-    creds_builder = _user_google_creds if mode in {"work_user_oauth", "user_oauth"} else _creds
-    return _thread_cached_service(("sheets", mode), lambda: _build_service("sheets", "v4", creds_builder(SHEETS_SCOPES)))
+def _sheets(account: str = "app"):
+    account = (account or "app").strip().lower()
+    mode = _work_sheets_auth_mode() if account == "work" else _sheets_auth_mode("app")
+    if mode == "work_user_oauth":
+        creds_builder = lambda scopes: _user_google_creds(scopes, account="work")
+    elif mode == "user_oauth":
+        creds_builder = lambda scopes: _user_google_creds(scopes, account="personal")
+    else:
+        creds_builder = _creds
+    return _thread_cached_service(("sheets", account, mode), lambda: _build_service("sheets", "v4", creds_builder(SHEETS_SCOPES)))
+
+
+def _work_sheets():
+    return _sheets("work")
 
 
 def _drive():
@@ -469,7 +504,7 @@ def _execute_with_rate_limit_retry(request, *, attempts: int = 3):
 
 def _read_classlist_book(spreadsheet_id: str) -> dict:
     return _execute_with_rate_limit_retry(
-        _sheets().spreadsheets().get(
+        _work_sheets().spreadsheets().get(
             spreadsheetId=spreadsheet_id,
             includeGridData=True,
             fields=_CLASSLIST_GRID_FIELDS,
@@ -1300,7 +1335,7 @@ def _classlist_permission_message(exc: HttpError, spreadsheet_ids: list[str], ta
         if spreadsheet_id:
             links.append(f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit")
     link_text = f" Target sheet: {'; '.join(links)}." if links else ""
-    auth_mode = _sheets_auth_mode()
+    auth_mode = _work_sheets_auth_mode()
     if auth_mode == "work_user_oauth":
         account_text = (
             " H.I.R.A is using the work Google account OAuth path for Sheets. Confirm that this work account "
@@ -1511,7 +1546,7 @@ def apply_mtl_failure_highlighting(
     if not targets:
         raise ValueError("No matching percentage columns found for failure highlighting.")
 
-    service = _sheets()
+    service = _work_sheets()
     for spreadsheet_id, requests in requests_by_sheet.items():
         try:
             service.spreadsheets().batchUpdate(
@@ -1809,7 +1844,7 @@ def _safe_sheet_title(value: str) -> str:
 
 
 def _spreadsheet_sheet_ids(spreadsheet_id: str) -> tuple[str, dict[str, int]]:
-    book = _sheets().spreadsheets().get(
+    book = _work_sheets().spreadsheets().get(
         spreadsheetId=spreadsheet_id,
         includeGridData=False,
         fields="properties(title),sheets(properties(sheetId,title))",
@@ -2044,7 +2079,7 @@ def generate_mtl_score_trend_report(
         raise ValueError("More than one classlist sheet matched. Specify the class/group: " + "; ".join(options))
 
     reports = []
-    service = _sheets()
+    service = _work_sheets()
     for sheet in sheets:
         columns = _trend_columns_for_sheet(sheet, assessment_query)
         if len(columns) < 2:
@@ -2140,7 +2175,7 @@ def update_mtl_class_score(
     if not str(score_column or "").strip():
         raise ValueError("score_column is required.")
 
-    service = _sheets()
+    service = _work_sheets()
     class_filter = _norm_cell(class_query)
     student_filter = _norm_cell(student_query)
     matches = []
@@ -2239,7 +2274,7 @@ def fill_mtl_percentage_scores(
     teacher_query: str = "HERWANTO",
     only_blank: bool = True,
 ) -> dict:
-    service = _sheets()
+    service = _work_sheets()
     class_filter = _norm_cell(class_query)
     assessment_filter = _norm_cell(assessment_query)
     assessment_parts = _score_query_parts(assessment_query)
@@ -3905,17 +3940,36 @@ def set_taste_profile(profile: dict) -> dict:
     return clean
 
 
-def get_web_push_subscriptions() -> list:
-    raw = get_config("web_push_subscriptions")
-    if not raw:
-        return []
+def _redis_json_get(key: str, default):
+    r = _get_redis()
+    if not r:
+        return default
     try:
-        subscriptions = json.loads(raw)
-    except Exception:
-        return []
+        raw = r.get(key)
+        if not raw:
+            return default
+        return json.loads(raw)
+    except Exception as exc:
+        logger.warning(f"Could not read Redis fallback {key}: {exc}")
+        return default
+
+
+def _redis_json_set(key: str, value, ttl_seconds: int = 60 * 60 * 24 * 14) -> bool:
+    r = _get_redis()
+    if not r:
+        return False
+    try:
+        r.set(key, json.dumps(value, ensure_ascii=False), ex=ttl_seconds)
+        return True
+    except Exception as exc:
+        logger.warning(f"Could not write Redis fallback {key}: {exc}")
+        return False
+
+
+def _clean_web_push_subscriptions(subscriptions) -> list:
     clean = []
     seen = set()
-    for item in subscriptions:
+    for item in subscriptions or []:
         if not isinstance(item, dict):
             continue
         client_id = str(item.get("client_id", "")).strip()
@@ -3936,6 +3990,47 @@ def get_web_push_subscriptions() -> list:
     return clean
 
 
+def _clean_web_push_delivery_log(entries) -> list:
+    clean = []
+    for item in (entries or [])[-80:]:
+        if not isinstance(item, dict):
+            continue
+        clean.append({
+            "created": str(item.get("created", "")).strip(),
+            "source": str(item.get("source", "")).strip(),
+            "kind": str(item.get("kind", "")).strip(),
+            "title": str(item.get("title", "")).strip(),
+            "attempted": int(item.get("attempted", 0) or 0),
+            "sent": int(item.get("sent", 0) or 0),
+            "expired": int(item.get("expired", 0) or 0),
+            "errors": item.get("errors", {}) if isinstance(item.get("errors"), dict) else {},
+            "last_error": str(item.get("last_error", "")).strip()[:300],
+            "payload_bytes": int(item.get("payload_bytes", 0) or 0),
+        })
+    return clean
+
+
+def get_web_push_subscriptions() -> list:
+    try:
+        raw = get_config("web_push_subscriptions")
+    except Exception as exc:
+        fallback = _clean_web_push_subscriptions(_redis_json_get(_REDIS_WEB_PUSH_SUBSCRIPTIONS_KEY, []))
+        if fallback:
+            logger.warning(f"Using Redis web push subscriptions after Sheets read failed: {exc}")
+            return fallback
+        raise
+    if not raw:
+        return _clean_web_push_subscriptions(_redis_json_get(_REDIS_WEB_PUSH_SUBSCRIPTIONS_KEY, []))
+    try:
+        subscriptions = json.loads(raw)
+    except Exception:
+        subscriptions = []
+    clean = _clean_web_push_subscriptions(subscriptions)
+    if clean:
+        _redis_json_set(_REDIS_WEB_PUSH_SUBSCRIPTIONS_KEY, clean)
+    return clean
+
+
 def get_web_push_subscription(client_id: str) -> dict | None:
     target = str(client_id or "").strip()
     if not target:
@@ -3947,7 +4042,9 @@ def get_web_push_subscription(client_id: str) -> dict | None:
 
 
 def set_web_push_subscriptions(subscriptions: list):
-    set_config("web_push_subscriptions", json.dumps(subscriptions[-30:], ensure_ascii=False))
+    clean = _clean_web_push_subscriptions(subscriptions)[-30:]
+    _redis_json_set(_REDIS_WEB_PUSH_SUBSCRIPTIONS_KEY, clean)
+    set_config("web_push_subscriptions", json.dumps(clean, ensure_ascii=False))
 
 
 def save_web_push_subscription(client_id: str, subscription: dict, metadata: dict | None = None) -> bool:
@@ -3995,36 +4092,32 @@ def _preferred_web_push_subscriptions(subscriptions: list) -> list:
 
 
 def get_web_push_delivery_log() -> list:
-    raw = get_config("web_push_delivery_log")
+    try:
+        raw = get_config("web_push_delivery_log")
+    except Exception as exc:
+        fallback = _clean_web_push_delivery_log(_redis_json_get(_REDIS_WEB_PUSH_DELIVERY_LOG_KEY, []))
+        if fallback:
+            logger.warning(f"Using Redis web push delivery log after Sheets read failed: {exc}")
+            return fallback
+        raise
     if not raw:
-        return []
+        return _clean_web_push_delivery_log(_redis_json_get(_REDIS_WEB_PUSH_DELIVERY_LOG_KEY, []))
     try:
         entries = json.loads(raw)
     except Exception:
-        return []
+        entries = []
     if not isinstance(entries, list):
-        return []
-    clean = []
-    for item in entries[-80:]:
-        if not isinstance(item, dict):
-            continue
-        clean.append({
-            "created": str(item.get("created", "")).strip(),
-            "source": str(item.get("source", "")).strip(),
-            "kind": str(item.get("kind", "")).strip(),
-            "title": str(item.get("title", "")).strip(),
-            "attempted": int(item.get("attempted", 0) or 0),
-            "sent": int(item.get("sent", 0) or 0),
-            "expired": int(item.get("expired", 0) or 0),
-            "errors": item.get("errors", {}) if isinstance(item.get("errors"), dict) else {},
-            "last_error": str(item.get("last_error", "")).strip()[:300],
-            "payload_bytes": int(item.get("payload_bytes", 0) or 0),
-        })
+        entries = []
+    clean = _clean_web_push_delivery_log(entries)
+    if clean:
+        _redis_json_set(_REDIS_WEB_PUSH_DELIVERY_LOG_KEY, clean)
     return clean
 
 
 def set_web_push_delivery_log(entries: list):
-    set_config("web_push_delivery_log", json.dumps(entries[-80:], ensure_ascii=False))
+    clean = _clean_web_push_delivery_log(entries)
+    _redis_json_set(_REDIS_WEB_PUSH_DELIVERY_LOG_KEY, clean)
+    set_config("web_push_delivery_log", json.dumps(clean[-80:], ensure_ascii=False))
 
 
 def add_web_push_delivery_log(
@@ -4038,8 +4131,7 @@ def add_web_push_delivery_log(
     last_error: str = "",
     payload_bytes: int = 0,
 ) -> list:
-    entries = get_web_push_delivery_log()
-    entries.append({
+    entry = {
         "created": datetime.now(SGT).isoformat(),
         "source": str(source or "").strip()[:240],
         "kind": str(kind or "").strip()[:40],
@@ -4050,8 +4142,18 @@ def add_web_push_delivery_log(
         "errors": errors or {},
         "last_error": str(last_error or "").strip()[:300],
         "payload_bytes": int(payload_bytes or 0),
-    })
-    set_web_push_delivery_log(entries)
+    }
+    try:
+        entries = get_web_push_delivery_log()
+    except Exception as exc:
+        logger.warning(f"Using Redis-only web push delivery log after Sheets read failed: {exc}")
+        entries = _clean_web_push_delivery_log(_redis_json_get(_REDIS_WEB_PUSH_DELIVERY_LOG_KEY, []))
+    entries.append(entry)
+    try:
+        set_web_push_delivery_log(entries)
+    except Exception as exc:
+        logger.warning(f"Web push delivery log persisted to Redis only after Sheets write failed: {exc}")
+        _redis_json_set(_REDIS_WEB_PUSH_DELIVERY_LOG_KEY, _clean_web_push_delivery_log(entries))
     return entries
 
 
@@ -4285,6 +4387,33 @@ def _remember_memory_cache(memory: dict):
         _memory_cache["expires_at"] = time.monotonic() + _MEMORY_CACHE_TTL_SECONDS
 
 
+def _merge_memory_dict(base: dict, extra: dict) -> dict:
+    merged = _copy_memory(base)
+    for category in DEFAULT_MEMORY:
+        for item in extra.get(category, []) if isinstance(extra, dict) else []:
+            text = str(item).strip()
+            if text and text not in merged[category]:
+                merged[category].append(text)
+    return merged
+
+
+def _redis_memory_fallback() -> dict:
+    raw = _redis_json_get(_REDIS_ASSISTANT_MEMORY_KEY, {})
+    if not isinstance(raw, dict):
+        raw = {}
+    memory = {k: list(v) for k, v in DEFAULT_MEMORY.items()}
+    for key, value in raw.items():
+        category = _normalise_memory_category(key)
+        if isinstance(value, list):
+            memory[category].extend(str(item).strip() for item in value if str(item).strip())
+    return memory
+
+
+def _set_redis_memory_fallback(memory: dict) -> bool:
+    clean = _copy_memory(memory)
+    return _redis_json_set(_REDIS_ASSISTANT_MEMORY_KEY, clean, ttl_seconds=60 * 60 * 24 * 365)
+
+
 def _is_sheets_read_quota_error(exc: Exception) -> bool:
     text = str(exc)
     return (
@@ -4292,6 +4421,18 @@ def _is_sheets_read_quota_error(exc: Exception) -> bool:
         or ("Quota exceeded" in text and "Read requests" in text)
         or "ReadRequestsPerMinutePerUser" in text
         or "readrequests" in text.lower()
+    )
+
+
+def _is_sheets_access_error(exc: Exception) -> bool:
+    text = str(exc)
+    return (
+        _is_sheets_read_quota_error(exc)
+        or "The caller does not have permission" in text
+        or "does not have permission" in text
+        or "PERMISSION_DENIED" in text
+        or "HttpError 403" in text
+        or "returned \"The caller does not have permission\"" in text
     )
 
 
@@ -4356,10 +4497,19 @@ def get_memory() -> dict:
     with _config_cache_lock:
         if _memory_cache_valid():
             return _copy_memory(_memory_cache.get("value") or {})
-    raw = get_config("assistant_memory")
+    try:
+        raw = get_config("assistant_memory")
+    except Exception as exc:
+        fallback = _redis_memory_fallback()
+        if any(fallback.get(category) for category in DEFAULT_MEMORY):
+            logger.warning(f"Using Redis assistant memory after Sheets read failed: {exc}")
+            _remember_memory_cache(fallback)
+            return fallback
+        raise
     if not raw:
         memory = {k: list(v) for k, v in DEFAULT_MEMORY.items()}
         memory = _merge_memory_log(memory)
+        memory = _merge_memory_dict(memory, _redis_memory_fallback())
         _remember_memory_cache(memory)
         return memory
     try:
@@ -4367,6 +4517,7 @@ def get_memory() -> dict:
     except Exception:
         memory = {k: list(v) for k, v in DEFAULT_MEMORY.items()}
         memory = _merge_memory_log(memory)
+        memory = _merge_memory_dict(memory, _redis_memory_fallback())
         _remember_memory_cache(memory)
         return memory
 
@@ -4375,6 +4526,7 @@ def get_memory() -> dict:
         if isinstance(value, list):
             memory[key] = [str(item) for item in value if str(item).strip()]
     memory = _merge_memory_log(memory)
+    memory = _merge_memory_dict(memory, _redis_memory_fallback())
     _remember_memory_cache(memory)
     return memory
 
@@ -4384,7 +4536,14 @@ def set_memory(memory: dict):
     for key in DEFAULT_MEMORY:
         values = memory.get(key, [])
         clean[key] = [str(item).strip() for item in values if str(item).strip()]
-    set_config("assistant_memory", json.dumps(clean, ensure_ascii=False))
+    redis_saved = _set_redis_memory_fallback(clean)
+    try:
+        set_config("assistant_memory", json.dumps(clean, ensure_ascii=False))
+    except Exception as exc:
+        if redis_saved and _is_sheets_access_error(exc):
+            logger.warning(f"Assistant memory persisted to Redis fallback after Sheets write failed: {exc}")
+        else:
+            raise
     _remember_memory_cache(clean)
 
 

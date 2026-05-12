@@ -1601,8 +1601,16 @@ def _home_snapshot(days: int) -> dict:
     }
     if not snapshot["google"]:
         return snapshot
-    snapshot["events"] = bot.gs.get_events_for_days(days)
-    snapshot["reminders"] = bot.gs.get_reminders()
+    try:
+        snapshot["events"] = bot.gs.get_events_for_days(days)
+    except Exception as exc:
+        bot.logger.warning(f"Home calendar events unavailable: {exc}")
+        snapshot["events"] = []
+    try:
+        snapshot["reminders"] = bot.gs.get_reminders()
+    except Exception as exc:
+        bot.logger.warning(f"Home reminders unavailable: {exc}")
+        snapshot["reminders"] = []
     try:
         snapshot["task_metadata"] = bot.gs.get_task_metadata()
     except Exception:
@@ -1627,7 +1635,10 @@ def _home_agenda_structured(days: int, snapshot: dict) -> dict:
     relief_cache = {}
     for offset in range(days):
         target = today + bot.timedelta(days=offset)
-        relief_cache[target.isoformat()] = bool(bot.school_day_cleared_memory_for_date(target))
+        try:
+            relief_cache[target.isoformat()] = bool(bot.school_day_cleared_memory_for_date(target))
+        except Exception:
+            relief_cache[target.isoformat()] = False
         lessons, _wt_label = bot._lessons_for_date(target)
         day_map[target.isoformat()] = {
             "date": target.isoformat(),
@@ -1870,6 +1881,13 @@ def _parallel_home_data(days: int) -> dict:
         bot.logger.warning(f"Home snapshot build failed: {exc}")
         snapshot = {}
         results = {key: fallbacks[key] for key in ("agenda", "agenda_structured", "daily_load", "tasks", "tasks_structured", "files", "marking")}
+        try:
+            agenda_structured = bot.build_agenda_structured(days)
+            results["agenda_structured"] = agenda_structured
+            results["daily_load"] = bot.build_daily_load(days)
+            results["agenda"] = bot.build_agenda(days)
+        except Exception as fallback_exc:
+            bot.logger.warning(f"Home timetable fallback failed: {fallback_exc}")
 
     jobs = {
         "digest": bot.build_curated_digest_snapshot,

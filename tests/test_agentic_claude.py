@@ -131,7 +131,7 @@ class AgenticClaudeTests(unittest.TestCase):
             self.assertTrue(bot.google_ok())
             self.assertEqual(bot.gs._sheets_auth_mode(), "user_oauth")
 
-    def test_google_ok_prefers_work_oauth_sheets_credentials(self):
+    def test_google_ok_uses_personal_oauth_for_app_sheets_and_work_oauth_for_classlists(self):
         env = {
             "GOOGLE_SHEET_ID": "sheet-id",
             "GOOGLE_SERVICE_ACCOUNT_JSON": "",
@@ -145,7 +145,10 @@ class AgenticClaudeTests(unittest.TestCase):
 
         with patch.dict(os.environ, env, clear=False):
             self.assertTrue(bot.google_ok())
-            self.assertEqual(bot.gs._sheets_auth_mode(), "work_user_oauth")
+            self.assertEqual(bot.gs._sheets_auth_mode(), "user_oauth")
+            self.assertEqual(bot.gs._work_sheets_auth_mode(), "work_user_oauth")
+            self.assertEqual(bot.gs.sheets_access_identity()["mode"], "user_oauth")
+            self.assertEqual(bot.gs.sheets_access_identity("work")["mode"], "work_user_oauth")
 
     def test_classlist_permission_message_points_to_work_sheets_oauth_when_missing(self):
         env = {
@@ -1343,6 +1346,37 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(load["today"]["lessons"], 0)
         self.assertLess(load["today"]["score"], 12)
+
+    def test_home_daily_load_keeps_timetable_when_google_side_data_fails(self):
+        lessons = [
+            {"start": "08:00", "end": "08:30", "subject": "FT", "description": "Form Time", "room": "Class"},
+            {"start": "09:00", "end": "10:00", "subject": "ML", "description": "Mother Tongue", "room": "L3"},
+        ]
+
+        with (
+            patch.object(web_app.bot, "google_ok", return_value=True),
+            patch.object(web_app.bot.gs, "get_events_for_days", side_effect=RuntimeError("calendar down")),
+            patch.object(web_app.bot.gs, "get_reminders", side_effect=RuntimeError("sheets down")),
+            patch.object(web_app.bot.gs, "get_task_metadata", return_value={}),
+            patch.object(web_app.bot.gs, "get_marking_tasks", return_value=[]),
+            patch.object(web_app.bot.gs, "get_memory", return_value={}),
+            patch.object(web_app.bot.gs, "get_events_between", side_effect=RuntimeError("calendar down")),
+            patch.object(web_app.bot, "_lessons_for_date", return_value=(lessons, "Odd")),
+            patch.object(web_app.bot, "school_day_cleared_memory_for_date", return_value=""),
+            patch.object(web_app.bot, "build_curated_digest_snapshot", return_value={"items": []}),
+            patch.object(web_app.bot, "build_proactive_v2_snapshot", return_value={"top": []}),
+            patch.object(web_app.bot, "build_islamic_brief", return_value=""),
+            patch.object(web_app.bot, "prayer_notification_status", return_value={}),
+            patch.object(web_app, "_service_status", return_value={}),
+            patch.object(web_app, "_classops_status_summary", return_value={}),
+            patch.object(web_app, "_briefing_delivery_status", return_value={}),
+        ):
+            data = web_app._parallel_home_data(3)
+
+        self.assertTrue(data["daily_load"]["days"])
+        self.assertEqual(data["daily_load"]["today"]["lessons"], 2)
+        self.assertNotIn("unavailable", data["daily_load"]["note"].lower())
+        self.assertNotIn("unavailable", data["daily_load"]["rest_note"].lower())
 
     def test_morning_briefing_waits_for_confirmed_phone_push(self):
         with (
