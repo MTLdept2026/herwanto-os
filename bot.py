@@ -5657,7 +5657,7 @@ def _source_contract_guardrail(messages: list[dict], tool_results: list[dict]) -
 async def _run_forced_weather_fallback(tool_choice: str | None) -> str | None:
     if tool_choice != "get_nea_weather":
         return None
-    return await _execute_tool("get_nea_weather", {
+    return await _execute_tool_offloop("get_nea_weather", {
         "area": "Yishun",
         "include_24h": True,
         "include_4day": False,
@@ -6978,6 +6978,27 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
 
     return tools or _core_tools()
 
+def _tool_timeout_seconds() -> int:
+    try:
+        return max(5, int(os.environ.get("HIRA_TOOL_TIMEOUT_SECONDS", "45") or 45))
+    except ValueError:
+        return 45
+
+
+def _execute_tool_in_thread(name: str, inp: dict) -> str:
+    return asyncio.run(_execute_tool(name, inp))
+
+
+async def _execute_tool_offloop(name: str, inp: dict) -> str:
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_execute_tool_in_thread, name, inp),
+            timeout=_tool_timeout_seconds(),
+        )
+    except asyncio.TimeoutError:
+        return f"Failed to run {name}: tool timed out after {_tool_timeout_seconds()} seconds."
+
+
 async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
     tools = tools or _core_tools()
     reply_text = ""
@@ -7018,7 +7039,7 @@ async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
 
         async def run_tool(block):
             logger.info(f"Tool call: {block.name} {block.input}")
-            result = await _execute_tool(block.name, block.input)
+            result = await _execute_tool_offloop(block.name, block.input)
             return {
                 "type": "tool_result",
                 "tool_use_id": block.id,
@@ -7176,7 +7197,7 @@ async def stream_agentic_claude(messages, max_tokens=650, tools=None):
 
         async def run_tool(block):
             logger.info(f"Tool call: {block.name} {block.input}")
-            result = await _execute_tool(block.name, block.input)
+            result = await _execute_tool_offloop(block.name, block.input)
             return {
                 "type": "tool_result",
                 "tool_use_id": block.id,

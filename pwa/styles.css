@@ -1501,6 +1501,78 @@ html[data-theme="dark"] .load-badge.load-green {
   color: var(--text-dark);
 }
 
+.today-focus-strip {
+  display: grid;
+  grid-template-columns: 1.25fr 1.25fr 0.62fr 0.72fr 74px;
+  gap: 8px;
+  margin-bottom: var(--space-md);
+  padding: 8px;
+  background: var(--bg-dark);
+  border: 1px solid var(--border-dark);
+  border-radius: 2px;
+}
+
+.focus-tile,
+.focus-action {
+  min-width: 0;
+  min-height: 76px;
+  display: grid;
+  align-content: center;
+  gap: 5px;
+  padding: 10px 12px;
+  background: #0c0c0c;
+  border: 1px solid #1b1b1b;
+  color: var(--text-dark);
+}
+
+.focus-tile span,
+.focus-tile small {
+  overflow: hidden;
+  color: var(--text-dark-dim);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.focus-tile strong {
+  overflow: hidden;
+  color: #ffffff;
+  font-family: var(--font-readable);
+  font-size: 15px;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.focus-tile:nth-child(3) strong,
+.focus-tile:nth-child(4) strong {
+  font-family: var(--font-dot);
+  font-size: 42px;
+  line-height: 0.85;
+}
+
+.focus-now {
+  border-color: color-mix(in srgb, var(--accent) 44%, #1b1b1b);
+}
+
+.focus-action {
+  place-items: center;
+  padding: 0;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.focus-action svg {
+  width: 18px;
+  height: 18px;
+}
+
 .live-system-label {
   display: inline-flex;
   align-items: center;
@@ -3314,6 +3386,35 @@ html[data-theme="dark"] .load-badge.load-green {
   font-size: 11px;
 }
 
+.task-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.task-actions .ghost-btn {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid var(--border-visible);
+  color: var(--text-secondary);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+
+.task-actions .ghost-btn:first-child {
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 42%, var(--border-visible));
+}
+
+.task-actions svg {
+  width: 14px;
+  height: 14px;
+}
+
 .task-meta {
   display: flex;
   flex-wrap: wrap;
@@ -3382,6 +3483,104 @@ html[data-theme="dark"] .load-badge.load-green {
   color: var(--text-dark-dim);
   opacity: 1;
   animation: cursor-pulse 800ms steps(1, end) infinite;
+}
+
+.quick-action-fab {
+  position: fixed;
+  right: calc(18px + env(safe-area-inset-right));
+  bottom: calc(18px + env(safe-area-inset-bottom));
+  z-index: 80;
+  width: 62px;
+  height: 62px;
+  min-height: 62px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+  border-radius: 2px;
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.28);
+}
+
+.quick-action-fab svg {
+  width: 24px;
+  height: 24px;
+}
+
+.quick-action-drawer {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+}
+
+.quick-drawer-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  background: rgba(0, 0, 0, 0.44);
+  border: 0;
+}
+
+.quick-drawer-sheet {
+  position: absolute;
+  left: max(12px, env(safe-area-inset-left));
+  right: max(12px, env(safe-area-inset-right));
+  bottom: max(12px, env(safe-area-inset-bottom));
+  display: grid;
+  gap: 14px;
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 16px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-visible);
+  border-radius: 2px;
+  box-shadow: 0 22px 46px rgba(0, 0, 0, 0.32);
+  animation: panel-rise 180ms ease both;
+}
+
+.quick-drawer-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.quick-drawer-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.quick-drawer-grid button,
+.quick-drawer-grid a {
+  min-width: 0;
+  min-height: 78px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  padding: 10px 8px;
+  color: var(--text-primary);
+  background: var(--surface);
+  border: 1px solid var(--border-visible);
+  border-radius: 2px;
+  font-family: var(--font-ui);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-align: center;
+  text-decoration: none;
+  text-transform: uppercase;
+}
+
+.quick-drawer-grid svg {
+  width: 20px;
+  height: 20px;
+  color: var(--accent);
 }
 
 #attachBtn {
@@ -4096,6 +4295,37 @@ html[data-theme="dark"] .load-badge.load-green {
     font-size: 28px;
   }
 
+  .today-focus-strip {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+    padding: 6px;
+  }
+
+  .focus-tile,
+  .focus-action {
+    min-height: 66px;
+    padding: 8px;
+  }
+
+  .focus-tile:nth-child(1),
+  .focus-tile:nth-child(2) {
+    grid-column: span 2;
+  }
+
+  .focus-tile strong {
+    font-size: 13px;
+  }
+
+  .focus-tile:nth-child(3) strong,
+  .focus-tile:nth-child(4) strong {
+    font-size: 34px;
+  }
+
+  .focus-action {
+    grid-column: span 2;
+    min-height: 56px;
+  }
+
   .composer {
     grid-template-columns: 52px minmax(0, 1fr) 78px;
     align-items: stretch;
@@ -4269,6 +4499,43 @@ html[data-theme="dark"] .load-badge.load-green {
   .task-copy small,
   .task-meta {
     font-size: 10px;
+  }
+
+  .task-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .task-actions .ghost-btn {
+    justify-content: center;
+    min-height: 36px;
+    padding: 0 6px;
+    font-size: 9px;
+  }
+
+  .quick-action-fab {
+    right: calc(16px + env(safe-area-inset-right));
+    bottom: calc(16px + env(safe-area-inset-bottom));
+    width: 58px;
+    height: 58px;
+    min-height: 58px;
+  }
+
+  .quick-drawer-sheet {
+    left: max(10px, env(safe-area-inset-left));
+    right: max(10px, env(safe-area-inset-right));
+    bottom: max(10px, env(safe-area-inset-bottom));
+    padding: 14px;
+  }
+
+  .quick-drawer-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .quick-drawer-grid button,
+  .quick-drawer-grid a {
+    min-height: 68px;
   }
 
   #filesView .panel,

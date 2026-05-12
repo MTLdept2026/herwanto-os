@@ -59,6 +59,53 @@ _config_cache = {
     "stale_after_error": False,
 }
 _REDIS_NUDGE_KEY = "hira:proactive_nudges:fallback"
+_app_notifications_mutation_lock = threading.RLock()
+_nudges_mutation_lock = threading.RLock()
+
+
+class _StorageMutationLock:
+    def __init__(self, name: str, local_lock: threading.RLock, timeout_seconds: float = 5.0):
+        self.name = name
+        self.local_lock = local_lock
+        self.timeout_seconds = timeout_seconds
+        self.redis = None
+        self.token = uuid.uuid4().hex
+        self.redis_key = f"hira:lock:{name}"
+
+    def __enter__(self):
+        self.local_lock.acquire()
+        try:
+            self.redis = _get_redis()
+        except Exception:
+            self.redis = None
+        if not self.redis:
+            return self
+        deadline = time.monotonic() + self.timeout_seconds
+        while time.monotonic() < deadline:
+            try:
+                if self.redis.set(self.redis_key, self.token, nx=True, ex=max(6, int(self.timeout_seconds) + 3)):
+                    return self
+            except Exception as exc:
+                logger.warning(f"Could not acquire Redis lock {self.name}: {exc}")
+                self.redis = None
+                return self
+            time.sleep(0.05)
+        logger.warning(f"Timed out waiting for Redis lock {self.name}; continuing with local lock only.")
+        self.redis = None
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if self.redis and self.redis.get(self.redis_key) == self.token:
+                self.redis.delete(self.redis_key)
+        except Exception as release_exc:
+            logger.warning(f"Could not release Redis lock {self.name}: {release_exc}")
+        finally:
+            self.local_lock.release()
+
+
+def _storage_mutation_lock(name: str, local_lock: threading.RLock) -> _StorageMutationLock:
+    return _StorageMutationLock(name, local_lock)
 
 def _int_env(name: str, default: int) -> int:
     try:
@@ -2200,15 +2247,51 @@ def _compact_notification_body(body: str) -> str:
 
 
 def enqueue_app_notification(kind: str, title: str, body: str, source: str = "") -> dict:
-    notifications = get_app_notifications(include_archived=True)
-    now = datetime.now(SGT).isoformat()
-    clean_kind = (kind or "notice").strip()
-    clean_title = (title or "H.I.R.A").strip()
-    clean_body = (body or "").strip()
-    clean_source = (source or "").strip()
-    if not clean_body:
-        return {
-            "id": "",
+    with _storage_mutation_lock("app_notifications", _app_notifications_mutation_lock):
+        notifications = get_app_notifications(include_archived=True)
+        now = datetime.now(SGT).isoformat()
+        clean_kind = (kind or "notice").strip()
+        clean_title = (title or "H.I.R.A").strip()
+        clean_body = (body or "").strip()
+        clean_source = (source or "").strip()
+        if not clean_body:
+            return {
+                "id": "",
+                "kind": clean_kind,
+                "title": clean_title,
+                "body": clean_body,
+                "created": now,
+                "source": clean_source,
+                "seen_by": [],
+                "archived": False,
+            }
+        for item in reversed(notifications):
+            if item.get("archived"):
+                continue
+            if clean_source and str(item.get("source", "")).strip() == clean_source:
+                item.update({
+                    "kind": clean_kind,
+                    "title": clean_title,
+                    "body": clean_body,
+                    "created": now,
+                })
+                item["_duplicate"] = True
+                set_app_notifications(notifications)
+                return item
+            if (
+                not clean_source
+                and str(item.get("kind", "")).strip() == clean_kind
+                and str(item.get("title", "")).strip() == clean_title
+                and str(item.get("body", "")).strip() == clean_body
+            ):
+                item["_duplicate"] = True
+                return item
+        next_id = 1
+        numeric_ids = [int(item["id"]) for item in notifications if str(item.get("id", "")).isdigit()]
+        if numeric_ids:
+            next_id = max(numeric_ids) + 1
+        item = {
+            "id": str(next_id),
             "kind": clean_kind,
             "title": clean_title,
             "body": clean_body,
@@ -2217,44 +2300,9 @@ def enqueue_app_notification(kind: str, title: str, body: str, source: str = "")
             "seen_by": [],
             "archived": False,
         }
-    for item in reversed(notifications):
-        if item.get("archived"):
-            continue
-        if clean_source and str(item.get("source", "")).strip() == clean_source:
-            item.update({
-                "kind": clean_kind,
-                "title": clean_title,
-                "body": clean_body,
-                "created": now,
-            })
-            item["_duplicate"] = True
-            set_app_notifications(notifications)
-            return item
-        if (
-            not clean_source
-            and str(item.get("kind", "")).strip() == clean_kind
-            and str(item.get("title", "")).strip() == clean_title
-            and str(item.get("body", "")).strip() == clean_body
-        ):
-            item["_duplicate"] = True
-            return item
-    next_id = 1
-    numeric_ids = [int(item["id"]) for item in notifications if str(item.get("id", "")).isdigit()]
-    if numeric_ids:
-        next_id = max(numeric_ids) + 1
-    item = {
-        "id": str(next_id),
-        "kind": clean_kind,
-        "title": clean_title,
-        "body": clean_body,
-        "created": now,
-        "source": clean_source,
-        "seen_by": [],
-        "archived": False,
-    }
-    notifications.append(item)
-    set_app_notifications(notifications)
-    return item
+        notifications.append(item)
+        set_app_notifications(notifications)
+        return item
 
 
 def unseen_app_notifications(client_id: str, limit: int = 12) -> list:
@@ -2265,38 +2313,40 @@ def unseen_app_notifications(client_id: str, limit: int = 12) -> list:
 
 
 def mark_app_notifications_seen(client_id: str, notification_ids: list[str]) -> int:
-    client_id = str(client_id or "default").strip() or "default"
-    ids = {str(item_id) for item_id in notification_ids}
-    if not ids:
-        return 0
-    notifications = get_app_notifications(include_archived=True)
-    changed = 0
-    for item in notifications:
-        if str(item.get("id")) not in ids:
-            continue
-        seen_by = item.get("seen_by") if isinstance(item.get("seen_by"), list) else []
-        if client_id not in seen_by:
-            seen_by.append(client_id)
-            item["seen_by"] = seen_by[-20:]
-            changed += 1
-    if changed:
-        set_app_notifications(notifications)
-    return changed
+    with _storage_mutation_lock("app_notifications", _app_notifications_mutation_lock):
+        client_id = str(client_id or "default").strip() or "default"
+        ids = {str(item_id) for item_id in notification_ids}
+        if not ids:
+            return 0
+        notifications = get_app_notifications(include_archived=True)
+        changed = 0
+        for item in notifications:
+            if str(item.get("id")) not in ids:
+                continue
+            seen_by = item.get("seen_by") if isinstance(item.get("seen_by"), list) else []
+            if client_id not in seen_by:
+                seen_by.append(client_id)
+                item["seen_by"] = seen_by[-20:]
+                changed += 1
+        if changed:
+            set_app_notifications(notifications)
+        return changed
 
 
 def archive_app_notifications(notification_ids: list[str]) -> int:
-    ids = {str(item_id) for item_id in notification_ids}
-    if not ids:
-        return 0
-    notifications = get_app_notifications(include_archived=True)
-    changed = 0
-    for item in notifications:
-        if str(item.get("id")) in ids and not item.get("archived"):
-            item["archived"] = True
-            changed += 1
-    if changed:
-        set_app_notifications(notifications)
-    return changed
+    with _storage_mutation_lock("app_notifications", _app_notifications_mutation_lock):
+        ids = {str(item_id) for item_id in notification_ids}
+        if not ids:
+            return 0
+        notifications = get_app_notifications(include_archived=True)
+        changed = 0
+        for item in notifications:
+            if str(item.get("id")) in ids and not item.get("archived"):
+                item["archived"] = True
+                changed += 1
+        if changed:
+            set_app_notifications(notifications)
+        return changed
 
 
 def get_app_notification(notification_id: str) -> dict | None:
@@ -3288,59 +3338,61 @@ def set_nudges(nudges: list):
 
 
 def add_nudge(message: str, send_at: str) -> dict:
-    now = datetime.now(SGT)
-    try:
-        sheet_nudges = _sheet_nudges(include_sent=True)
-        next_id = 1
-        numeric_ids = [int(n["id"]) for n in sheet_nudges if str(n.get("id", "")).isdigit()]
-        if numeric_ids:
-            next_id = max(numeric_ids) + 1
+    with _storage_mutation_lock("proactive_nudges", _nudges_mutation_lock):
+        now = datetime.now(SGT)
+        try:
+            sheet_nudges = _sheet_nudges(include_sent=True)
+            next_id = 1
+            numeric_ids = [int(n["id"]) for n in sheet_nudges if str(n.get("id", "")).isdigit()]
+            if numeric_ids:
+                next_id = max(numeric_ids) + 1
+            nudge = {
+                "id": str(next_id),
+                "message": message.strip(),
+                "send_at": send_at.strip(),
+                "status": "pending",
+                "created": now.isoformat(),
+                "sent_at": "",
+            }
+            set_nudges(sheet_nudges + [nudge])
+            return nudge
+        except Exception as exc:
+            logger.warning(f"Sheets nudge write failed; queueing Redis fallback nudge: {exc}")
+
+        fallback_nudges = _redis_nudges(include_sent=True)
         nudge = {
-            "id": str(next_id),
+            "id": _fallback_nudge_id(fallback_nudges),
             "message": message.strip(),
             "send_at": send_at.strip(),
             "status": "pending",
             "created": now.isoformat(),
             "sent_at": "",
         }
-        set_nudges(sheet_nudges + [nudge])
+        if not _set_redis_nudges(fallback_nudges + [nudge]):
+            raise RuntimeError("Sheets and Redis fallback are both unavailable for proactive nudges.")
         return nudge
-    except Exception as exc:
-        logger.warning(f"Sheets nudge write failed; queueing Redis fallback nudge: {exc}")
-
-    fallback_nudges = _redis_nudges(include_sent=True)
-    nudge = {
-        "id": _fallback_nudge_id(fallback_nudges),
-        "message": message.strip(),
-        "send_at": send_at.strip(),
-        "status": "pending",
-        "created": now.isoformat(),
-        "sent_at": "",
-    }
-    if not _set_redis_nudges(fallback_nudges + [nudge]):
-        raise RuntimeError("Sheets and Redis fallback are both unavailable for proactive nudges.")
-    return nudge
 
 
 def cancel_nudge(nudge_id: str) -> bool:
-    nudges = get_nudges(include_sent=True)
-    changed = False
-    for nudge in nudges:
-        if str(nudge.get("id")) == str(nudge_id) and nudge.get("status") != "sent":
-            nudge["status"] = "cancelled"
-            changed = True
-    if changed:
-        try:
-            redis_items = [n for n in nudges if str(n.get("id", "")).startswith("r-")]
-            if str(nudge_id).startswith("r-"):
-                _set_redis_nudges(redis_items)
-            else:
-                set_nudges([n for n in nudges if not str(n.get("id", "")).startswith("r-")])
-                if redis_items:
+    with _storage_mutation_lock("proactive_nudges", _nudges_mutation_lock):
+        nudges = get_nudges(include_sent=True)
+        changed = False
+        for nudge in nudges:
+            if str(nudge.get("id")) == str(nudge_id) and nudge.get("status") != "sent":
+                nudge["status"] = "cancelled"
+                changed = True
+        if changed:
+            try:
+                redis_items = [n for n in nudges if str(n.get("id", "")).startswith("r-")]
+                if str(nudge_id).startswith("r-"):
                     _set_redis_nudges(redis_items)
-        except Exception:
-            _set_redis_nudges([n for n in nudges if str(n.get("id", "")).startswith("r-")] or nudges)
-    return changed
+                else:
+                    set_nudges([n for n in nudges if not str(n.get("id", "")).startswith("r-")])
+                    if redis_items:
+                        _set_redis_nudges(redis_items)
+            except Exception:
+                _set_redis_nudges([n for n in nudges if str(n.get("id", "")).startswith("r-")] or nudges)
+        return changed
 
 
 def due_nudges(now: datetime) -> list:
@@ -3362,25 +3414,26 @@ def due_nudges(now: datetime) -> list:
 
 
 def mark_nudge_sent(nudge_id: str):
-    nudges = get_nudges(include_sent=True)
-    now = datetime.now(SGT).isoformat()
-    for nudge in nudges:
-        if str(nudge.get("id")) == str(nudge_id):
-            nudge["status"] = "sent"
-            nudge["sent_at"] = now
-            break
-    sheet_items = [n for n in nudges if not str(n.get("id", "")).startswith("r-")]
-    redis_items = [n for n in nudges if str(n.get("id", "")).startswith("r-")]
-    if str(nudge_id).startswith("r-"):
-        _set_redis_nudges(redis_items)
-        return
-    try:
-        set_nudges(sheet_items)
-    except Exception as exc:
-        logger.warning(f"Could not mark Sheets nudge sent; preserving state in Redis fallback: {exc}")
-        _set_redis_nudges(nudges)
-    if redis_items:
-        _set_redis_nudges(redis_items)
+    with _storage_mutation_lock("proactive_nudges", _nudges_mutation_lock):
+        nudges = get_nudges(include_sent=True)
+        now = datetime.now(SGT).isoformat()
+        for nudge in nudges:
+            if str(nudge.get("id")) == str(nudge_id):
+                nudge["status"] = "sent"
+                nudge["sent_at"] = now
+                break
+        sheet_items = [n for n in nudges if not str(n.get("id", "")).startswith("r-")]
+        redis_items = [n for n in nudges if str(n.get("id", "")).startswith("r-")]
+        if str(nudge_id).startswith("r-"):
+            _set_redis_nudges(redis_items)
+            return
+        try:
+            set_nudges(sheet_items)
+        except Exception as exc:
+            logger.warning(f"Could not mark Sheets nudge sent; preserving state in Redis fallback: {exc}")
+            _set_redis_nudges(nudges)
+        if redis_items:
+            _set_redis_nudges(redis_items)
 
 
 # ─── SHEETS: DAILY CHECK-INS ────────────────────────────────────────────────

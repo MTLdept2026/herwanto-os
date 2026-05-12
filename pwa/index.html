@@ -11,10 +11,10 @@
       href="https://fonts.googleapis.com/css2?family=Doto:wght@400..900&family=Space+Grotesk:wght@300;400;500;700&family=VT323&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap"
       rel="stylesheet"
     />
-    <link rel="manifest" href="/manifest.webmanifest?v=20260511-trust-ledger-42" />
+    <link rel="manifest" href="/manifest.webmanifest?v=20260512-mobile-qol-43" />
     <link rel="icon" href="/static/icon.svg?v=20260510-trace-39" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=20260510-trace-39" />
-    <link rel="stylesheet" href="./styles.css?v=20260511-trust-ledger-42" />
+    <link rel="stylesheet" href="./styles.css?v=20260512-mobile-qol-43" />
   </head>
   <body>
     <main class="shell">
@@ -61,6 +61,14 @@
           </header>
           <div id="notificationReaderBody" class="notification-reader-body rich-output"></div>
           <footer class="notification-reader-actions">
+            <button id="notificationReaderDoneBtn" type="button" class="ghost-btn">
+              <span data-lucide="check-circle" aria-hidden="true"></span>
+              Done
+            </button>
+            <button id="notificationReaderSnoozeBtn" type="button" class="ghost-btn">
+              <span data-lucide="alarm-clock" aria-hidden="true"></span>
+              Snooze
+            </button>
             <button id="notificationReaderDismissBtn" type="button" class="ghost-btn">
               <span data-lucide="archive" aria-hidden="true"></span>
               Dismiss
@@ -305,6 +313,32 @@
             Show Briefings
           </button>
         </div>
+        <section class="today-focus-strip" aria-label="Today focus">
+          <article class="focus-tile focus-now">
+            <span>Now</span>
+            <strong id="focusNowTitle">Syncing</strong>
+            <small id="focusNowMeta">Checking today</small>
+          </article>
+          <article class="focus-tile">
+            <span>Next</span>
+            <strong id="focusNextTitle">Standby</strong>
+            <small id="focusNextMeta">No next item yet</small>
+          </article>
+          <article class="focus-tile">
+            <span>Due</span>
+            <strong id="focusDueCount">0</strong>
+            <small id="focusDueMeta">today</small>
+          </article>
+          <article class="focus-tile">
+            <span>Marking</span>
+            <strong id="focusMarkingCount">0</strong>
+            <small>left</small>
+          </article>
+          <button id="focusActionBtn" type="button" class="focus-action" data-command-action="send" data-command-prompt="Triage my current load. Pick the top 3 things I should handle next, explain why, and give me a realistic order of attack.">
+            <span data-lucide="zap" aria-hidden="true"></span>
+            Act
+          </button>
+        </section>
         <div id="homeChatMount" class="home-chat-mount"></div>
         <div class="ops-grid">
           <section class="ops-card daily-load-card ops-card-wide">
@@ -736,7 +770,58 @@
         <div id="tasksOutput" class="rich-output panel"></div>
       </section>
     </main>
+    <button id="quickActionFab" class="quick-action-fab" type="button" aria-label="Open quick actions">
+      <span data-lucide="plus" aria-hidden="true"></span>
+    </button>
+    <section id="quickActionDrawer" class="quick-action-drawer" hidden aria-label="Quick actions">
+      <button type="button" class="quick-drawer-backdrop" data-quick-close aria-label="Close quick actions"></button>
+      <div class="quick-drawer-sheet">
+        <header class="quick-drawer-head">
+          <div>
+            <p class="eyebrow">Quick Actions</p>
+            <h2>Do the thing</h2>
+          </div>
+          <button type="button" class="icon-btn compact" data-quick-close aria-label="Close quick actions">
+            <span data-lucide="x" aria-hidden="true"></span>
+          </button>
+        </header>
+        <div class="quick-drawer-grid">
+          <button type="button" data-command-action="fill" data-command-prompt="/remind Description | YYYY-MM-DD | Category">
+            <span data-lucide="bell-plus" aria-hidden="true"></span>
+            Reminder
+          </button>
+          <button type="button" data-command-action="fill" data-command-prompt="Remind me to ">
+            <span data-lucide="alarm-clock-plus" aria-hidden="true"></span>
+            Nudge
+          </button>
+          <button type="button" data-command-action="send" data-command-prompt="Triage my current load. Pick the top 3 things I should handle next, explain why, and give me a realistic order of attack.">
+            <span data-lucide="list-checks" aria-hidden="true"></span>
+            Triage
+          </button>
+          <button type="button" data-command-action="send" data-command-prompt="Give me a crisp H.I.R.A briefing for right now: what matters today, what is due soon, what may clash, and the single best next move.">
+            <span data-lucide="radar" aria-hidden="true"></span>
+            Brief
+          </button>
+          <button type="button" data-quick-view="tasks">
+            <span data-lucide="check-square" aria-hidden="true"></span>
+            Tasks
+          </button>
+          <button type="button" data-quick-view="gmail">
+            <span data-lucide="mail" aria-hidden="true"></span>
+            Gmail
+          </button>
+          <a href="/classops">
+            <span data-lucide="graduation-cap" aria-hidden="true"></span>
+            ClassOps
+          </a>
+          <button type="button" data-command-action="fill" data-command-prompt="I have marked ">
+            <span data-lucide="clipboard-check" aria-hidden="true"></span>
+            Marking
+          </button>
+        </div>
+      </div>
+    </section>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-    <script src="./app.js?v=20260511-trust-ledger-42" type="module"></script>
+    <script src="./app.js?v=20260512-mobile-qol-43" type="module"></script>
   </body>
 </html>

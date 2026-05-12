@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260511-trust-ledger-42";
-const APP_SCRIPT = "app.js?v=20260511-trust-ledger-42";
-const EXPECTED_SW_CACHE = "hira-os-v113";
+const APP_VERSION = "20260512-mobile-qol-43";
+const APP_SCRIPT = "app.js?v=20260512-mobile-qol-43";
+const EXPECTED_SW_CACHE = "hira-os-v114";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
 const AGENDA_CACHE_KEY = "hira_pwa_agenda_snapshot_v1";
 const HOME_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
@@ -46,6 +46,7 @@ const state = {
   deviceLocation: safeJsonParse("hira_pwa_device_location", null),
   notificationPoll: null,
   activeNotificationId: "",
+  activeNotificationItem: null,
   lastPushSyncAt: Number(localStorage.getItem("hira_pwa_last_push_sync_at") || "0"),
   lastInputPulseAt: 0,
   homeRefreshInFlight: null,
@@ -523,6 +524,14 @@ function renderNotifications() {
           </div>
           <p>${markdownish(preview)}</p>
           <div class="notification-actions">
+            <button type="button" class="ghost-btn notification-done" data-notification-action="done" data-notification-id="${id}">
+              <span data-lucide="check-circle" aria-hidden="true"></span>
+              Done
+            </button>
+            <button type="button" class="ghost-btn notification-snooze" data-notification-action="snooze" data-notification-id="${id}">
+              <span data-lucide="alarm-clock" aria-hidden="true"></span>
+              Snooze
+            </button>
             <button type="button" class="ghost-btn notification-open" data-notification-open="${id}">
               <span data-lucide="book-open" aria-hidden="true"></span>
               Read full
@@ -885,11 +894,17 @@ function renderNotificationReader(item, loading = false) {
   const meta = $("#notificationReaderMeta");
   const body = $("#notificationReaderBody");
   const dismiss = $("#notificationReaderDismissBtn");
+  const done = $("#notificationReaderDoneBtn");
+  const snooze = $("#notificationReaderSnoozeBtn");
   const cleanTitle = item?.title || "H.I.R.A";
   title.innerHTML = markdownish(cleanTitle);
   meta.textContent = loading ? "Loading full briefing..." : notificationMetaText(item);
   body.innerHTML = loading ? "<div>Loading full briefing...</div>" : renderTextBlock(item?.body || "No briefing text was saved for this notification.");
   dismiss.dataset.notificationDismiss = item?.id || "";
+  done.dataset.notificationAction = "done";
+  done.dataset.notificationId = item?.id || "";
+  snooze.dataset.notificationAction = "snooze";
+  snooze.dataset.notificationId = item?.id || "";
   reader.hidden = false;
   document.body.classList.add("notification-reader-open");
   refreshIcons(reader);
@@ -898,6 +913,7 @@ function renderNotificationReader(item, loading = false) {
 function closeNotificationReader() {
   $("#notificationReader").hidden = true;
   state.activeNotificationId = "";
+  state.activeNotificationItem = null;
   document.body.classList.remove("notification-reader-open");
 }
 
@@ -917,6 +933,7 @@ async function openNotificationReader(item = {}) {
   };
   if (!notification.id && !notification.body) return;
   state.activeNotificationId = notification.id;
+  state.activeNotificationItem = notification;
   if (notification.body) rememberPushedNotification(notification);
   renderNotificationReader(notification, Boolean(notification.id));
   let fullNotification = notification;
@@ -925,6 +942,7 @@ async function openNotificationReader(item = {}) {
       const fetched = await fetchNotificationDetail(notification.id);
       if (fetched && state.activeNotificationId === notification.id) {
         fullNotification = fetched;
+        state.activeNotificationItem = fetched;
         rememberNotification(fetched);
         renderNotificationReader(fetched, false);
         await markNotificationsSeen([notification.id]);
@@ -1706,6 +1724,66 @@ function renderDailyLoad(load = {}) {
   renderWorkloadTrend(load);
 }
 
+function sgtDateKey(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    timeZone: "Asia/Singapore",
+  }).formatToParts(date);
+  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${lookup.year}-${lookup.month}-${lookup.day}`;
+}
+
+function currentSgtMinutes() {
+  const parts = new Intl.DateTimeFormat("en-SG", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "Asia/Singapore",
+  }).formatToParts(new Date());
+  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return Number(lookup.hour || 0) * 60 + Number(lookup.minute || 0);
+}
+
+function focusItemLabel(item) {
+  if (!item) return { title: "Clear block", meta: "No current anchor" };
+  const kind = String(item.kind || "item").toUpperCase();
+  const title = item.title || "Untitled";
+  const meta = [item.time, item.meta, kind].filter(Boolean).join(" · ");
+  return { title, meta };
+}
+
+function renderTodayFocus(data = {}) {
+  const now = currentSgtMinutes();
+  const timeline = Array.isArray(state.homeTimelineItems) ? state.homeTimelineItems : [];
+  const current = timeline.find((item) => Number.isFinite(item.start) && item.start <= now && (item.end || item.start + 20) >= now);
+  const next = timeline.find((item) => Number.isFinite(item.start) && item.start > now);
+  const fallbackNext = timeline.find((item) => Number.isFinite(item.start)) || null;
+  const nowLabel = focusItemLabel(current);
+  const nextLabel = focusItemLabel(next || fallbackNext);
+  const todayKey = sgtDateKey();
+  const taskItems = Array.isArray(data.tasks_structured?.items) ? data.tasks_structured.items : [];
+  const structuredDue = Array.isArray(data.agenda_structured?.days?.[0]?.due) ? data.agenda_structured.days[0].due : [];
+  const dueToday = taskItems.filter((item) => item.due === todayKey).length || structuredDue.length || Number(data.daily_load?.today?.due || 0);
+  const markingLeft = Number(data.marking?.unmarked_scripts ?? data.daily_load?.today?.marking_scripts ?? 0);
+  $("#focusNowTitle").textContent = nowLabel.title;
+  $("#focusNowMeta").textContent = current ? nowLabel.meta : "Open time right now";
+  $("#focusNextTitle").textContent = next ? nextLabel.title : nextLabel.title;
+  $("#focusNextMeta").textContent = next ? nextLabel.meta : "Nothing later today";
+  $("#focusDueCount").textContent = String(dueToday);
+  $("#focusDueMeta").textContent = dueToday === 1 ? "task today" : "tasks today";
+  $("#focusMarkingCount").textContent = String(markingLeft);
+  const action = $("#focusActionBtn");
+  if (action) {
+    const lead = data.intelligence?.next_move || {};
+    const title = lead.title || nextLabel.title || "today";
+    const body = lead.body || nextLabel.meta || "";
+    action.dataset.commandPrompt = `Help me execute the best next move now: ${title}. ${body}`.trim();
+  }
+  refreshIcons(document.querySelector(".today-focus-strip"));
+}
+
 function intelligenceSeverityClass(severity) {
   const clean = String(severity || "yellow").toLowerCase();
   return ["green", "yellow", "orange", "red"].includes(clean) ? clean : "yellow";
@@ -2182,6 +2260,20 @@ function renderTaskList(data, heading = "Task Brief · Now to 7 May", { limit = 
                 <div class="task-date">${markdownish(due)}</div>
                 <p>${markdownish(item.description || "")}</p>
                 ${meta ? `<small>${markdownish(meta)}</small>` : ""}
+                <div class="task-actions">
+                  <button type="button" class="ghost-btn" data-task-done-button="${markdownish(item.id)}">
+                    <span data-lucide="check" aria-hidden="true"></span>
+                    Done
+                  </button>
+                  <button type="button" class="ghost-btn" data-task-snooze="${markdownish(item.id)}">
+                    <span data-lucide="alarm-clock" aria-hidden="true"></span>
+                    Tonight
+                  </button>
+                  <button type="button" class="ghost-btn" data-task-plan="${markdownish(item.id)}">
+                    <span data-lucide="sparkles" aria-hidden="true"></span>
+                    Plan
+                  </button>
+                </div>
               </div>
             </article>
           `;
@@ -2210,9 +2302,9 @@ function renderTaskBriefFromText(text, options = {}) {
   return renderTaskList({ items }, "Task Brief · Now to 7 May", options);
 }
 
-async function completeTask(taskId, checkbox) {
-  checkbox.disabled = true;
-  const taskItem = checkbox.closest(".task-item");
+async function completeTask(taskId, control) {
+  if (control) control.disabled = true;
+  const taskItem = control?.closest?.(".task-item") || document.querySelector(`.task-item[data-task-id="${CSS.escape(String(taskId || ""))}"]`);
   const desc = taskItem?.querySelector(".task-copy p")?.textContent?.trim() || "";
   try {
     const data = await api(`/api/tasks/${encodeURIComponent(taskId)}/done`, { method: "POST", headers: headers(false) });
@@ -2238,8 +2330,8 @@ async function completeTask(taskId, checkbox) {
       }
     }, 500);
   } catch (error) {
-    checkbox.checked = false;
-    checkbox.disabled = false;
+    if (control?.type === "checkbox") control.checked = false;
+    if (control) control.disabled = false;
     setStatus(error.message, "error");
   }
 }
@@ -2569,6 +2661,7 @@ function renderHomeData(data = {}, { fromCache = false, savedAt = 0 } = {}) {
   renderBriefingDelivery(data.briefing_delivery || {});
   renderIntelligenceStack(data.intelligence || {});
   renderClassOpsStatus(data.classops || {});
+  renderTodayFocus(data);
   homeGlyphDataReady = true;
   if (glyphMode === "load" || glyphMode === "next") renderNothingGlyph(glyphMode);
   const proactiveTop = Array.isArray(data.proactive?.top) ? data.proactive.top : [];
@@ -2595,6 +2688,13 @@ function renderHomeData(data = {}, { fromCache = false, savedAt = 0 } = {}) {
 }
 
 function renderHomeLoadingState() {
+  $("#focusNowTitle").textContent = "Syncing";
+  $("#focusNowMeta").textContent = "Checking today";
+  $("#focusNextTitle").textContent = "Standby";
+  $("#focusNextMeta").textContent = "No next item yet";
+  $("#focusDueCount").textContent = "0";
+  $("#focusDueMeta").textContent = "today";
+  $("#focusMarkingCount").textContent = "0";
   $("#homeLivingTimeline").innerHTML = "<div>Loading...</div>";
   homeGlyphDataReady = false;
   $("#homeProactive").innerHTML = "<div>Loading...</div>";
@@ -2725,6 +2825,7 @@ async function loadTasks(days = 7) {
   try {
     const data = await api(`/api/tasks?days=${days}`, { headers: headers(false) });
     $("#tasksOutput").innerHTML = data.structured ? renderTaskList(data.structured) : renderTaskBriefFromText(data.text);
+    refreshIcons($("#tasksOutput"));
     setStatus("Tasks refreshed.", "ok");
   } catch (error) {
     $("#tasksOutput").textContent = `Error: ${error.message}`;
@@ -2897,6 +2998,7 @@ function runQuickCommand(button) {
   const prompt = button?.dataset.commandPrompt?.trim();
   const action = button?.dataset.commandAction || "fill";
   if (!prompt || state.chatBusy) return;
+  closeQuickDrawer();
   hapticTap(10);
   if (action === "send") {
     $("#messageInput").value = "";
@@ -2910,6 +3012,50 @@ function runQuickCommand(button) {
     stageCommandPrompt(prompt);
   }
   setStatus(COMMAND_STATUS[action] || COMMAND_STATUS.fill, "ok");
+}
+
+function openQuickDrawer() {
+  const drawer = $("#quickActionDrawer");
+  if (!drawer) return;
+  drawer.hidden = false;
+  document.body.classList.add("quick-drawer-open");
+  refreshIcons(drawer);
+}
+
+function closeQuickDrawer() {
+  const drawer = $("#quickActionDrawer");
+  if (!drawer) return;
+  drawer.hidden = true;
+  document.body.classList.remove("quick-drawer-open");
+}
+
+async function jumpToQuickView(view) {
+  closeQuickDrawer();
+  setView(view);
+  if (view === "tasks") await loadTasks(Number($("#tasksDays")?.value || 7));
+  if (view === "gmail") $("#gmailQuery")?.focus();
+}
+
+function taskDescriptionFromControl(control) {
+  return control?.closest?.(".task-item")?.querySelector(".task-copy p")?.textContent?.trim() || "";
+}
+
+function planTaskFromControl(control) {
+  const description = taskDescriptionFromControl(control);
+  const prompt = description
+    ? `Help me finish this task efficiently: ${description}. Give me the next 3 actions and the smallest first move.`
+    : "Help me finish this selected task efficiently. Give me the next 3 actions and the smallest first move.";
+  setView("home");
+  sendChat(prompt);
+}
+
+function snoozeTaskFromControl(control) {
+  const description = taskDescriptionFromControl(control);
+  const prompt = description
+    ? `Remind me tonight to handle this task: ${description}`
+    : "Remind me tonight to handle this task.";
+  setView("home");
+  sendChat(prompt);
 }
 
 function pulseComposerInput() {
@@ -3139,6 +3285,13 @@ $("#notificationsBtn").addEventListener("click", () => {
   updateNotificationControls();
 });
 $("#notificationsList").addEventListener("click", (event) => {
+  const actionButton = event.target.closest("[data-notification-action]");
+  if (actionButton) {
+    const id = actionButton.dataset.notificationId;
+    const item = state.notifications.find((notification) => String(notification.id) === String(id)) || { id };
+    performNotificationAction(actionButton.dataset.notificationAction, item);
+    return;
+  }
   const open = event.target.closest("[data-notification-open]");
   if (open) {
     const id = open.dataset.notificationOpen;
@@ -3163,6 +3316,14 @@ $("#notificationsList").addEventListener("click", (event) => {
   dismissNotification(dismiss.dataset.notificationDismiss);
 });
 $("#notificationReader").addEventListener("click", (event) => {
+  const actionButton = event.target.closest("[data-notification-action]");
+  if (actionButton) {
+    const id = actionButton.dataset.notificationId;
+    const item = state.activeNotificationItem || state.notifications.find((notification) => String(notification.id) === String(id)) || { id };
+    performNotificationAction(actionButton.dataset.notificationAction, item);
+    closeNotificationReader();
+    return;
+  }
   const close = event.target.closest("[data-reader-close]");
   if (close) {
     closeNotificationReader();
@@ -3176,6 +3337,7 @@ $("#notificationReader").addEventListener("click", (event) => {
 });
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !$("#notificationReader").hidden) closeNotificationReader();
+  if (event.key === "Escape" && !$("#quickActionDrawer")?.hidden) closeQuickDrawer();
 });
 $("#enableNotificationsBtn").addEventListener("click", enableNotifications);
 $("#settingsEnableNotificationsBtn").addEventListener("click", enableNotifications);
@@ -3241,9 +3403,36 @@ document.querySelectorAll(".nav-tab").forEach((tab) => {
 });
 
 document.addEventListener("click", (event) => {
+  const taskDone = event.target.closest("[data-task-done-button]");
+  if (taskDone) {
+    completeTask(taskDone.dataset.taskDoneButton, taskDone);
+    return;
+  }
+  const taskSnooze = event.target.closest("[data-task-snooze]");
+  if (taskSnooze) {
+    snoozeTaskFromControl(taskSnooze);
+    return;
+  }
+  const taskPlan = event.target.closest("[data-task-plan]");
+  if (taskPlan) {
+    planTaskFromControl(taskPlan);
+    return;
+  }
   const button = event.target.closest("[data-command-prompt]");
   if (!button) return;
   runQuickCommand(button);
+});
+
+$("#quickActionFab")?.addEventListener("click", openQuickDrawer);
+$("#quickActionDrawer")?.addEventListener("click", (event) => {
+  if (event.target.closest("[data-quick-close]")) {
+    closeQuickDrawer();
+    return;
+  }
+  const viewButton = event.target.closest("[data-quick-view]");
+  if (viewButton) {
+    jumpToQuickView(viewButton.dataset.quickView);
+  }
 });
 
 $("#nothingGlyphBtn")?.addEventListener("click", cycleNothingGlyph);

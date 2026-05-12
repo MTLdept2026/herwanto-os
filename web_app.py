@@ -36,8 +36,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260511-trust-ledger-42"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v113"
+PWA_APP_VERSION = "20260512-mobile-qol-43"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v114"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -843,6 +843,25 @@ def _safe_text(builder, fallback: str) -> str:
         return fallback
 
 
+def _schedule_background_call(label: str, fn, *args, **kwargs) -> None:
+    try:
+        task = asyncio.create_task(asyncio.to_thread(fn, *args, **kwargs))
+    except RuntimeError:
+        try:
+            fn(*args, **kwargs)
+        except Exception as exc:
+            bot.logger.warning(f"Background {label} failed: {exc}")
+        return
+
+    def _done(done_task: asyncio.Task):
+        try:
+            done_task.result()
+        except Exception as exc:
+            bot.logger.warning(f"Background {label} failed: {exc}")
+
+    task.add_done_callback(_done)
+
+
 def _record_web_action(
     action: str,
     status: str,
@@ -1457,24 +1476,8 @@ def _home_intelligence(results: dict, days: int) -> dict:
     }
 
 
-def _parallel_home_data(days: int) -> dict:
-    jobs = {
-        "agenda": lambda: bot.build_agenda(days),
-        "agenda_structured": lambda: bot.build_agenda_structured(days),
-        "daily_load": lambda: bot.build_daily_load(days),
-        "digest": bot.build_curated_digest_snapshot,
-        "proactive": lambda: bot.build_proactive_v2_snapshot(days=days),
-        "tasks": lambda: bot.build_task_brief(days),
-        "tasks_structured": lambda: bot.build_task_structured(days),
-        "islamic": lambda: bot.build_islamic_brief(),
-        "prayers": bot.prayer_notification_status,
-        "files": bot.build_files_index,
-        "services": _service_status,
-        "marking": _marking_summary,
-        "classops": _classops_status_summary,
-        "briefing_delivery": _briefing_delivery_status,
-    }
-    fallbacks = {
+def _home_fallbacks() -> dict:
+    return {
         "agenda": "Agenda unavailable right now.",
         "agenda_structured": {
             "generated_at": "",
@@ -1557,9 +1560,300 @@ def _parallel_home_data(days: int) -> dict:
             "slots": [],
         },
     }
+
+
+def _home_snapshot(days: int) -> dict:
+    snapshot = {
+        "google": bot.google_ok(),
+        "events": [],
+        "reminders": [],
+        "task_metadata": {},
+        "marking_tasks": [],
+        "memory": {},
+    }
+    if not snapshot["google"]:
+        return snapshot
+    snapshot["events"] = bot.gs.get_events_for_days(days)
+    snapshot["reminders"] = bot.gs.get_reminders()
+    try:
+        snapshot["task_metadata"] = bot.gs.get_task_metadata()
+    except Exception:
+        snapshot["task_metadata"] = {}
+    try:
+        snapshot["marking_tasks"] = bot.gs.get_marking_tasks()
+    except Exception:
+        snapshot["marking_tasks"] = []
+    try:
+        snapshot["memory"] = bot.gs.get_memory()
+    except Exception:
+        snapshot["memory"] = {}
+    return snapshot
+
+
+def _home_agenda_structured(days: int, snapshot: dict) -> dict:
+    days = max(1, min(int(days or 7), 14))
+    now = datetime.now(bot.SGT)
+    today = now.date()
+    end_date = today + bot.timedelta(days=days - 1)
+    day_map = {}
+    relief_cache = {}
+    for offset in range(days):
+        target = today + bot.timedelta(days=offset)
+        relief_cache[target.isoformat()] = bool(bot.relief_memory_for_date(target))
+        lessons, _wt_label = bot._lessons_for_date(target)
+        day_map[target.isoformat()] = {
+            "date": target.isoformat(),
+            "label": target.strftime("%A, %-d %B"),
+            "week": bot._agenda_week_display(target),
+            "relieved": relief_cache[target.isoformat()],
+            "lessons": [
+                {
+                    "time": f"{lesson['start']}-{lesson['end']}",
+                    "subject": lesson["subject"],
+                    "title": lesson["description"],
+                    "room": lesson["room"] if lesson["room"] != "-" else "",
+                    "kind": "lesson",
+                }
+                for lesson in lessons
+            ],
+            "events": [],
+            "due": [],
+        }
+    for event in snapshot.get("events") or []:
+        try:
+            item = bot._event_to_agenda_item(event)
+        except Exception:
+            continue
+        if item["date"] in day_map:
+            day_map[item["date"]]["events"].append(item)
+    for reminder in snapshot.get("reminders") or []:
+        due = reminder.get("due", "")
+        if today.isoformat() <= due <= end_date.isoformat() and due in day_map:
+            day_map[due]["due"].append({
+                "id": reminder.get("id", ""),
+                "title": reminder.get("description", ""),
+                "category": reminder.get("category", ""),
+                "kind": "due",
+            })
+    return {
+        "generated_at": now.strftime("%A, %-d %B %Y, %H:%M SGT"),
+        "days": list(day_map.values()),
+        "services": {"google": bool(snapshot.get("google"))},
+    }
+
+
+def _home_agenda_text(days: int, structured: dict, snapshot: dict) -> str:
+    days = max(1, min(int(days or 7), 14))
+    now = datetime.now(bot.SGT)
+    today = now.date()
+    end_date = today + bot.timedelta(days=days)
+    lines = [f"*Agenda*\n_{now.strftime('%A, %-d %B %Y, %H:%M SGT')}_\n"]
+    lessons, wt_label = bot._lessons_for_date(today)
+    if wt_label and today.weekday() < 5:
+        lines.append(f"*Today at school ({bot._week_display(wt_label, today)})*")
+        lines.append(bot.tt.format_lessons(lessons))
+        lines.append("")
+    if not snapshot.get("google"):
+        lines.append("_Google not connected._")
+        return "\n".join(lines)
+    lines.append(f"*Calendar - next {days} days*")
+    lines.append(bot.gs.format_events(snapshot.get("events") or [], show_date=True))
+    lines.append("")
+    reminders = snapshot.get("reminders") or []
+    overdue = [r for r in reminders if r.get("due", "") < today.isoformat()]
+    due_window = [r for r in reminders if today.isoformat() <= r.get("due", "") <= end_date.isoformat()]
+    if overdue:
+        lines.append("*Overdue*")
+        for r in sorted(overdue, key=lambda x: x.get("due", "")):
+            lines.append(f"- `[{r['id']}]` {r['due']} - {r['description']} _{r['category']}_")
+        lines.append("")
+    lines.append(f"*Due by {end_date.strftime('%-d %b')}*")
+    if due_window:
+        for r in sorted(due_window, key=lambda x: x.get("due", "")):
+            lines.append(f"- `[{r['id']}]` {r['due']} - {r['description']} _{r['category']}_")
+    else:
+        lines.append("Nothing due in this window.")
+    return "\n".join(lines).strip()
+
+
+def _home_enriched_tasks(snapshot: dict) -> list[dict]:
+    metadata = snapshot.get("task_metadata") or {}
+    return [
+        {**reminder, **(metadata.get(str(reminder.get("id", ""))) or {})}
+        for reminder in snapshot.get("reminders") or []
+    ]
+
+
+def _home_task_structured(days: int, tasks: list[dict]) -> dict:
+    today = datetime.now(bot.SGT).date()
+    window = max(1, min(int(days or 7), 30))
+    end_date = today + bot.timedelta(days=window)
+    active = [task for task in tasks if task.get("due", "9999-12-31") <= end_date.isoformat()]
+    items = []
+    for task in sorted(active, key=lambda item: bot._task_priority_score(item, today))[:30]:
+        due = task.get("due", "")
+        overdue = False
+        weekday = ""
+        try:
+            due_date = date.fromisoformat(due)
+            overdue = due_date < today
+            weekday = due_date.strftime("%A")
+        except Exception:
+            pass
+        items.append({
+            "id": str(task.get("id", "")),
+            "description": task.get("description", ""),
+            "due": due,
+            "weekday": weekday,
+            "category": task.get("category", ""),
+            "priority": task.get("priority", ""),
+            "effort": task.get("effort", ""),
+            "next_action": task.get("next_action", ""),
+            "overdue": overdue,
+        })
+    return {
+        "generated_at": datetime.now(bot.SGT).strftime("%A, %-d %B %Y, %H:%M SGT"),
+        "end_date": end_date.isoformat(),
+        "items": items,
+    }
+
+
+def _home_task_text(days: int, tasks: list[dict]) -> str:
+    today = datetime.now(bot.SGT).date()
+    end_date = today + bot.timedelta(days=max(1, min(int(days or 7), 30)))
+    active = [task for task in tasks if task.get("due", "9999-12-31") <= end_date.isoformat()]
+    if not active:
+        return "No active tasks in that window."
+    lines = [f"*Task brief* - now to {end_date.strftime('%-d %b')}\n"]
+    for task in sorted(active, key=lambda item: bot._task_priority_score(item, today))[:12]:
+        next_action = f"\n  Next: {task['next_action']}" if task.get("next_action") else ""
+        overdue = " OVERDUE" if task.get("due", "") < today.isoformat() else ""
+        lines.append(f"- `[{task['id']}]` {task['due']}{overdue} - {task['description']}{next_action}")
+    return "\n".join(lines)
+
+
+def _home_load_days_for_dates(dates: list, today: date, reminders: list[dict]) -> list[dict]:
+    if not dates:
+        return []
+    event_counts = {target.isoformat(): 0 for target in dates}
+    due_counts = {target.isoformat(): 0 for target in dates}
+    if bot.google_ok():
+        try:
+            start = bot.SGT.localize(datetime.combine(min(dates), datetime.min.time()))
+            end = bot.SGT.localize(datetime.combine(max(dates) + bot.timedelta(days=1), datetime.min.time()))
+            for event in bot.gs.get_events_between(start, end):
+                item = bot._event_to_agenda_item(event)
+                if item["date"] in event_counts:
+                    event_counts[item["date"]] += 1
+        except Exception:
+            pass
+        date_set = set(due_counts.keys())
+        for reminder in reminders:
+            due = reminder.get("due", "")
+            if due in date_set:
+                due_counts[due] += 1
+    load_days = []
+    for target in dates:
+        lessons, _ = bot._lessons_for_date(target)
+        key = target.isoformat()
+        load_days.append(bot._daily_load_item(
+            target,
+            today,
+            bot._effective_lesson_count(target, lessons),
+            event_counts.get(key, 0),
+            due_counts.get(key, 0),
+            0,
+        ))
+    return load_days
+
+
+def _home_daily_load(days: int, structured: dict, snapshot: dict) -> dict:
+    today = datetime.now(bot.SGT).date()
+    marking_scripts = sum(
+        max(0, int(task.get("total_scripts") or 0) - int(task.get("marked_count") or 0))
+        for task in snapshot.get("marking_tasks") or []
+    )
+    load_days = []
+    for index, day in enumerate(structured.get("days", [])):
+        try:
+            date_obj = datetime.fromisoformat(day["date"]).date()
+        except Exception:
+            continue
+        scripts_today = marking_scripts if index == 0 else 0
+        lesson_count = 0 if day.get("relieved") else len(day.get("lessons", []))
+        load_days.append(bot._daily_load_item(
+            date_obj,
+            today,
+            lesson_count,
+            len(day.get("events", [])),
+            len(day.get("due", [])),
+            scripts_today,
+        ))
+    today_load = load_days[0] if load_days else {
+        "score": 0,
+        "tone": "green",
+        "load": "Pretty chill",
+        "lessons": 0,
+        "events": 0,
+        "due": 0,
+        "marking_scripts": 0,
+    }
+    reminders = snapshot.get("reminders") or []
+    previous_week = _home_load_days_for_dates(bot._weekday_neighbors(today, -1), today, reminders)
+    next_week = _home_load_days_for_dates(bot._weekday_neighbors(today, 1), today, reminders)
+    return {
+        "today": today_load,
+        "days": load_days,
+        "note": bot._daily_load_note(today_load),
+        "previous_week": previous_week,
+        "next_week": next_week,
+        "rest_note": bot._rest_load_note(previous_week, next_week),
+    }
+
+
+def _home_files_index(snapshot: dict) -> str:
+    if not snapshot.get("google"):
+        return "Google is not connected."
+    files = (snapshot.get("memory") or {}).get("files", [])
+    if not files:
+        return "No generated or uploaded files remembered yet."
+    lines = ["*Artifact library*"]
+    for item in files[-20:]:
+        lines.append(f"- {item}")
+    return "\n".join(lines)
+
+
+def _parallel_home_data(days: int) -> dict:
+    fallbacks = _home_fallbacks()
+    try:
+        snapshot = _home_snapshot(days)
+        agenda_structured = _home_agenda_structured(days, snapshot)
+        enriched_tasks = _home_enriched_tasks(snapshot)
+        results = {
+            "agenda": _home_agenda_text(days, agenda_structured, snapshot),
+            "agenda_structured": agenda_structured,
+            "daily_load": _home_daily_load(days, agenda_structured, snapshot),
+            "tasks": _home_task_text(days, enriched_tasks),
+            "tasks_structured": _home_task_structured(days, enriched_tasks),
+            "files": _home_files_index(snapshot),
+            "marking": _marking_summary_from_tasks(snapshot.get("marking_tasks") or [], connected=bool(snapshot.get("google"))),
+        }
+    except Exception as exc:
+        bot.logger.warning(f"Home snapshot build failed: {exc}")
+        snapshot = {}
+        results = {key: fallbacks[key] for key in ("agenda", "agenda_structured", "daily_load", "tasks", "tasks_structured", "files", "marking")}
+
+    jobs = {
+        "digest": bot.build_curated_digest_snapshot,
+        "proactive": lambda: bot.build_proactive_v2_snapshot(days=days),
+        "islamic": lambda: bot.build_islamic_brief(),
+        "prayers": bot.prayer_notification_status,
+        "services": _service_status,
+        "classops": _classops_status_summary,
+        "briefing_delivery": _briefing_delivery_status,
+    }
     futures = {key: _HOME_EXECUTOR.submit(builder) for key, builder in jobs.items()}
     wait(futures.values(), timeout=20)
-    results = {}
     for key, future in futures.items():
         if not future.done():
             future.cancel()
@@ -1644,6 +1938,11 @@ def _marking_summary() -> dict:
             "sets": [],
             "connected": False,
         }
+    return _marking_summary_from_tasks(tasks, connected=True)
+
+
+def _marking_summary_from_tasks(tasks: list[dict], connected: bool = True) -> dict:
+    tasks = tasks or []
 
     total_scripts = sum(max(0, int(task.get("total_scripts") or 0)) for task in tasks)
     marked_scripts = sum(max(0, int(task.get("marked_count") or 0)) for task in tasks)
@@ -1671,7 +1970,7 @@ def _marking_summary() -> dict:
         "unmarked_scripts": max(0, total_scripts - marked_scripts),
         "all_clear": not tasks,
         "sets": sets,
-        "connected": True,
+        "connected": connected,
     }
 
 
@@ -2249,7 +2548,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
     history = bot.get_history(history_key)
     working_memory = _update_working_memory(history_key, history, message)
     working_summary = _working_memory_summary(working_memory)
-    bot.absorb_taste_hint(message)
+    _schedule_background_call("taste hint capture", bot.absorb_taste_hint, message)
     user_content = message
     if bot.re.search(r"\b(?:personal|personal\s*2|second(?:ary)?|other\s+personal|work|moe|school)\s+(?:gmail|email|emails|mail|inbox)\b", message, bot.re.I):
         account_hint, _ = bot._extract_gmail_account_from_text(message)
@@ -2424,12 +2723,13 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             reply_text = final_text or "".join(reply_parts).strip() or "Done."
             history.append({"role": "assistant", "content": reply_text})
             bot.save_history(history_key, history[-bot.MAX_TURNS:])
-            try:
-                recorded = bot.record_chat_learning_event(message, reply_text, source="pwa")
-                if recorded:
-                    yield sse({"type": "learning", "count": len(recorded), "kinds": [item["type"] for item in recorded]})
-            except Exception as exc:
-                bot.logger.warning(f"PWA learning event failed: {exc}")
+            _schedule_background_call(
+                "chat learning event",
+                bot.record_chat_learning_event,
+                message,
+                reply_text,
+                source="pwa",
+            )
             yield sse(timing("saved"))
             _finalise_chat_trace(trace, "answered")
             yield sse({"type": "trace", "trace": trace})
@@ -2492,7 +2792,7 @@ async def _source_check_backend_fallback_payload(message: str) -> tuple[str, str
     if not tool_name:
         return "", "", ""
 
-    result = await bot._execute_tool(tool_name, {"focus": message, "max_items": 2})
+    result = await bot._execute_tool_offloop(tool_name, {"focus": message, "max_items": 2})
     if not result or result.startswith("Failed to fetch"):
         return (
             "I hit the model/backend step, and the live source check also failed, "
