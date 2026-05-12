@@ -716,6 +716,50 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(count, 0)
 
+    def test_f1_calendar_sync_request_adds_remaining_events_and_memory(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 12, 12, 36))
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "add_memory") as add_memory,
+            patch.object(bot.gs, "get_events_between", return_value=[]),
+            patch.object(bot.gs, "create_all_day_event", return_value={"id": "evt"}) as create_all_day_event,
+        ):
+            result = bot.sync_f1_calendar_to_memory_and_calendar(now=now)
+
+        self.assertEqual(len(result["races"]), 18)
+        self.assertEqual(result["calendar_created"], 18)
+        self.assertTrue(result["memory_saved"])
+        add_memory.assert_called_once()
+        category, text = add_memory.call_args.args
+        self.assertEqual(category, "sports")
+        self.assertIn("f1-calendar:2026", text)
+        self.assertIn("R5 Canada 2026-05-22 to 2026-05-24", text)
+        self.assertIn("R22 Abu Dhabi 2026-12-04 to 2026-12-06", text)
+        first_call = create_all_day_event.call_args_list[0].args
+        self.assertEqual(first_call[0], "F1: Canadian Grand Prix (Sprint weekend)")
+        self.assertEqual(first_call[1], "2026-05-22")
+        self.assertEqual(first_call[2], "2026-05-24")
+
+    def test_f1_calendar_sync_response_is_direct_action_not_brief(self):
+        with patch.object(bot, "sync_f1_calendar_to_memory_and_calendar", return_value={
+            "source": bot.F1_2026_CALENDAR_SOURCE,
+            "races": [
+                {"short": "Canada", "start": "2026-05-22", "end": "2026-05-24", "sprint": True},
+                {"short": "Abu Dhabi", "start": "2026-12-04", "end": "2026-12-06", "sprint": False},
+            ],
+            "memory_saved": True,
+            "calendar_created": 2,
+            "calendar_skipped": 0,
+            "errors": [],
+        }):
+            reply = bot.f1_calendar_sync_response(
+                "Find the f1 calendar for the rest of this season and append it to your memory and my calendar"
+            )
+
+        self.assertIn("Saved the season list to sports memory", reply)
+        self.assertIn("Calendar: created 2 event", reply)
+        self.assertNotIn("No recent Google News items", reply)
+
     def test_daily_load_counts_relieved_lessons_as_zero(self):
         today_key = bot.datetime.now(bot.SGT).date().isoformat()
         agenda = {

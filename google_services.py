@@ -17,7 +17,7 @@ import threading
 import statistics
 import time
 from functools import lru_cache
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -1250,6 +1250,25 @@ def create_event(title: str, start_dt: datetime, end_dt: datetime,
         "summary": title,
         "start": {"dateTime": start_dt.isoformat(), "timeZone": "Asia/Singapore"},
         "end":   {"dateTime": end_dt.isoformat(),   "timeZone": "Asia/Singapore"},
+    }
+    if location:
+        event["location"] = location
+    if description:
+        event["description"] = description
+    result = _cal().events().insert(calendarId=cal_id, body=event).execute()
+    return result
+
+
+def create_all_day_event(title: str, start_date: date | str, end_date: date | str,
+                         location: str = "", description: str = "") -> dict:
+    """Create an all-day calendar event, inclusive of end_date."""
+    cal_id = CALENDAR_IDS[0] if CALENDAR_IDS else "primary"
+    start = date.fromisoformat(str(start_date)[:10]) if not isinstance(start_date, date) else start_date
+    end = date.fromisoformat(str(end_date)[:10]) if not isinstance(end_date, date) else end_date
+    event = {
+        "summary": title,
+        "start": {"date": start.isoformat()},
+        "end": {"date": (end + timedelta(days=1)).isoformat()},
     }
     if location:
         event["location"] = location

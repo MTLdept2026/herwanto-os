@@ -4189,6 +4189,160 @@ def _effective_lesson_count(target: date, lessons: list) -> int:
     return 0 if school_day_cleared_memory_for_date(target) else len(lessons or [])
 
 
+F1_2026_CALENDAR_SOURCE = "https://www.formula1.com/en/racing/2026"
+F1_2026_RACE_WEEKENDS = [
+    {"round": 5, "name": "Canadian Grand Prix", "short": "Canada", "start": "2026-05-22", "end": "2026-05-24", "location": "Montreal, Canada", "sprint": True},
+    {"round": 6, "name": "Monaco Grand Prix", "short": "Monaco", "start": "2026-06-05", "end": "2026-06-07", "location": "Monaco", "sprint": False},
+    {"round": 7, "name": "Barcelona-Catalunya Grand Prix", "short": "Barcelona-Catalunya", "start": "2026-06-12", "end": "2026-06-14", "location": "Barcelona, Spain", "sprint": False},
+    {"round": 8, "name": "Austrian Grand Prix", "short": "Austria", "start": "2026-06-26", "end": "2026-06-28", "location": "Spielberg, Austria", "sprint": False},
+    {"round": 9, "name": "British Grand Prix", "short": "Great Britain", "start": "2026-07-03", "end": "2026-07-05", "location": "Silverstone, United Kingdom", "sprint": True},
+    {"round": 10, "name": "Belgian Grand Prix", "short": "Belgium", "start": "2026-07-17", "end": "2026-07-19", "location": "Spa-Francorchamps, Belgium", "sprint": False},
+    {"round": 11, "name": "Hungarian Grand Prix", "short": "Hungary", "start": "2026-07-24", "end": "2026-07-26", "location": "Budapest, Hungary", "sprint": False},
+    {"round": 12, "name": "Dutch Grand Prix", "short": "Netherlands", "start": "2026-08-21", "end": "2026-08-23", "location": "Zandvoort, Netherlands", "sprint": True},
+    {"round": 13, "name": "Italian Grand Prix", "short": "Italy", "start": "2026-09-04", "end": "2026-09-06", "location": "Monza, Italy", "sprint": False},
+    {"round": 14, "name": "Spanish Grand Prix", "short": "Spain", "start": "2026-09-11", "end": "2026-09-13", "location": "Madrid, Spain", "sprint": False},
+    {"round": 15, "name": "Azerbaijan Grand Prix", "short": "Azerbaijan", "start": "2026-09-24", "end": "2026-09-26", "location": "Baku, Azerbaijan", "sprint": False},
+    {"round": 16, "name": "Singapore Grand Prix", "short": "Singapore", "start": "2026-10-09", "end": "2026-10-11", "location": "Singapore", "sprint": True},
+    {"round": 17, "name": "United States Grand Prix", "short": "United States", "start": "2026-10-23", "end": "2026-10-25", "location": "Austin, United States", "sprint": False},
+    {"round": 18, "name": "Mexico City Grand Prix", "short": "Mexico", "start": "2026-10-30", "end": "2026-11-01", "location": "Mexico City, Mexico", "sprint": False},
+    {"round": 19, "name": "Sao Paulo Grand Prix", "short": "Brazil", "start": "2026-11-06", "end": "2026-11-08", "location": "Sao Paulo, Brazil", "sprint": False},
+    {"round": 20, "name": "Las Vegas Grand Prix", "short": "Las Vegas", "start": "2026-11-19", "end": "2026-11-21", "location": "Las Vegas, United States", "sprint": False},
+    {"round": 21, "name": "Qatar Grand Prix", "short": "Qatar", "start": "2026-11-27", "end": "2026-11-29", "location": "Lusail, Qatar", "sprint": False},
+    {"round": 22, "name": "Abu Dhabi Grand Prix", "short": "Abu Dhabi", "start": "2026-12-04", "end": "2026-12-06", "location": "Yas Marina, Abu Dhabi", "sprint": False},
+]
+
+
+def is_f1_calendar_sync_request(text: str) -> bool:
+    clean = str(text or "").lower()
+    if not re.search(r"\b(f1|formula\s*1|grand prix)\b", clean):
+        return False
+    wants_calendar = re.search(r"\b(calendar|schedule|season|race calendar|fixtures?)\b", clean)
+    wants_save = re.search(r"\b(add|append|save|sync|put|remember|memory|calendae)\b", clean) or re.search(r"\bmy\s+calendar\b", clean)
+    return bool(wants_calendar and wants_save)
+
+
+def _remaining_f1_weekends(now: datetime | None = None) -> list[dict]:
+    current = (now or datetime.now(SGT)).astimezone(SGT).date()
+    return [
+        dict(item)
+        for item in F1_2026_RACE_WEEKENDS
+        if date.fromisoformat(item["end"]) >= current
+    ]
+
+
+def _calendar_event_start_date(event: dict) -> str:
+    start = event.get("start", {}) if isinstance(event, dict) else {}
+    raw = str(start.get("date") or start.get("dateTime") or "")
+    return raw[:10]
+
+
+def _existing_f1_calendar_keys(races: list[dict]) -> set[tuple[str, str]]:
+    if not races or not google_ok():
+        return set()
+    start = SGT.localize(datetime.combine(date.fromisoformat(races[0]["start"]), datetime.min.time()))
+    end = SGT.localize(datetime.combine(date.fromisoformat(races[-1]["end"]) + timedelta(days=1), datetime.min.time()))
+    keys = set()
+    try:
+        for event in gs.get_events_between(start, end):
+            title = str(event.get("summary", "") or "")
+            if not title.lower().startswith("f1:"):
+                continue
+            keys.add((title.lower(), _calendar_event_start_date(event)))
+    except Exception as exc:
+        logger.warning(f"F1 calendar duplicate scan failed: {exc}")
+    return keys
+
+
+def _f1_calendar_memory_text(races: list[dict], now: datetime | None = None) -> str:
+    current = now or datetime.now(SGT)
+    summary = "; ".join(
+        f"R{race['round']} {race['short']} {race['start']} to {race['end']}{' Sprint' if race.get('sprint') else ''}"
+        for race in races
+    )
+    return (
+        f"f1-calendar:2026: Remaining Formula 1 race weekends captured on "
+        f"{current.strftime('%Y-%m-%d %H:%M SGT')} from {F1_2026_CALENDAR_SOURCE}. "
+        f"{summary}"
+    )
+
+
+def sync_f1_calendar_to_memory_and_calendar(now: datetime | None = None) -> dict:
+    current = now or datetime.now(SGT)
+    races = _remaining_f1_weekends(now=current)
+    result = {
+        "source": F1_2026_CALENDAR_SOURCE,
+        "races": races,
+        "memory_saved": False,
+        "calendar_created": 0,
+        "calendar_skipped": 0,
+        "errors": [],
+    }
+    if not races:
+        return result
+    if not google_ok():
+        result["errors"].append("Google is not connected, so I could not write memory or calendar events.")
+        return result
+
+    try:
+        gs.add_memory("sports", _f1_calendar_memory_text(races, now=current))
+        result["memory_saved"] = True
+    except Exception as exc:
+        result["errors"].append(f"Memory write failed: {exc}")
+
+    existing = _existing_f1_calendar_keys(races)
+    for race in races:
+        title = f"F1: {race['name']}"
+        if race.get("sprint"):
+            title += " (Sprint weekend)"
+        key = (title.lower(), race["start"])
+        if key in existing:
+            result["calendar_skipped"] += 1
+            continue
+        description = (
+            f"Round {race['round']} of the 2026 Formula 1 season. "
+            f"Official calendar source: {F1_2026_CALENDAR_SOURCE}"
+        )
+        try:
+            gs.create_all_day_event(
+                title,
+                race["start"],
+                race["end"],
+                location=race["location"],
+                description=description,
+            )
+            result["calendar_created"] += 1
+        except Exception as exc:
+            result["errors"].append(f"{race['short']}: {exc}")
+    return result
+
+
+def f1_calendar_sync_response(text: str, now: datetime | None = None) -> str:
+    if not is_f1_calendar_sync_request(text):
+        return ""
+    result = sync_f1_calendar_to_memory_and_calendar(now=now)
+    races = result.get("races") or []
+    if not races:
+        return "I could not find any remaining 2026 F1 race weekends from today."
+    first = races[0]
+    last = races[-1]
+    base = (
+        f"Done - I found {len(races)} remaining F1 race weekends "
+        f"({first['short']} {first['start']} to {last['short']} {last['end']}). "
+    )
+    if result.get("memory_saved"):
+        base += "Saved the season list to sports memory. "
+    base += (
+        f"Calendar: created {result.get('calendar_created', 0)} event(s)"
+        f", skipped {result.get('calendar_skipped', 0)} already there. "
+    )
+    if result.get("errors"):
+        base += "Issues: " + "; ".join(str(item) for item in result["errors"][:3])
+    else:
+        sprint_count = sum(1 for race in races if race.get("sprint"))
+        base += f"Sprint weekends marked: {sprint_count}. Source: Formula 1 official calendar."
+    return base.strip()
+
+
 def parse_delayed_digest_push_request(text: str, now: datetime | None = None) -> dict | None:
     clean = " ".join(str(text or "").strip().split())
     if not clean:

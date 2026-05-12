@@ -2585,6 +2585,10 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
     if absence_reply:
         return _quick_sse_response(absence_reply, history_key, history, route_name="memory_recall")
 
+    f1_sync_reply = bot.f1_calendar_sync_response(message)
+    if f1_sync_reply:
+        return _quick_sse_response(f1_sync_reply, history_key, history, route_name="f1_calendar_sync", tool_name="sync_f1_calendar")
+
     quick_checkin_reply = ""
     if bot.google_ok() and bot._is_affirmative(message):
         try:
