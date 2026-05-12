@@ -404,6 +404,47 @@ VOLATILE_FACT_PATTERN = re.compile(
     re.I,
 )
 
+DAY_REFERENCE_PATTERN = re.compile(
+    r"\b(today|tomorrow|tonight|this\s+week|next\s+week|"
+    r"mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rs(?:day)?|r)?|fri(?:day)?|"
+    r"sat(?:urday)?|sun(?:day)?)\b",
+    re.I,
+)
+
+
+def _is_day_planning_query(text: str) -> bool:
+    clean = " ".join(str(text or "").lower().split())
+    if not clean or not DAY_REFERENCE_PATTERN.search(clean):
+        return False
+    return bool(
+        re.search(r"\b(?:what'?s|whats|what is|how'?s|hows|how is|show|check|tell me|brief me)\b", clean)
+        or re.search(r"\b(?:my|for)\s+(?:today|tomorrow|tonight|this\s+week|next\s+week|mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rs(?:day)?|r)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b", clean)
+        or re.search(r"\b(?:schedule|calendar|agenda|timetable|day|week|like|load)\b", clean)
+    )
+
+
+def _is_cca_schedule_query_text(text: str, recent_context: str = "") -> bool:
+    clean = " ".join(str(text or "").lower().split())
+    context = " ".join(str(recent_context or "").lower().split())
+    combined = f"{context} {clean}".strip()
+    if not clean:
+        return False
+    school_football = bool(re.search(
+        r"\b(?:nsg|n2a?|c\s*div|b\s*div|boon\s+lay|kent\s+ridge|"
+        r"accompanying\s+teacher|teacher[-\s]?in[-\s]?charge|duty\s+roster|rostered)\b",
+        combined,
+    ))
+    if school_football:
+        return True
+    if "cca" in clean and re.search(r"\b(?:calendar|schedule|duty|training|match|roster|rostered|on\s+cca)\b", clean):
+        return True
+    if "football" in clean and re.search(r"\b(?:calendar|schedule|duty|training|match|roster|rostered)\b", clean):
+        return True
+    if "duty" in clean and re.search(r"\b(?:football|match|training|roster|rostered|nsg|cca|n2a?|c\s*div|b\s*div)\b", combined):
+        return True
+    return False
+
+
 def source_discipline_for_text(text: str) -> dict:
     clean = " ".join((text or "").split())
     lowered = clean.lower()
@@ -420,7 +461,7 @@ def source_discipline_for_text(text: str) -> dict:
     tools: list[str] = []
     if re.search(r"https?://\S+", clean):
         tools.append("fetch_url")
-    if re.search(r"\b(cca|football cca|cca duty|training duty)\b", lowered):
+    if _is_cca_schedule_query_text(lowered):
         tools.append("get_cca_schedule")
     if re.search(r"\b(liverpool|lfc|epl|premier league|anfield|salah|wirtz|isak|transfer|rumou?r|lineup|starting xi)\b", lowered):
         tools.append("get_liverpool_brief")
@@ -769,8 +810,8 @@ Personality:
 - Default vibe: concise, grounded, encouraging, lightly informal, and sharp without being cruel.
 - If he asks your name, answer naturally: "I'm H.I.R.A — Herwanto Interface for Responsive Assistance."
 - Be decisive when the path is clear; ask only when a missing detail blocks action.
-- Have a wicked sense of humour and good wit: dry, clever, quick, and occasionally cheeky.
-- Use humour like seasoning, not gravy. Never force jokes, emojis, hype, or motivational fluff.
+- Have a wicked sense of humour and good wit: dry, clever, quick, and occasionally cheeky. Self-deprecating humour is welcome when you have made a small mistake or when bureaucracy/tool friction is annoying, but keep it short and then fix the problem.
+- Use humour like seasoning, not gravy. One clean line is enough. Never use humour to dodge responsibility, soften a made-up answer, or distract from missing evidence.
 - Do not make jokes when the user is upset, dealing with a serious issue, asking for BM accuracy, or needs exact code/business judgement.
 - Never be mean-spirited, insulting, crude, or sarcastic at the user's expense. Punch up at chaos, bureaucracy, vague requirements, and bad error messages.
 - Protect his attention: summarise, prioritise, and make the next action obvious.
@@ -794,11 +835,14 @@ Herwanto wears three hats:
 
 Rules:
 - Be concise. No filler, no preamble.
+- Do not sound helpless. If a tool/data source exists, use it. If it fails, state the exact failure and the next concrete route. Avoid "you need to check" unless H.I.R.A genuinely has no source/tool/path left.
+- When you are wrong, own it plainly: "I messed that up" is better than a paragraph of self-defence. Then give the corrected answer or exact blocker.
 - Natural language is the main interface. Slash commands are shortcuts, not required. If the user asks in plain English/Singlish, infer the intent and use tools directly.
 - Prefer doing the requested action or lookup over explaining which command to use. Only mention a slash command if the user asks how to do it manually or the action is blocked.
 - After tool results, answer in natural language with a brief useful summary. Do not dump raw tool output unless the user asks for raw output.
 - When Herwanto corrects you, repair the answer before reassuring him: first state the corrected fact with source-backed details if the fact is live/current, then apologise briefly, then say the prevention rule. Never respond to a correction with only "noted" or "won't happen again".
 - If you say you will check, pull, verify, look up, or get the actual result/details, you must call the relevant tool in that same turn before answering. Do not end with "give me a moment" as the final answer.
+- Be upfront about uncertainty and failures. Do not invent backend diagnoses, permission stories, service-account problems, sheet IDs, or "session memory only" explanations unless a tool/status result in this turn explicitly showed that. If memory/tool access fails, quote the exact tool failure briefly and say what is unverified.
 - For data lookups, use the user's words as intent: "last 5 emails" means latest 5 Gmail messages; "what's on today" means schedule/context; "anything due" means reminders/tasks; "who do I owe replies/follow-ups to" means Gmail/follow-up/task context as relevant.
 - For timetable or lesson lookups, use get_timetable. TIMETABLE in timetable.py is the source of truth for lessons; Google Calendar is only for events/appointments.
 - HBL guardrail: Never infer HBL from Friday, Even-week Friday, a free day, or "no timetabled lessons". Say it is HBL only when a dated source explicitly marks that date as HBL. If the assistant context says "HBL status: Not HBL", treat that as authoritative over stale/general HBL memories or generic recurring labels.
@@ -858,6 +902,7 @@ Rules:
 - After web_search, fetch_url, get_latest_news, get_liverpool_brief, or get_f1_brief reveals useful knowledge H.I.R.A should retain, call remember_source_insight. Store stable background as durability=stable. Store current standings, line-ups, results, transfer rumours, prices, schedules, and laws/rules that may change as durability=live_check or rumour, so future answers know to verify again.
 - When the user asks about weather, temperature, high/low temp, hot/cold conditions, rain, forecast, haze, PSI, air quality, umbrella, or whether it will rain in Singapore — call get_nea_weather before answering. If no area is specified, use Yishun. Weather answers must include available temperature, humidity, PSI/PM2.5 air quality, 2-hour nowcast, and 24-hour forecast details.
 - When the user says "remember", "note that", or gives stable preferences/facts about himself — call remember_user_info.
+- For permanent memory questions, be precise: long-term memory is backed by the app's configured storage, and a remember action only persisted if remember_user_info returned success. Never claim something was committed, lost, or blocked by Sheets/backend permissions without the tool result.
 - Treat Correction_Ledger memory as high-priority. If it conflicts with older memory, follow the correction and do not repeat the old mistake.
 - Treat Self_Reflections memory as your own learning journal: use it to improve future behaviour, source discipline, and follow-through.
 - Treat Source_Notes as source-backed research memory. Use them as leads and context, but live-check anything marked live_check, rumour, temporary, or time-sensitive.
@@ -6041,6 +6086,8 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
         ])
     ):
         return "find_available_training_slots"
+    if "get_cca_schedule" in available and _is_cca_schedule_query_text(text):
+        return "get_cca_schedule"
     if (
         "get_assistant_context" in available
         and has_any(["appointment", "hdb", "calendar"])
@@ -6149,7 +6196,7 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     if "fetch_url" in available and re.search(r"https?://\S+", text or "", re.I):
         return "fetch_url"
 
-    if "get_cca_schedule" in available and has_any(["cca", "football cca", "cca duty", "training duty"]):
+    if "get_cca_schedule" in available and _is_cca_schedule_query_text(text):
         return "get_cca_schedule"
 
     if "web_research" in available and has_any([
@@ -6198,10 +6245,16 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     ):
         return "update_project_status"
 
-    if "get_assistant_context" in available and has_any([
-        "today", "tomorrow", "schedule", "calendar", "agenda", "my day",
-        "my week", "what's on", "whats on"
-    ]):
+    if (
+        "get_assistant_context" in available
+        and (
+            has_any([
+                "today", "tomorrow", "schedule", "calendar", "agenda", "my day",
+                "my week", "what's on", "whats on"
+            ])
+            or _is_day_planning_query(text)
+        )
+    ):
         return "get_assistant_context"
 
     if "get_task_brief" in available and has_any([
@@ -6370,6 +6423,40 @@ def _source_contract_guardrail(messages: list[dict], tool_results: list[dict]) -
         f"I checked live sources, but I could not confirm the latest result. "
         f"Source contract: {status} as of {as_of} via {source}. {reason}. "
         "I’m not going to answer this from older headlines or memory."
+    )
+
+
+def _tool_result_text(tool_results: list[dict]) -> str:
+    return "\n".join(str(item.get("content", "")) for item in tool_results or [] if isinstance(item, dict))
+
+
+def _memory_backend_claim_guardrail(reply_text: str, tool_results: list[dict]) -> str:
+    """Block unsupported invented backend/memory diagnoses before the user sees them."""
+    text = str(reply_text or "")
+    if not text:
+        return text
+    suspicious = re.search(
+        r"\b(?:permanent memory|memory store|session memory|backend fix|sheets error|service account|memory sheet|assistant_memory)\b",
+        text,
+        re.I,
+    )
+    failure_claim = re.search(
+        r"\b(?:cannot|can't|couldn'?t|unable|failed|failing|blocked|needs?\s+(?:a\s+)?backend|permission|access)\b",
+        text,
+        re.I,
+    )
+    if not (suspicious and failure_claim):
+        return text
+    evidence = _tool_result_text(tool_results)
+    if re.search(
+        r"\b(?:Failed to remember|Remembered under|Memory unavailable|Google memory is not connected|assistant_memory|Config|Google Sheets denied|permission|forbidden|unauthorized)\b",
+        evidence,
+        re.I,
+    ):
+        return text
+    return (
+        "I need to be precise: I cannot verify that memory/backend diagnosis from the tool results in this turn. "
+        "Permanent memory only counts as saved when the memory tool reports success. If it fails, I should show the exact error instead of inventing a cause."
     )
 
 
@@ -7645,9 +7732,13 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         add(TIMETABLE_TOOL, WEEK_TYPE_TOOL)
     if classlist_followup or re.search(r"\b(classlist|class list|students?|names?|my classes|mtl group|grouping|1 flagship|2g3|3g3|4nt|4nt bml|scores?|marks?|results?|wa1|wa2|fa1|fa2|prelim|eoy|weighted assessment|formative assessment|exam|assessment|percentage|percent|%|analyse|analyze|analysis|graph|graphs|chart|charts|trend|mean|median|average|pass rate|underperforming|watchlist|most improved|progress|drop|dropped|colour|color|highlight|red|failures?|failed|below 50|less than 50)\b", text):
         add(CLASSLIST_TOOL, ANALYZE_MTL_SCORES_TOOL, GENERATE_MTL_TREND_REPORT_TOOL, APPLY_MTL_FAILURE_HIGHLIGHTING_TOOL, UPDATE_CLASS_SCORE_TOOL, FILL_PERCENTAGE_SCORES_TOOL, TIMETABLE_TOOL)
-    if re.search(r"\b(calendar|schedule|agenda|today|tomorrow|week|meeting|event|appointment|duty|training|match|cca|what'?s on)\b", text):
+    if (
+        re.search(r"\b(calendar|schedule|agenda|today|tomorrow|week|meeting|event|appointment|duty|training|match|cca|what'?s on)\b", text)
+        or _is_day_planning_query(text)
+        or _is_cca_schedule_query_text(text, context)
+    ):
         add(CONTEXT_TOOL, CALENDAR_TOOL, DELETE_CALENDAR_TOOL, AVAILABILITY_SLOT_TOOL, REMINDER_TOOL, TIMETABLE_TOOL)
-        if re.search(r"\b(cca|football cca|cca duty|training duty)\b", text):
+        if _is_cca_schedule_query_text(text, context):
             add(CCA_SCHEDULE_TOOL)
     if re.search(r"\b(task|tasks|due|deadline|remind|reminder|prepare|submit|complete|done|priority|prioritise|prioritize|focus)\b", text):
         add(CONTEXT_TOOL, TASK_BRIEF_TOOL, REMINDER_TOOL, COMPLETE_TASK_TOOL)
@@ -7736,6 +7827,7 @@ async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
     tools = tools or _core_tools()
     reply_text = ""
     max_iterations = 8
+    all_tool_results: list[dict] = []
 
     for _ in range(max_iterations):
         forced_tool = _forced_tool_for_current_turn(messages, tools)
@@ -7780,16 +7872,18 @@ async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
             }
 
         tool_results = await asyncio.gather(*(run_tool(block) for block in tool_blocks))
+        all_tool_results.extend(tool_results)
         messages.append({"role": "user", "content": tool_results})
         guarded = _source_contract_guardrail(messages, tool_results)
         if guarded:
             return guarded
 
-    return _correct_weekday_date_mismatches(reply_text or "Done.")
+    guarded_reply = _memory_backend_claim_guardrail(reply_text or "Done.", all_tool_results)
+    return _correct_weekday_date_mismatches(guarded_reply)
 
 def _looks_tool_heavy(text: str) -> bool:
     return bool(re.search(
-        r"\b(calendar|schedule|meeting|event|remind|nudge|notify|notification|notifications|push|task|due|marking|scripts?|"
+        r"\b(calendar|schedule|meeting|event|duty|roster|rostered|nsg|n2a?|c\s*div|b\s*div|remind|nudge|notify|notification|notifications|push|task|due|marking|scripts?|"
         r"email|gmail|inbox|draft|reply|timetable|lesson|news|latest|search|digest|briefing|shortlist|shortlisted|preferred topics|remember|"
         r"classlist|class list|students?|my classes|mtl group|grouping|colour|color|highlight|red fill|failures?|below 50|less than 50|"
         r"prayer|prayers|pray|solat|salah|subuh|fajr|syuruk|zohor|zuhur|zuhr|dhuhr|asar|asr|maghrib|isyak|isha|muis|religion|religious|islam|islamic|halal|haram|fatwa|zakat|puasa|fasting|ramadan|qibla|wudhu|wudu|ablution|"
@@ -7830,6 +7924,8 @@ async def should_route_quick_pwa_chat(messages: list[dict], message: str) -> boo
         re.search(r"\b(?:try again|retry|again|nothing filled|not filled|didn'?t fill|did not fill|still blank|same permission|permissions?)\b", text, re.I)
         and re.search(r"\b(?:classlist|class list|2g3|3g3|1g2|wa1|wa2|fa1|fa2|percentage|percent|%)\b", recent_context)
     ):
+        return False
+    if _is_day_planning_query(text) or _is_cca_schedule_query_text(text, recent_context):
         return False
     if not text or len(text) > 120 or _looks_tool_heavy(text):
         return False
@@ -7885,6 +7981,7 @@ async def stream_agentic_claude(messages, max_tokens=650, tools=None):
     tools = tools or _core_tools()
     reply_text = ""
     max_iterations = 8
+    all_tool_results: list[dict] = []
 
     for _ in range(max_iterations):
         forced_tool = _forced_tool_for_current_turn(messages, tools)
@@ -7943,6 +8040,7 @@ async def stream_agentic_claude(messages, max_tokens=650, tools=None):
             }
 
         tool_results = await asyncio.gather(*(run_tool(block) for block in tool_blocks))
+        all_tool_results.extend(tool_results)
         messages.append({"role": "user", "content": tool_results})
         contracts = _source_contracts_from_tool_results(tool_results)
         if contracts:
@@ -7955,7 +8053,8 @@ async def stream_agentic_claude(messages, max_tokens=650, tools=None):
             yield {"type": "done", "text": reply_text}
             return
 
-    corrected = _correct_weekday_date_mismatches(reply_text or "Done.")
+    guarded_reply = _memory_backend_claim_guardrail(reply_text or "Done.", all_tool_results)
+    corrected = _correct_weekday_date_mismatches(guarded_reply)
     if corrected != (reply_text or "Done."):
         yield {"type": "replace", "text": corrected}
     yield {"type": "done", "text": corrected}

@@ -1131,6 +1131,74 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(forced, "get_cca_schedule")
 
+    def test_nsg_duty_prompt_forces_sheet_tool(self):
+        forced = bot._forced_tool_for_text(
+            "Am I on NSG duty for Thursday?",
+            [{"name": "get_cca_schedule"}, {"name": "get_assistant_context"}],
+        )
+
+        self.assertEqual(forced, "get_cca_schedule")
+
+    def test_n2_football_calendar_gets_cca_tool_in_pwa(self):
+        tools = bot.pwa_tools_for_message("You need to check the N2 football calendar and tell me")
+        names = {tool["name"] for tool in tools}
+
+        self.assertIn("get_cca_schedule", names)
+
+    def test_weekday_day_question_is_not_quick_chat(self):
+        routed_quick = asyncio.run(bot.should_route_quick_pwa_chat([], "Hey whats my Thursday like"))
+
+        self.assertFalse(routed_quick)
+
+    def test_cca_schedule_prefers_target_month_tab_over_stale_configured_gid(self):
+        book = {
+            "properties": {"title": "CCA Calendar"},
+            "sheets": [
+                {"properties": {"sheetId": 1961438111, "title": "January"}},
+                {"properties": {"sheetId": 222, "title": "May"}},
+            ],
+        }
+        ranges = {
+            "'January'!A1:Z220": [["January Football CCA", "Herwanto"]],
+            "'May'!A1:Z220": [
+                ["May Football CCA"],
+                ["Thursday 14 May", "NSG C Div", "Boon Lay", "Mr Tan"],
+            ],
+        }
+        fake_service = FakeSheetsService(book, ranges=ranges)
+        with (
+            patch.object(bot.gs, "_sheets", return_value=fake_service),
+            patch.object(bot.gs, "get_config", side_effect=lambda key: {
+                "cca_schedule_spreadsheet_id": "1L5FGME5itmc3vknwL0xSsIrz4qJ3n6z1YfxffgeB3nU",
+                "cca_schedule_gid": "1961438111",
+            }.get(key, "")),
+        ):
+            snapshot = bot.gs.get_cca_schedule_snapshot(bot.date(2026, 5, 14), week_label="Odd week, Term 2 Week 8")
+
+        self.assertEqual(snapshot["selected_tab"], "May")
+        self.assertFalse(snapshot["assigned"])
+
+    def test_unsupported_memory_backend_claim_is_blocked(self):
+        reply = (
+            "The memory store is hitting a Sheets error on the backend. "
+            "This means I am running with session memory only and the service account needs access."
+        )
+
+        guarded = bot._memory_backend_claim_guardrail(reply, [])
+
+        self.assertIn("cannot verify", guarded)
+        self.assertIn("exact error", guarded)
+        self.assertNotIn("service account needs access", guarded)
+
+    def test_memory_backend_claim_allowed_with_tool_evidence(self):
+        reply = "Permanent memory failed because Google Sheets denied permission."
+        guarded = bot._memory_backend_claim_guardrail(
+            reply,
+            [{"content": "Failed to remember: Google Sheets denied write access while updating Config."}],
+        )
+
+        self.assertEqual(guarded, reply)
+
     def test_daily_load_counts_relieved_lessons_as_zero(self):
         today_key = bot.datetime.now(bot.SGT).date().isoformat()
         agenda = {

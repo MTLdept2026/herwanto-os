@@ -588,6 +588,43 @@ def _date_tokens_for_sheet(target: date) -> set[str]:
     }
 
 
+def _date_selection_tokens_for_sheet(target: date, week_label: str = "") -> set[str]:
+    month_full = target.strftime("%B").lower()
+    month_short = target.strftime("%b").lower()
+    tokens = set(_date_tokens_for_sheet(target))
+    tokens.update({month_full, month_short})
+    label = _norm_cell(week_label)
+    if label:
+        tokens.add(label)
+        match = re.search(r"\bterm\s*(\d+)\s+week\s*(\d+)\b", label)
+        if match:
+            term, week = match.groups()
+            tokens.update({
+                f"term {term} week {week}",
+                f"t{term} week {week}",
+                f"t{term}w{week}",
+                f"week {week}",
+            })
+    return {token for token in tokens if token}
+
+
+def _week_label_tokens(week_label: str = "") -> set[str]:
+    label = _norm_cell(week_label)
+    if not label:
+        return set()
+    tokens = {label}
+    match = re.search(r"\bterm\s*(\d+)\s+week\s*(\d+)\b", label)
+    if match:
+        term, week = match.groups()
+        tokens.update({
+            f"term {term} week {week}",
+            f"t{term} week {week}",
+            f"t{term}w{week}",
+            f"week {week}",
+        })
+    return tokens
+
+
 def _row_text(row: list[str]) -> str:
     return " ".join(str(cell or "").strip() for cell in row if str(cell or "").strip()).lower()
 
@@ -644,7 +681,8 @@ def get_cca_schedule_snapshot(target_date: date | str | None = None, week_label:
     ).execute()
     spreadsheet_title = book.get("properties", {}).get("title", spreadsheet_id)
     tokens = _date_tokens_for_sheet(target)
-    week_tokens = {str(week_label or "").lower()}
+    selection_tokens = _date_selection_tokens_for_sheet(target, week_label)
+    week_tokens = _week_label_tokens(week_label)
     candidates = []
     for sheet in book.get("sheets", []) or []:
         props = sheet.get("properties", {})
@@ -660,11 +698,11 @@ def get_cca_schedule_snapshot(target_date: date | str | None = None, week_label:
         score = 0
         reasons = []
         if sheet_id == gid:
-            score += 2
+            score += 1
             reasons.append("configured gid")
-        if any(token and token in title_text for token in tokens):
+        if any(token and token in title_text for token in selection_tokens):
             score += 12
-            reasons.append("date in tab title")
+            reasons.append("date/week/month in tab title")
         if any(token and token in top_text for token in tokens):
             score += 8
             reasons.append("date/day in tab rows")
