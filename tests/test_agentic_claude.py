@@ -611,6 +611,50 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(result["sent"], 1)
         mark_nudge.assert_called_once_with("9")
 
+    def test_web_push_recovery_prioritises_missed_briefing_over_later_nudge(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 12, 7, 20))
+        briefing = {
+            "id": "40",
+            "kind": "briefing",
+            "title": "Morning briefing",
+            "body": "Morning digest",
+            "source": "morning_briefing:2026-05-12",
+            "created": bot.SGT.localize(bot.datetime(2026, 5, 12, 7, 0)).isoformat(),
+            "archived": False,
+        }
+        nudge = {
+            "id": "41",
+            "kind": "reminder",
+            "title": "H.I.R.A nudge",
+            "body": "Lower priority nudge",
+            "source": "nudge:41",
+            "created": bot.SGT.localize(bot.datetime(2026, 5, 12, 7, 10)).isoformat(),
+            "archived": False,
+        }
+        sent_sources = []
+
+        def fake_send(_title, _body, data=None):
+            sent_sources.append((data or {}).get("source"))
+            return 1
+
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return now if tz else now.replace(tzinfo=None)
+
+        with (
+            patch.object(web_app, "datetime", FixedDateTime),
+            patch.object(web_app.bot.gs, "get_app_notifications", return_value=[nudge, briefing]),
+            patch.object(web_app.bot.gs, "get_web_push_delivery_log", return_value=[]),
+            patch.object(web_app.bot.gs, "send_web_push_notification", side_effect=fake_send),
+            patch.object(web_app.bot, "_record_notification_outcome"),
+            patch.object(web_app.bot.gs, "set_config"),
+        ):
+            result = web_app.recover_missed_push_notifications(limit=1)
+
+        self.assertEqual(result["attempted"], 1)
+        self.assertEqual(sent_sources, ["morning_briefing:2026-05-12"])
+
     def test_notification_health_diagnostics_survive_subscription_lookup_failure(self):
         with (
             patch.object(web_app.bot.gs, "get_web_push_subscriptions", return_value=[{
@@ -1165,6 +1209,7 @@ class AgenticClaudeTests(unittest.TestCase):
             patch.object(bot, "_notification_feedback_bias", return_value=0),
             patch.object(bot, "_should_suppress_notification", return_value=False),
             patch.object(bot, "_action_reminder_was_delivered", return_value=False),
+            patch.object(bot, "_cca_roster_assignment_confirmed", return_value=True),
         ):
             candidate = bot._calendar_event_reminder_candidate(event, now=now)
 
@@ -1173,6 +1218,46 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(candidate["kind"], "reminder")
         self.assertIn("CCA duty briefing", candidate["body"])
         self.assertIn("calendar_reminder:2026-05-05:evt-duty", candidate["source"])
+
+    def test_calendar_reminder_blocks_cca_when_not_on_roster(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 12, 13, 31))
+        event = {
+            "id": "evt-cdiv",
+            "summary": "C Div Training",
+            "start": {"dateTime": "2026-05-12T15:00:00+08:00"},
+            "end": {"dateTime": "2026-05-12T18:00:00+08:00"},
+            "_calendar_id": "primary",
+        }
+
+        with (
+            patch.object(bot, "_notification_feedback_bias", return_value=0),
+            patch.object(bot, "_should_suppress_notification", return_value=False),
+            patch.object(bot, "_action_reminder_was_delivered", return_value=False),
+            patch.object(bot, "_cca_roster_assignment_confirmed", return_value=False),
+        ):
+            candidate = bot._calendar_event_reminder_candidate(event, now=now)
+
+        self.assertIsNone(candidate)
+
+    def test_calendar_reminder_blocks_school_events_on_medical_leave(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 12, 13, 31))
+        event = {
+            "id": "evt-workshop",
+            "summary": "Staff training workshop",
+            "start": {"dateTime": "2026-05-12T15:00:00+08:00"},
+            "end": {"dateTime": "2026-05-12T16:00:00+08:00"},
+            "_calendar_id": "primary",
+        }
+
+        with (
+            patch.object(bot, "_notification_feedback_bias", return_value=0),
+            patch.object(bot, "_should_suppress_notification", return_value=False),
+            patch.object(bot, "_action_reminder_was_delivered", return_value=False),
+            patch.object(bot, "school_day_cleared_memory_for_date", return_value="absence:2026-05-12: medical leave"),
+        ):
+            candidate = bot._calendar_event_reminder_candidate(event, now=now)
+
+        self.assertIsNone(candidate)
 
     def test_calendar_reminder_skips_unmatched_or_already_delivered_events(self):
         now = bot.SGT.localize(bot.datetime(2026, 5, 5, 14, 30))
@@ -1343,6 +1428,7 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertTrue(bot._quiet_hours_active(now=now))
         self.assertTrue(bot._should_send_phone_push("reminder", "nudge:42", now=now))
+        self.assertTrue(bot._should_send_phone_push("briefing", "morning_briefing:2026-05-05", now=now))
         self.assertFalse(bot._should_send_phone_push("reminder", "checkin:42", now=now))
 
     def test_dispatch_keeps_pwa_nudge_pending_without_phone_push(self):
@@ -1955,14 +2041,17 @@ class AgenticClaudeTests(unittest.TestCase):
                 title="Latihan Peribahasa",
                 hidden=True,
                 no_submission_needed=True,
+                purpose_id="worksheet",
             )
             overrides = bot.gs.get_classops_content_overrides()
 
         self.assertTrue(override["hidden"])
         self.assertTrue(override["no_submission_needed"])
+        self.assertEqual(override["purpose_id"], "worksheet")
         self.assertEqual(overrides["2G3/24:2:26/latihan.pdf"]["title"], "Latihan Peribahasa")
         self.assertTrue(overrides["2G3/24:2:26/latihan.pdf"]["hidden"])
         self.assertTrue(overrides["2G3/24:2:26/latihan.pdf"]["no_submission_needed"])
+        self.assertEqual(overrides["2G3/24:2:26/latihan.pdf"]["purpose_id"], "worksheet")
 
     def test_classops_content_overrides_rename_and_hide_manifest_items(self):
         manifest = {
@@ -1989,6 +2078,36 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(updated["classes"][0]["content_item_count"], 1)
         self.assertEqual(updated["classes"][0]["content_items"][0]["title"], "Nota - Masa Senggang")
         self.assertTrue(updated["classes"][0]["content_items"][0]["title_overridden"])
+
+    def test_classops_content_overrides_can_correct_purpose(self):
+        manifest = {
+            "summary": {"content_item_count": 1},
+            "classes": [{
+                "class": "2G3",
+                "content_item_count": 1,
+                "content_items": [
+                    {
+                        "path": "2G3/24:2:26/raw.pdf",
+                        "title": "Raw",
+                        "date": "2026-02-24",
+                        "purpose_id": "slides",
+                        "purpose_label": "Slides",
+                        "purpose_tone": "resource",
+                        "purpose_rank": 50,
+                        "trackable": False,
+                    },
+                ],
+            }],
+        }
+        ledger = {"content_overrides": {"2G3/24:2:26/raw.pdf": {"purpose_id": "worksheet"}}}
+
+        updated = web_app._classops_apply_content_overrides(manifest, ledger)
+        item = updated["classes"][0]["content_items"][0]
+
+        self.assertEqual(item["purpose_id"], "worksheet")
+        self.assertEqual(item["purpose_label"], "Worksheet")
+        self.assertTrue(item["trackable"])
+        self.assertTrue(item["purpose_overridden"])
 
     def test_classops_content_overrides_mark_no_submission_needed(self):
         manifest = {

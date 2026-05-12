@@ -11,6 +11,15 @@ const state = {
 
 const $ = (selector) => document.querySelector(selector);
 let taskHideTimer = null;
+const CONTENT_PURPOSES = {
+  lesson_page: { label: "Lesson page", tone: "lesson", rank: 10, trackable: false },
+  submission_task: { label: "Submission task", tone: "task", rank: 20, trackable: true },
+  worksheet: { label: "Worksheet", tone: "task", rank: 30, trackable: true },
+  notes: { label: "Notes", tone: "resource", rank: 40, trackable: false },
+  slides: { label: "Slides", tone: "resource", rank: 50, trackable: false },
+  media: { label: "Media", tone: "resource", rank: 60, trackable: false },
+  resource: { label: "Resource", tone: "resource", rank: 90, trackable: false },
+};
 
 function escapeHtml(value = "") {
   return String(value)
@@ -113,14 +122,21 @@ function contentDateLabel(item = {}) {
 
 function contentPurpose(item = {}) {
   const purpose = item.purpose && typeof item.purpose === "object" ? item.purpose : {};
-  const label = item.purpose_label || purpose.label || (item.kind ? item.kind : "Resource");
+  const id = item.purpose_id || purpose.id || "resource";
+  const fallback = CONTENT_PURPOSES[id] || CONTENT_PURPOSES.resource;
+  const label = item.purpose_label || purpose.label || fallback.label || (item.kind ? item.kind : "Resource");
   return {
-    id: item.purpose_id || purpose.id || "resource",
+    id,
     label,
-    tone: item.purpose_tone || purpose.tone || "resource",
-    rank: Number(item.purpose_rank || purpose.rank || 90),
-    trackable: Boolean(item.trackable ?? purpose.trackable),
+    tone: item.purpose_tone || purpose.tone || fallback.tone || "resource",
+    rank: Number(item.purpose_rank || purpose.rank || fallback.rank || 90),
+    trackable: Boolean(item.trackable ?? purpose.trackable ?? fallback.trackable),
   };
+}
+
+function purposeForId(purposeId = "resource") {
+  const id = CONTENT_PURPOSES[purposeId] ? purposeId : "resource";
+  return { id, ...CONTENT_PURPOSES[id] };
 }
 
 function contentSortDateValue(value = "") {
@@ -146,10 +162,18 @@ function sortContentItems(items = []) {
       if (rightDate === null) return -1;
       if (leftDate !== rightDate) return rightDate - leftDate;
     }
-    const a = [left.folder || "", left.title || "", left.path || ""].map((value) => String(value || "").toLowerCase());
-    const b = [right.folder || "", right.title || "", right.path || ""].map((value) => String(value || "").toLowerCase());
+    const a = [left.folder || ""].map((value) => String(value || "").toLowerCase());
+    const b = [right.folder || ""].map((value) => String(value || "").toLowerCase());
     for (let index = 0; index < a.length; index += 1) {
       const compared = a[index].localeCompare(b[index]);
+      if (compared) return compared;
+    }
+    const purposeRank = Number(left.purpose_rank || contentPurpose(left).rank || 90) - Number(right.purpose_rank || contentPurpose(right).rank || 90);
+    if (purposeRank) return purposeRank;
+    const titleA = [left.title || "", left.path || ""].map((value) => String(value || "").toLowerCase());
+    const titleB = [right.title || "", right.path || ""].map((value) => String(value || "").toLowerCase());
+    for (let index = 0; index < titleA.length; index += 1) {
+      const compared = titleA[index].localeCompare(titleB[index]);
       if (compared) return compared;
     }
     return 0;
@@ -255,6 +279,7 @@ function renderContents(classItem) {
     $("#ledgerMeta").textContent = "--";
     $("#studentReport").innerHTML = `<div class="empty">Choose a class to load its roster.</div>`;
     $("#contentsTable").innerHTML = `<div class="empty">Choose a class to view its content page.</div>`;
+    $("#printContents").innerHTML = "";
     hideContentInspector();
     return;
   }
@@ -287,6 +312,55 @@ function renderContents(classItem) {
     const stillExists = contentItems.some((item) => item.path === state.selectedContentItem.path);
     if (!stillExists) hideContentInspector();
   }
+  renderPrintableContents(classItem, contentItems);
+}
+
+function groupedContentItems(contentItems = []) {
+  const groups = new Map();
+  for (const item of contentItems) {
+    const key = `${item.date || ""}|${item.folder || ""}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        date: item.date || "",
+        folder: item.folder || "",
+        date_missing: item.date_missing || !item.date,
+        items: [],
+      });
+    }
+    groups.get(key).items.push(item);
+  }
+  return [...groups.values()];
+}
+
+function renderPrintableContents(classItem = currentClassItem(), contentItems = sortContentItems(classItem?.content_items || [])) {
+  const target = $("#printContents");
+  if (!target) return;
+  if (!classItem) {
+    target.innerHTML = "";
+    return;
+  }
+  const groups = groupedContentItems(contentItems);
+  target.innerHTML = `
+    <h1>${escapeHtml(classItem.class || "Class")} Contents</h1>
+    <p class="print-meta">Student-facing contents · ${groups.length} lesson${groups.length === 1 ? "" : "s"} · ${contentItems.length} item${contentItems.length === 1 ? "" : "s"}</p>
+    ${groups.map((group) => `
+      <section class="print-lesson">
+        <h2>${escapeHtml(group.date_missing ? "Check date" : formatContentDate(group.date))}${group.folder ? ` · ${escapeHtml(group.folder)}` : ""}</h2>
+        <div class="print-items">
+          ${group.items.map((item) => {
+            const purpose = contentPurpose(item);
+            return `
+              <article class="print-item">
+                <span>${escapeHtml(purpose.label)}</span>
+                <strong>${escapeHtml(item.title || "Untitled")}</strong>
+                <small>${escapeHtml(item.kind || "")}</small>
+              </article>
+            `;
+          }).join("")}
+        </div>
+      </section>
+    `).join("")}
+  `;
 }
 
 function contentItemFromRow(row) {
@@ -319,6 +393,7 @@ function showContentInspector(item = {}) {
   if (reflectionPanel) reflectionPanel.hidden = true;
   $("#contentTitleInput").value = item.title || "";
   const purpose = contentPurpose(item);
+  $("#contentPurposeSelect").value = purpose.id;
   $("#contentInspectorMeta").textContent = [
     purpose.label,
     item.kind || "file",
@@ -353,6 +428,21 @@ function updateContentItemInState(path, updates = {}) {
     state.data.summary.content_item_count = (state.data.classes || [])
       .reduce((total, item) => total + Number(item.content_item_count || 0), 0);
   }
+}
+
+function applyPurposeToUpdates(updates = {}, purposeId = "") {
+  if (!purposeId) return updates;
+  const purpose = purposeForId(purposeId);
+  return {
+    ...updates,
+    purpose,
+    purpose_id: purpose.id,
+    purpose_label: purpose.label,
+    purpose_tone: purpose.tone,
+    purpose_rank: purpose.rank,
+    trackable: purpose.trackable,
+    purpose_overridden: true,
+  };
 }
 
 function markContentItemSubmissionNeeded(path, needed) {
@@ -571,6 +661,7 @@ async function saveContentOverride({ hidden = null } = {}) {
   const item = state.selectedContentItem;
   if (!item?.path) return setStatus("Select a contents item first.", "warn");
   const title = $("#contentTitleInput").value.trim();
+  const purposeId = $("#contentPurposeSelect").value;
   if (!title && !hidden) return setStatus("Add a display title before saving.", "warn");
   setButtonBusy(hidden ? "#hideContentItemBtn" : "#saveContentTitleBtn", true);
   $(hidden ? "#saveContentTitleBtn" : "#hideContentItemBtn").disabled = true;
@@ -581,6 +672,7 @@ async function saveContentOverride({ hidden = null } = {}) {
       path: item.path,
       title: hidden ? undefined : title,
       hidden,
+      purpose_id: hidden ? undefined : purposeId,
     };
     const data = await api("/api/classops/content-override", {
       method: "POST",
@@ -598,8 +690,9 @@ async function saveContentOverride({ hidden = null } = {}) {
       return;
     }
     const nextTitle = data.override?.title || title;
-    const updated = { ...item, title: nextTitle, title_overridden: true };
-    updateContentItemInState(item.path, { title: nextTitle, title_overridden: true });
+    const updates = applyPurposeToUpdates({ title: nextTitle, title_overridden: true }, data.override?.purpose_id || purposeId);
+    const updated = { ...item, ...updates };
+    updateContentItemInState(item.path, updates);
     renderContents(currentClassItem());
     showContentInspector(updated);
     setStatus("Display title saved.", "ok");
@@ -712,6 +805,51 @@ function selectClass(className) {
   renderContents(classItem);
 }
 
+function contentMap(data = {}) {
+  const map = new Map();
+  for (const classItem of data.classes || []) {
+    for (const item of classItem.content_items || []) {
+      if (!item.path) continue;
+      map.set(item.path, { ...item, className: classItem.class || "" });
+    }
+  }
+  return map;
+}
+
+function scanDiffSummary(previous, next) {
+  if (!previous?.classes?.length) {
+    const count = Number(next?.summary?.content_item_count || 0);
+    const dateChecks = (next?.classes || []).reduce((total, classItem) => {
+      return total + (classItem.content_items || []).filter((item) => item.date_missing || !item.date).length;
+    }, 0);
+    return `Scan loaded ${count} content item${count === 1 ? "" : "s"}${dateChecks ? ` · ${dateChecks} need date check` : ""}.`;
+  }
+  const before = contentMap(previous);
+  const after = contentMap(next);
+  let added = 0;
+  let removed = 0;
+  let renamed = 0;
+  let purposeChanged = 0;
+  let dateChecks = 0;
+  for (const [path, item] of after.entries()) {
+    const old = before.get(path);
+    if (!old) added += 1;
+    if (old && (old.title || "") !== (item.title || "")) renamed += 1;
+    if (old && contentPurpose(old).id !== contentPurpose(item).id) purposeChanged += 1;
+    if (item.date_missing || !item.date) dateChecks += 1;
+  }
+  for (const path of before.keys()) {
+    if (!after.has(path)) removed += 1;
+  }
+  const parts = [];
+  if (added) parts.push(`${added} new`);
+  if (renamed) parts.push(`${renamed} renamed`);
+  if (purposeChanged) parts.push(`${purposeChanged} retyped`);
+  if (removed) parts.push(`${removed} removed/hidden`);
+  if (dateChecks) parts.push(`${dateChecks} need date check`);
+  return parts.length ? `Scan updated: ${parts.join(" · ")}.` : "Scan complete: no content changes detected.";
+}
+
 function renderDashboard(data) {
   state.data = data;
   const classes = data.classes || [];
@@ -732,10 +870,13 @@ async function loadDashboard() {
   setButtonBusy("#scanBtn", true);
   setStatus("Scanning Dropbox ClassOps folder...");
   setTask("Scanning Dropbox ClassOps folder");
+  const previousData = state.data;
   try {
     const data = await api("/api/classops/dashboard");
+    const summary = scanDiffSummary(previousData, data);
     renderDashboard(data);
-    settleTask("Dropbox scan complete");
+    setStatus(summary, "ok");
+    settleTask(summary);
   } catch (error) {
     setStatus(error.message, "error");
     settleTask("Dropbox scan failed", "error");
@@ -751,7 +892,10 @@ $("#saveTokenBtn").addEventListener("click", () => {
 });
 
 $("#scanBtn").addEventListener("click", loadDashboard);
-$("#printBtn").addEventListener("click", () => window.print());
+$("#printBtn").addEventListener("click", () => {
+  renderPrintableContents();
+  window.print();
+});
 
 function buildAssignmentPayload(nonSubmitted = [...state.nonSubmitted]) {
   if (!state.selectedClass) return setStatus("Select a class first.", "warn");

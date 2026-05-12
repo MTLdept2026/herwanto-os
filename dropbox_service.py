@@ -349,6 +349,18 @@ def infer_content_purpose(file_item: dict, collection: dict | None = None) -> di
     }
 
 
+def classops_content_purpose_from_id(purpose_id: str) -> dict:
+    purpose = str(purpose_id or "").strip()
+    meta = CONTENT_PURPOSES.get(purpose) or CONTENT_PURPOSES["resource"]
+    return {
+        "id": purpose if purpose in CONTENT_PURPOSES else "resource",
+        "label": meta["label"],
+        "tone": meta["tone"],
+        "rank": meta["rank"],
+        "trackable": (purpose if purpose in CONTENT_PURPOSES else "resource") in {"submission_task", "worksheet"},
+    }
+
+
 def _clean_title_text(value: str) -> str:
     text = str(value or "")
     text = re.sub(r"\s+", " ", text.replace("\u00a0", " ")).strip(" \t\r\n-_|")

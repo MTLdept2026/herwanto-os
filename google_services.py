@@ -1857,9 +1857,10 @@ def get_classops_content_overrides() -> dict:
                 "title": str(value.get("title") or "").strip(),
                 "hidden": bool(value.get("hidden", False)),
                 "no_submission_needed": bool(value.get("no_submission_needed", False)),
+                "purpose_id": str(value.get("purpose_id") or "").strip(),
             }
         else:
-            normalised[key] = {"title": str(value or "").strip(), "hidden": False, "no_submission_needed": False}
+            normalised[key] = {"title": str(value or "").strip(), "hidden": False, "no_submission_needed": False, "purpose_id": ""}
     return normalised
 
 
@@ -1868,6 +1869,7 @@ def save_classops_content_override(
     title: str | None = None,
     hidden: bool | None = None,
     no_submission_needed: bool | None = None,
+    purpose_id: str | None = None,
 ) -> dict:
     clean_path = str(path or "").strip()
     if not clean_path:
@@ -1883,6 +1885,8 @@ def save_classops_content_override(
         current["hidden"] = bool(hidden)
     if no_submission_needed is not None:
         current["no_submission_needed"] = bool(no_submission_needed)
+    if purpose_id is not None:
+        current["purpose_id"] = str(purpose_id or "").strip()
     overrides[clean_path] = current
     set_classops_ledger(ledger)
     return {"path": clean_path, **current}

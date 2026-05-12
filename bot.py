@@ -2769,6 +2769,37 @@ def _calendar_event_requires_reminder(event: dict) -> bool:
     return any(term in text for term in _calendar_reminder_terms())
 
 
+def _calendar_event_is_cca_like(event: dict) -> bool:
+    text = _event_text(event).lower()
+    return bool(re.search(r"\b(?:cca|c\s*div|b\s*div|football|training|match)\b", text))
+
+
+def _calendar_event_is_work_school_like(event: dict) -> bool:
+    text = _event_text(event).lower()
+    return bool(re.search(
+        r"\b(?:school|lesson|class|cca|c\s*div|b\s*div|football|training|duty|briefing|meeting|workshop|staff|relief|exam|invigilation)\b",
+        text,
+    ))
+
+
+def _cca_roster_assignment_confirmed(target: date) -> bool:
+    try:
+        snapshot = gs.get_cca_schedule_snapshot(target, week_label=_agenda_week_display(target), user_name="Herwanto")
+    except Exception as exc:
+        logger.warning(f"CCA reminder roster confirmation failed: {exc}")
+        return False
+    return bool(snapshot.get("assigned"))
+
+
+def _calendar_event_block_reason(event: dict, start_dt: datetime) -> str:
+    if _calendar_event_is_cca_like(event) and not _cca_roster_assignment_confirmed(start_dt.date()):
+        return "not on CCA schedule"
+    absence = school_day_cleared_memory_for_date(start_dt.date())
+    if absence and _calendar_event_is_work_school_like(event):
+        return "away from work/school"
+    return ""
+
+
 def _travel_override_minutes(location: str) -> int | None:
     raw = os.environ.get("HIRA_TRAVEL_TIME_OVERRIDES", "").strip()
     if not raw:
@@ -2844,6 +2875,8 @@ def _calendar_event_travel_candidate(event: dict, now: datetime | None = None) -
     travel_minutes, travel_source = _estimated_travel_minutes_with_source(event)
     if not travel_minutes:
         return None
+    if _calendar_event_block_reason(event, start_dt):
+        return None
     buffer_minutes = _env_int("HIRA_TRAVEL_BUFFER_MINUTES", 10, 0)
     leave_dt = start_dt - timedelta(minutes=travel_minutes + buffer_minutes)
     minutes_until_leave = int((leave_dt - current).total_seconds() // 60)
@@ -2891,6 +2924,8 @@ def _calendar_event_reminder_candidate(event: dict, now: datetime | None = None)
     current = now or datetime.now(SGT)
     start_dt = _event_start_datetime(event)
     if not start_dt or start_dt.date() != current.date():
+        return None
+    if _calendar_event_block_reason(event, start_dt):
         return None
     minutes_until = int((start_dt - current).total_seconds() // 60)
     lookahead = _env_int("HIRA_CALENDAR_REMINDER_LOOKAHEAD_MINUTES", 90, 5)
@@ -8493,6 +8528,8 @@ def _should_send_phone_push(kind: str, source: str = "", now: datetime | None = 
     clean_kind = str(kind or "").strip()
     clean_source = str(source or "").strip()
     if clean_kind == "urgent":
+        return True
+    if clean_kind == "briefing" or re.match(r"^(?:web_)?(?:morning|evening)_briefing:", clean_source):
         return True
     if clean_source.startswith("work_gmail:"):
         return True

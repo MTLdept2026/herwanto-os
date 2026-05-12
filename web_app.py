@@ -398,7 +398,17 @@ def recover_missed_push_notifications(limit: int | None = None) -> dict:
     attempted = 0
     sent_total = 0
     skipped = 0
-    for item in reversed(queued):
+
+    def recovery_rank(item: dict) -> tuple:
+        source = _notification_push_source(item)
+        kind = str(item.get("kind", "") or "").strip()
+        is_briefing = kind == "briefing" or re.match(r"^(?:web_)?(?:morning|evening)_briefing:", source)
+        is_explicit_nudge = source.startswith("nudge:")
+        created = _parse_sgt_datetime(item.get("created", ""))
+        created_ts = created.timestamp() if created else 0
+        return (0 if is_briefing else 1 if is_explicit_nudge else 2, -created_ts)
+
+    for item in sorted([item for item in queued if not item.get("archived")], key=recovery_rank):
         if attempted >= max(1, int(limit or _WEB_PUSH_RECOVERY_LIMIT)):
             break
         source = _notification_push_source(item)
@@ -808,6 +818,7 @@ class ClassOpsContentOverrideRequest(BaseModel):
     title: Optional[str] = None
     hidden: Optional[bool] = None
     no_submission_needed: Optional[bool] = None
+    purpose_id: Optional[str] = None
 
 
 class ClassOpsNoSubmissionNeededRequest(BaseModel):
@@ -3350,9 +3361,10 @@ def _classops_apply_content_overrides(manifest: dict, ledger: dict | None = None
                 "title": str(value.get("title") or "").strip(),
                 "hidden": bool(value.get("hidden", False)),
                 "no_submission_needed": bool(value.get("no_submission_needed", False)),
+                "purpose_id": str(value.get("purpose_id") or "").strip(),
             }
         else:
-            normalised[key] = {"title": str(value or "").strip(), "hidden": False, "no_submission_needed": False}
+            normalised[key] = {"title": str(value or "").strip(), "hidden": False, "no_submission_needed": False, "purpose_id": ""}
     for class_item in manifest.get("classes", []) or []:
         filtered = []
         for item in class_item.get("content_items", []) or []:
@@ -3366,6 +3378,15 @@ def _classops_apply_content_overrides(manifest: dict, ledger: dict | None = None
                 next_item["title_overridden"] = True
             if override.get("no_submission_needed"):
                 next_item["no_submission_needed"] = True
+            if override.get("purpose_id"):
+                purpose = dropbox.classops_content_purpose_from_id(override["purpose_id"])
+                next_item["purpose"] = purpose
+                next_item["purpose_id"] = purpose.get("id", "resource")
+                next_item["purpose_label"] = purpose.get("label", "Resource")
+                next_item["purpose_tone"] = purpose.get("tone", "resource")
+                next_item["purpose_rank"] = purpose.get("rank", 90)
+                next_item["trackable"] = bool(purpose.get("trackable"))
+                next_item["purpose_overridden"] = True
             filtered.append(next_item)
         class_item["content_items"] = dropbox.sort_classops_content_items(filtered)
         class_item["content_item_count"] = len(filtered)
@@ -3513,6 +3534,7 @@ def classops_content_override(
             title=req.title,
             hidden=req.hidden,
             no_submission_needed=req.no_submission_needed,
+            purpose_id=req.purpose_id,
         )
         _record_web_action(
             "classops.content_override",
@@ -3524,6 +3546,7 @@ def classops_content_override(
                 "path": req.path,
                 "hidden": str(bool(req.hidden)),
                 "no_submission_needed": str(bool(req.no_submission_needed)),
+                "purpose_id": req.purpose_id or "",
             },
         )
         return {"ok": True, "override": override}

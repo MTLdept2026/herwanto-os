@@ -133,8 +133,20 @@
               <span>Display title</span>
               <input id="contentTitleInput" type="text" />
             </label>
+            <label>
+              <span>Content type</span>
+              <select id="contentPurposeSelect">
+                <option value="lesson_page">Lesson page</option>
+                <option value="slides">Slides</option>
+                <option value="worksheet">Worksheet</option>
+                <option value="notes">Notes</option>
+                <option value="submission_task">Submission task</option>
+                <option value="media">Media</option>
+                <option value="resource">Resource</option>
+              </select>
+            </label>
             <div class="content-inspector-actions">
-              <button id="saveContentTitleBtn" class="control-primary" type="button">Save title</button>
+              <button id="saveContentTitleBtn" class="control-primary" type="button">Save details</button>
               <button id="trackContentItemBtn" class="control-secondary" type="button">Track</button>
               <button id="openContentFileBtn" class="control-secondary" type="button">Open file</button>
               <button id="reflectionWorksheetBtn" type="button" class="control-secondary">Worksheet</button>
@@ -152,6 +164,7 @@
               <div id="reflectionBody" class="reflection-body"></div>
             </section>
           </section>
+          <section id="printContents" class="print-contents" aria-label="Printable class contents"></section>
           <section class="student-ledger">
             <div class="section-head">
               <div>

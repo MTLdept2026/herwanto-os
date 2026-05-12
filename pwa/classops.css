@@ -50,7 +50,7 @@ body::before {
   opacity: 0.09;
 }
 
-button, input {
+button, input, select {
   min-width: 0;
   min-height: 44px;
   border: 1px solid var(--border-visible);
@@ -66,10 +66,18 @@ button, input {
     transform 120ms ease;
 }
 
-input {
+input, select {
   width: 100%;
   padding: 12px 14px;
   background: var(--surface);
+}
+
+select {
+  appearance: none;
+  background:
+    linear-gradient(45deg, transparent 50%, var(--text-primary) 50%) calc(100% - 18px) 50% / 6px 6px no-repeat,
+    linear-gradient(135deg, var(--text-primary) 50%, transparent 50%) calc(100% - 13px) 50% / 6px 6px no-repeat,
+    var(--surface);
 }
 
 button, .ghost {
@@ -129,7 +137,8 @@ button.is-activated::after,
 
 button:focus-visible,
 .ghost:focus-visible,
-input:focus-visible {
+input:focus-visible,
+select:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent) 70%, #fff);
   outline-offset: 2px;
   border-color: var(--accent);
@@ -1287,6 +1296,10 @@ aside h2 {
   text-transform: uppercase;
 }
 
+.print-contents {
+  display: none;
+}
+
 .content-inspector-meta {
   overflow-wrap: anywhere;
   color: var(--text-secondary);
@@ -1586,15 +1599,78 @@ aside h2 {
   .status-strip,
   .class-grid,
   aside,
+  .contents-table,
+  .collection-panel,
   .content-inspector,
   .student-ledger,
   .status-text,
+  .work-status,
   .hero-panel {
     display: none !important;
   }
   .shell { width: 100%; padding: 0; }
   .workspace { display: block; }
   .detail { border: 0; padding: 0; }
+  .detail > .section-head {
+    display: none;
+  }
+  .print-contents {
+    display: block;
+    color: #000;
+    font-family: Arial, sans-serif;
+  }
+  .print-contents h1 {
+    margin: 0 0 6px;
+    color: #000;
+    font-family: Arial, sans-serif;
+    font-size: 28px;
+    line-height: 1.1;
+  }
+  .print-contents .print-meta {
+    margin: 0 0 18px;
+    color: #333;
+    font-size: 12px;
+  }
+  .print-lesson {
+    break-inside: avoid;
+    margin: 0 0 18px;
+  }
+  .print-lesson h2 {
+    margin: 0 0 8px;
+    padding: 6px 8px;
+    background: #dfe8c5;
+    color: #000;
+    font-family: Arial, sans-serif;
+    font-size: 17px;
+    line-height: 1.2;
+  }
+  .print-items {
+    display: table;
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .print-item {
+    display: table-row;
+  }
+  .print-item span,
+  .print-item strong,
+  .print-item small {
+    display: table-cell;
+    padding: 7px 8px;
+    border: 1px solid #000;
+    vertical-align: top;
+    font-size: 12px;
+  }
+  .print-item span {
+    width: 112px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .print-item small {
+    width: 110px;
+    color: #111;
+    text-align: right;
+  }
   .contents-row {
     break-inside: avoid;
     grid-template-columns: 64px minmax(0, 1fr) 150px;
