@@ -22,6 +22,17 @@ COMPILE_TARGETS = [
     "classops_intelligence.py",
     "dropbox_service.py",
 ]
+CRITICAL_UNIT_TESTS = [
+    "tests.test_agentic_claude.AgenticClaudeTests.test_medical_leave_context_becomes_teaching_memory",
+    "tests.test_agentic_claude.AgenticClaudeTests.test_medical_leave_archives_active_school_calendar_notifications",
+    "tests.test_agentic_claude.AgenticClaudeTests.test_not_on_duty_blocks_cca_calendar_reminder",
+    "tests.test_agentic_claude.AgenticClaudeTests.test_calendar_reminder_blocks_cca_when_not_on_roster",
+    "tests.test_agentic_claude.AgenticClaudeTests.test_calendar_reminder_blocks_school_events_on_medical_leave",
+    "tests.test_agentic_claude.AgenticClaudeTests.test_dispatch_skips_stale_calendar_reminder",
+    "tests.test_agentic_claude.AgenticClaudeTests.test_dispatch_marks_action_reminder_after_confirmed_push",
+    "tests.test_agentic_claude.AgenticClaudeTests.test_fill_mtl_percentage_scores_updates_blank_fa2_percentages",
+    "tests.test_agentic_claude.AgenticClaudeTests.test_fill_mtl_percentage_scores_reuses_blank_column_after_raw_score",
+]
 
 
 def run(cmd: list[str], env: dict[str, str] | None = None) -> int:
@@ -58,18 +69,22 @@ def run_smoke(base_url: str, token: str = "") -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--critical", action="store_true", help="Run HIRA's trust-critical regression checks")
     parser.add_argument("--unit", action="store_true", help="Run Python unit tests")
     parser.add_argument("--compile", action="store_true", help="Compile core Python modules")
     parser.add_argument("--smoke-url", default="", help="Optional running app URL, e.g. http://127.0.0.1:4173")
     parser.add_argument("--token", default=os.environ.get("HIRA_WEB_TOKEN", ""), help="Optional PWA token for protected smoke endpoints")
     args = parser.parse_args()
 
-    selected = args.unit or args.compile or bool(args.smoke_url)
+    selected = args.critical or args.unit or args.compile or bool(args.smoke_url)
+    run_critical = args.critical or not selected
     run_unit = args.unit or not selected
     run_compile = args.compile or not selected
     status = 0
     if run_compile:
         status |= run([sys.executable, "-m", "py_compile", *COMPILE_TARGETS], env={"PYTHONPYCACHEPREFIX": PY_CACHE})
+    if run_critical:
+        status |= run([sys.executable, "-m", "unittest", *CRITICAL_UNIT_TESTS, "-q"], env={"PYTHONPYCACHEPREFIX": PY_CACHE})
     if run_unit:
         status |= run([sys.executable, "-m", "unittest", "tests.test_agentic_claude", "-q"], env={"PYTHONPYCACHEPREFIX": PY_CACHE})
     if args.smoke_url:
