@@ -147,6 +147,20 @@ class AgenticClaudeTests(unittest.TestCase):
             self.assertTrue(bot.google_ok())
             self.assertEqual(bot.gs._sheets_auth_mode(), "work_user_oauth")
 
+    def test_classlist_permission_message_points_to_work_sheets_oauth_when_missing(self):
+        env = {
+            "GOOGLE_WORK_SHEETS_REFRESH_TOKEN": "",
+            "GOOGLE_SHEETS_REFRESH_TOKEN": "",
+            "GOOGLE_SERVICE_ACCOUNT_JSON": "",
+        }
+
+        with patch.dict(os.environ, env, clear=False):
+            message = bot.gs._classlist_permission_message(None, ["sheet-id"], ["2G3 WA2"])
+
+        self.assertIn("work Google Sheets OAuth is not configured", message)
+        self.assertIn("GOOGLE_WORK_SHEETS_REFRESH_TOKEN", message)
+        self.assertIn("Fallback option", message)
+
     def test_google_ok_still_accepts_service_account_sheets_credentials(self):
         with patch.dict(os.environ, {"GOOGLE_SHEET_ID": "sheet-id", "GOOGLE_SERVICE_ACCOUNT_JSON": "encoded"}, clear=False):
             with patch.object(bot.gs, "_user_google_oauth_configured", return_value=False):
@@ -710,6 +724,39 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(result["sent"], 1)
         mark_nudge.assert_called_once_with("9")
 
+    def test_web_push_recovery_archives_blocked_cca_calendar_notification(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 12, 14, 10))
+        item = {
+            "id": "35",
+            "kind": "reminder",
+            "title": "Calendar reminder",
+            "body": "C Div Training starts in 50 min (15:00).",
+            "source": "calendar_reminder:2026-05-12:evt-cdiv",
+            "created": now.isoformat(),
+            "archived": False,
+        }
+
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return now if tz else now.replace(tzinfo=None)
+
+        with (
+            patch.object(web_app, "datetime", FixedDateTime),
+            patch.object(web_app.bot.gs, "get_app_notifications", return_value=[item]),
+            patch.object(web_app.bot.gs, "get_web_push_delivery_log", return_value=[]),
+            patch.object(web_app.bot, "cca_duty_cleared_memory_for_date", return_value="cca-duty-cleared:2026-05-12"),
+            patch.object(web_app.bot.gs, "archive_app_notifications") as archive,
+            patch.object(web_app.bot.gs, "send_web_push_notification") as send_push,
+            patch.object(web_app.bot, "_record_notification_outcome"),
+        ):
+            result = web_app.recover_missed_push_notifications(limit=1)
+
+        self.assertEqual(result["sent"], 0)
+        self.assertEqual(result["skipped"], 1)
+        archive.assert_called_once_with(["35"])
+        send_push.assert_not_called()
+
     def test_web_push_recovery_prioritises_missed_briefing_over_later_nudge(self):
         now = bot.SGT.localize(bot.datetime(2026, 5, 12, 7, 20))
         briefing = {
@@ -891,6 +938,24 @@ class AgenticClaudeTests(unittest.TestCase):
             candidate = bot._calendar_event_reminder_candidate(event, now=now)
 
         self.assertIsNone(candidate)
+
+    def test_queue_blocks_cca_notification_after_not_on_duty_memory(self):
+        with (
+            patch.object(bot, "cca_duty_cleared_memory_for_date", return_value="cca-duty-cleared:2026-05-12"),
+            patch.object(bot.gs, "enqueue_app_notification") as enqueue,
+            patch.object(bot.gs, "send_web_push_notification") as send_push,
+            patch.object(bot, "_record_notification_outcome"),
+        ):
+            queued = bot._queue_app_notification(
+                "reminder",
+                "Calendar reminder",
+                "C Div Training starts in 89 min (15:00).",
+                source="calendar_reminder:2026-05-12:evt-cdiv",
+            )
+
+        self.assertIsNone(queued)
+        enqueue.assert_not_called()
+        send_push.assert_not_called()
 
     def test_absence_memory_answers_why_not_at_work_without_agentic_route(self):
         now = bot.SGT.localize(bot.datetime(2026, 5, 12, 12, 8))

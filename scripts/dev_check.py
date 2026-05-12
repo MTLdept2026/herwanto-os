@@ -25,6 +25,7 @@ COMPILE_TARGETS = [
 CRITICAL_UNIT_TESTS = [
     "tests.test_agentic_claude.AgenticClaudeTests.test_google_ok_accepts_user_oauth_sheets_credentials",
     "tests.test_agentic_claude.AgenticClaudeTests.test_google_ok_prefers_work_oauth_sheets_credentials",
+    "tests.test_agentic_claude.AgenticClaudeTests.test_classlist_permission_message_points_to_work_sheets_oauth_when_missing",
     "tests.test_agentic_claude.AgenticClaudeTests.test_notification_outcomes_are_capped_below_sheet_cell_limit",
     "tests.test_agentic_claude.AgenticClaudeTests.test_retry_after_percentage_failure_forces_percentage_tool_from_context",
     "tests.test_agentic_claude.AgenticClaudeTests.test_pwa_retry_after_classlist_failure_is_not_quick_chat",
@@ -32,6 +33,8 @@ CRITICAL_UNIT_TESTS = [
     "tests.test_agentic_claude.AgenticClaudeTests.test_medical_leave_context_becomes_teaching_memory",
     "tests.test_agentic_claude.AgenticClaudeTests.test_medical_leave_archives_active_school_calendar_notifications",
     "tests.test_agentic_claude.AgenticClaudeTests.test_not_on_duty_blocks_cca_calendar_reminder",
+    "tests.test_agentic_claude.AgenticClaudeTests.test_queue_blocks_cca_notification_after_not_on_duty_memory",
+    "tests.test_agentic_claude.AgenticClaudeTests.test_web_push_recovery_archives_blocked_cca_calendar_notification",
     "tests.test_agentic_claude.AgenticClaudeTests.test_calendar_reminder_blocks_cca_when_not_on_roster",
     "tests.test_agentic_claude.AgenticClaudeTests.test_calendar_reminder_blocks_school_events_on_medical_leave",
     "tests.test_agentic_claude.AgenticClaudeTests.test_dispatch_skips_stale_calendar_reminder",

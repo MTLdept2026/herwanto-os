@@ -2829,6 +2829,29 @@ def _calendar_event_block_reason(event: dict, start_dt: datetime) -> str:
     return ""
 
 
+def _calendar_notification_block_reason(
+    source: str,
+    title: str = "",
+    body: str = "",
+    now: datetime | None = None,
+) -> str:
+    clean_source = str(source or "").strip()
+    if not clean_source.startswith(("calendar_reminder:", "calendar_travel:")):
+        return ""
+    target = _source_date(clean_source)
+    if not target:
+        return ""
+    text = " ".join([str(title or ""), str(body or ""), clean_source])
+    if _text_is_cca_like(text):
+        if cca_duty_cleared_memory_for_date(target):
+            return "not on CCA duty"
+        if school_day_cleared_memory_for_date(target):
+            return "away from work/school"
+    if _text_is_work_school_like(text) and school_day_cleared_memory_for_date(target):
+        return "away from work/school"
+    return ""
+
+
 def _travel_override_minutes(location: str) -> int | None:
     raw = os.environ.get("HIRA_TRAVEL_TIME_OVERRIDES", "").strip()
     if not raw:
@@ -3412,6 +3435,16 @@ async def _dispatch_proactive_candidates(context, candidates: list[dict], limit:
         kind = str(candidate.get("kind", "update")).strip() or "update"
         source = str(candidate.get("source", "")).strip()
         family = str(candidate.get("family", "")).strip()
+        block_reason = _calendar_notification_block_reason(source, title, body, now=current)
+        if block_reason:
+            logger.info(f"Calendar notification blocked at dispatch for source={source}: {block_reason}")
+            _record_notification_outcome(
+                "blocked_day_state",
+                source=source,
+                kind=kind,
+                title=title,
+            )
+            continue
         confidence = str(candidate.get("confidence", "probably_remind")).strip() or "probably_remind"
         if kind == "reminder" and confidence in {"ignore", "digest_only"}:
             continue
@@ -8689,6 +8722,16 @@ async def handle_voice(update, context):
 # ─── SCHEDULED JOBS ──────────────────────────────────────────────────────────
 
 def _queue_app_notification(kind: str, title: str, body: str, source: str = ""):
+    block_reason = _calendar_notification_block_reason(source, title, body)
+    if block_reason:
+        logger.info(f"Calendar notification blocked before queue for source={source or kind}: {block_reason}")
+        _record_notification_outcome(
+            "blocked_day_state",
+            source=source,
+            kind=kind,
+            title=title,
+        )
+        return None
     if _should_suppress_notification(source, kind):
         logger.info(f"Notification suppressed by preference memory for source={source or kind}")
         return None

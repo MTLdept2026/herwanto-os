@@ -418,6 +418,23 @@ def recover_missed_push_notifications(limit: int | None = None) -> dict:
         if not source or not body:
             skipped += 1
             continue
+        block_reason = bot._calendar_notification_block_reason(source, title, body, now=current)
+        if block_reason:
+            skipped += 1
+            item_id = str(item.get("id", "") or "").strip()
+            if item_id:
+                try:
+                    bot.gs.archive_app_notifications([item_id])
+                except Exception as exc:
+                    bot.logger.warning(f"Could not archive blocked recovered notification {item_id}: {exc}")
+            bot._record_notification_outcome(
+                "blocked_day_state",
+                notification_id=item_id,
+                source=source,
+                kind=kind,
+                title=title,
+            )
+            continue
         created = _parse_sgt_datetime(item.get("created", ""))
         if created and created < max_age:
             skipped += 1

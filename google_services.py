@@ -1118,7 +1118,17 @@ def _classlist_permission_message(exc: HttpError, spreadsheet_ids: list[str], ta
             "and that the refresh token was granted the Google Sheets scope."
         )
     else:
-        account_text = f" Share it with {email} as Editor." if email else " Share it with H.I.R.A's Google service account as Editor."
+        service_account_text = (
+            f" Fallback option: share it with {email} as Editor."
+            if email
+            else " Fallback option: share it with H.I.R.A's Google service account as Editor."
+        )
+        account_text = (
+            " H.I.R.A is currently falling back to the service account because work Google Sheets OAuth is not configured. "
+            "To edit as Herwanto's work Google account, configure GOOGLE_WORK_SHEETS_REFRESH_TOKEN with Google Sheets scope "
+            "and make sure that work account can edit the sheet."
+            f"{service_account_text}"
+        )
     protected_hint = " If Editor access is already enabled, check whether the tab or WA/% columns are protected for only selected users."
     return (
         f"Google Sheets denied write access while filling {target_text}."
