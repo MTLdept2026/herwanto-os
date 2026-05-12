@@ -7500,6 +7500,8 @@ async def gmail_cmd(update, context):
         return
     try:
         messages = gs.list_gmail_messages(query=query, max_results=10, account=account)
+        if account == "work":
+            record_work_gmail_success("telegram_gmail", messages_scanned=len(messages))
         if not messages:
             detail = f" for `{query}`" if query else ""
             await reply(update, f"No {gs.gmail_label(account)} messages found{detail}.", parse_mode="Markdown")
@@ -7529,6 +7531,8 @@ async def gmaildraft_cmd(update, context):
         return
     try:
         draft = gs.create_gmail_draft(parts[0], parts[1], parts[2], parts[3] if len(parts) > 3 else "", account=account)
+        if account == "work":
+            record_work_gmail_success("telegram_gmail_draft")
         await update.message.reply_text(f"{gs.gmail_label(account).title()} draft created: {draft.get('id', '')}")
     except Exception as e:
         await update.message.reply_text(f"Gmail draft error: {e}")
@@ -8981,6 +8985,8 @@ async def _execute_tool(name: str, inp: dict) -> str:
                 inp.get("max_items", 10),
                 account=account,
             )
+            if account == "work":
+                record_work_gmail_success("tool_gmail_brief", messages_scanned=len(messages))
             if not messages:
                 return f"No {gs.gmail_label(account)} messages found."
             lines = []
@@ -9007,6 +9013,8 @@ async def _execute_tool(name: str, inp: dict) -> str:
                 inp.get("cc", ""),
                 account=account,
             )
+            if account == "work":
+                record_work_gmail_success("tool_gmail_draft")
             return f"Created {gs.gmail_label(account)} draft: {draft.get('id', '')}"
         except Exception as e:
             return f"Failed to create Gmail draft: {e}"
@@ -9779,6 +9787,15 @@ def _save_work_gmail_monitor_status(status: str, detail: str = "", **extra):
         gs.set_config(WORK_GMAIL_MONITOR_STATUS_KEY, json.dumps(payload, ensure_ascii=False))
     except Exception as exc:
         logger.warning(f"Could not persist Work Gmail monitor status: {exc}")
+
+
+def record_work_gmail_success(source: str = "manual", messages_scanned: int | None = None):
+    if not google_ok():
+        return
+    extra = {"source": str(source or "manual").strip()[:80]}
+    if messages_scanned is not None:
+        extra["messages_scanned"] = int(messages_scanned or 0)
+    _save_work_gmail_monitor_status("checked", "Work Gmail fetch succeeded.", **extra)
 
 
 def _work_gmail_message_datetime(message: dict) -> datetime | None:

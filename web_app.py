@@ -3931,6 +3931,8 @@ def gmail(req: GmailRequest, x_hira_token: Optional[str] = Header(default=None))
         raise HTTPException(status_code=400, detail=f"{bot.gs.gmail_label(account).title()} is not connected")
     try:
         messages = bot.gs.list_gmail_messages(req.query, req.max_items, account=account)
+        if account == "work":
+            bot.record_work_gmail_success("pwa_gmail", messages_scanned=len(messages))
     except Exception as exc:
         bot.logger.warning("PWA Gmail fetch failed for account=%s query=%r: %s", account, req.query, exc)
         raise _gmail_http_error(exc, account) from exc
@@ -3949,6 +3951,8 @@ def gmail_draft(
         raise HTTPException(status_code=400, detail=f"{bot.gs.gmail_label(account).title()} is not connected")
     try:
         draft = bot.gs.create_gmail_draft(req.to, req.subject, req.body, req.cc, account=account)
+        if account == "work":
+            bot.record_work_gmail_success("pwa_gmail_draft")
     except Exception as exc:
         bot.logger.warning("PWA Gmail draft failed for account=%s to=%r: %s", account, req.to, exc)
         raise _gmail_http_error(exc, account) from exc

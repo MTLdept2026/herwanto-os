@@ -5221,6 +5221,36 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(services["_details"]["work_gmail"]["state"], "reconnect")
         self.assertEqual(services["_details"]["work_gmail"]["label"], "Reconnect")
 
+    def test_successful_work_gmail_fetch_marks_monitor_healthy(self):
+        store = {}
+        messages = [{
+            "id": "work-1",
+            "from": "Admin <admin@example.com>",
+            "subject": "Working",
+            "snippet": "Token works again.",
+            "body": "",
+            "date": datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000"),
+        }]
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "gmail_ok", return_value=True),
+            patch.object(bot.gs, "list_gmail_messages", return_value=messages),
+            patch.object(bot.gs, "get_config", side_effect=lambda key: store.get(key, "")),
+            patch.object(bot.gs, "set_config", side_effect=lambda key, value: store.__setitem__(key, value)),
+        ):
+            result = asyncio.run(bot._execute_tool("get_gmail_brief", {
+                "account": "work",
+                "query": "",
+                "max_items": 5,
+            }))
+
+        self.assertIn("Working", result)
+        status = json.loads(store[bot.WORK_GMAIL_MONITOR_STATUS_KEY])
+        self.assertEqual(status["status"], "checked")
+        self.assertEqual(status["source"], "tool_gmail_brief")
+        self.assertEqual(status["messages_scanned"], 1)
+
     def test_prayer_reminder_has_catchup_window(self):
         now = bot.SGT.localize(bot.datetime(2026, 5, 1, 13, 18))
         plan = [{
