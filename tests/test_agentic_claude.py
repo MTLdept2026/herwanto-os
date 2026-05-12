@@ -137,6 +137,29 @@ class AgenticClaudeTests(unittest.TestCase):
                 self.assertTrue(bot.google_ok())
                 self.assertEqual(bot.gs._sheets_auth_mode(), "service_account")
 
+    def test_notification_outcomes_are_capped_below_sheet_cell_limit(self):
+        entries = [
+            {
+                "created": "2026-05-12T17:00:00+08:00",
+                "notification_id": str(idx),
+                "source": f"calendar_reminder:2026-05-12:event-{idx}" + ("x" * 220),
+                "group": "calendar_reminder",
+                "kind": "reminder",
+                "action": "not_now",
+                "rating": "",
+                "client_id": "phone" + ("y" * 100),
+                "title": "C Div Training " + ("z" * 240),
+            }
+            for idx in range(500)
+        ]
+        captured = {}
+
+        with patch.object(bot.gs, "set_config", side_effect=lambda key, value: captured.update({key: value})):
+            bot.gs.set_notification_outcomes(entries)
+
+        self.assertEqual(captured.keys(), {"notification_outcomes"})
+        self.assertLess(len(captured["notification_outcomes"]), 50000)
+
     def test_tuesday_even_timetable_uses_hardcoded_source(self):
         result = bot._timetable_for_lookup("Tuesday", "Even")
 

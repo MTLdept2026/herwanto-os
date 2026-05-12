@@ -3262,7 +3262,12 @@ def get_notification_outcomes() -> list:
 
 
 def set_notification_outcomes(entries: list):
-    set_config("notification_outcomes", json.dumps(entries[-400:], ensure_ascii=False))
+    kept = list(entries[-160:])
+    payload = json.dumps(kept, ensure_ascii=False)
+    while kept and len(payload) > 45000:
+        kept = kept[20:]
+        payload = json.dumps(kept, ensure_ascii=False)
+    set_config("notification_outcomes", payload)
 
 
 def add_notification_outcome(
@@ -3278,13 +3283,13 @@ def add_notification_outcome(
     item = {
         "created": datetime.now(SGT).isoformat(),
         "notification_id": str(notification_id or "").strip()[:80],
-        "source": str(source or "").strip()[:240],
+        "source": str(source or "").strip()[:180],
         "group": _notification_outcome_group(source, kind)[:80],
         "kind": str(kind or "").strip()[:40],
         "action": str(action or "").strip()[:40],
         "rating": str(rating or "").strip()[:40],
-        "client_id": str(client_id or "").strip()[:120],
-        "title": str(title or "").strip()[:240],
+        "client_id": str(client_id or "").strip()[:80],
+        "title": str(title or "").strip()[:160],
     }
     if not item["action"]:
         return entries
