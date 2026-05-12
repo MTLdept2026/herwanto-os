@@ -1393,6 +1393,56 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertNotIn("🏎️ F1", [entry["label"] for entry in entries])
 
+    def test_curated_digest_rejects_stale_general_news_items(self):
+        def fake_google_news(query, max_items=4):
+            return [
+                {
+                    "title": "Singapore SMEs navigate pandemic support schemes - CNA",
+                    "url": "https://example.com/cna-2020",
+                    "source": "CNA",
+                    "published": "Mon, 20 Apr 2020 02:00:00 GMT",
+                },
+                {
+                    "title": "Singapore businesses get new grant support today",
+                    "url": "https://example.com/sg-current",
+                    "source": "Business Times",
+                    "published": "Tue, 12 May 2026 01:00:00 GMT",
+                },
+            ]
+
+        with patch("bot._news_topics", return_value=[("SG News", "sg")]), \
+             patch("bot._recent_news_digest_keys", return_value=set()), \
+             patch("search_service.google_news", side_effect=fake_google_news):
+            entries = bot.build_curated_digest_entries(
+                now=bot.SGT.localize(datetime(2026, 5, 12, 9, 0)),
+                limit=1,
+                fetch_limit=2,
+                record=False,
+            )
+
+        self.assertEqual(entries[0]["item"]["url"], "https://example.com/sg-current")
+
+    def test_curated_digest_returns_empty_when_only_stale_general_news_exists(self):
+        def fake_google_news(query, max_items=4):
+            return [{
+                "title": "Old CNA explainer from 2020",
+                "url": "https://example.com/cna-2020",
+                "source": "CNA",
+                "published": "Mon, 20 Apr 2020 02:00:00 GMT",
+            }]
+
+        with patch("bot._news_topics", return_value=[("SG News", "sg")]), \
+             patch("bot._recent_news_digest_keys", return_value=set()), \
+             patch("search_service.google_news", side_effect=fake_google_news):
+            entries = bot.build_curated_digest_entries(
+                now=bot.SGT.localize(datetime(2026, 5, 12, 9, 0)),
+                limit=1,
+                fetch_limit=2,
+                record=False,
+            )
+
+        self.assertEqual(entries, [])
+
     def test_curated_digest_rejects_generic_epl_for_liverpool_slot(self):
         def fake_google_news(query, max_items=4):
             if query == "lfc":

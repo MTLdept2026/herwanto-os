@@ -3537,6 +3537,7 @@ DIGEST_TOPIC_RULES = {
         "max_age_hours": 168,
     },
 }
+CURATED_DIGEST_DEFAULT_MAX_AGE_HOURS = 14 * 24
 
 
 def _digest_sports_kind(label: str) -> str:
@@ -3608,14 +3609,12 @@ def _digest_item_has_any(text: str, terms: tuple[str, ...]) -> bool:
 
 def _digest_item_allowed(label: str, item: dict, now: datetime | None = None) -> bool:
     rule = _digest_topic_rule(label)
-    if not rule:
-        return True
     text = _digest_item_text(item)
     terms = tuple(rule.get("terms") or ())
     if terms and not _digest_item_has_any(text, terms):
         return False
     age_hours = _digest_item_age_hours(item, now=now)
-    max_age = int(rule.get("max_age_hours") or 0)
+    max_age = int(rule.get("max_age_hours") or CURATED_DIGEST_DEFAULT_MAX_AGE_HOURS)
     if max_age and age_hours is not None and age_hours > max_age:
         return False
     return True
