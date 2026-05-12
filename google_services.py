@@ -70,6 +70,10 @@ _config_cache = {
     "row_count": 0,
     "stale_after_error": False,
 }
+_memory_cache = {
+    "expires_at": 0.0,
+    "value": None,
+}
 _classlist_cache_lock = threading.RLock()
 _classlist_cache: dict[str, dict] = {}
 _REDIS_NUDGE_KEY = "hira:proactive_nudges:fallback"
@@ -128,7 +132,8 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
-_CONFIG_CACHE_TTL_SECONDS = max(0, _int_env("HIRA_CONFIG_CACHE_TTL_SECONDS", 45))
+_CONFIG_CACHE_TTL_SECONDS = max(0, _int_env("HIRA_CONFIG_CACHE_TTL_SECONDS", 300))
+_MEMORY_CACHE_TTL_SECONDS = max(0, _int_env("HIRA_MEMORY_CACHE_TTL_SECONDS", 300))
 _CLASSLIST_CACHE_TTL_SECONDS = max(0, _int_env("HIRA_CLASSLIST_CACHE_TTL_SECONDS", 120))
 _CLASSLIST_GRID_FIELDS = "properties(title),sheets(properties(sheetId,title),data(rowData(values(formattedValue,effectiveValue))))"
 APP_NOTIFICATION_PUSH_BODY_LIMIT = max(240, min(1800, _int_env("HIRA_WEB_PUSH_BODY_LIMIT", 650)))
@@ -3286,6 +3291,8 @@ def invalidate_config_cache():
         _config_cache["row_numbers"] = None
         _config_cache["row_count"] = 0
         _config_cache["stale_after_error"] = False
+        _memory_cache["expires_at"] = 0.0
+        _memory_cache["value"] = None
 
 
 def get_config(key: str):
@@ -3294,6 +3301,23 @@ def get_config(key: str):
 
 
 def set_config(key: str, value: str):
+    # If we already know the Config row for an existing key, write directly.
+    # This avoids a fresh read-before-write during active chats, which can hit
+    # Google Sheets' per-user read quota and make memory saves fail even though
+    # the target row is already known from cache.
+    with _config_cache_lock:
+        cached_values = _config_cache.get("values")
+        cached_rows = dict(_config_cache.get("row_numbers") or {})
+        row_number = cached_rows.get(key) if cached_values is not None else None
+    if row_number:
+        _sheets().spreadsheets().values().update(
+            spreadsheetId=SHEET_ID,
+            range=f"Config!B{row_number}",
+            valueInputOption="RAW",
+            body={"values": [[value]]},
+        ).execute()
+        _remember_config_cache_value(key, value, row_number)
+        return
     _, row_numbers, row_count = _load_config_cache()
     row_number = row_numbers.get(key)
     if row_number:
@@ -4189,19 +4213,47 @@ DEFAULT_MEMORY = {
 }
 
 
+def _copy_memory(memory: dict) -> dict:
+    return {key: list(memory.get(key, [])) for key in DEFAULT_MEMORY}
+
+
+def _memory_cache_valid(now: float | None = None) -> bool:
+    if _MEMORY_CACHE_TTL_SECONDS <= 0:
+        return False
+    if _memory_cache.get("value") is None:
+        return False
+    return (now if now is not None else time.monotonic()) < float(_memory_cache.get("expires_at", 0.0) or 0.0)
+
+
+def _remember_memory_cache(memory: dict):
+    if _MEMORY_CACHE_TTL_SECONDS <= 0:
+        return
+    with _config_cache_lock:
+        _memory_cache["value"] = _copy_memory(memory)
+        _memory_cache["expires_at"] = time.monotonic() + _MEMORY_CACHE_TTL_SECONDS
+
+
 def get_memory() -> dict:
+    with _config_cache_lock:
+        if _memory_cache_valid():
+            return _copy_memory(_memory_cache.get("value") or {})
     raw = get_config("assistant_memory")
     if not raw:
-        return {k: list(v) for k, v in DEFAULT_MEMORY.items()}
+        memory = {k: list(v) for k, v in DEFAULT_MEMORY.items()}
+        _remember_memory_cache(memory)
+        return memory
     try:
         data = json.loads(raw)
     except Exception:
-        return {k: list(v) for k, v in DEFAULT_MEMORY.items()}
+        memory = {k: list(v) for k, v in DEFAULT_MEMORY.items()}
+        _remember_memory_cache(memory)
+        return memory
 
     memory = {k: list(v) for k, v in DEFAULT_MEMORY.items()}
     for key, value in data.items():
         if isinstance(value, list):
             memory[key] = [str(item) for item in value if str(item).strip()]
+    _remember_memory_cache(memory)
     return memory
 
 
@@ -4211,6 +4263,7 @@ def set_memory(memory: dict):
         values = memory.get(key, [])
         clean[key] = [str(item).strip() for item in values if str(item).strip()]
     set_config("assistant_memory", json.dumps(clean, ensure_ascii=False))
+    _remember_memory_cache(clean)
 
 
 def add_memory(category: str, text: str) -> dict:

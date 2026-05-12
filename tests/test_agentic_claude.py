@@ -1281,6 +1281,37 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(forced, "remember_user_info")
 
+    def test_memory_recall_question_does_not_force_memory_write(self):
+        forced = bot._forced_tool_for_text(
+            "Hey HIRA. Remember the CCA calendar I told u to refer to?",
+            [{"name": "remember_user_info"}, {"name": "get_cca_schedule"}],
+        )
+
+        self.assertEqual(forced, "get_cca_schedule")
+
+    def test_plain_memory_fact_still_forces_memory_tool(self):
+        forced = bot._forced_tool_for_text(
+            "Remember my mum's name is Salwa",
+            [{"name": "remember_user_info"}, {"name": "get_assistant_context"}],
+        )
+
+        self.assertEqual(forced, "remember_user_info")
+
+    def test_memory_rate_limit_error_is_compacted(self):
+        guarded = bot._memory_tool_failure_guardrail(
+            "raw failure",
+            [{
+                "content": (
+                    "Failed to remember: <HttpError 429 when requesting https://sheets.googleapis.com/v4/spreadsheets/x "
+                    "returned \"Quota exceeded for quota metric 'Read requests'\". Details: "
+                    "\"reason\": \"RATE_LIMIT_EXCEEDED\", \"quotalimitvalue\": \"60\" lots of raw JSON"
+                )
+            }],
+        )
+
+        self.assertIn("Memory save failed: Google Sheets read quota exceeded (60 read requests/min/user)", guarded)
+        self.assertNotIn("sheets.googleapis.com/v4/spreadsheets", guarded)
+
     def test_commit_to_memory_gets_memory_tool_in_pwa(self):
         tools = bot.pwa_tools_for_message("Save this to memory: stop waiting around after fixes")
         names = {tool["name"] for tool in tools}
@@ -5176,6 +5207,64 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(fake.values_api.get_calls, 1)
         self.assertEqual(fake.values_api.updates, [("Config!B3", {"values": [["baz"]]})])
+        bot.gs.invalidate_config_cache()
+
+    def test_memory_cache_avoids_repeated_config_reads_and_read_before_write(self):
+        class Request:
+            def __init__(self, payload=None):
+                self.payload = payload or {}
+
+            def execute(self):
+                return self.payload
+
+        class Values:
+            def __init__(self):
+                self.get_calls = 0
+                self.updates = []
+
+            def get(self, spreadsheetId, range):
+                self.get_calls += 1
+                return Request({
+                    "values": [[
+                        "assistant_memory",
+                        json.dumps({"profile": ["My mum's name is Salwa."]}),
+                    ]]
+                })
+
+            def update(self, spreadsheetId, range, valueInputOption, body):
+                self.updates.append((range, body))
+                return Request()
+
+            def append(self, spreadsheetId, range, valueInputOption, body):
+                raise AssertionError("assistant_memory should update an existing cached row")
+
+        class Sheets:
+            def __init__(self):
+                self.values_api = Values()
+
+            def spreadsheets(self):
+                return self
+
+            def values(self):
+                return self.values_api
+
+        fake = Sheets()
+        bot.gs.invalidate_config_cache()
+        with (
+            patch.object(bot.gs, "_sheets", return_value=fake),
+            patch.object(bot.gs, "_CONFIG_CACHE_TTL_SECONDS", 300),
+            patch.object(bot.gs, "_MEMORY_CACHE_TTL_SECONDS", 300),
+        ):
+            first = bot.gs.get_memory()
+            second = bot.gs.get_memory()
+            bot.gs.add_memory("profile", "Another durable fact.")
+
+        self.assertEqual(first["profile"], ["My mum's name is Salwa."])
+        self.assertEqual(second["profile"], ["My mum's name is Salwa."])
+        self.assertEqual(fake.values_api.get_calls, 1)
+        self.assertEqual(fake.values_api.updates[0][0], "Config!B2")
+        saved = json.loads(fake.values_api.updates[0][1]["values"][0][0])
+        self.assertIn("Another durable fact.", saved["profile"])
         bot.gs.invalidate_config_cache()
 
     def test_add_nudge_uses_redis_fallback_when_sheets_are_capped(self):

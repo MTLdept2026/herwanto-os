@@ -499,13 +499,26 @@ def _is_memory_commit_query_text(text: str) -> bool:
     clean = " ".join(str(text or "").lower().split())
     if not clean:
         return False
-    return bool(re.search(
-        r"\b(?:remember|note that|commit (?:this|that|it)?\s*(?:to )?(?:memory)?|"
+    explicit_save = re.search(
+        r"\b(?:note that|commit (?:this|that|it)?\s*(?:to )?(?:memory)?|"
         r"save (?:this|that|it)?\s*(?:to|in)?\s*(?:memory)?|"
         r"store (?:this|that|it)?\s*(?:to|in)?\s*(?:memory)?|"
         r"permanent memory|make (?:this|that|it) permanent|don'?t forget)\b",
         clean,
-    ))
+    )
+    if explicit_save:
+        return True
+    if not re.search(r"\bremember\b", clean):
+        return False
+    recall_question = (
+        "?" in str(text or "")
+        or re.search(r"\b(?:do|did|can|could|will|would)\s+(?:you|u)\s+remember\b", clean)
+        or re.search(r"\bremember\s+(?:the|what|who|where|when|which|why|how)\b", clean)
+        or re.search(r"\bi\s+told\s+(?:you|u)\b", clean)
+    )
+    if recall_question:
+        return False
+    return True
 
 
 def source_discipline_for_text(text: str) -> dict:
@@ -955,7 +968,7 @@ Rules:
 - For broad research, use web_research first: it plans query variants, searches, fetches top sources, and returns evidence snippets. For quick lookups use web_search, then fetch_url on the best official/primary/recent result before giving conclusions. When the user pastes a web link or asks you to read/check a URL, call fetch_url. If fetch_url fails or the page is paywalled/dynamic, say what failed and use web_search/get_latest_news for corroborating public sources where available.
 - After web_search, fetch_url, get_latest_news, get_liverpool_brief, or get_f1_brief reveals useful knowledge H.I.R.A should retain, call remember_source_insight. Store stable background as durability=stable. Store current standings, line-ups, results, transfer rumours, prices, schedules, and laws/rules that may change as durability=live_check or rumour, so future answers know to verify again.
 - When the user asks about weather, temperature, high/low temp, hot/cold conditions, rain, forecast, haze, PSI, air quality, umbrella, or whether it will rain in Singapore — call get_nea_weather before answering. If no area is specified, use Yishun. Weather answers must include available temperature, humidity, PSI/PM2.5 air quality, 2-hour nowcast, and 24-hour forecast details.
-- When the user says "remember", "note that", "commit this to memory", "save this to memory", "don't forget", or gives stable preferences/facts about himself — call remember_user_info.
+- When the user gives a stable preference/fact to retain, or says "note that", "commit this to memory", "save this to memory", or "don't forget" — call remember_user_info. If he asks whether you remember something, do not write memory; answer from stored memory/source config or use the relevant lookup tool.
 - For permanent memory questions, be precise: long-term memory is backed by the app's configured storage, and a remember action only persisted if remember_user_info returned success. Never claim something was committed, lost, or blocked by Sheets/backend permissions without the tool result.
 - Treat Correction_Ledger memory as high-priority. If it conflicts with older memory, follow the correction and do not repeat the old mistake.
 - Treat Self_Reflections memory as your own learning journal: use it to improve future behaviour, source discipline, and follow-through.
@@ -6532,12 +6545,25 @@ def _cca_sheet_user_burden_guardrail(reply_text: str, tool_results: list[dict]) 
     )
 
 
+def _compact_tool_error(error: str, limit: int = 360) -> str:
+    clean = " ".join(str(error or "").split())
+    if "RATE_LIMIT_EXCEEDED" in clean or "Quota exceeded" in clean:
+        metric = "Google Sheets read quota exceeded"
+        quota = re.search(r"quotalimitvalue['\"]?:\s*['\"]?(\d+)", clean)
+        if quota:
+            metric += f" ({quota.group(1)} read requests/min/user)"
+        return metric
+    if len(clean) <= limit:
+        return clean
+    return clean[: max(0, limit - 1)].rstrip() + "..."
+
+
 def _memory_tool_failure_guardrail(reply_text: str, tool_results: list[dict]) -> str:
     evidence = _tool_result_text(tool_results)
     match = re.search(r"Failed to remember:\s*([^\n]+)", evidence, re.I)
     if not match:
         return str(reply_text or "")
-    error = match.group(1).strip()
+    error = _compact_tool_error(match.group(1).strip())
     return (
         f"Memory save failed: {error}\n\n"
         "I have not written this to permanent memory. I should not claim it is saved, diagnose the backend, or give config instructions unless the tool returned those details."
