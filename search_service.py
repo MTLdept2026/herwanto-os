@@ -5,12 +5,16 @@ Web search tool (AI chat): Tavily API — free tier 1000/month.
   Without it, the bot works fine; AI chat just won't search the web.
 """
 
+from __future__ import annotations
+
 import os
 import logging
 import re
 import hashlib
 import requests
 import feedparser
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from urllib.parse import quote, urlparse
 
@@ -274,7 +278,26 @@ HIGH_SIGNAL_NEWS_TERMS = (
 )
 
 
-def _news_quality_score(item: dict) -> int:
+def _news_age_hours(item: dict, now: datetime | None = None) -> float | None:
+    published = str((item or {}).get("published", "") or "").strip()
+    if not published:
+        return None
+    try:
+        parsed = parsedate_to_datetime(published)
+    except Exception:
+        try:
+            parsed = datetime.fromisoformat(published)
+        except Exception:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return max(0.0, (current.astimezone(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds() / 3600)
+
+
+def _news_quality_score(item: dict, now: datetime | None = None) -> int:
     text = f"{item.get('title', '')} {item.get('source', '')}".lower()
     score = 10
     for term in LOW_SIGNAL_NEWS_TERMS:
@@ -288,17 +311,29 @@ def _news_quality_score(item: dict) -> int:
         score -= 2
     if "|" in title or title.count("-") > 2:
         score -= 1
+    age_hours = _news_age_hours(item, now=now)
+    if age_hours is not None:
+        if age_hours <= 36:
+            score += 10
+        elif age_hours <= 96:
+            score += 6
+        elif age_hours <= 14 * 24:
+            score += 1
+        elif age_hours <= 45 * 24:
+            score -= 8
+        else:
+            score -= 28
     return score
 
 
-def _rank_news_items(items: list[dict]) -> list[dict]:
-    filtered = [item for item in items if _news_quality_score(item) > 0]
+def _rank_news_items(items: list[dict], now: datetime | None = None) -> list[dict]:
+    filtered = [item for item in items if _news_quality_score(item, now=now) > 0]
     ranked = filtered or items
-    return sorted(ranked, key=_news_quality_score, reverse=True)
+    return sorted(ranked, key=lambda item: _news_quality_score(item, now=now), reverse=True)
 
 
-def news_quality_score(item: dict) -> int:
-    return _news_quality_score(item)
+def news_quality_score(item: dict, now: datetime | None = None) -> int:
+    return _news_quality_score(item, now=now)
 
 
 def news_item_key(item: dict) -> str:

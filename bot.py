@@ -3640,7 +3640,7 @@ def _digest_label_lens(label: str) -> tuple[str, int]:
 
 def _curated_digest_score(label: str, item: dict, slot_index: int = 0, now: datetime | None = None) -> tuple[int, str]:
     lens, lens_bonus = _digest_label_lens(label)
-    score = 50 + ss.news_quality_score(item) + lens_bonus
+    score = 50 + ss.news_quality_score(item, now=now) + lens_bonus
     title_text = str(item.get("title", "")).lower()
     if any(term in title_text for term in ("today", "new", "launch", "update", "policy", "developer", "release", "security")):
         score += 4

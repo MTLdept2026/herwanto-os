@@ -1443,6 +1443,29 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(entries, [])
 
+    def test_google_news_ranking_prefers_recent_f1_update_over_stale_item(self):
+        now = datetime(2026, 5, 12, 9, 0, tzinfo=timezone.utc)
+        stale = {
+            "title": "George Russell and Kimi Antonelli confirmed as Mercedes line-up",
+            "url": "https://example.com/f1-old",
+            "source": "Formula 1",
+            "published": "Wed, 15 Oct 2025 13:00:00 GMT",
+        }
+        fresh = {
+            "title": "Kimi Antonelli Mercedes form continues after Miami Grand Prix",
+            "url": "https://example.com/f1-fresh",
+            "source": "Example",
+            "published": "Mon, 11 May 2026 10:00:00 GMT",
+        }
+
+        ranked = search_service._rank_news_items([stale, fresh], now=now)
+
+        self.assertEqual(ranked[0]["url"], "https://example.com/f1-fresh")
+        self.assertGreater(
+            search_service.news_quality_score(fresh, now=now),
+            search_service.news_quality_score(stale, now=now),
+        )
+
     def test_curated_digest_rejects_generic_epl_for_liverpool_slot(self):
         def fake_google_news(query, max_items=4):
             if query == "lfc":
