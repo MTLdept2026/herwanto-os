@@ -409,6 +409,13 @@ def source_discipline_for_text(text: str) -> dict:
     lowered = clean.lower()
     if not clean:
         return {"confidence": "unknown", "needs_live_check": False, "reason": "empty input", "recommended_tools": []}
+    if is_source_citation_preference(clean):
+        return {
+            "confidence": "memory_ok",
+            "needs_live_check": False,
+            "reason": "User is setting a standing source/citation preference, not asking for live news.",
+            "recommended_tools": [],
+        }
 
     tools: list[str] = []
     if re.search(r"https?://\S+", clean):
@@ -3954,11 +3961,12 @@ def absorb_taste_hint(text: str) -> bool:
     ownership_captured = absorb_ownership_signal(text)
     relief_captured = absorb_relief_context(text)
     absence_captured = absorb_day_state_context(text)
+    source_pref_captured = absorb_source_citation_preference(text)
     if not google_ok():
-        return ownership_captured or relief_captured or absence_captured
+        return ownership_captured or relief_captured or absence_captured or source_pref_captured
     clean = str(text or "").strip()
     if len(clean) < 12:
-        return ownership_captured or relief_captured or absence_captured
+        return ownership_captured or relief_captured or absence_captured or source_pref_captured
     lower = clean.lower()
     taste_markers = (
         "i like", "i prefer", "my taste", "my style", "i hate", "i dislike",
@@ -3966,7 +3974,7 @@ def absorb_taste_hint(text: str) -> bool:
         "too noisy", "too cluttered", "not my vibe", "my vibe",
     )
     if not any(marker in lower for marker in taste_markers):
-        return ownership_captured or relief_captured or absence_captured
+        return ownership_captured or relief_captured or absence_captured or source_pref_captured
     try:
         profile = gs.get_taste_profile()
         field = "quality_bar"
@@ -3978,13 +3986,13 @@ def absorb_taste_hint(text: str) -> bool:
         existing_text = ", ".join(existing) if isinstance(existing, list) else str(existing or "").strip()
         hint = clean[:240]
         if hint.lower() in existing_text.lower():
-            return ownership_captured or relief_captured or absence_captured
+            return ownership_captured or relief_captured or absence_captured or source_pref_captured
         profile[field] = f"{existing_text}\n- {hint}".strip() if existing_text else f"- {hint}"
         gs.set_taste_profile(profile)
         return True
     except Exception as exc:
         logger.warning(f"Taste hint capture failed: {exc}")
-        return ownership_captured or relief_captured or absence_captured
+        return ownership_captured or relief_captured or absence_captured or source_pref_captured
 
 
 RELIEF_MEMORY_PREFIX = "relief:"
@@ -4165,6 +4173,50 @@ def _absence_reason_from_memory(memory_text: str) -> str:
 
 def school_day_cleared_memory_for_date(target: date | datetime | str) -> str:
     return relief_memory_for_date(target) or absence_memory_for_date(target)
+
+
+SOURCE_CITATION_PREF_PREFIX = "source-citation:"
+
+
+def is_source_citation_preference(text: str) -> bool:
+    clean = " ".join(str(text or "").strip().split()).lower()
+    if len(clean) < 12:
+        return False
+    wants_future_rule = re.search(r"\b(always|future|from now|next time|whenever|please|pls|should|must)\b", clean)
+    wants_sources = re.search(r"\b(source|sources|cite|citation|citations|link|links|url|publisher|publication)\b", clean)
+    target_news = re.search(r"\b(news|headline|headlines|digest|briefing|article|articles|items?|surfacing)\b", clean)
+    not_question = not re.search(r"\b(what|who|when|where|why|how|find|search|research|look up|latest|current)\b", clean)
+    return bool(wants_sources and target_news and (wants_future_rule or not_question))
+
+
+def absorb_source_citation_preference(text: str) -> bool:
+    if not is_source_citation_preference(text) or not google_ok():
+        return False
+    rule = (
+        f"{SOURCE_CITATION_PREF_PREFIX} Always provide source names and source links when surfacing news, "
+        "headlines, digest items, or article-based claims. Include dates/freshness when available."
+    )
+    try:
+        memory = gs.get_memory()
+        existing = "\n".join(str(item) for item in memory.get("constraints", []) if item)
+        if SOURCE_CITATION_PREF_PREFIX in existing:
+            return True
+        gs.add_memory("constraints", rule)
+        return True
+    except Exception as exc:
+        logger.warning(f"Source citation preference capture failed: {exc}")
+        return False
+
+
+def source_citation_preference_response(text: str) -> str:
+    if not is_source_citation_preference(text):
+        return ""
+    saved = absorb_source_citation_preference(text)
+    tail = "Saved as a standing rule." if saved else "I will apply it as a standing rule."
+    return (
+        "Got it - whenever I surface news, headlines, digest items, or article-based claims, "
+        f"I'll include the source name, link, and date/freshness where available. {tail}"
+    )
 
 
 def absence_memory_response(text: str, now: datetime | None = None, recent_context: str = "") -> str:

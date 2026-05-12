@@ -724,6 +724,25 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(count, 0)
 
+    def test_source_citation_preference_is_saved_without_live_research(self):
+        text = "Always provide the source when surfacing news items in future pls"
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "get_memory", return_value={"constraints": []}),
+            patch.object(bot.gs, "add_memory") as add_memory,
+        ):
+            reply = bot.source_citation_preference_response(text)
+
+        self.assertIn("source name", reply)
+        add_memory.assert_called_once()
+        category, memory_text = add_memory.call_args.args
+        self.assertEqual(category, "constraints")
+        self.assertIn("source-citation:", memory_text)
+
+        discipline = bot.source_discipline_for_text(text)
+        self.assertFalse(discipline["needs_live_check"])
+        self.assertEqual(discipline["recommended_tools"], [])
+
     def test_f1_calendar_sync_request_adds_remaining_events_and_memory(self):
         now = bot.SGT.localize(bot.datetime(2026, 5, 12, 12, 36))
         with (
