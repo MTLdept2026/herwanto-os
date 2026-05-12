@@ -1220,6 +1220,33 @@ html[data-theme="dark"] .segment {
   opacity: 0.62;
 }
 
+.connection-card.is-warning {
+  opacity: 1;
+  border-color: var(--hira-red);
+}
+
+.connection-card.is-warning::before {
+  background: var(--hira-red);
+  opacity: 1;
+}
+
+.connection-card.is-warning .connection-icon {
+  color: var(--hira-red);
+  background: color-mix(in srgb, var(--hira-red) 10%, transparent);
+}
+
+.connection-card.is-warning strong {
+  color: var(--hira-red);
+}
+
+.connection-card.is-warning .connection-switch {
+  border-color: var(--hira-red) !important;
+}
+
+.connection-card.is-warning .connection-switch span {
+  background: var(--hira-red) !important;
+}
+
 .daily-load-card {
   --load-strip-gap: 6px;
   gap: var(--space-md);
@@ -6449,6 +6476,34 @@ html[data-theme="dark"] .connection-card {
 .connection-card.is-on .connection-switch span {
   background: var(--hira-cyan) !important;
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--hira-cyan) 45%, transparent), 0 0 12px color-mix(in srgb, var(--hira-cyan) 42%, transparent) !important;
+}
+
+.connection-card.is-warning,
+html[data-theme="dark"] .connection-card.is-warning {
+  border-color: var(--hira-red) !important;
+}
+
+.connection-card.is-warning::before {
+  background: var(--hira-red) !important;
+  opacity: 1 !important;
+}
+
+.connection-card.is-warning .connection-icon {
+  color: var(--hira-red) !important;
+  background: color-mix(in srgb, var(--hira-red) 10%, var(--hira-plate, transparent)) !important;
+}
+
+.connection-card.is-warning strong {
+  color: var(--hira-red) !important;
+}
+
+.connection-card.is-warning .connection-switch {
+  background: var(--hira-plate, var(--surface)) !important;
+  border-color: var(--hira-red) !important;
+}
+
+.connection-card.is-warning .connection-switch span {
+  background: var(--hira-red) !important;
 }
 
 .living-timeline {

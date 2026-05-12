@@ -5201,6 +5201,26 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(status["status"], "error")
         self.assertIn("invalid_grant", status["detail"])
 
+    def test_pwa_service_status_marks_revoked_work_gmail_as_reconnect(self):
+        with (
+            patch.object(web_app.bot, "google_ok", return_value=True),
+            patch.object(web_app.bot.gs, "gmail_ok", side_effect=lambda account="personal": True),
+            patch.object(web_app.bot, "work_gmail_monitor_status", return_value={
+                "enabled": True,
+                "connected": True,
+                "status": "error",
+                "detail": "invalid_grant: Token has been expired or revoked.",
+                "last_run": "2026-05-13T06:37:00+08:00",
+            }),
+            patch.object(web_app.dropbox, "configured", return_value=False),
+        ):
+            services = web_app._service_status()
+
+        self.assertFalse(services["work_gmail"])
+        self.assertTrue(services["_details"]["work_gmail"]["configured"])
+        self.assertEqual(services["_details"]["work_gmail"]["state"], "reconnect")
+        self.assertEqual(services["_details"]["work_gmail"]["label"], "Reconnect")
+
     def test_prayer_reminder_has_catchup_window(self):
         now = bot.SGT.localize(bot.datetime(2026, 5, 1, 13, 18))
         plan = [{

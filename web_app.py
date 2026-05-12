@@ -1172,8 +1172,9 @@ def _home_intelligence(results: dict, days: int) -> dict:
     overdue_tasks = [item for item in task_items if item.get("overdue")]
     due_today_tasks = [item for item in task_items if str(item.get("due") or "") <= today]
     due_soon_tasks = [item for item in task_items if today < str(item.get("due") or "") <= soon]
-    connected_count = sum(1 for value in services.values() if value)
-    disconnected_count = max(0, len(services) - connected_count)
+    service_values = {key: value for key, value in services.items() if not str(key).startswith("_")}
+    connected_count = sum(1 for value in service_values.values() if value)
+    disconnected_count = max(0, len(service_values) - connected_count)
     classops_open = int(classops.get("open_submission_count") or classops.get("pending_count") or 0)
     classops_concerns = int(classops.get("concern_count") or 0)
     classops_due_now = int(classops.get("due_today_count") or 0) + int(classops.get("overdue_count") or 0)
@@ -1331,7 +1332,7 @@ def _home_intelligence(results: dict, days: int) -> dict:
         f"Load score {load_score}",
         f"{due_count} due",
         f"{unmarked} unmarked",
-        f"{connected_count}/{len(services) or 0} services connected",
+        f"{connected_count}/{len(service_values) or 0} services connected",
     ]
     if classops.get("connected"):
         evidence.append(f"{classops_concerns} ClassOps concern(s)")
@@ -1914,14 +1915,35 @@ def _parallel_home_data(days: int) -> dict:
 
 
 def _service_status() -> dict:
+    work_gmail_status = bot.work_gmail_monitor_status()
+    work_gmail_configured = bot.gs.gmail_ok("work")
+    work_gmail_detail = str(work_gmail_status.get("detail", "") or "")
+    work_gmail_error = str(work_gmail_status.get("status", "") or "").strip().lower() == "error"
+    work_gmail_revoked = bool(re.search(
+        r"\b(invalid_grant|expired|revoked|unauthorized|invalid credentials)\b",
+        work_gmail_detail,
+        re.I,
+    ))
+    work_gmail_healthy = work_gmail_configured and not (work_gmail_error and work_gmail_revoked)
+    work_gmail_state = "on" if work_gmail_healthy else "reconnect" if work_gmail_configured and work_gmail_revoked else "off"
     return {
         "google": bot.google_ok(),
         "calendar": bot.google_ok(),
         "work_drive": bot.google_ok(),
         "personal_gmail": bot.gs.gmail_ok("personal"),
         "personal_gmail2": bot.gs.gmail_ok("personal2"),
-        "work_gmail": bot.gs.gmail_ok("work"),
+        "work_gmail": work_gmail_healthy,
         "dropbox": dropbox.configured(),
+        "_details": {
+            "work_gmail": {
+                "configured": work_gmail_configured,
+                "healthy": work_gmail_healthy,
+                "state": work_gmail_state,
+                "label": "Reconnect" if work_gmail_state == "reconnect" else "On" if work_gmail_state == "on" else "Off",
+                "detail": work_gmail_detail,
+                "last_run": work_gmail_status.get("last_run", "") or work_gmail_status.get("checked_at", ""),
+            }
+        },
     }
 
 

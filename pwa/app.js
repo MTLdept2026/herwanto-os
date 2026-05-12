@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260512-mobile-qol-43";
-const APP_SCRIPT = "app.js?v=20260512-mobile-qol-43";
-const EXPECTED_SW_CACHE = "hira-os-v114";
+const APP_VERSION = "20260513-work-gmail-health-44";
+const APP_SCRIPT = "app.js?v=20260513-work-gmail-health-44";
+const EXPECTED_SW_CACHE = "hira-os-v115";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
 const AGENDA_CACHE_KEY = "hira_pwa_agenda_snapshot_v1";
 const HOME_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
@@ -1471,16 +1471,21 @@ function segmentMarkup(filled, total = 12, tone = "accent") {
 }
 
 function renderConnections(services) {
+  const details = services?._details || {};
   $("#homeConnectionsList").innerHTML = CONNECTIONS
     .map(
       ({ key, label, icon }) => {
+        const meta = details[key] || {};
         const connected = Boolean(services?.[key]);
+        const stateLabel = String(meta.label || (connected ? "On" : "Off"));
+        const state = String(meta.state || (connected ? "on" : "off")).toLowerCase();
+        const cardClass = state === "reconnect" || state === "attention" ? "is-warning" : connected ? "is-on" : "is-off";
         return `
-        <div class="connection-card ${connected ? "is-on" : "is-off"}">
+        <div class="connection-card ${cardClass}">
           <div class="connection-icon"><span data-lucide="${icon}" aria-hidden="true"></span></div>
           <div>
             <span>${label}</span>
-            <strong>${connected ? "On" : "Off"}</strong>
+            <strong>${escapeHtml(stateLabel)}</strong>
           </div>
           <span class="connection-switch" aria-hidden="true"><span></span></span>
         </div>
@@ -2653,9 +2658,13 @@ function renderHomeData(data = {}, { fromCache = false, savedAt = 0 } = {}) {
   renderSegmentsAll(".file-memory-segments", fileMemorySegments(data.files), 12, fileLines > 8 ? "success" : "accent");
   const services = data.services || {};
   const connectedCount = CONNECTIONS.filter(({ key }) => Boolean(services[key])).length;
+  const warningCount = CONNECTIONS.filter(({ key }) => {
+    const state = String(services?._details?.[key]?.state || "").toLowerCase();
+    return state === "reconnect" || state === "attention";
+  }).length;
   $("#homeServicesSummary").textContent = `${connectedCount}/${CONNECTIONS.length}`;
-  $("#homeServicesLabel").textContent = connectedCount ? "SERVICES CONNECTED" : "AWAITING CONNECTION";
-  renderSegmentsAll(".services-segments", Math.round((connectedCount / CONNECTIONS.length) * 12), 12, connectedCount ? "accent" : "muted");
+  $("#homeServicesLabel").textContent = warningCount ? "SERVICE NEEDS ATTENTION" : connectedCount ? "SERVICES CONNECTED" : "AWAITING CONNECTION";
+  renderSegmentsAll(".services-segments", Math.round((connectedCount / CONNECTIONS.length) * 12), 12, warningCount ? "danger" : connectedCount ? "accent" : "muted");
   renderConnections(services);
   renderDailyLoad(data.daily_load || {});
   renderBriefingDelivery(data.briefing_delivery || {});
