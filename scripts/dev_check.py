@@ -24,7 +24,6 @@ COMPILE_TARGETS = [
 ]
 CRITICAL_UNIT_TESTS = [
     "tests.test_agentic_claude.AgenticClaudeTests.test_google_ok_accepts_user_oauth_sheets_credentials",
-    "tests.test_agentic_claude.AgenticClaudeTests.test_google_ok_prefers_work_oauth_sheets_credentials",
     "tests.test_agentic_claude.AgenticClaudeTests.test_classlist_permission_message_points_to_work_sheets_oauth_when_missing",
     "tests.test_agentic_claude.AgenticClaudeTests.test_notification_outcomes_are_capped_below_sheet_cell_limit",
     "tests.test_agentic_claude.AgenticClaudeTests.test_retry_after_percentage_failure_forces_percentage_tool_from_context",

@@ -36,7 +36,7 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260513-home-sync-timing-45"
+PWA_APP_VERSION = "20260514-home-status-priority-46"
 PWA_SERVICE_WORKER_CACHE = "hira-os-v116"
 
 try:
@@ -1937,13 +1937,16 @@ def _parallel_home_data(days: int) -> dict:
             bot.logger.warning(f"Home timetable fallback failed: {fallback_exc}")
 
     jobs = {
+        # Keep connection and delivery status ahead of slower enrichment jobs.
+        # These cards are the first place the UI reports whether H.I.R.A is
+        # alive, so they should not be starved by digest/ClassOps fetches.
+        "services": _service_status,
+        "briefing_delivery": _briefing_delivery_status,
+        "prayers": bot.prayer_notification_status,
+        "islamic": lambda: bot.build_islamic_brief(),
         "digest": bot.build_curated_digest_snapshot,
         "proactive": lambda: bot.build_proactive_v2_snapshot(days=days),
-        "islamic": lambda: bot.build_islamic_brief(),
-        "prayers": bot.prayer_notification_status,
-        "services": _service_status,
         "classops": _classops_status_summary,
-        "briefing_delivery": _briefing_delivery_status,
     }
     results.update(_home_run_jobs(jobs, fallbacks, _HOME_SECONDARY_TIMEOUT_SECONDS, timings, prefix="extra."))
     results["intelligence"] = _home_intelligence(results, days)
