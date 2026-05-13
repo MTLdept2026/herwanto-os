@@ -253,6 +253,37 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(forced, "get_timetable")
 
+    def test_plt_tomorrow_verification_forces_timetable_tool(self):
+        forced = bot._forced_tool_for_text(
+            "Are u sure i have PLT tomorrow?",
+            [{"name": "get_timetable"}, {"name": "get_assistant_context"}],
+        )
+
+        self.assertEqual(forced, "get_timetable")
+
+    def test_contextual_timetable_verification_forces_timetable_tool(self):
+        messages = [
+            {"role": "user", "content": "Do I have PLT tomorrow?"},
+            {"role": "assistant", "content": "Yes, PLT is in your timetable tomorrow."},
+            {"role": "user", "content": "Are you sure?"},
+        ]
+        forced = bot._forced_tool_for_current_turn(
+            messages,
+            [{"name": "get_timetable"}, {"name": "get_assistant_context"}],
+        )
+
+        self.assertEqual(forced, "get_timetable")
+
+    def test_pwa_plt_tomorrow_gets_timetable_tool_and_is_not_quick(self):
+        text = "Are u sure i have PLT tomorrow?"
+
+        tools = bot.pwa_tools_for_message(text)
+        names = {tool["name"] for tool in tools}
+        routed_quick = asyncio.run(bot.should_route_quick_pwa_chat([], text))
+
+        self.assertIn("get_timetable", names)
+        self.assertFalse(routed_quick)
+
     def test_action_requests_are_not_forced_to_read_only_tools(self):
         calendar_forced = bot._forced_tool_for_text(
             "schedule meeting with HOD tomorrow at 3pm",

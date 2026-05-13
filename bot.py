@@ -469,6 +469,17 @@ DAY_REFERENCE_PATTERN = re.compile(
     re.I,
 )
 
+TIMETABLE_ITEM_PATTERN = re.compile(
+    r"\b(?:plt|professional\s+learning\s+teams?|timetable|lessons?|classes?|periods?|teaching)\b",
+    re.I,
+)
+
+VERIFICATION_PATTERN = re.compile(
+    r"\b(?:are\s+(?:you|u)\s+sure|confirm|double[-\s]?check|verify|check|"
+    r"do\s+i\s+have|have\s+i\s+got|am\s+i\s+having|is\s+there)\b",
+    re.I,
+)
+
 
 def _is_day_planning_query(text: str) -> bool:
     clean = " ".join(str(text or "").lower().split())
@@ -479,6 +490,21 @@ def _is_day_planning_query(text: str) -> bool:
         or re.search(r"\b(?:my|for)\s+(?:today|tomorrow|tonight|this\s+week|next\s+week|mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rs(?:day)?|r)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b", clean)
         or re.search(r"\b(?:schedule|calendar|agenda|timetable|day|week|like|load)\b", clean)
     )
+
+
+def _is_timetable_verification_query(text: str, recent_context: str = "") -> bool:
+    clean = " ".join(str(text or "").lower().split())
+    context = " ".join(str(recent_context or "").lower().split())
+    combined = f"{context} {clean}".strip()
+    if not clean or not TIMETABLE_ITEM_PATTERN.search(combined):
+        return False
+    if DAY_REFERENCE_PATTERN.search(clean) and TIMETABLE_ITEM_PATTERN.search(clean):
+        return True
+    if VERIFICATION_PATTERN.search(clean) and (
+        TIMETABLE_ITEM_PATTERN.search(clean) or DAY_REFERENCE_PATTERN.search(clean) or TIMETABLE_ITEM_PATTERN.search(context)
+    ):
+        return True
+    return False
 
 
 def _is_cca_schedule_query_text(text: str, recent_context: str = "") -> bool:
@@ -545,6 +571,8 @@ def source_discipline_for_text(text: str) -> dict:
     tools: list[str] = []
     if re.search(r"https?://\S+", clean):
         tools.append("fetch_url")
+    if _is_timetable_verification_query(clean):
+        tools.append("get_timetable")
     if _is_cca_schedule_query_text(lowered):
         tools.append("get_cca_schedule")
     if re.search(r"\b(liverpool|lfc|epl|premier league|anfield|salah|wirtz|isak|transfer|rumou?r|lineup|starting xi)\b", lowered):
@@ -920,6 +948,7 @@ Rules:
 - Be upfront about uncertainty and failures. Do not invent backend diagnoses, permission stories, service-account problems, sheet IDs, or "session memory only" explanations unless a tool/status result in this turn explicitly showed that. If memory/tool access fails, quote the exact tool failure briefly and say what is unverified.
 - For data lookups, use the user's words as intent: "last 5 emails" means latest 5 Gmail messages; "what's on today" means schedule/context; "anything due" means reminders/tasks; "who do I owe replies/follow-ups to" means Gmail/follow-up/task context as relevant.
 - For timetable or lesson lookups, use get_timetable. TIMETABLE in timetable.py is the source of truth for lessons; Google Calendar is only for events/appointments.
+- For recurring school timetable items such as PLT, FTCT/CCE, ML lessons, classes, or periods: never answer from memory alone when the question is dated ("today", "tomorrow", a weekday) or phrased as verification ("are you sure", "confirm", "do I have"). Call get_timetable first, then answer using the exact date, weekday, week type, and whether that item appears in the returned timetable. If it is absent, say it is absent; do not add it to calendar or imply a commitment.
 - HBL guardrail: Never infer HBL from Friday, Even-week Friday, a free day, or "no timetabled lessons". Say it is HBL only when a dated source explicitly marks that date as HBL. If the assistant context says "HBL status: Not HBL", treat that as authoritative over stale/general HBL memories or generic recurring labels.
 - If Stored memory says Herwanto's lessons/classes are covered by relief for a date, treat those timetable lessons as covered for workload and overlap warnings. Do not warn that a calendar item clashes with relieved lessons unless newer user/calendar information clearly contradicts the relief memory.
 - For CCA schedule/duty questions, use get_cca_schedule. The canonical source is Herwanto's CCA schedule Google Sheet. Select the tab by the requested/current date and school week. If Herwanto's name is not on that day's schedule, do not prompt him and do not add a CCA duty/event to his calendar.
@@ -6282,6 +6311,8 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
         return "find_available_training_slots"
     if "get_cca_schedule" in available and _is_cca_schedule_query_text(text):
         return "get_cca_schedule"
+    if "get_timetable" in available and _is_timetable_verification_query(text):
+        return "get_timetable"
     if (
         "get_assistant_context" in available
         and has_any(["appointment", "hdb", "calendar"])
@@ -6357,7 +6388,8 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
         return "get_mtl_classlists"
 
     if "get_timetable" in available and has_any([
-        "timetable", "lesson", "lessons", "periods", "classes"
+        "timetable", "lesson", "lessons", "periods", "classes", "plt",
+        "professional learning team", "professional learning teams"
     ]):
         if not has_any(["calendar event", "calendar events", "appointment", "appointments"]):
             return "get_timetable"
@@ -6553,6 +6585,11 @@ def _forced_tool_for_current_turn(messages: list[dict], tools: list[dict]) -> st
         and re.search(r"\b(f1|formula 1|grand prix|mercedes|ferrari|mclaren|red bull|hamilton|russell|antonelli)\b", recent_context)
     ):
         return "get_f1_brief"
+    if (
+        "get_timetable" in available
+        and _is_timetable_verification_query(content, recent_context)
+    ):
+        return "get_timetable"
     return None
 
 
@@ -8049,7 +8086,10 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
 
     if re.search(r"\b(gmail|email|emails|mail|inbox|unread|draft|reply)\b", text):
         add(GMAIL_BRIEF_TOOL, GMAIL_DRAFT_TOOL)
-    if re.search(r"\b(timetable|lesson|period|odd week|even week|school week)\b", text):
+    if (
+        re.search(r"\b(timetable|lesson|lessons|class|classes|period|odd week|even week|school week|plt|professional learning teams?)\b", text)
+        or _is_timetable_verification_query(text, context)
+    ):
         add(TIMETABLE_TOOL, WEEK_TYPE_TOOL)
     if classlist_followup or re.search(r"\b(classlist|class list|students?|names?|my classes|mtl group|grouping|1 flagship|2g3|3g3|4nt|4nt bml|scores?|marks?|results?|wa1|wa2|fa1|fa2|prelim|eoy|weighted assessment|formative assessment|exam|assessment|percentage|percent|%|analyse|analyze|analysis|graph|graphs|chart|charts|trend|mean|median|average|pass rate|underperforming|watchlist|most improved|progress|drop|dropped|colour|color|highlight|red|failures?|failed|below 50|less than 50)\b", text):
         add(CLASSLIST_TOOL, ANALYZE_MTL_SCORES_TOOL, GENERATE_MTL_TREND_REPORT_TOOL, APPLY_MTL_FAILURE_HIGHLIGHTING_TOOL, UPDATE_CLASS_SCORE_TOOL, FILL_PERCENTAGE_SCORES_TOOL, TIMETABLE_TOOL)
@@ -8302,7 +8342,12 @@ async def should_route_quick_pwa_chat(messages: list[dict], message: str) -> boo
         and re.search(r"\b(?:classlist|class list|2g3|3g3|1g2|wa1|wa2|fa1|fa2|percentage|percent|%)\b", recent_context)
     ):
         return False
-    if _is_day_planning_query(text) or _is_cca_schedule_query_text(text, recent_context) or _is_memory_commit_query_text(text):
+    if (
+        _is_day_planning_query(text)
+        or _is_timetable_verification_query(text, recent_context)
+        or _is_cca_schedule_query_text(text, recent_context)
+        or _is_memory_commit_query_text(text)
+    ):
         return False
     if not text or len(text) > 120 or _looks_tool_heavy(text):
         return False
