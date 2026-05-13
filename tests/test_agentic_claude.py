@@ -1410,6 +1410,26 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(data["daily_load"]["today"]["lessons"], 2)
         self.assertNotIn("unavailable", data["daily_load"]["note"].lower())
         self.assertNotIn("unavailable", data["daily_load"]["rest_note"].lower())
+        self.assertIn("sync_timings", data)
+
+    def test_home_job_runner_times_out_slow_optional_sources(self):
+        timings = []
+
+        def slow_source():
+            __import__("time").sleep(0.05)
+            return "late"
+
+        result = web_app._home_run_jobs(
+            {"fast": lambda: "ok", "slow": slow_source},
+            {"fast": "fallback-fast", "slow": "fallback-slow"},
+            timeout=0.01,
+            timings=timings,
+            prefix="test.",
+        )
+
+        self.assertEqual(result["fast"], "ok")
+        self.assertEqual(result["slow"], "fallback-slow")
+        self.assertTrue(any(item["phase"] == "test.slow" and item["status"] == "timeout" for item in timings))
 
     def test_morning_briefing_waits_for_confirmed_phone_push(self):
         with (

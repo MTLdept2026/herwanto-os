@@ -1,9 +1,9 @@
-const CACHE_NAME = "hira-os-v115";
-const HIRA_APP_VERSION = "20260513-work-gmail-health-44";
+const CACHE_NAME = "hira-os-v116";
+const HIRA_APP_VERSION = "20260513-home-sync-timing-45";
 const ASSETS = [
   "/",
-  "/styles.css?v=20260513-work-gmail-health-44",
-  "/app.js?v=20260513-work-gmail-health-44",
+  "/styles.css?v=20260513-home-sync-timing-45",
+  "/app.js?v=20260513-home-sync-timing-45",
   "/static/icon.svg",
   "/static/icon-192.png",
   "/static/icon-512.png",

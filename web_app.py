@@ -36,8 +36,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260512-mobile-qol-43"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v114"
+PWA_APP_VERSION = "20260513-home-sync-timing-45"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v116"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -90,6 +90,8 @@ _WEB_PUSH_RECOVERY_INTERVAL = _env_int("HIRA_WEB_PUSH_RECOVERY_SECONDS", 90, min
 _WEB_PUSH_RECOVERY_COOLDOWN = _env_int("HIRA_WEB_PUSH_RECOVERY_COOLDOWN_SECONDS", 300, minimum=60)
 _WEB_PUSH_RECOVERY_MAX_AGE_HOURS = _env_int("HIRA_WEB_PUSH_RECOVERY_MAX_AGE_HOURS", 36, minimum=1)
 _WEB_PUSH_RECOVERY_LIMIT = _env_int("HIRA_WEB_PUSH_RECOVERY_LIMIT", 3, minimum=1)
+_HOME_PRIMARY_TIMEOUT_SECONDS = max(2.0, min(15.0, _env_float("HIRA_HOME_PRIMARY_TIMEOUT_SECONDS", 8.0)))
+_HOME_SECONDARY_TIMEOUT_SECONDS = max(2.0, min(15.0, _env_float("HIRA_HOME_SECONDARY_TIMEOUT_SECONDS", 8.0)))
 _STATIC_PATHS = {
     "/",
     "/growth",
@@ -1591,7 +1593,56 @@ def _home_fallbacks() -> dict:
     }
 
 
-def _home_snapshot(days: int) -> dict:
+def _record_home_timing(timings: list[dict] | None, phase: str, elapsed_ms: int, status: str = "ok", detail: str = "") -> None:
+    if timings is not None:
+        timings.append({
+            "phase": phase,
+            "elapsed_ms": elapsed_ms,
+            "status": status,
+            "detail": detail[:160],
+        })
+    if status != "ok" or elapsed_ms >= 3000:
+        bot.logger.info("Home sync phase=%s status=%s elapsed_ms=%s detail=%s", phase, status, elapsed_ms, detail[:240])
+
+
+def _home_timing(timings: list[dict] | None, phase: str, started: float, status: str = "ok", detail: str = "") -> None:
+    _record_home_timing(timings, phase, round((time.perf_counter() - started) * 1000), status, detail)
+
+
+def _home_run_jobs(jobs: dict, fallbacks: dict, timeout: float, timings: list[dict], prefix: str = "") -> dict:
+    def run_timed(builder):
+        started = time.perf_counter()
+        try:
+            return "ok", builder(), round((time.perf_counter() - started) * 1000), ""
+        except Exception as exc:
+            return "error", None, round((time.perf_counter() - started) * 1000), str(exc)
+
+    submitted_at = {key: time.perf_counter() for key in jobs}
+    futures = {key: _HOME_EXECUTOR.submit(run_timed, builder) for key, builder in jobs.items()}
+    wait(futures.values(), timeout=timeout)
+    results = {}
+    for key, future in futures.items():
+        phase = f"{prefix}{key}" if prefix else key
+        if not future.done():
+            future.cancel()
+            results[key] = fallbacks[key]
+            _home_timing(timings, phase, submitted_at[key], "timeout", f">{timeout:.1f}s")
+            continue
+        try:
+            status, value, elapsed_ms, detail = future.result()
+            if status == "ok":
+                results[key] = value
+                _record_home_timing(timings, phase, elapsed_ms)
+            else:
+                results[key] = fallbacks[key]
+                _record_home_timing(timings, phase, elapsed_ms, "error", detail)
+        except Exception as exc:
+            results[key] = fallbacks[key]
+            _home_timing(timings, phase, submitted_at[key], "error", str(exc))
+    return results
+
+
+def _home_snapshot(days: int, timings: list[dict] | None = None) -> dict:
     snapshot = {
         "google": bot.google_ok(),
         "events": [],
@@ -1602,28 +1653,22 @@ def _home_snapshot(days: int) -> dict:
     }
     if not snapshot["google"]:
         return snapshot
-    try:
-        snapshot["events"] = bot.gs.get_events_for_days(days)
-    except Exception as exc:
-        bot.logger.warning(f"Home calendar events unavailable: {exc}")
-        snapshot["events"] = []
-    try:
-        snapshot["reminders"] = bot.gs.get_reminders()
-    except Exception as exc:
-        bot.logger.warning(f"Home reminders unavailable: {exc}")
-        snapshot["reminders"] = []
-    try:
-        snapshot["task_metadata"] = bot.gs.get_task_metadata()
-    except Exception:
-        snapshot["task_metadata"] = {}
-    try:
-        snapshot["marking_tasks"] = bot.gs.get_marking_tasks()
-    except Exception:
-        snapshot["marking_tasks"] = []
-    try:
-        snapshot["memory"] = bot.gs.get_memory()
-    except Exception:
-        snapshot["memory"] = {}
+    fallbacks = {
+        "events": [],
+        "reminders": [],
+        "task_metadata": {},
+        "marking_tasks": [],
+        "memory": {},
+    }
+    jobs = {
+        "events": lambda: bot.gs.get_events_for_days(days),
+        "reminders": bot.gs.get_reminders,
+        "task_metadata": bot.gs.get_task_metadata,
+        "marking_tasks": bot.gs.get_marking_tasks,
+        "memory": bot.gs.get_memory,
+    }
+    timing_sink = timings if timings is not None else []
+    snapshot.update(_home_run_jobs(jobs, fallbacks, _HOME_PRIMARY_TIMEOUT_SECONDS, timing_sink, prefix="snapshot."))
     return snapshot
 
 
@@ -1777,21 +1822,14 @@ def _home_load_days_for_dates(dates: list, today: date, reminders: list[dict]) -
         return []
     event_counts = {target.isoformat(): 0 for target in dates}
     due_counts = {target.isoformat(): 0 for target in dates}
-    if bot.google_ok():
-        try:
-            start = bot.SGT.localize(datetime.combine(min(dates), datetime.min.time()))
-            end = bot.SGT.localize(datetime.combine(max(dates) + bot.timedelta(days=1), datetime.min.time()))
-            for event in bot.gs.get_events_between(start, end):
-                item = bot._event_to_agenda_item(event)
-                if item["date"] in event_counts:
-                    event_counts[item["date"]] += 1
-        except Exception:
-            pass
-        date_set = set(due_counts.keys())
-        for reminder in reminders:
-            due = reminder.get("due", "")
-            if due in date_set:
-                due_counts[due] += 1
+    # Keep comparative load cheap: the live calendar is already fetched for the
+    # main agenda. Do not make extra Calendar calls just to decorate last/next
+    # week comparison, because that keeps the home screen in "Syncing".
+    date_set = set(due_counts.keys())
+    for reminder in reminders:
+        due = reminder.get("due", "")
+        if due in date_set:
+            due_counts[due] += 1
     load_days = []
     for target in dates:
         lessons, _ = bot._lessons_for_date(target)
@@ -1864,9 +1902,12 @@ def _home_files_index(snapshot: dict) -> str:
 
 
 def _parallel_home_data(days: int) -> dict:
+    total_started = time.perf_counter()
+    timings: list[dict] = []
     fallbacks = _home_fallbacks()
     try:
-        snapshot = _home_snapshot(days)
+        core_started = time.perf_counter()
+        snapshot = _home_snapshot(days, timings=timings)
         agenda_structured = _home_agenda_structured(days, snapshot)
         enriched_tasks = _home_enriched_tasks(snapshot)
         results = {
@@ -1878,16 +1919,21 @@ def _parallel_home_data(days: int) -> dict:
             "files": _home_files_index(snapshot),
             "marking": _marking_summary_from_tasks(snapshot.get("marking_tasks") or [], connected=bool(snapshot.get("google"))),
         }
+        _home_timing(timings, "core_build", core_started)
     except Exception as exc:
+        _home_timing(timings, "core_build", total_started, "error", str(exc))
         bot.logger.warning(f"Home snapshot build failed: {exc}")
         snapshot = {}
         results = {key: fallbacks[key] for key in ("agenda", "agenda_structured", "daily_load", "tasks", "tasks_structured", "files", "marking")}
         try:
+            fallback_started = time.perf_counter()
             agenda_structured = bot.build_agenda_structured(days)
             results["agenda_structured"] = agenda_structured
             results["daily_load"] = bot.build_daily_load(days)
             results["agenda"] = bot.build_agenda(days)
+            _home_timing(timings, "legacy_fallback", fallback_started)
         except Exception as fallback_exc:
+            _home_timing(timings, "legacy_fallback", total_started, "error", str(fallback_exc))
             bot.logger.warning(f"Home timetable fallback failed: {fallback_exc}")
 
     jobs = {
@@ -1899,18 +1945,10 @@ def _parallel_home_data(days: int) -> dict:
         "classops": _classops_status_summary,
         "briefing_delivery": _briefing_delivery_status,
     }
-    futures = {key: _HOME_EXECUTOR.submit(builder) for key, builder in jobs.items()}
-    wait(futures.values(), timeout=20)
-    for key, future in futures.items():
-        if not future.done():
-            future.cancel()
-            results[key] = fallbacks[key]
-            continue
-        try:
-            results[key] = future.result()
-        except Exception:
-            results[key] = fallbacks[key]
+    results.update(_home_run_jobs(jobs, fallbacks, _HOME_SECONDARY_TIMEOUT_SECONDS, timings, prefix="extra."))
     results["intelligence"] = _home_intelligence(results, days)
+    _home_timing(timings, "total", total_started)
+    results["sync_timings"] = timings
     return results
 
 

@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260513-work-gmail-health-44";
-const APP_SCRIPT = "app.js?v=20260513-work-gmail-health-44";
-const EXPECTED_SW_CACHE = "hira-os-v115";
+const APP_VERSION = "20260513-home-sync-timing-45";
+const APP_SCRIPT = "app.js?v=20260513-home-sync-timing-45";
+const EXPECTED_SW_CACHE = "hira-os-v116";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
 const AGENDA_CACHE_KEY = "hira_pwa_agenda_snapshot_v1";
 const HOME_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
@@ -2729,6 +2729,17 @@ function renderHomeErrorState(error) {
   renderSegmentsAll(".file-memory-segments", 1, 12, "warning");
 }
 
+function homeSlowSyncNote(timings = []) {
+  const candidates = (Array.isArray(timings) ? timings : [])
+    .filter((item) => item && item.phase !== "total" && (item.status !== "ok" || Number(item.elapsed_ms || 0) >= 3000))
+    .sort((a, b) => Number(b.elapsed_ms || 0) - Number(a.elapsed_ms || 0));
+  const slow = candidates[0];
+  if (!slow) return "";
+  const label = String(slow.phase || "source").replace(/^snapshot\./, "").replace(/^extra\./, "").replaceAll("_", " ");
+  const seconds = Math.max(1, Math.round(Number(slow.elapsed_ms || 0) / 1000));
+  return `${label} ${slow.status === "timeout" ? "timed out" : "was slow"} (${seconds}s)`;
+}
+
 async function loadHome({ force = false, background = false, useCache = true } = {}) {
   if (state.homeRefreshInFlight && !force) return state.homeRefreshInFlight;
   const refreshButton = $("#refreshHomeBtn");
@@ -2746,11 +2757,18 @@ async function loadHome({ force = false, background = false, useCache = true } =
   }
   state.homeLastRefreshStartedAt = Date.now();
   state.homeRefreshInFlight = (async () => {
+    const controller = new AbortController();
+    const slowNotice = window.setTimeout(() => {
+      if (refreshButton) refreshButton.textContent = "Still Syncing";
+      setStatus("Still syncing live sources. Cached view stays usable meanwhile.", "muted");
+    }, 7000);
+    const hardTimeout = window.setTimeout(() => controller.abort(), 28000);
     try {
-      const data = await api(`/api/home?days=${state.homeDays}`, { headers: headers(false) });
+      const data = await api(`/api/home?days=${state.homeDays}`, { headers: headers(false), signal: controller.signal });
       saveHomeSnapshot(data);
       renderHomeData(data);
-      setStatus(`Synced ${state.homeDays}-day view.`, "ok");
+      const slowNote = homeSlowSyncNote(data.sync_timings);
+      setStatus(slowNote ? `Synced ${state.homeDays}-day view. Slow source: ${slowNote}.` : `Synced ${state.homeDays}-day view.`, slowNote ? "warn" : "ok");
       if (refreshButton) {
         refreshButton.textContent = "Updated";
         refreshButton.classList.add("is-updated");
@@ -2762,9 +2780,12 @@ async function loadHome({ force = false, background = false, useCache = true } =
       }
     } catch (error) {
       if (!canShowCache) renderHomeErrorState(error);
-      setStatus(canShowCache ? `Live sync failed; cached view kept: ${error.message}` : error.message, canShowCache ? "warn" : "error");
+      const message = error.name === "AbortError" ? "Live sync timed out after 28s." : error.message;
+      setStatus(canShowCache ? `Live sync failed; cached view kept: ${message}` : message, canShowCache ? "warn" : "error");
       if (refreshButton) refreshButton.textContent = canShowCache ? "Retry Sync" : "Try again";
     } finally {
+      window.clearTimeout(slowNotice);
+      window.clearTimeout(hardTimeout);
       if (refreshButton) refreshButton.disabled = false;
       state.homeRefreshInFlight = null;
     }
