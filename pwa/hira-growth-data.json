@@ -5,9 +5,9 @@
   "summary": {
     "start": "2026-04-28",
     "current": "2026-05-13",
-    "commitsTracked": 177,
-    "majorPhases": 28,
-    "currentStage": "Postgres-backed operations with verifiable memory and service health"
+    "commitsTracked": 178,
+    "majorPhases": 29,
+    "currentStage": "Live topic radar with source-led answers and social leads"
   },
   "metrics": [
     {
@@ -17,7 +17,7 @@
     },
     {
       "label": "Tracked upgrade commits",
-      "value": "177",
+      "value": "178",
       "note": "Grouped from git history through the growth-log minisite."
     },
     {
@@ -49,8 +49,8 @@
     },
     {
       "name": "Live Knowledge",
-      "score": 90,
-      "description": "Weather, MUIS, dual personal Gmail inbox support, experimental Work Gmail OAuth, Work Gmail action monitoring with runtime health, Google News, Tavily search, fetch URL, source notes, live-check hints, structured Liverpool and F1 briefers."
+      "score": 92,
+      "description": "Weather, MUIS, dual personal Gmail inbox support, experimental Work Gmail OAuth, Work Gmail action monitoring with runtime health, Google News, Tavily/search fallbacks, bounded X/Twitter-style social leads for digest topics, fetch URL, source notes, live-check hints, structured Liverpool and F1 briefers."
     },
     {
       "name": "Self-Improvement",
@@ -521,6 +521,22 @@
         "The PWA connection card now treats a revoked Work Gmail token as a real reconnect state, and successful Work Gmail fetches or drafts clear stale reconnect warnings."
       ],
       "impact": "H.I.R.A now has a sturdier operational backbone: durable memory is no longer hostage to Sheets quota or formatting, delivery behavior has receipts, and integration health can say connected, reconnect, unavailable, or failed with less guesswork."
+    },
+    {
+      "date": "2026-05-13",
+      "era": "Live Radar",
+      "title": "Hira starts chasing live topic signals",
+      "commit": "live-topic-radar",
+      "tag": "Digest + Source Discipline",
+      "summary": "H.I.R.A's live-news brain was tightened so Android-style current events route to source tools, selected topics stay merged with the built-in radar, and the digest can use bounded social-search leads for fast-moving interests.",
+      "details": [
+        "PWA prompts about Android, Android 17, Google I/O, Gemini, Pixel, iOS, Apple, AI, Nothing, Liverpool, and F1 now force live news/source tools instead of falling through to memory-shaped answers.",
+        "The unsupported backend-diagnosis guardrail now returns user-facing wording rather than internal instruction text.",
+        "The morning digest now always merges configured watch topics with built-in radar topics for Liverpool, F1/Mercedes, AI tools, Codex/Claude/Gemini/Kimi, Teenage Engineering, Android, iOS, Islam, Singapore education, Nothing Products, and Nothing OS.",
+        "A capped social-search supplement can query X/Twitter-style indexed results for the first few high-interest live topics, treating social posts as leads rather than final confirmation.",
+        ".env.example and README now document the social-search controls so the breadth can be tuned without code changes."
+      ],
+      "impact": "H.I.R.A should now be much harder to catch out on fast-moving personal-interest news: it knows Android and the selected topic radar need live checks, and the digest can pick up fresher early signals while still keeping source discipline."
     }
   ],
   "currentCapabilities": [
@@ -534,7 +550,7 @@
     "Forecast Radar that highlights upcoming pressure from load spikes, due clusters, marking drag, or stable horizon signals.",
     "Adaptive Plan that creates live Prime, Build, Slice, and Stabilize work blocks from the current day state.",
     "7-Day Trial Loop with checkpoints and a trial-note action to measure whether H.I.R.A reduces decision friction in real life.",
-    "Telegram-compatible tool brain with calendar, reminders, marking, MTL classlists, dual personal Gmail brief/draft support, experimental Work Gmail brief/draft support, work-email action monitoring, artifacts, weather, MUIS prayer/khutbah, news, web search, and URL reading.",
+    "Telegram-compatible tool brain with calendar, reminders, marking, MTL classlists, dual personal Gmail brief/draft support, experimental Work Gmail brief/draft support, work-email action monitoring, artifacts, weather, MUIS prayer/khutbah, live selected-topic news, social-search digest leads, web search, and URL reading.",
     "Structured sports intelligence for Liverpool and F1.",
     "Railway Hobby runtime profile with upload queue, memory guardrails, worker split, Redis production option, admin status, /memcheck, /storagecheck, and /digestcheck.",
     "Postgres-backed long-term memory buckets, topic profiles for new interests, correction ledger, self-reflection notes, source-backed research notes, and conversation summaries.",
@@ -547,7 +563,7 @@
     "Recoverable push notification system with Postgres delivery logs, notification state, recovery status, confirmed-push completion checks, and catch-up retry behavior for daily briefings.",
     "Action-enabled push notifications: Done, Snooze 30m, Useful, and Not useful feed back into task/check-in/follow-up completion, proactive nudges, and notification outcome memory.",
     "Calendar and task reminder push layer with reminder confidence levels and rough time-to-leave estimates from explicit notes, place overrides, or default travel buffers.",
-    "Curated live digest that gathers multiple shortlist candidates, ranks them for quality and relevance, and adds a short why-it-matters layer.",
+    "Curated live digest that merges configured watch topics with built-in radar topics, gathers Google News plus bounded X/Twitter-style social leads, ranks candidates for quality and relevance, and adds a short why-it-matters layer.",
     "Checked availability planner for after-school training slots that combines timetable lessons, calendar conflicts, and CCA-day avoidance.",
     "Priority-weighted memory prompt: corrections and constraints always visible; low-signal buckets trimmed.",
     "Closed learning loop: implicit + explicit correction capture → weekly consolidation job → promoted to preferences/constraints.",

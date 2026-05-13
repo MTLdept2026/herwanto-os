@@ -117,6 +117,7 @@ class FakeSheetsService:
 class AgenticClaudeTests(unittest.TestCase):
     def setUp(self):
         bot.gs._invalidate_classlist_cache()
+        os.environ.setdefault("HIRA_DIGEST_SOCIAL_SEARCH", "0")
 
     def test_google_ok_accepts_user_oauth_sheets_credentials(self):
         env = {
@@ -1232,7 +1233,8 @@ class AgenticClaudeTests(unittest.TestCase):
         guarded = bot._backend_claim_guardrail(reply, [])
 
         self.assertIn("cannot verify", guarded)
-        self.assertIn("exact tool result", guarded)
+        self.assertIn("not verified the cause", guarded)
+        self.assertNotIn("I should show", guarded)
         self.assertNotIn("service account needs access", guarded)
 
     def test_memory_backend_claim_allowed_with_tool_evidence(self):
@@ -2348,6 +2350,52 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("Nothing Products", labels)
         self.assertIn("Teenage Engineering", labels)
 
+    def test_news_topics_merge_configured_with_builtin_radar(self):
+        configured = [{"label": "Custom Topic", "query": "custom query"}]
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "get_news_topics", return_value=configured),
+            patch.object(bot, "_ownership_news_topics", return_value=[]),
+        ):
+            topics = bot._news_topics()
+
+        labels = [label for label, _ in topics]
+        self.assertIn("Custom Topic", labels)
+        self.assertIn("🤖 Android", labels)
+        self.assertIn("🧠 Codex / Claude / Gemini / Kimi", labels)
+
+    def test_curated_digest_can_include_x_social_lead_for_live_topic(self):
+        def fake_web_search(query, max_results=5):
+            self.assertIn("site:x.com", query)
+            return [{
+                "title": "Android 17 beta update rolling out to Pixel users",
+                "url": "https://x.com/android/status/123",
+                "description": "Fresh Android update thread.",
+            }]
+
+        with (
+            patch("bot._news_topics", return_value=[("🤖 Android", "Android 17 Pixel beta update")]),
+            patch("bot._recent_news_digest_keys", return_value=set()),
+            patch("search_service.google_news", return_value=[]),
+            patch("search_service.web_search", side_effect=fake_web_search),
+            patch.dict(os.environ, {
+                "HIRA_DIGEST_SOCIAL_SEARCH": "1",
+                "HIRA_DIGEST_SOCIAL_DOMAINS": "x.com",
+                "HIRA_DIGEST_SOCIAL_TOPIC_LIMIT": "1",
+            }),
+        ):
+            entries = bot.build_curated_digest_entries(
+                now=bot.SGT.localize(datetime(2026, 5, 13, 8, 0)),
+                limit=1,
+                fetch_limit=2,
+                record=False,
+            )
+
+        self.assertEqual(entries[0]["label"], "🤖 Android")
+        self.assertEqual(entries[0]["item"]["source"], "Social: x.com")
+        self.assertTrue(entries[0]["item"]["social"])
+
     def test_classops_date_folder_parses_singapore_day_month_year(self):
         parsed = dropbox_service.parse_classops_date_folder("24/2/26 Peribahasa")
         self.assertTrue(parsed["matched"])
@@ -3266,6 +3314,21 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertIn("get_latest_news", names)
         self.assertIn("get_liverpool_brief", names)
+
+    def test_pwa_android_update_prompt_includes_news_tools(self):
+        text = "There was an Android 17 update. Can you find it?"
+        tools = bot.pwa_tools_for_message(text)
+        names = {tool["name"] for tool in tools}
+
+        self.assertIn("get_latest_news", names)
+        self.assertEqual(bot._forced_tool_for_text(text, tools), "get_latest_news")
+        self.assertFalse(asyncio.run(bot.should_route_quick_pwa_chat([], text)))
+
+    def test_source_discipline_treats_android_updates_as_live(self):
+        discipline = bot.source_discipline_for_text("Can you find the Android 17 update?")
+
+        self.assertTrue(discipline["needs_live_check"])
+        self.assertIn("get_latest_news", discipline["recommended_tools"])
 
     def test_pwa_preferred_topics_followup_uses_news_tools(self):
         text = "Nothing on my other preferred topics?"

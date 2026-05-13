@@ -966,7 +966,7 @@ Rules:
 - When the user asks to colour, color, highlight, or red-fill failures below the pass mark in an MTL percentage column — call apply_mtl_failure_highlighting. Default failure threshold is 50 unless Herwanto says another pass mark. If he asks for both failure colouring and sheet-side analysis/graphs, call apply_mtl_failure_highlighting and generate_mtl_score_trend_report in the same turn.
 - When the user asks to calculate and enter a score/mark/result into an MTL classlist sheet, calculate only from the numbers he gives or sheet values retrieved with include_scores=true, then call update_mtl_class_score. Do not guess a student or column; if the tool reports ambiguity, ask for the missing class/student/column detail.
 - When the user asks to fill or create percentage columns in an MTL classlist, call fill_mtl_percentage_scores. The tool can create a missing percentage column immediately after the raw score column, e.g. create/fill WA2 (100%) after WA2 (40). Use class_query and assessment_query if the user provides them; otherwise the tool will ask for specificity when multiple columns match.
-- When the user asks about latest news, current events, headlines, football, Liverpool/LFC, F1, AI, Singapore education, apps, Apple, Nothing OS, or his shortlisted topics — call get_latest_news and/or web_search before answering. Prefer get_liverpool_brief for Liverpool/LFC questions and get_f1_brief for Formula 1 questions because they gather structured source slices, but if those are thin, stale, or say "no items found", immediately run web_search with a targeted query.
+- When the user asks about latest news, current events, headlines, football, Liverpool/LFC, F1, AI, Singapore education, apps, Android/Google I/O/Gemini, Apple, Nothing OS, or his shortlisted topics — call get_latest_news and/or web_search before answering. Prefer get_liverpool_brief for Liverpool/LFC questions and get_f1_brief for Formula 1 questions because they gather structured source slices, but if those are thin, stale, or say "no items found", immediately run web_search with a targeted query.
 - For Liverpool/F1 result or score questions, answer the result first in the first sentence only when a live/source tool confirms it. Treat SOURCE CONTRACT status=confirmed as usable; treat unconfirmed, stale, or failed as a hard stop. Do not lead with programme notes, previews, line-ups, fan reaction, or where Herwanto can check it himself. If get_liverpool_brief/get_f1_brief does not contain a clear confirmed scoreline, run web_search with an exact "team/opponent/date full-time score" query before answering. Only say the result is unavailable after that targeted lookup fails.
 - For volatile facts, use this source contract discipline: confirmed = answer directly with source/as_of; unconfirmed = say what was checked and what was missing; stale = mention it only as older context; failed = say the live check failed. Never upgrade unconfirmed/stale/failed tool output into a confident fact.
 - For sports corrections and follow-ups, preserve the conversation subject. If Herwanto corrects a Liverpool/F1 claim, or then asks "what was the match like?", "the result?", "recap?", "home or away?", or "actual details?", use the relevant structured sports brief before answering even if the follow-up omits the team name.
@@ -3693,14 +3693,34 @@ def _ownership_news_topics(now: datetime | None = None) -> list[tuple[str, str]]
     return topics
 
 
+def _dedupe_news_topics(topics: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    deduped: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for label, query in topics:
+        clean_label = str(label or "").strip()
+        clean_query = str(query or "").strip()
+        if not clean_label or not clean_query:
+            continue
+        key = (clean_label.lower(), clean_query.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append((clean_label, clean_query))
+    return deduped
+
+
 def _news_topics(now: datetime | None = None):
+    configured: list[tuple[str, str]] = []
     if google_ok():
         try:
             configured = [(t["label"], t["query"]) for t in gs.get_news_topics()]
-            return configured + _ownership_news_topics(now=now)
         except Exception:
             pass
-    return [(label, query) for label, query in ss.DIGEST_TOPICS]
+    return _dedupe_news_topics(
+        configured
+        + [(label, query) for label, query in ss.DIGEST_TOPICS]
+        + _ownership_news_topics(now=now)
+    )
 
 
 LIVERPOOL_DIGEST_TERMS = (
@@ -3881,6 +3901,86 @@ DIGEST_TOPIC_RULES = {
     },
 }
 CURATED_DIGEST_DEFAULT_MAX_AGE_HOURS = 14 * 24
+DIGEST_SOCIAL_TOPIC_TERMS = (
+    "liverpool",
+    "lfc",
+    "f1",
+    "formula 1",
+    "mercedes",
+    "antonelli",
+    "kimi",
+    "ai",
+    "openai",
+    "codex",
+    "claude",
+    "anthropic",
+    "gemini",
+    "android",
+    "ios",
+    "nothing",
+    "cmf",
+    "teenage",
+    "islam",
+    "muis",
+)
+
+
+def _digest_social_enabled() -> bool:
+    return os.environ.get("HIRA_DIGEST_SOCIAL_SEARCH", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _digest_social_domains() -> list[str]:
+    raw = os.environ.get("HIRA_DIGEST_SOCIAL_DOMAINS", "x.com,twitter.com").strip()
+    domains = [item.strip().lower().removeprefix("https://").removeprefix("http://").strip("/") for item in raw.split(",")]
+    clean = [domain for domain in domains if domain]
+    return clean[:4] or ["x.com", "twitter.com"]
+
+
+def _digest_social_topic_limit() -> int:
+    try:
+        return max(0, min(12, int(os.environ.get("HIRA_DIGEST_SOCIAL_TOPIC_LIMIT", "6") or 6)))
+    except ValueError:
+        return 6
+
+
+def _digest_social_topic_allowed(label: str, query: str) -> bool:
+    clean = f"{label} {query}".lower()
+    return any(term in clean for term in DIGEST_SOCIAL_TOPIC_TERMS)
+
+
+def _digest_social_items(label: str, query: str, max_items: int = 1) -> list[dict]:
+    if not _digest_social_enabled() or not ss.search_enabled() or not _digest_social_topic_allowed(label, query):
+        return []
+    limit = max(1, min(int(max_items or 1), 2))
+    items: list[dict] = []
+    seen_urls: set[str] = set()
+    for domain in _digest_social_domains():
+        social_query = f"site:{domain} {query} latest update"
+        try:
+            results = ss.web_search(social_query, max_results=limit + 2)
+        except Exception as exc:
+            logger.warning(f"Social digest search failed for {domain} / {label}: {exc}")
+            continue
+        for result in results:
+            url = str(result.get("url", "") or "").strip()
+            title = str(result.get("title", "") or "").strip()
+            if not url or not title or domain not in url.lower():
+                continue
+            key = url.lower().rstrip("/")
+            if key in seen_urls:
+                continue
+            seen_urls.add(key)
+            items.append({
+                "title": title,
+                "url": url,
+                "published": "",
+                "source": f"Social: {domain}",
+                "description": str(result.get("description", "") or "").strip()[:500],
+                "social": True,
+            })
+            if len(items) >= limit:
+                return items
+    return items
 
 
 def _digest_sports_kind(label: str) -> str:
@@ -3985,6 +4085,8 @@ def _curated_digest_score(label: str, item: dict, slot_index: int = 0, now: date
     lens, lens_bonus = _digest_label_lens(label)
     score = 50 + ss.news_quality_score(item, now=now) + lens_bonus
     title_text = str(item.get("title", "")).lower()
+    if item.get("social"):
+        score += 3
     if any(term in title_text for term in ("today", "new", "launch", "update", "policy", "developer", "release", "security")):
         score += 4
     if _digest_item_has_any(title_text, DIGEST_HOT_TERMS):
@@ -4026,8 +4128,11 @@ def build_curated_digest_entries(now: datetime | None = None, limit: int = 4, fe
     seen_candidates = []
     used_keys = set()
     topics = _news_topics(now=current)
-    for label, query in topics:
+    social_topic_limit = _digest_social_topic_limit()
+    for topic_index, (label, query) in enumerate(topics):
         items = ss.google_news(query, max_items=max(2, int(fetch_limit or 4)))
+        if topic_index < social_topic_limit:
+            items.extend(_digest_social_items(label, query, max_items=1))
         for index, item in enumerate(items):
             key = ss.news_item_key(item)
             if not key or key in used_keys:
@@ -6316,9 +6421,10 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
 
     if "get_latest_news" in available and has_any([
         "digest", "briefing", "news", "latest", "headlines", "shortlist",
-        "shortlisted", "preferred topics", "nothing phone", "nothing os",
-        "nothing products", "cmf", "carl pei", "apple", "ai",
-        "singapore education",
+        "shortlisted", "preferred topics", "android", "android 17",
+        "google i/o", "google io", "gemini", "pixel", "nothing phone",
+        "nothing os", "nothing products", "cmf", "carl pei", "apple",
+        "ios", "ai", "singapore education",
     ]):
         return "get_latest_news"
 
@@ -6547,8 +6653,8 @@ def _backend_claim_guardrail(reply_text: str, tool_results: list[dict]) -> str:
     ):
         return text
     return (
-        "I need to be precise: I cannot verify that backend/tool diagnosis from the tool results in this turn. "
-        "I should show the exact tool result if there is one; otherwise I should say I have not verified the cause instead of inventing it."
+        "I cannot verify that backend/tool diagnosis from the tool results in this turn. "
+        "I have not verified the cause, so I should not invent one."
     )
 
 
@@ -7980,7 +8086,7 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         r"\b(football|f1|formula 1|liverpool|lfc|man utd|man united|manchester united|premier league|epl|grand prix|mercedes|ferrari|mclaren|red bull)\b",
         combined,
     )
-    if re.search(r"\b(digest|briefing|news|latest|current|headline|headlines|search|web|shortlist|shortlisted|preferred topics|football|f1|liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|apple|ai|singapore education|nothing phone|nothing os|nothing products|cmf|carl pei)\b", text) or sports_followup or correction_followup:
+    if re.search(r"\b(digest|briefing|news|latest|current|headline|headlines|search|web|shortlist|shortlisted|preferred topics|football|f1|liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|android|android 17|google i/o|google io|gemini|pixel|apple|ios|ai|singapore education|nothing phone|nothing os|nothing products|cmf|carl pei)\b", text) or sports_followup or correction_followup:
         add(NEWS_TOOL, WEB_RESEARCH_TOOL, SOURCE_NOTE_TOOL)
         if re.search(r"\b(liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|man utd|man united|manchester united)\b", combined):
             add(LIVERPOOL_BRIEF_TOOL)
@@ -8160,7 +8266,7 @@ def _looks_tool_heavy(text: str) -> bool:
         r"prayer|prayers|pray|solat|salah|subuh|fajr|syuruk|zohor|zuhur|zuhr|dhuhr|asar|asr|maghrib|isyak|isha|muis|religion|religious|islam|islamic|halal|haram|fatwa|zakat|puasa|fasting|ramadan|qibla|wudhu|wudu|ablution|"
         r"location|where|journey|travel|route|directions|commute|drive|driving|mrt|bus|walk|walking|masjid|mosque|"
         r"weather|forecast|temperature|temp|hot|cold|rain|raining|rainy|shower|showers|thunder|storm|umbrella|"
-        r"haze|psi|pm2\.5|air quality|nea|mss|project|projects|gameplan|ruh|rūḥ|apps?|app store|"
+        r"haze|psi|pm2\.5|air quality|nea|mss|project|projects|gameplan|ruh|rūḥ|apps?|app store|android|google i/o|google io|gemini|pixel|"
         r"milestone|launched|shipped|released|approved|rejected|submitted|blocked|"
         r"football|f1|liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|"
         r"match|recap|score|home|away|host(?:ed)?|line-?up|starting xi|standings|table|fixtures?|results?|transfers?|rumou?rs?|injur(?:y|ies)|"
