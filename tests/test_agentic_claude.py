@@ -1523,6 +1523,26 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertTrue(sent)
         build_briefing.assert_not_called()
 
+    def test_morning_briefing_places_digest_before_agenda_for_push_preview(self):
+        lessons = [{
+            "start": "08:00",
+            "end": "08:30",
+            "subject": "FT",
+            "description": "Form Time",
+            "room": "Class",
+        }]
+        with (
+            patch.object(bot, "_fresh_morning_digest", return_value="- *AI release* (AI Tools · Source)") as digest,
+            patch.object(bot, "_lessons_for_date", return_value=(lessons, "Odd")),
+            patch.object(bot, "build_islamic_brief", return_value="Prayer rhythm"),
+            patch.object(bot, "google_ok", return_value=False),
+        ):
+            text = bot.build_briefing(record_news_digest=False)
+
+        digest.assert_called_once()
+        self.assertLess(text.index("*Morning digest:*"), text.index("*Today's lessons"))
+        self.assertIn("AI release", text)
+
     def test_evening_briefing_waits_for_confirmed_phone_push(self):
         with (
             patch.object(bot, "google_ok", return_value=True),

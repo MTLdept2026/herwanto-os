@@ -72,10 +72,10 @@ except ValueError:
     logger.warning("Invalid HIRA_EVENING_BRIEFING_CATCHUP_MINUTES; using 90 minutes")
     EVENING_BRIEFING_CATCHUP_MINUTES = 90
 try:
-    MORNING_DIGEST_ITEM_LIMIT = max(4, min(8, int(os.environ.get("HIRA_MORNING_DIGEST_ITEM_LIMIT", "6") or 6)))
+    MORNING_DIGEST_ITEM_LIMIT = max(6, min(24, int(os.environ.get("HIRA_MORNING_DIGEST_ITEM_LIMIT", "16") or 16)))
 except ValueError:
-    logger.warning("Invalid HIRA_MORNING_DIGEST_ITEM_LIMIT; using 6 items")
-    MORNING_DIGEST_ITEM_LIMIT = 6
+    logger.warning("Invalid HIRA_MORNING_DIGEST_ITEM_LIMIT; using 16 items")
+    MORNING_DIGEST_ITEM_LIMIT = 16
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 if not ANTHROPIC_API_KEY:
@@ -6827,6 +6827,19 @@ def build_briefing(record_news_digest: bool = False):
     today = now.date()
     lines = [f"Good morning, Herwanto!\n_{now.strftime('%A, %-d %B %Y')}_\n"]
 
+    # Put the preferred-topic digest first so phone push previews do not spend
+    # their limited body budget on routine agenda text before the news radar.
+    try:
+        digest = _fresh_morning_digest(now=now, record=record_news_digest)
+        if digest:
+            lines.append("*Morning digest:*")
+            lines.append(digest)
+            lines.append("")
+    except Exception as e:
+        logger.warning(f"Morning digest build failed: {e}")
+        lines.append("_(Morning digest unavailable right now.)_")
+        lines.append("")
+
     # Timetable
     lessons, wt_label = _lessons_for_date(today)
     if wt_label:
@@ -6890,16 +6903,6 @@ def build_briefing(record_news_digest: bool = False):
                 lines.extend(classops_lines)
         except Exception as e:
             logger.warning(f"ClassOps briefing scan failed: {e}")
-
-    # Morning news digest
-    try:
-        digest = _fresh_morning_digest(now=now, record=record_news_digest)
-        if digest:
-            lines.append("")
-            lines.append("*Morning digest:*")
-            lines.append(digest)
-    except Exception:
-        pass
 
     lines.append("\nHave a productive day!")
     return "\n".join(lines)
