@@ -21,7 +21,6 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 logger = logging.getLogger(__name__)
 
-TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 GOOGLE_NEWS_TIMEOUT = 8
 WEB_SEARCH_TIMEOUT = 8
 RESEARCH_WORKERS = 4
@@ -49,6 +48,14 @@ DIGEST_TOPICS = [
 
 def search_enabled():
     return os.environ.get("HIRA_DISABLE_WEB_SEARCH", "").strip().lower() not in {"1", "true", "yes"}
+
+
+def _tavily_api_key() -> str:
+    return os.environ.get("TAVILY_API_KEY", "").strip()
+
+
+def tavily_configured() -> bool:
+    return bool(_tavily_api_key())
 
 
 class _ReadableHTMLParser(HTMLParser):
@@ -256,12 +263,13 @@ def _dedupe_results(results: list[dict], max_results: int) -> list[dict]:
 
 
 def _tavily_search(query: str, max_results: int = 5) -> list[dict]:
-    if not TAVILY_API_KEY:
+    api_key = _tavily_api_key()
+    if not api_key:
         return []
     try:
         resp = requests.post(
             "https://api.tavily.com/search",
-            json={"api_key": TAVILY_API_KEY, "query": query, "max_results": max_results},
+            json={"api_key": api_key, "query": query, "max_results": max_results},
             timeout=WEB_SEARCH_TIMEOUT,
         )
         resp.raise_for_status()
@@ -272,6 +280,14 @@ def _tavily_search(query: str, max_results: int = 5) -> list[dict]:
     except Exception as e:
         logger.warning(f"Tavily search error: {e}")
         return []
+
+
+def tavily_search(query: str, max_results: int = 5) -> list[dict]:
+    """Search with Tavily only; use when fallbacks are too slow or too noisy."""
+    clean = " ".join(str(query or "").split())
+    if not clean or not search_enabled():
+        return []
+    return _dedupe_results(_tavily_search(clean, max_results=max_results), max_results)
 
 
 def _duckduckgo_search(query: str, max_results: int = 5) -> list[dict]:

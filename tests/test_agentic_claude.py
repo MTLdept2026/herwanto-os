@@ -2437,7 +2437,7 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("🧠 Codex / Claude / Gemini / Kimi", labels)
 
     def test_curated_digest_can_include_x_social_lead_for_live_topic(self):
-        def fake_web_search(query, max_results=5):
+        def fake_tavily_search(query, max_results=5):
             self.assertIn("site:x.com", query)
             return [{
                 "title": "Android 17 beta update rolling out to Pixel users",
@@ -2449,7 +2449,8 @@ class AgenticClaudeTests(unittest.TestCase):
             patch("bot._news_topics", return_value=[("🤖 Android", "Android 17 Pixel beta update")]),
             patch("bot._recent_news_digest_keys", return_value=set()),
             patch("search_service.google_news", return_value=[]),
-            patch("search_service.web_search", side_effect=fake_web_search),
+            patch("search_service.tavily_configured", return_value=True),
+            patch("search_service.tavily_search", side_effect=fake_tavily_search),
             patch.dict(os.environ, {
                 "HIRA_DIGEST_SOCIAL_SEARCH": "1",
                 "HIRA_DIGEST_SOCIAL_DOMAINS": "x.com",
@@ -2466,6 +2467,22 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(entries[0]["label"], "🤖 Android")
         self.assertEqual(entries[0]["item"]["source"], "Social: x.com")
         self.assertTrue(entries[0]["item"]["social"])
+
+    def test_social_digest_skips_fast_without_tavily_key(self):
+        with (
+            patch("search_service.tavily_configured", return_value=False),
+            patch("search_service.tavily_search") as tavily_search,
+            patch("search_service.web_search") as web_search,
+            patch.dict(os.environ, {
+                "HIRA_DIGEST_SOCIAL_SEARCH": "1",
+                "HIRA_DIGEST_SOCIAL_DOMAINS": "x.com,twitter.com",
+            }),
+        ):
+            items = bot._digest_social_items("🤖 Android", "Android 17 Pixel beta update")
+
+        self.assertEqual(items, [])
+        tavily_search.assert_not_called()
+        web_search.assert_not_called()
 
     def test_classops_date_folder_parses_singapore_day_month_year(self):
         parsed = dropbox_service.parse_classops_date_folder("24/2/26 Peribahasa")
@@ -3727,7 +3744,7 @@ class AgenticClaudeTests(unittest.TestCase):
 
     def test_web_search_uses_duckduckgo_fallback_when_tavily_missing(self):
         with (
-            patch.object(search_service, "TAVILY_API_KEY", ""),
+            patch.dict(os.environ, {"TAVILY_API_KEY": ""}, clear=False),
             patch.object(search_service, "_duckduckgo_search", return_value=[
                 {"title": "Official F1 calendar", "description": "", "url": "https://www.formula1.com/en/racing/2026"},
             ]) as duckduckgo,
