@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 logger = logging.getLogger(__name__)
 
 GOOGLE_NEWS_TIMEOUT = 8
+RSS_FEED_TIMEOUT = 4
 WEB_SEARCH_TIMEOUT = 8
 RESEARCH_WORKERS = 4
 
@@ -706,6 +707,43 @@ def google_news(query, max_items=5):
     except Exception as e:
         logger.warning(f"RSS error for '{query}': {e}")
         return []
+
+
+def rss_feed_items(feed_url: str, source_label: str = "", max_items: int = 3) -> list[dict]:
+    """Fetch ordinary RSS/Atom feed items for free source/community supplements."""
+    url = str(feed_url or "").strip()
+    if not _looks_like_url(url):
+        return []
+    try:
+        resp = requests.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; HIRA/1.0; +https://example.com/hira)"},
+            timeout=RSS_FEED_TIMEOUT,
+        )
+        resp.raise_for_status()
+        feed = feedparser.parse(resp.content)
+    except Exception as e:
+        logger.warning(f"RSS feed error for '{url}': {e}")
+        return []
+    items = []
+    for entry in getattr(feed, "entries", [])[: max(1, int(max_items or 3)) * 3]:
+        description = getattr(entry, "summary", "") or getattr(entry, "description", "")
+        description = re.sub(r"<[^>]+>", " ", description or "")
+        description = " ".join(description.split())
+        title = getattr(entry, "title", "")
+        link = getattr(entry, "link", "")
+        if not title or not link:
+            continue
+        items.append({
+            "title": title,
+            "url": link,
+            "published": getattr(entry, "published", "") or getattr(entry, "updated", ""),
+            "source": source_label or getattr(getattr(feed, "feed", {}), "title", "") or _domain_from_url(url),
+            "description": description[:500],
+        })
+        if len(items) >= max(1, int(max_items or 3)):
+            break
+    return items
 
 
 def format_news_items(items):

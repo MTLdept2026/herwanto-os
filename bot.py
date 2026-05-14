@@ -3977,6 +3977,106 @@ def _digest_social_topic_allowed(label: str, query: str) -> bool:
     return any(term in clean for term in DIGEST_SOCIAL_TOPIC_TERMS)
 
 
+def _digest_free_sources_enabled() -> bool:
+    return os.environ.get("HIRA_DIGEST_FREE_SOURCE_SUPPLEMENTS", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _digest_free_source_topic_limit() -> int:
+    try:
+        return max(0, min(12, int(os.environ.get("HIRA_DIGEST_FREE_SOURCE_TOPIC_LIMIT", "6") or 6)))
+    except ValueError:
+        return 6
+
+
+FREE_DIGEST_FEEDS = [
+    {
+        "match": ("android", "pixel"),
+        "source": "Android Developers Blog",
+        "url": "https://android-developers.googleblog.com/feeds/posts/default",
+    },
+    {
+        "match": ("ios", "macos", "app store", "testflight", "apple developer", "solo dev", "developer"),
+        "source": "Apple Developer News",
+        "url": "https://developer.apple.com/news/rss/news.rss",
+    },
+    {
+        "match": ("openai", "ai tools", "codex", "chatgpt"),
+        "source": "OpenAI News",
+        "url": "https://openai.com/news/rss.xml",
+    },
+    {
+        "match": ("anthropic", "claude", "ai tools"),
+        "source": "Anthropic News",
+        "url": "https://www.anthropic.com/news/rss.xml",
+    },
+    {
+        "match": ("ai", "llm", "local llm", "model", "gemini", "kimi"),
+        "source": "r/LocalLLaMA",
+        "url": "https://www.reddit.com/r/LocalLLaMA/.rss",
+    },
+    {
+        "match": ("liverpool", "lfc", "epl"),
+        "source": "r/LiverpoolFC",
+        "url": "https://www.reddit.com/r/LiverpoolFC/.rss",
+    },
+    {
+        "match": ("f1", "formula 1", "mercedes"),
+        "source": "r/formula1",
+        "url": "https://www.reddit.com/r/formula1/.rss",
+    },
+    {
+        "match": ("nothing", "cmf"),
+        "source": "r/NothingTech",
+        "url": "https://www.reddit.com/r/NothingTech/.rss",
+    },
+    {
+        "match": ("teenage engineering", "op-xy", "op-1"),
+        "source": "r/teenageengineering",
+        "url": "https://www.reddit.com/r/teenageengineering/.rss",
+    },
+]
+
+
+def _digest_free_source_items(
+    label: str,
+    query: str,
+    max_items: int = 1,
+    feed_cache: dict[str, list[dict]] | None = None,
+) -> list[dict]:
+    if not _digest_free_sources_enabled() or not ss.search_enabled():
+        return []
+    clean = f"{label} {query}".lower()
+    matches = [
+        feed for feed in FREE_DIGEST_FEEDS
+        if any(term in clean for term in feed["match"])
+    ]
+    if not matches:
+        return []
+    limit = max(1, min(int(max_items or 1), 2))
+    items: list[dict] = []
+    seen_urls: set[str] = set()
+    cache = feed_cache if feed_cache is not None else {}
+    for feed in matches[:2]:
+        feed_items = cache.get(feed["url"])
+        if feed_items is None:
+            feed_items = ss.rss_feed_items(feed["url"], source_label=feed["source"], max_items=limit + 1)
+            cache[feed["url"]] = feed_items
+        for item in feed_items:
+            url = str(item.get("url", "") or "").strip()
+            title = str(item.get("title", "") or "").strip()
+            if not url or not title:
+                continue
+            key = url.lower().rstrip("/")
+            if key in seen_urls:
+                continue
+            seen_urls.add(key)
+            item["free_source"] = True
+            items.append(item)
+            if len(items) >= limit:
+                return items
+    return items
+
+
 def _digest_social_items(label: str, query: str, max_items: int = 1) -> list[dict]:
     if not _digest_social_enabled() or not ss.search_enabled() or not _digest_social_topic_allowed(label, query):
         return []
@@ -4119,6 +4219,8 @@ def _curated_digest_score(label: str, item: dict, slot_index: int = 0, now: date
     title_text = str(item.get("title", "")).lower()
     if item.get("social"):
         score += 3
+    if item.get("free_source"):
+        score += 2
     if any(term in title_text for term in ("today", "new", "launch", "update", "policy", "developer", "release", "security")):
         score += 4
     if _digest_item_has_any(title_text, DIGEST_HOT_TERMS):
@@ -4161,8 +4263,12 @@ def build_curated_digest_entries(now: datetime | None = None, limit: int = 4, fe
     used_keys = set()
     topics = _news_topics(now=current)
     social_topic_limit = _digest_social_topic_limit()
+    free_source_topic_limit = _digest_free_source_topic_limit()
+    free_source_feed_cache: dict[str, list[dict]] = {}
     for topic_index, (label, query) in enumerate(topics):
         items = ss.google_news(query, max_items=max(2, int(fetch_limit or 4)))
+        if topic_index < free_source_topic_limit:
+            items.extend(_digest_free_source_items(label, query, max_items=1, feed_cache=free_source_feed_cache))
         if topic_index < social_topic_limit:
             items.extend(_digest_social_items(label, query, max_items=1))
         for index, item in enumerate(items):

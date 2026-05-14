@@ -2484,6 +2484,41 @@ class AgenticClaudeTests(unittest.TestCase):
         tavily_search.assert_not_called()
         web_search.assert_not_called()
 
+    def test_free_source_digest_adds_rss_items_without_paid_search(self):
+        def fake_rss_feed_items(url, source_label="", max_items=3):
+            self.assertIn("reddit.com/r/formula1", url)
+            return [{
+                "title": "Mercedes upgrade thread from practice",
+                "url": "https://www.reddit.com/r/formula1/comments/upgrade",
+                "published": "Thu, 14 May 2026 01:00:00 GMT",
+                "source": source_label,
+                "description": "Community signal",
+            }]
+
+        with (
+            patch("bot._news_topics", return_value=[("F1 / Mercedes", "Mercedes F1 upgrade")]),
+            patch("bot._recent_news_digest_keys", return_value=set()),
+            patch("search_service.google_news", return_value=[]),
+            patch("search_service.rss_feed_items", side_effect=fake_rss_feed_items),
+            patch("search_service.tavily_configured", return_value=False),
+            patch("search_service.tavily_search") as tavily_search,
+            patch.dict(os.environ, {
+                "HIRA_DIGEST_FREE_SOURCE_SUPPLEMENTS": "1",
+                "HIRA_DIGEST_FREE_SOURCE_TOPIC_LIMIT": "1",
+                "HIRA_DIGEST_SOCIAL_SEARCH": "1",
+            }),
+        ):
+            entries = bot.build_curated_digest_entries(
+                now=bot.SGT.localize(datetime(2026, 5, 14, 8, 0)),
+                limit=1,
+                fetch_limit=2,
+                record=False,
+            )
+
+        self.assertEqual(entries[0]["item"]["source"], "r/formula1")
+        self.assertTrue(entries[0]["item"]["free_source"])
+        tavily_search.assert_not_called()
+
     def test_classops_date_folder_parses_singapore_day_month_year(self):
         parsed = dropbox_service.parse_classops_date_folder("24/2/26 Peribahasa")
         self.assertTrue(parsed["matched"])
