@@ -3520,6 +3520,8 @@ def build_proactive_v2_queue(now: datetime | None = None, days: int = 7, familie
         if allow("task"):
             structured = build_task_structured(days)
             for task in structured.get("items", [])[:5]:
+                if _task_is_expired_event_like(task, current):
+                    continue
                 score = _task_candidate_score(task, today)
                 if score < 58:
                     continue
@@ -4656,6 +4658,126 @@ def _source_date(source: str) -> date | None:
         return date.fromisoformat(match.group(1))
     except Exception:
         return None
+
+
+def _coerce_sgt_datetime(value: datetime | None = None) -> datetime:
+    current = value or datetime.now(SGT)
+    if current.tzinfo is None:
+        return SGT.localize(current)
+    return current.astimezone(SGT)
+
+
+def _timed_event_end_datetime_from_text(text: str, event_day: date) -> datetime | None:
+    match = re.search(
+        r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*"
+        r"(?:[-–—]|to)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b",
+        str(text or ""),
+        re.I,
+    )
+    if not match:
+        return None
+
+    start_hour = int(match.group(1))
+    start_minute = int(match.group(2) or "0")
+    start_period = (match.group(3) or match.group(6) or "").lower()
+    end_hour = int(match.group(4))
+    end_minute = int(match.group(5) or "0")
+    end_period = (match.group(6) or "").lower()
+
+    def to_24h(hour: int, minute: int, period: str) -> int | None:
+        if not (1 <= hour <= 12 and 0 <= minute <= 59 and period in {"am", "pm"}):
+            return None
+        if period == "am":
+            hour = 0 if hour == 12 else hour
+        elif hour != 12:
+            hour += 12
+        return hour * 60 + minute
+
+    start_minutes = to_24h(start_hour, start_minute, start_period)
+    end_minutes = to_24h(end_hour, end_minute, end_period)
+    if end_minutes is None:
+        return None
+    end_day = event_day
+    if start_minutes is not None and end_minutes <= start_minutes:
+        end_day = event_day + timedelta(days=1)
+    return SGT.localize(datetime.combine(end_day, dt_time(end_minutes // 60, end_minutes % 60)))
+
+
+def _text_looks_like_timed_event(text: str) -> bool:
+    clean = str(text or "").lower()
+    has_time_range = bool(re.search(
+        r"\b\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s*"
+        r"(?:[-–—]|to)\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)\b",
+        clean,
+    ))
+    if not has_time_range:
+        return False
+    event_terms = (
+        r"\b(today|tomorrow|event|competition|meeting|workshop|training|lesson|"
+        r"class|appointment|session|duty|camp|briefing)\b"
+    )
+    return bool(
+        re.search(event_terms, clean)
+        or re.search(r"\bat\s+\S", clean)
+    )
+
+
+def _task_is_expired_event_like(task: dict, now: datetime | date) -> bool:
+    due = str(task.get("due", "") or "").strip()
+    try:
+        due_date = date.fromisoformat(due)
+    except Exception:
+        return False
+    current_input = datetime.combine(now, dt_time.min) if isinstance(now, date) and not isinstance(now, datetime) else now
+    current = _coerce_sgt_datetime(current_input)
+    text = " ".join([
+        str(task.get("description", "") or ""),
+        str(task.get("category", "") or ""),
+        str(task.get("next_action", "") or ""),
+    ])
+    if not _text_looks_like_timed_event(text):
+        return False
+    if due_date < current.date():
+        return True
+    if due_date > current.date():
+        return False
+    end_dt = _timed_event_end_datetime_from_text(text, due_date)
+    if not end_dt:
+        return False
+    catchup = _env_int("HIRA_CALENDAR_REMINDER_CATCHUP_MINUTES", 10, 0)
+    return current > end_dt + timedelta(minutes=catchup)
+
+
+def _notification_expired_action_reason(
+    source: str,
+    title: str = "",
+    body: str = "",
+    now: datetime | None = None,
+) -> str:
+    clean_source = str(source or "").strip()
+    group = _notification_source_group(clean_source)
+    current = _coerce_sgt_datetime(now)
+    source_day = _source_date(clean_source)
+    if group in {"calendar_reminder", "calendar_travel"} and source_day and source_day < current.date():
+        return "calendar event date has passed"
+    if group == "task_reminder":
+        text = " ".join([str(title or ""), str(body or "")])
+        due_match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
+        due_day = None
+        if due_match:
+            try:
+                due_day = date.fromisoformat(due_match.group(1))
+            except Exception:
+                due_day = None
+        event_day = due_day or source_day
+        if event_day and _text_looks_like_timed_event(text):
+            if event_day < current.date():
+                return "timed task event date has passed"
+            end_dt = _timed_event_end_datetime_from_text(text, event_day)
+            catchup = _env_int("HIRA_CALENDAR_REMINDER_CATCHUP_MINUTES", 10, 0)
+            if end_dt and current > end_dt + timedelta(minutes=catchup):
+                return "timed task event end time has passed"
+    return ""
 
 
 def _archive_conflicting_day_notifications(target: date, *, duty_only: bool = False) -> int:
@@ -9447,6 +9569,16 @@ async def handle_voice(update, context):
 # ─── SCHEDULED JOBS ──────────────────────────────────────────────────────────
 
 def _queue_app_notification(kind: str, title: str, body: str, source: str = ""):
+    expired_reason = _notification_expired_action_reason(source, title, body)
+    if expired_reason:
+        logger.info(f"Notification expired before queue for source={source or kind}: {expired_reason}")
+        _record_notification_outcome(
+            "expired",
+            source=source,
+            kind=kind,
+            title=title,
+        )
+        return None
     block_reason = _calendar_notification_block_reason(source, title, body)
     if block_reason:
         logger.info(f"Calendar notification blocked before queue for source={source or kind}: {block_reason}")

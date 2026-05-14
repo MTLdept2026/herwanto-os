@@ -821,6 +821,72 @@ class AgenticClaudeTests(unittest.TestCase):
         archive.assert_called_once_with(["35"])
         send_push.assert_not_called()
 
+    def test_web_push_recovery_archives_expired_timed_task_notification(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 15, 5, 8))
+        item = {
+            "id": "36",
+            "kind": "reminder",
+            "title": "Sahibba competition today - 2:00-6:00pm at Pei Hwa Secondary",
+            "body": "2026-05-14 Teaching",
+            "source": "task_reminder:2026-05-15:44",
+            "created": now.isoformat(),
+            "archived": False,
+        }
+
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return now if tz else now.replace(tzinfo=None)
+
+        with (
+            patch.object(web_app, "datetime", FixedDateTime),
+            patch.object(web_app.bot.gs, "get_app_notifications", return_value=[item]),
+            patch.object(web_app.bot.gs, "get_web_push_delivery_log", return_value=[]),
+            patch.object(web_app.bot.gs, "archive_app_notifications") as archive,
+            patch.object(web_app.bot.gs, "send_web_push_notification") as send_push,
+            patch.object(web_app.bot, "_record_notification_outcome") as outcome,
+        ):
+            result = web_app.recover_missed_push_notifications(limit=1)
+
+        self.assertEqual(result["sent"], 0)
+        self.assertEqual(result["skipped"], 1)
+        archive.assert_called_once_with(["36"])
+        send_push.assert_not_called()
+        outcome.assert_called_once()
+        self.assertEqual(outcome.call_args.args[0], "expired")
+
+    def test_web_push_recovery_archives_same_day_timed_task_after_end(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 14, 18, 15))
+        item = {
+            "id": "37",
+            "kind": "reminder",
+            "title": "Sahibba competition today - 2:00-6:00pm at Pei Hwa Secondary",
+            "body": "2026-05-14 Teaching",
+            "source": "task_reminder:2026-05-14:45",
+            "created": bot.SGT.localize(bot.datetime(2026, 5, 14, 13, 20)).isoformat(),
+            "archived": False,
+        }
+
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return now if tz else now.replace(tzinfo=None)
+
+        with (
+            patch.object(web_app, "datetime", FixedDateTime),
+            patch.object(web_app.bot.gs, "get_app_notifications", return_value=[item]),
+            patch.object(web_app.bot.gs, "get_web_push_delivery_log", return_value=[]),
+            patch.object(web_app.bot.gs, "archive_app_notifications") as archive,
+            patch.object(web_app.bot.gs, "send_web_push_notification") as send_push,
+            patch.object(web_app.bot, "_record_notification_outcome"),
+        ):
+            result = web_app.recover_missed_push_notifications(limit=1)
+
+        self.assertEqual(result["sent"], 0)
+        self.assertEqual(result["skipped"], 1)
+        archive.assert_called_once_with(["37"])
+        send_push.assert_not_called()
+
     def test_web_push_recovery_prioritises_missed_briefing_over_later_nudge(self):
         now = bot.SGT.localize(bot.datetime(2026, 5, 12, 7, 20))
         briefing = {
@@ -1973,6 +2039,29 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(queue[0]["family"], "task")
         self.assertEqual(queue[0]["kind"], "reminder")
         self.assertEqual(queue[0]["source"], "task_reminder:2026-05-05:31")
+
+    def test_expired_timed_event_task_is_not_sent_as_overdue_reminder(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 15, 5, 8))
+        task = {
+            "id": "44",
+            "description": "Sahibba competition today - 2:00-6:00pm at Pei Hwa Secondary",
+            "due": "2026-05-14",
+            "category": "Teaching",
+            "priority": "high",
+            "effort": "medium",
+        }
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot, "_calendar_reminder_candidates", return_value=[]),
+            patch.object(bot, "build_task_structured", return_value={"items": [task]}),
+            patch.object(bot, "_notification_feedback_bias", return_value=0),
+            patch.object(bot, "_should_suppress_notification", return_value=False),
+            patch.object(bot, "_action_reminder_was_delivered", return_value=False),
+        ):
+            queue = bot.build_proactive_v2_queue(now=now, days=2, families={"task"})
+
+        self.assertEqual(queue, [])
 
     def test_dispatch_marks_action_reminder_after_confirmed_push(self):
         future_start = (bot.datetime.now(bot.SGT) + bot.timedelta(minutes=30)).isoformat()
