@@ -3817,6 +3817,29 @@ SPORTS_MATCH_DIGEST_TERMS = (
     "standings",
     "table",
 )
+SPORTS_THREAD_DIGEST_SKIP_TERMS = (
+    "daily discussion",
+    "daily thread",
+    "discussion thread",
+    "free talk",
+    "rival watch thread",
+    "watch thread",
+    "match thread",
+    "pre-match thread",
+    "post-match thread",
+)
+NON_SPORTS_DIGEST_SPORTS_NOISE_TERMS = (
+    "aaron judge",
+    "yankees",
+    "athletics vs",
+    "postgame interview",
+    "post-game interview",
+    "mlb",
+    "nba",
+    "nfl",
+    "nhl",
+    "baseball",
+)
 DIGEST_HOT_TERMS = (
     "announces",
     "announcement",
@@ -3928,6 +3951,23 @@ DIGEST_TOPIC_RULES = {
     "education": {
         "terms": ("moe", "singapore education", "teacher", "school", "schools", "educator", "curriculum"),
         "lens": "Singapore educator relevance",
+        "max_age_hours": 168,
+    },
+    "design": {
+        "terms": (
+            "ui",
+            "ux",
+            "ui/ux",
+            "design system",
+            "product design",
+            "interface",
+            "interaction design",
+            "usability",
+            "figma",
+            "prototype",
+            "designer",
+        ),
+        "lens": "design craft relevance",
         "max_age_hours": 168,
     },
 }
@@ -4154,6 +4194,8 @@ def _digest_topic_rule(label: str) -> dict:
         return DIGEST_TOPIC_RULES["developer"]
     if "education" in clean or "moe" in clean:
         return DIGEST_TOPIC_RULES["education"]
+    if "design" in clean or "ui/ux" in clean or "ux" in clean:
+        return DIGEST_TOPIC_RULES["design"]
     if "ai" in clean or "codex" in clean or "claude" in clean or "kimi" in clean:
         return DIGEST_TOPIC_RULES["ai"]
     return {}
@@ -4180,16 +4222,28 @@ def _digest_item_text(item: dict) -> str:
     return f"{(item or {}).get('title', '')} {(item or {}).get('source', '')}".lower()
 
 
+def _digest_item_title_text(item: dict) -> str:
+    return str((item or {}).get("title", "") or "").lower()
+
+
 def _digest_item_has_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term in text for term in terms)
 
 
 def _digest_item_allowed(label: str, item: dict, now: datetime | None = None) -> bool:
     rule = _digest_topic_rule(label)
+    title_text = _digest_item_title_text(item)
     text = _digest_item_text(item)
     terms = tuple(rule.get("terms") or ())
-    if terms and not _digest_item_has_any(text, terms):
+    sports_kind = _digest_sports_kind(label)
+    if _digest_item_has_any(title_text, SPORTS_THREAD_DIGEST_SKIP_TERMS):
         return False
+    if not sports_kind and _digest_item_has_any(title_text, NON_SPORTS_DIGEST_SPORTS_NOISE_TERMS):
+        return False
+    if terms:
+        match_text = title_text if sports_kind else text
+        if not _digest_item_has_any(match_text, terms):
+            return False
     age_hours = _digest_item_age_hours(item, now=now)
     max_age = int(rule.get("max_age_hours") or CURATED_DIGEST_DEFAULT_MAX_AGE_HOURS)
     if max_age and age_hours is not None and age_hours > max_age:

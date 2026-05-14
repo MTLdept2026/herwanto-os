@@ -2458,6 +2458,59 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(entries[0]["item"]["title"], "Liverpool 1-1 Chelsea: match report and player ratings")
         self.assertIn("Liverpool match", entries[0]["why"])
 
+    def test_curated_digest_rejects_liverpool_daily_discussion_thread(self):
+        def fake_google_news(query, max_items=4):
+            return [{
+                "title": "Daily Discussion - May 14, 2026",
+                "url": "https://www.reddit.com/r/LiverpoolFC/comments/daily",
+                "source": "r/LiverpoolFC",
+                "published": "Thu, 14 May 2026 05:00:44 GMT",
+            }]
+
+        with patch("bot._news_topics", return_value=[("⚽ Liverpool / EPL", "lfc")]), \
+             patch("bot._recent_news_digest_keys", return_value=set()), \
+             patch("search_service.google_news", side_effect=fake_google_news), \
+             patch("bot._digest_free_source_items", return_value=[]), \
+             patch("bot._digest_social_items", return_value=[]):
+            entries = bot.build_curated_digest_entries(
+                now=bot.SGT.localize(datetime(2026, 5, 15, 6, 45)),
+                limit=1,
+                fetch_limit=2,
+                record=False,
+            )
+
+        self.assertEqual(entries, [])
+
+    def test_curated_digest_rejects_sports_video_for_design_topic(self):
+        def fake_google_news(query, max_items=4):
+            return [
+                {
+                    "title": "Aaron Judge WANTS TO LEAVE The Yankees After Loss - Postgame Interview - Athletics Vs Yankees",
+                    "url": "https://example.com/yankees-video",
+                    "source": "Fathom Journal",
+                    "published": "Sun, 10 May 2026 08:00:32 GMT",
+                },
+                {
+                    "title": "Design systems: practical UI patterns for product teams",
+                    "url": "https://example.com/design-systems",
+                    "source": "Example",
+                    "published": "Thu, 14 May 2026 08:00:32 GMT",
+                },
+            ]
+
+        with patch("bot._news_topics", return_value=[("🎨 Design / UI/UX", "UI UX design")]), \
+             patch("bot._recent_news_digest_keys", return_value=set()), \
+             patch("search_service.google_news", side_effect=fake_google_news):
+            entries = bot.build_curated_digest_entries(
+                now=bot.SGT.localize(datetime(2026, 5, 15, 6, 45)),
+                limit=1,
+                fetch_limit=2,
+                record=False,
+            )
+
+        self.assertEqual(entries[0]["item"]["url"], "https://example.com/design-systems")
+        self.assertIn("design craft", entries[0]["why"])
+
     def test_curated_digest_accepts_ai_tools_radar_items(self):
         def fake_google_news(query, max_items=4):
             return [{
