@@ -2416,7 +2416,7 @@ def _briefing_replay_slot(message: str) -> str:
     if not clean:
         return ""
     wants_digest = re.search(r"\b(digest|briefing|brief|roundup)\b", clean)
-    wants_live = re.search(r"\b(right now|live|current|fresh|now)\b", clean)
+    wants_live = _wants_live_briefing(clean)
     if wants_live:
         return ""
     wants_replay = re.search(r"\b(show|replay|open|missed|earlier|this morning|this evening)\b", clean)
@@ -2429,13 +2429,18 @@ def _briefing_replay_slot(message: str) -> str:
     return ""
 
 
+def _wants_live_briefing(clean: str) -> bool:
+    live_terms = r"\b(right now|live|current|fresh|now(?:'s|s)?|lets have it|let's have it|good time)\b"
+    return bool(re.search(live_terms, clean))
+
+
 def _live_briefing_slot(message: str) -> str:
     clean = " ".join((message or "").lower().split())
     if not clean:
         return ""
     if not re.search(r"\b(brief me|briefing|brief)\b", clean):
         return ""
-    if not re.search(r"\b(right now|live|current|fresh|now)\b", clean):
+    if not _wants_live_briefing(clean):
         return ""
     if re.search(r"\b(evening|roundup|tonight)\b", clean):
         return "evening"

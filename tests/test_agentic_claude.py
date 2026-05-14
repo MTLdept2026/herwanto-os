@@ -3404,6 +3404,11 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(web_app._live_briefing_slot("Give me a crisp H.I.R.A briefing for right now."), "morning")
         self.assertEqual(web_app._briefing_replay_slot("Give me a crisp H.I.R.A briefing for right now."), "")
 
+    def test_evening_brief_now_phrase_uses_live_briefing_route(self):
+        self.assertEqual(web_app._live_briefing_slot("Now's a good time for evening brief. Let's have it"), "evening")
+        self.assertEqual(web_app._live_briefing_slot("Nows a good time for evening brief. Lets have it"), "evening")
+        self.assertEqual(web_app._briefing_replay_slot("Now's a good time for evening brief. Let's have it"), "")
+
     def test_briefing_replay_ignores_stale_stored_notification(self):
         stale = {
             "kind": "briefing",
