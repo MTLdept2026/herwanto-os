@@ -2642,6 +2642,24 @@ def _archive_nudge_notifications(nudge_id: str) -> int:
     return bot.gs.archive_app_notifications(ids) if ids else 0
 
 
+def _parse_nudge_ids(raw: str) -> list[str]:
+    ids: list[str] = []
+    seen: set[str] = set()
+    for part in re.split(r"[\s,]+", str(raw or "").strip()):
+        nudge_id = part.strip().lstrip("#")
+        if not re.fullmatch(r"(?:r-)?\d+", nudge_id, re.I):
+            continue
+        if nudge_id not in seen:
+            seen.add(nudge_id)
+            ids.append(nudge_id)
+    return ids
+
+
+def _nudge_id_from_source(source: str) -> str:
+    match = re.fullmatch(r"nudge:((?:r-)?\d+)", str(source or "").strip(), re.I)
+    return match.group(1) if match else ""
+
+
 def _pwa_nudge_command_reply(message: str) -> tuple[str, str] | None:
     clean = str(message or "").strip()
     if not clean:
@@ -2657,22 +2675,50 @@ def _pwa_nudge_command_reply(message: str) -> tuple[str, str] | None:
         lines = ["Pending nudges"]
         for nudge in nudges:
             lines.append(bot._format_nudge(nudge))
-        lines.append("\nUse `/cancelnudge <id>` to cancel one.")
+        lines.append("\nTap Done on a nudge notification, or use `/cancelnudge <id>` / `/cancelnudge 78, 79, 80`.")
         return "\n".join(lines), "list_nudges"
 
-    match = re.match(r"^/(?:cancelnudge|cancel_nudge)\s+(\S+)\s*$", clean, re.I)
+    match = re.match(r"^/(?:cancelnudge|cancel_nudge)\s+(.+?)\s*$", clean, re.I)
     if not match:
         return None
-    nudge_id = match.group(1)
-    try:
-        ok = bot.gs.cancel_nudge(nudge_id)
-        archived = _archive_nudge_notifications(nudge_id) if ok else 0
-    except Exception as exc:
-        return f"Could not cancel nudge #{nudge_id}: {exc}", "cancel_nudge"
-    if not ok:
-        return f"Nudge #{nudge_id} was not found, or it was already sent.", "cancel_nudge"
-    extra = f" I also removed {archived} matching app notification{'s' if archived != 1 else ''} from H.I.R.A." if archived else ""
-    return f"Nudge #{nudge_id} cancelled.{extra}", "cancel_nudge"
+    nudge_ids = _parse_nudge_ids(match.group(1))
+    if not nudge_ids:
+        return "Send `/cancelnudge 78` or `/cancelnudge 78, 79, 80` to clear pending nudges.", "cancel_nudge"
+
+    cancelled: list[str] = []
+    missing: list[str] = []
+    errors: list[str] = []
+    archived = 0
+    for nudge_id in nudge_ids:
+        try:
+            ok = bot.gs.cancel_nudge(nudge_id)
+            if ok:
+                cancelled.append(nudge_id)
+                archived += _archive_nudge_notifications(nudge_id)
+            else:
+                missing.append(nudge_id)
+        except Exception as exc:
+            errors.append(f"#{nudge_id}: {exc}")
+
+    if len(nudge_ids) == 1:
+        nudge_id = nudge_ids[0]
+        if errors:
+            return f"Could not cancel nudge #{nudge_id}: {errors[0].split(': ', 1)[-1]}", "cancel_nudge"
+        if missing:
+            return f"Nudge #{nudge_id} was not found, or it was already sent.", "cancel_nudge"
+        extra = f" I also removed {archived} matching app notification{'s' if archived != 1 else ''} from H.I.R.A." if archived else ""
+        return f"Nudge #{nudge_id} cancelled.{extra}", "cancel_nudge"
+
+    lines: list[str] = []
+    if cancelled:
+        lines.append(f"Cancelled nudges: {', '.join(f'#{item}' for item in cancelled)}.")
+    if archived:
+        lines.append(f"Removed {archived} matching app notification{'s' if archived != 1 else ''}.")
+    if missing:
+        lines.append(f"Already sent or not found: {', '.join(f'#{item}' for item in missing)}.")
+    if errors:
+        lines.append(f"Could not cancel: {'; '.join(errors)}.")
+    return "\n".join(lines) if lines else "No matching nudges found.", "cancel_nudge"
 
 
 @app.post("/api/chat")
@@ -3874,6 +3920,7 @@ def notifications_action(
                 task_match = re.search(r"^task_reminder:[^:]+:(\w[\w-]*)$", source)
             followup_match = re.search(r"^followup:(\w[\w-]*)$", source)
             checkin_match = re.search(r"^checkin:(\w[\w-]*)$", source)
+            nudge_id = _nudge_id_from_source(source)
             if task_match:
                 ok, synced_marking = bot.complete_reminder_by_id(task_match.group(1))
                 result = {"completed": bool(ok), "synced_marking": synced_marking}
@@ -3883,8 +3930,21 @@ def notifications_action(
             elif checkin_match:
                 ok = bot.gs.complete_checkin_today(checkin_match.group(1))
                 result = {"completed": bool(ok)}
+            elif nudge_id:
+                ok = bot.gs.cancel_nudge(nudge_id)
+                already_cleared = False
+                if not ok:
+                    try:
+                        already_cleared = any(
+                            str(nudge.get("id", "")) == nudge_id
+                            and str(nudge.get("status", "")).strip().lower() in {"sent", "cancelled"}
+                            for nudge in bot.gs.get_nudges(include_sent=True)
+                        )
+                    except Exception:
+                        already_cleared = False
+                result = {"completed": bool(ok or already_cleared), "nudge_id": nudge_id, "nudge_cancelled": bool(ok)}
             else:
-                result = {"completed": False, "reason": "No linked task, follow-up, or check-in"}
+                result = {"completed": False, "reason": "No linked task, follow-up, check-in, or nudge"}
             bot._record_notification_outcome(
                 "done",
                 notification_id=item.get("id", ""),
@@ -3902,6 +3962,8 @@ def notifications_action(
                     ledger_meta["followup_id"] = followup_match.group(1)
                 elif checkin_match:
                     ledger_meta["checkin_id"] = checkin_match.group(1)
+                elif nudge_id:
+                    ledger_meta["nudge_id"] = nudge_id
                 _record_web_action(
                     "notification.done",
                     "done",

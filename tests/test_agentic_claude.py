@@ -5131,6 +5131,26 @@ class AgenticClaudeTests(unittest.TestCase):
         cancel.assert_called_once_with("7")
         archive.assert_called_once_with(["9"])
 
+    def test_pwa_cancelnudge_command_accepts_comma_separated_ids(self):
+        notifications = [
+            {"id": "91", "source": "nudge:78", "archived": False},
+            {"id": "92", "source": "nudge:79", "archived": False},
+            {"id": "93", "source": "nudge:80", "archived": False},
+        ]
+
+        with (
+            patch.object(bot.gs, "cancel_nudge", return_value=True) as cancel,
+            patch.object(bot.gs, "get_app_notifications", return_value=notifications),
+            patch.object(bot.gs, "archive_app_notifications", side_effect=lambda ids: len(ids)) as archive,
+        ):
+            reply, tool = web_app._pwa_nudge_command_reply("/cancelnudge 78, 79, 80")
+
+        self.assertEqual(tool, "cancel_nudge")
+        self.assertIn("Cancelled nudges: #78, #79, #80.", reply)
+        self.assertIn("Removed 3 matching app notifications.", reply)
+        self.assertEqual([call.args[0] for call in cancel.call_args_list], ["78", "79", "80"])
+        self.assertEqual([call.args[0] for call in archive.call_args_list], [["91"], ["92"], ["93"]])
+
     def test_notification_action_done_completes_linked_task(self):
         item = {
             "id": "9",
@@ -5179,6 +5199,33 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertTrue(result["completed"])
         complete.assert_called_once_with("7")
+
+    def test_notification_action_done_clears_linked_nudge(self):
+        item = {
+            "id": "9",
+            "kind": "reminder",
+            "title": "H.I.R.A nudge",
+            "body": "Exercise Briefing starts soon.",
+            "source": "nudge:80",
+        }
+        req = web_app.NotificationActionRequest(id="9", action="done")
+
+        with (
+            patch.object(web_app, "_require_token"),
+            patch.object(bot.gs, "get_app_notification", return_value=item),
+            patch.object(bot.gs, "cancel_nudge", return_value=True) as cancel,
+            patch.object(bot, "_record_notification_outcome"),
+            patch.object(bot.gs, "archive_app_notifications") as archive,
+            patch.object(bot.gs, "add_action_ledger") as ledger,
+        ):
+            result = web_app.notifications_action(req, x_hira_token="token", x_hira_client="phone")
+
+        self.assertTrue(result["completed"])
+        self.assertEqual(result["nudge_id"], "80")
+        self.assertTrue(result["nudge_cancelled"])
+        cancel.assert_called_once_with("80")
+        archive.assert_called_once_with(["9"])
+        self.assertEqual(ledger.call_args.kwargs["metadata"]["nudge_id"], "80")
 
     def test_notification_action_not_useful_records_feedback_and_archives(self):
         item = {

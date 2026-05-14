@@ -1070,7 +1070,11 @@ async function performNotificationAction(action, item = {}) {
     }
     renderNotifications();
     const labels = {
-      done: data.completed === false ? "Noted, but I could not find the linked item." : "Marked done.",
+      done: data.nudge_id
+        ? "Nudge cleared."
+        : data.completed === false
+          ? "Noted, but I could not find the linked item."
+          : "Marked done.",
       snooze: "Snoozed for 30 minutes.",
       useful: "Noted. More like this.",
       not_useful: "Noted. I will quieten signals like that.",
