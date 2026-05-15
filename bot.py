@@ -5594,10 +5594,60 @@ def _format_nudge(nudge: dict) -> str:
     return f"`[{nudge['id']}]` *{when}* - {nudge['message']}"
 
 def _create_nudge(message: str, send_at: str) -> dict:
+    if _nudge_message_is_category_stub(message):
+        raise ValueError("Nudge message is only a date/category stub. Use a concrete action or reminder message.")
     send_dt = _parse_iso_sgt(send_at)
     if send_dt <= datetime.now(SGT):
         raise ValueError("Nudge time must be in the future.")
     return gs.add_nudge(message, send_dt.isoformat())
+
+
+def _normalise_nudge_query(value: str) -> str:
+    clean = re.sub(r"[\"'`“”‘’]", " ", str(value or ""))
+    clean = re.sub(r"\bnudges?\b", " ", clean, flags=re.I)
+    clean = re.sub(r"\s+", " ", clean).strip().lower()
+    return clean
+
+
+def _nudge_matches_query(nudge: dict, query: str) -> bool:
+    clean_query = _normalise_nudge_query(query)
+    if not clean_query:
+        return False
+    haystack = _normalise_nudge_query(
+        " ".join(
+            str(nudge.get(field, "") or "")
+            for field in ("message", "send_at", "id")
+        )
+    )
+    return all(term in haystack for term in clean_query.split())
+
+
+def cancel_pending_nudges_by_query(query: str) -> dict:
+    clean_query = _normalise_nudge_query(query)
+    if not clean_query:
+        return {"cancelled": [], "matched": [], "errors": []}
+    matched = [
+        nudge
+        for nudge in gs.get_nudges(include_sent=True)
+        if str(nudge.get("status", "")).strip().lower() == "pending"
+        and _nudge_matches_query(nudge, clean_query)
+    ]
+    cancelled: list[str] = []
+    errors: list[str] = []
+    for nudge in matched:
+        nudge_id = str(nudge.get("id", "") or "").strip()
+        if not nudge_id:
+            continue
+        try:
+            if gs.cancel_nudge(nudge_id):
+                cancelled.append(nudge_id)
+        except Exception as exc:
+            errors.append(f"#{nudge_id}: {exc}")
+    return {
+        "cancelled": cancelled,
+        "matched": matched,
+        "errors": errors,
+    }
 
 AFFIRMATIVE_REPLIES = {
     "yes", "y", "done", "did", "completed", "complete", "settled", "ok",
@@ -6737,6 +6787,10 @@ _STATE_CHANGING_ACTIONS = {
     "create_followup",
 }
 _VAGUE_ACTION_REF_RE = re.compile(r"\b(this|that|it|that day|the day|same day|there|then)\b", re.I)
+_NUDGE_CATEGORY_STUB_RE = re.compile(
+    r"^(?:\d{4}-\d{2}-\d{2}\s+)?(?:teaching|cca|gameplan|ruh|personal|marketing sprint)(?:\s+\d{4}-\d{2}-\d{2})?$",
+    re.I,
+)
 
 
 def _action_field_text(inp: dict, *fields: str) -> str:
@@ -6761,6 +6815,11 @@ def _action_subject_for_audit(name: str, inp: dict) -> str:
     return ""
 
 
+def _nudge_message_is_category_stub(message: str) -> bool:
+    clean = " ".join(str(message or "").strip().split())
+    return bool(_NUDGE_CATEGORY_STUB_RE.fullmatch(clean))
+
+
 def _validate_state_changing_action(name: str, inp: dict) -> tuple[bool, str]:
     if name not in _STATE_CHANGING_ACTIONS:
         return True, ""
@@ -6781,6 +6840,8 @@ def _validate_state_changing_action(name: str, inp: dict) -> tuple[bool, str]:
     elif name == "create_proactive_nudge":
         if not str(inp.get("send_at", "") or "").strip():
             return False, "Nudge needs a concrete send_at datetime."
+        if _nudge_message_is_category_stub(str(inp.get("message", "") or "")):
+            return False, "Nudge message is only a date/category stub. Use a concrete action or reminder message before saving."
     elif name in {"create_daily_checkin", "create_break_aware_daily_checkin"}:
         if not str(inp.get("question", "") or "").strip():
             return False, "Check-in needs a concrete question."
@@ -7930,12 +7991,25 @@ async def cancelnudge_cmd(update, context):
         await update.message.reply_text("Google not connected.")
         return
     if not context.args:
-        await update.message.reply_text("Usage: /cancelnudge <id>")
+        await update.message.reply_text("Usage: /cancelnudge <id> or /cancelnudge Teaching")
         return
     try:
-        nudge_id = context.args[0]
-        ok = gs.cancel_nudge(nudge_id)
-        await update.message.reply_text(f"Nudge #{nudge_id} cancelled." if ok else f"Nudge #{nudge_id} not found.")
+        raw = " ".join(context.args).strip()
+        if re.fullmatch(r"(?:r-)?\d+", raw, re.I):
+            nudge_id = raw
+            ok = gs.cancel_nudge(nudge_id)
+            await update.message.reply_text(f"Nudge #{nudge_id} cancelled." if ok else f"Nudge #{nudge_id} not found.")
+            return
+        result = cancel_pending_nudges_by_query(raw)
+        cancelled = [str(item) for item in result.get("cancelled", [])]
+        errors = [str(item) for item in result.get("errors", [])]
+        if cancelled:
+            text = f"Cancelled nudges matching `{raw}`: " + ", ".join(f"#{item}" for item in cancelled)
+            if errors:
+                text += "\nCould not cancel: " + "; ".join(errors)
+            await reply(update, text, parse_mode="Markdown")
+        else:
+            await update.message.reply_text(f"No pending nudges matched {raw}.")
     except Exception as e:
         await update.message.reply_text(f"Nudges error: {e}")
 

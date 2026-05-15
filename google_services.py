@@ -5130,21 +5130,20 @@ def cancel_nudge(nudge_id: str) -> bool:
     with _storage_mutation_lock("proactive_nudges", _nudges_mutation_lock):
         nudges = get_nudges(include_sent=True)
         changed = False
+        nudge_is_redis = str(nudge_id).startswith("r-")
         for nudge in nudges:
             if str(nudge.get("id")) == str(nudge_id) and nudge.get("status") != "sent":
                 nudge["status"] = "cancelled"
                 changed = True
         if changed:
-            try:
-                redis_items = [n for n in nudges if str(n.get("id", "")).startswith("r-")]
-                if str(nudge_id).startswith("r-"):
-                    _set_redis_nudges(redis_items)
-                else:
-                    set_nudges([n for n in nudges if not str(n.get("id", "")).startswith("r-")])
-                    if redis_items:
-                        _set_redis_nudges(redis_items)
-            except Exception:
-                _set_redis_nudges([n for n in nudges if str(n.get("id", "")).startswith("r-")] or nudges)
+            redis_items = [n for n in nudges if str(n.get("id", "")).startswith("r-")]
+            primary_items = [n for n in nudges if not str(n.get("id", "")).startswith("r-")]
+            if not nudge_is_redis:
+                set_nudges(primary_items)
+                if redis_items and not _set_redis_nudges(redis_items):
+                    logger.warning("Cancelled primary nudge %s, but Redis fallback nudge state could not be refreshed.", nudge_id)
+            elif not _set_redis_nudges(redis_items or nudges):
+                raise RuntimeError(f"Could not persist cancellation for Redis fallback nudge {nudge_id}.")
         return changed
 
 

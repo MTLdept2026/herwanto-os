@@ -542,7 +542,7 @@
       "date": "2026-05-15",
       "era": "Conversation Coherence",
       "title": "Hira learns not to lose the thread",
-      "commit": "504b62e + dd48808 + 29dd4a9",
+      "commit": "504b62e + dd48808 + 29dd4a9 + teaching-nudge-fix",
       "tag": "Routing + Trust",
       "summary": "After a real conversation bug exposed H.I.R.A jumping from calendar cleanup into an unrelated habit check-in, the chat router was hardened so short replies follow the newest assistant offer instead of stale shortcuts.",
       "details": [
@@ -551,7 +551,8 @@
         "Short follow-ups such as yes, do it, go ahead, same, and that one now inspect the latest assistant offer before quick routing, then force the matching tool path for calendar views, Gmail drafts, reminders, searches, nudges, or deletions.",
         "Telegram and PWA now share the safer check-in affirmation logic instead of drifting apart across surfaces.",
         "Stale pending actions in PWA working memory are cleared when a fresh unrelated thread begins.",
-        "Brief me on this no longer hijacks into the daily briefing shortcut when the user is asking about the current subject."
+        "Brief me on this no longer hijacks into the daily briefing shortcut when the user is asking about the current subject.",
+        "Vague date/category nudge bodies such as 2026-05-17 Teaching are now blocked, and pending nudges can be cancelled by label so stale teaching nudges can be nuked in one shot."
       ],
       "impact": "H.I.R.A should feel less senile in active conversations: Postgres keeps durable memory, while these guardrails protect the immediate thread so confirmations and short replies continue the right task."
     }
