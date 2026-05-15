@@ -2841,6 +2841,48 @@ def _complete_checkins_from_affirmation() -> tuple[str, list[str]]:
         return "", []
 
 
+def _explicit_checkin_completion_text(message: str) -> bool:
+    clean = " ".join(str(message or "").lower().replace(".", " ").replace("!", " ").split())
+    if clean in {
+        "done",
+        "did",
+        "completed",
+        "complete",
+        "settled",
+        "yes done",
+        "done already",
+        "alhamdulillah",
+        "alhamdulillah done",
+        "dah",
+        "sudah",
+        "dah buat",
+        "sudah buat",
+    }:
+        return True
+    return clean.startswith("done ")
+
+
+def _recent_assistant_checkin_prompt(history: list[dict]) -> bool:
+    for item in reversed(history[:-1] if history else []):
+        if not isinstance(item, dict) or item.get("role") != "assistant":
+            continue
+        content = str(item.get("content", "") or "").lower()
+        if not content.strip():
+            continue
+        if re.search(r"\b(check-?in|istigh?far|salawat|selawat|dah baca|done for today)\b", content):
+            return True
+        return False
+    return False
+
+
+def _should_complete_checkin_from_affirmation(message: str, history: list[dict]) -> bool:
+    if not bot._is_affirmative(message):
+        return False
+    if _explicit_checkin_completion_text(message):
+        return True
+    return _recent_assistant_checkin_prompt(history)
+
+
 def _parse_nudge_ids(raw: str) -> list[str]:
     ids: list[str] = []
     seen: set[str] = set()
@@ -3087,7 +3129,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
 
     quick_checkin_reply = ""
     archived_checkin_notification_ids: list[str] = []
-    if bot._is_affirmative(message):
+    if _should_complete_checkin_from_affirmation(message, history):
         quick_checkin_reply, archived_checkin_notification_ids = _complete_checkins_from_affirmation()
 
     if quick_checkin_reply:

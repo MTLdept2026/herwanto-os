@@ -5607,7 +5607,7 @@ AFFIRMATIVE_REPLIES = {
 
 def _is_affirmative(text: str) -> bool:
     clean = " ".join(text.lower().replace(".", " ").replace("!", " ").split())
-    return clean in AFFIRMATIVE_REPLIES or clean.startswith("yes ") or clean.startswith("done ")
+    return clean in AFFIRMATIVE_REPLIES or clean.startswith("done ")
 
 def _parse_checkin_times(raw: str) -> list:
     times = []
@@ -7155,6 +7155,11 @@ def _forced_tool_for_current_turn(messages: list[dict], tools: list[dict]) -> st
         and _is_timetable_verification_query(content, recent_context)
     ):
         return "get_timetable"
+    if (
+        "get_assistant_context" in available
+        and _is_schedule_context_affirmation(content, recent_context)
+    ):
+        return "get_assistant_context"
     return None
 
 
@@ -8727,6 +8732,7 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
     if (
         re.search(r"\b(calendar|schedule|agenda|today|tomorrow|week|meeting|event|appointment|duty|training|match|cca|what'?s on)\b", text)
         or re.search(r"\b(duplicate|duplicates|duplicated|replicate|replicated|copies|copied|thrice|three times|bulk delete|bulk remove)\b", text)
+        or _is_schedule_context_affirmation(text, context)
         or _is_day_planning_query(text)
         or _is_cca_schedule_query_text(text, context)
     ):
@@ -8972,6 +8978,21 @@ def _obvious_quick_chat(text: str) -> bool:
         return True
     return len(clean.split()) <= 5 and bool(re.search(r"\b(thanks?|ok(?:ay)?|yes|no|hi|hello|hey)\b", clean))
 
+def _is_schedule_context_affirmation(text: str, recent_context: str = "") -> bool:
+    clean = re.sub(r"[^\w\s']", "", str(text or "").lower()).strip()
+    if clean not in {"yes", "yes pls", "yes please", "yep", "yeah", "sure", "ok", "okay", "please do", "pls"}:
+        return False
+    context = str(recent_context or "").lower()
+    offered_schedule_view = re.search(
+        r"\b(?:want me to|should i|shall i|i can)\b.{0,90}\b(?:pull up|show|check|confirm|review|view)\b",
+        context,
+        re.S,
+    )
+    return bool(
+        offered_schedule_view
+        and re.search(r"\b(calendar|schedule|agenda|events?|18-29 may|week|day)\b", context)
+    )
+
 async def should_route_quick_pwa_chat(messages: list[dict], message: str) -> bool:
     text = (message or "").strip()
     recent_context = "\n".join(
@@ -8988,6 +9009,7 @@ async def should_route_quick_pwa_chat(messages: list[dict], message: str) -> boo
         _is_day_planning_query(text)
         or _is_timetable_verification_query(text, recent_context)
         or _is_cca_schedule_query_text(text, recent_context)
+        or _is_schedule_context_affirmation(text, recent_context)
         or _is_memory_commit_query_text(text)
     ):
         return False

@@ -285,6 +285,32 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("get_timetable", names)
         self.assertFalse(routed_quick)
 
+    def test_pwa_yes_pls_after_calendar_offer_uses_context_tool(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": (
+                    "Want me to pull up a clean view of your 18-29 May schedule "
+                    "to confirm everything looks right?"
+                ),
+            }
+        ]
+        text = "Yes pls"
+        tools = bot.pwa_tools_for_message(
+            text,
+            recent_context=messages[0]["content"],
+        )
+        names = {tool["name"] for tool in tools}
+        forced = bot._forced_tool_for_current_turn(
+            messages + [{"role": "user", "content": text}],
+            tools,
+        )
+        routed_quick = asyncio.run(bot.should_route_quick_pwa_chat(messages, text))
+
+        self.assertIn("get_assistant_context", names)
+        self.assertEqual(forced, "get_assistant_context")
+        self.assertFalse(routed_quick)
+
     def test_action_requests_are_not_forced_to_read_only_tools(self):
         calendar_forced = bot._forced_tool_for_text(
             "schedule meeting with HOD tomorrow at 3pm",
@@ -5427,6 +5453,37 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(archived_ids, ["91"])
         complete.assert_called_once_with("7")
         archive.assert_called_once_with(["91"])
+
+    def test_yes_pls_does_not_complete_checkin_after_calendar_followup(self):
+        history = [
+            {
+                "role": "assistant",
+                "content": (
+                    "Want me to pull up a clean view of your 18-29 May schedule "
+                    "to confirm everything looks right?"
+                ),
+            },
+            {"role": "user", "content": "Yes pls"},
+        ]
+
+        self.assertFalse(bot._is_affirmative("Yes pls"))
+        self.assertFalse(web_app._should_complete_checkin_from_affirmation("Yes pls", history))
+
+    def test_plain_yes_only_completes_checkin_after_checkin_prompt(self):
+        history = [
+            {"role": "assistant", "content": "H.I.R.A check-in: Dah baca istighfar dan selawat hari ni?"},
+            {"role": "user", "content": "yes"},
+        ]
+
+        self.assertTrue(web_app._should_complete_checkin_from_affirmation("yes", history))
+
+    def test_explicit_done_can_complete_checkin_without_recent_prompt(self):
+        history = [
+            {"role": "assistant", "content": "Calendar should be tidy now."},
+            {"role": "user", "content": "done already"},
+        ]
+
+        self.assertTrue(web_app._should_complete_checkin_from_affirmation("done already", history))
 
     def test_pwa_cancelcheckin_command_cancels_and_archives_notification(self):
         notifications = [{"id": "91", "source": "checkin:7", "archived": False}]
