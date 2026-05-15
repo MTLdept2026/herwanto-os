@@ -1,23 +1,23 @@
 {
-  "updated": "2026-05-13",
+  "updated": "2026-05-15",
   "name": "H.I.R.A Growth Log",
   "subtitle": "How Herwanto Intelligent Response Agent grew from an installable assistant into a more reliable, visually coherent personal operating system.",
   "summary": {
     "start": "2026-04-28",
-    "current": "2026-05-13",
-    "commitsTracked": 178,
-    "majorPhases": 29,
-    "currentStage": "Live topic radar with source-led answers and social leads"
+    "current": "2026-05-15",
+    "commitsTracked": 181,
+    "majorPhases": 30,
+    "currentStage": "Conversation coherence guardrails with safer follow-up routing"
   },
   "metrics": [
     {
       "label": "Days of build acceleration",
-      "value": "15",
+      "value": "17",
       "note": "From first installable PWA commit to a sharper Nothing-style app identity with explicit trust rails, ClassOps intelligence, and Postgres-backed operational memory."
     },
     {
       "label": "Tracked upgrade commits",
-      "value": "178",
+      "value": "181",
       "note": "Grouped from git history through the growth-log minisite."
     },
     {
@@ -55,7 +55,7 @@
     {
       "name": "Self-Improvement",
       "score": 99,
-      "description": "Postgres-backed memory commits, priority-weighted memory prompt, relevant recall, working memory, action validation/audits, persistent action ledger, source/memory trace visibility, ClassOps blind-spot checks, intent lens, proactive workload insights, OS readiness scoring, forecast radar, adaptive planning, 7-day trial loop, notification feedback learning, implicit correction detection, weekly consolidation, and conversation summarisation."
+      "description": "Postgres-backed memory commits, priority-weighted memory prompt, relevant recall, working memory, conversation-continuation guardrails, action validation/audits, persistent action ledger, source/memory trace visibility, ClassOps blind-spot checks, intent lens, proactive workload insights, OS readiness scoring, forecast radar, adaptive planning, 7-day trial loop, notification feedback learning, implicit correction detection, weekly consolidation, and conversation summarisation."
     }
   ],
   "chapters": [
@@ -537,6 +537,23 @@
         ".env.example and README now document the social-search controls so the breadth can be tuned without code changes."
       ],
       "impact": "H.I.R.A should now be much harder to catch out on fast-moving personal-interest news: it knows Android and the selected topic radar need live checks, and the digest can pick up fresher early signals while still keeping source discipline."
+    },
+    {
+      "date": "2026-05-15",
+      "era": "Conversation Coherence",
+      "title": "Hira learns not to lose the thread",
+      "commit": "504b62e + dd48808 + 29dd4a9",
+      "tag": "Routing + Trust",
+      "summary": "After a real conversation bug exposed H.I.R.A jumping from calendar cleanup into an unrelated habit check-in, the chat router was hardened so short replies follow the newest assistant offer instead of stale shortcuts.",
+      "details": [
+        "Bulk duplicate calendar cleanup was added so replicated calendar items can be removed in one pass while one copy is kept.",
+        "Check-in completion now requires explicit completion wording or a genuinely recent check-in prompt, preventing generic replies like yes pls from marking habits done.",
+        "Short follow-ups such as yes, do it, go ahead, same, and that one now inspect the latest assistant offer before quick routing, then force the matching tool path for calendar views, Gmail drafts, reminders, searches, nudges, or deletions.",
+        "Telegram and PWA now share the safer check-in affirmation logic instead of drifting apart across surfaces.",
+        "Stale pending actions in PWA working memory are cleared when a fresh unrelated thread begins.",
+        "Brief me on this no longer hijacks into the daily briefing shortcut when the user is asking about the current subject."
+      ],
+      "impact": "H.I.R.A should feel less senile in active conversations: Postgres keeps durable memory, while these guardrails protect the immediate thread so confirmations and short replies continue the right task."
     }
   ],
   "currentCapabilities": [
@@ -544,6 +561,7 @@
     "Home OS Intelligence that synthesizes agenda, workload, tasks, marking load, proactive signals, service health, and file memory into a readiness score, operating mode, next best move, risks, openings, and one-tap actions.",
     "Persistent action ledger with review and selected undo support for assistant/PWA writes, plus chat trace visibility for relevant memory sources.",
     "Postgres-backed durable storage for assistant memory, memory logs, app config, push subscriptions, push delivery logs, and notification state, with Sheets demoted to fallback and read-only external sources.",
+    "Conversation-continuation guardrails that route short replies like yes pls, do it, go ahead, same, and that one through the newest relevant assistant offer instead of stale shortcuts.",
     "ClassOps teacher dashboard that combines Dropbox lesson folders, Google Drive classlists and marks, submission tracking, priority items, blind-spot checks, student watchlists, student timelines, and feed-forward groups.",
     "Lesson-aware reflection worksheet generation from selected Dropbox PDF/DOCX/PPTX lesson files using read-only extraction.",
     "Command Protocol that turns the current state into concrete Now, Next, and Later steps with confidence and evidence.",
