@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260515-checkin-affirmation-47";
-const APP_SCRIPT = "app.js?v=20260515-checkin-affirmation-47";
-const EXPECTED_SW_CACHE = "hira-os-v117";
+const APP_VERSION = "20260515-prayer-done-48";
+const APP_SCRIPT = "app.js?v=20260515-prayer-done-48";
+const EXPECTED_SW_CACHE = "hira-os-v118";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
 const AGENDA_CACHE_KEY = "hira_pwa_agenda_snapshot_v1";
 const HOME_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
@@ -1072,6 +1072,8 @@ async function performNotificationAction(action, item = {}) {
     const labels = {
       done: data.nudge_id
         ? "Nudge cleared."
+        : data.prayer_key
+          ? "Prayer cleared for today."
         : data.completed === false
           ? "Noted, but I could not find the linked item."
           : "Marked done.",

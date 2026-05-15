@@ -36,8 +36,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260515-checkin-affirmation-47"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v117"
+PWA_APP_VERSION = "20260515-prayer-done-48"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v118"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -1702,6 +1702,7 @@ def _home_agenda_structured(days: int, snapshot: dict) -> dict:
         except Exception:
             relief_cache[target.isoformat()] = False
         lessons, _wt_label = bot._lessons_for_date(target)
+        visible_lessons = bot._visible_lessons_for_date(target, lessons)
         day_map[target.isoformat()] = {
             "date": target.isoformat(),
             "label": target.strftime("%A, %-d %B"),
@@ -1715,7 +1716,7 @@ def _home_agenda_structured(days: int, snapshot: dict) -> dict:
                     "room": lesson["room"] if lesson["room"] != "-" else "",
                     "kind": "lesson",
                 }
-                for lesson in lessons
+                for lesson in visible_lessons
             ],
             "events": [],
             "due": [],
@@ -1752,7 +1753,7 @@ def _home_agenda_text(days: int, structured: dict, snapshot: dict) -> str:
     lessons, wt_label = bot._lessons_for_date(today)
     if wt_label and today.weekday() < 5:
         lines.append(f"*Today at school ({bot._week_display(wt_label, today)})*")
-        lines.append(bot.tt.format_lessons(lessons))
+        lines.append(bot.tt.format_lessons(bot._visible_lessons_for_date(today, lessons)))
         lines.append("")
     if not snapshot.get("google"):
         lines.append("_Google not connected._")
@@ -4089,6 +4090,7 @@ def notifications_action(
                 task_match = re.search(r"^task_reminder:[^:]+:(\w[\w-]*)$", source)
             followup_match = re.search(r"^followup:(\w[\w-]*)$", source)
             checkin_match = re.search(r"^checkin:(\w[\w-]*)$", source)
+            prayer_key = bot._prayer_key_from_notification_source(source)
             nudge_id = _nudge_id_from_source(source)
             if task_match:
                 ok, synced_marking = bot.complete_reminder_by_id(task_match.group(1))
@@ -4099,6 +4101,9 @@ def notifications_action(
             elif checkin_match:
                 ok = bot.gs.complete_checkin_today(checkin_match.group(1))
                 result = {"completed": bool(ok)}
+            elif prayer_key:
+                ok = bot.mark_prayer_prompt_done(prayer_key)
+                result = {"completed": bool(ok), "prayer_key": prayer_key}
             elif nudge_id:
                 ok = bot.gs.cancel_nudge(nudge_id)
                 already_cleared = False
@@ -4131,6 +4136,8 @@ def notifications_action(
                     ledger_meta["followup_id"] = followup_match.group(1)
                 elif checkin_match:
                     ledger_meta["checkin_id"] = checkin_match.group(1)
+                elif prayer_key:
+                    ledger_meta["prayer_key"] = prayer_key
                 elif nudge_id:
                     ledger_meta["nudge_id"] = nudge_id
                 _record_web_action(

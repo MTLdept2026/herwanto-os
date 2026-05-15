@@ -1010,6 +1010,42 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(category, "teaching")
         self.assertIn("relief:2026-05-06", text)
 
+    def test_timetable_clear_context_marks_next_two_school_weeks(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 15, 20, 45))
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "get_memory", return_value={"teaching": []}),
+            patch.object(bot.gs, "add_memory") as add_memory,
+        ):
+            captured = bot.absorb_timetable_clear_context(
+                "Clear my scheduled normal lessons from the timetable for the next 2 weeks and follow the uploaded schedule.",
+                now=now,
+            )
+
+        self.assertTrue(captured)
+        add_memory.assert_called_once()
+        category, text = add_memory.call_args.args
+        self.assertEqual(category, "teaching")
+        self.assertIn("timetable-clear:2026-05-15", text)
+        self.assertIn("timetable-clear:2026-05-28", text)
+        self.assertNotIn("timetable-clear:2026-05-29", text)
+
+    def test_structured_agenda_hides_cleared_timetable_lessons(self):
+        lessons = [
+            {"start": "08:00", "end": "08:30", "subject": "FT", "description": "Form Time", "room": "Class"},
+            {"start": "09:00", "end": "10:00", "subject": "ML", "description": "Mother Tongue", "room": "L3"},
+        ]
+
+        with (
+            patch.object(bot, "_lessons_for_date", return_value=(lessons, "Odd")),
+            patch.object(bot, "school_day_cleared_memory_for_date", return_value="timetable-clear:2026-05-15"),
+            patch.object(bot, "google_ok", return_value=False),
+        ):
+            agenda = bot.build_agenda_structured(1)
+
+        self.assertTrue(agenda["days"][0]["relieved"])
+        self.assertEqual(agenda["days"][0]["lessons"], [])
+
     def test_medical_leave_context_becomes_teaching_memory(self):
         now = bot.SGT.localize(bot.datetime(2026, 5, 12, 8, 15))
         with (
@@ -4763,6 +4799,52 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("Filled all FA2 percentages", reply)
         self.assertEqual(len(fake_messages.calls), 2)
 
+    def test_agentic_claude_returns_tool_summary_when_followup_call_fails(self):
+        class FollowupFailureMessages:
+            def __init__(self):
+                self.calls = []
+
+            def create(self, **kwargs):
+                self.calls.append(kwargs)
+                if len(self.calls) == 1:
+                    return SimpleNamespace(
+                        stop_reason="tool_use",
+                        content=[
+                            SimpleNamespace(
+                                type="tool_use",
+                                id="tool-1",
+                                name="create_calendar_event",
+                                input={
+                                    "title": "Football Training",
+                                    "date": "2026-05-18",
+                                    "start_time": "15:00",
+                                    "end_time": "16:00",
+                                },
+                            )
+                        ],
+                    )
+                raise ValueError("messages.2: tool_use ids were found without tool_result blocks immediately after")
+
+        fake_messages = FollowupFailureMessages()
+        fake_claude = SimpleNamespace(messages=fake_messages)
+
+        async def fake_execute_tool(name, inp):
+            return "Created: Football Training on 2026-05-18 15:00-16:00"
+
+        with (
+            patch.object(bot, "claude", fake_claude),
+            patch.object(bot, "CACHED_SYSTEM_PROMPT", return_value="system"),
+            patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool),
+        ):
+            reply = asyncio.run(bot._run_agentic_claude(
+                [{"role": "user", "content": "Add this schedule screenshot"}],
+                tools=[{"name": "create_calendar_event"}],
+            ))
+
+        self.assertIn("I added these to your calendar", reply)
+        self.assertIn("Football Training on 2026-05-18 15:00-16:00", reply)
+        self.assertEqual(len(fake_messages.calls), 2)
+
     def test_email_followup_forces_gmail_before_action(self):
         messages = [{"role": "user", "content": "read my latest personal email and note the meeting details for follow up"}]
         tools = [{"name": "get_gmail_brief"}, {"name": "create_followup"}]
@@ -5387,6 +5469,36 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertTrue(result["completed"])
         complete.assert_called_once_with("7")
 
+    def test_notification_action_done_clears_prayer_for_today(self):
+        item = {
+            "id": "9",
+            "kind": "reminder",
+            "title": "Maghrib prayer",
+            "body": "Maghrib entered at 19:08. Pray as soon as it enters.",
+            "source": "prayer:2026-05-15:maghrib",
+        }
+        req = web_app.NotificationActionRequest(id="9", action="done")
+        now = bot.SGT.localize(bot.datetime(2026, 5, 15, 19, 12))
+        store = {}
+
+        with (
+            patch.object(web_app, "_require_token"),
+            patch.object(bot.gs, "get_app_notification", return_value=item),
+            patch.object(bot, "datetime", wraps=bot.datetime) as fake_datetime,
+            patch.object(bot.gs, "set_config", side_effect=lambda key, value: store.__setitem__(key, value)),
+            patch.object(bot, "_record_notification_outcome"),
+            patch.object(bot.gs, "archive_app_notifications") as archive,
+            patch.object(bot.gs, "add_action_ledger") as ledger,
+        ):
+            fake_datetime.now.return_value = now
+            result = web_app.notifications_action(req, x_hira_token="token", x_hira_client="phone")
+
+        self.assertTrue(result["completed"])
+        self.assertEqual(result["prayer_key"], "maghrib")
+        self.assertEqual(store["prayer_prompt:2026-05-15:maghrib"], "19:12")
+        archive.assert_called_once_with(["9"])
+        self.assertEqual(ledger.call_args.kwargs["metadata"]["prayer_key"], "maghrib")
+
     def test_notification_action_done_clears_linked_nudge(self):
         item = {
             "id": "9",
@@ -5761,6 +5873,26 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(due["key"], "zohor")
         self.assertEqual(store["prayer_prompt:2026-05-01:zohor"], "13:18")
+
+    def test_prayer_candidate_source_is_dated(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 1, 19, 8))
+        due = {
+            "key": "maghrib",
+            "label": "Maghrib",
+            "time": "19:08",
+            "note": "Pray as soon as it enters.",
+        }
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot, "_prayer_reminder_due", return_value=due),
+            patch.object(bot.gs, "due_nudges", return_value=[]),
+            patch.object(bot.gs, "due_checkins", return_value=[]),
+            patch.object(bot.gs, "due_followups", return_value=[]),
+        ):
+            queue = bot.build_proactive_v2_queue(now=now, families={"prayer"})
+
+        self.assertEqual(queue[0]["source"], "prayer:2026-05-01:maghrib")
 
     def test_prayer_reminder_uses_fallback_when_config_unavailable(self):
         now = bot.SGT.localize(bot.datetime(2026, 5, 1, 13, 5))

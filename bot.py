@@ -2356,7 +2356,7 @@ def build_agenda(days: int = 7) -> str:
     lessons, wt_label = _lessons_for_date(today)
     if wt_label and today.weekday() < 5:
         lines.append(f"*Today at school ({_week_display(wt_label, today)})*")
-        lines.append(tt.format_lessons(lessons))
+        lines.append(tt.format_lessons(_visible_lessons_for_date(today, lessons)))
         lines.append("")
 
     if not google_ok():
@@ -2423,6 +2423,7 @@ def build_agenda_structured(days: int = 7) -> dict:
     for offset in range(days):
         target = today + timedelta(days=offset)
         lessons, wt_label = _lessons_for_date(target)
+        visible_lessons = _visible_lessons_for_date(target, lessons)
         day_map[target.isoformat()] = {
             "date": target.isoformat(),
             "label": target.strftime("%A, %-d %B"),
@@ -2436,7 +2437,7 @@ def build_agenda_structured(days: int = 7) -> dict:
                     "room": lesson["room"] if lesson["room"] != "-" else "",
                     "kind": "lesson",
                 }
-                for lesson in lessons
+                for lesson in visible_lessons
             ],
             "events": [],
             "due": [],
@@ -3405,7 +3406,7 @@ def build_proactive_v2_queue(now: datetime | None = None, days: int = 7, familie
                     text = f"{due['label']} entered at {due['time']}. {due['note']}"
                     candidates.append(_make_proactive_candidate(
                         "prayer",
-                        f"prayer:{due['key']}",
+                        f"prayer:{current.strftime('%Y-%m-%d')}:{due['key']}",
                         "reminder",
                         f"{due['label']} prayer",
                         text,
@@ -4577,15 +4578,16 @@ def absorb_ownership_signal(text: str) -> bool:
 
 def absorb_taste_hint(text: str) -> bool:
     ownership_captured = absorb_ownership_signal(text)
+    timetable_clear_captured = absorb_timetable_clear_context(text)
     relief_captured = absorb_relief_context(text)
     absence_captured = absorb_day_state_context(text)
     duty_captured = absorb_duty_state_context(text)
     source_pref_captured = absorb_source_citation_preference(text)
     if not google_ok():
-        return ownership_captured or relief_captured or absence_captured or duty_captured or source_pref_captured
+        return ownership_captured or timetable_clear_captured or relief_captured or absence_captured or duty_captured or source_pref_captured
     clean = str(text or "").strip()
     if len(clean) < 12:
-        return ownership_captured or relief_captured or absence_captured or duty_captured or source_pref_captured
+        return ownership_captured or timetable_clear_captured or relief_captured or absence_captured or duty_captured or source_pref_captured
     lower = clean.lower()
     taste_markers = (
         "i like", "i prefer", "my taste", "my style", "i hate", "i dislike",
@@ -4593,7 +4595,7 @@ def absorb_taste_hint(text: str) -> bool:
         "too noisy", "too cluttered", "not my vibe", "my vibe",
     )
     if not any(marker in lower for marker in taste_markers):
-        return ownership_captured or relief_captured or absence_captured or duty_captured or source_pref_captured
+        return ownership_captured or timetable_clear_captured or relief_captured or absence_captured or duty_captured or source_pref_captured
     try:
         profile = gs.get_taste_profile()
         field = "quality_bar"
@@ -4605,17 +4607,18 @@ def absorb_taste_hint(text: str) -> bool:
         existing_text = ", ".join(existing) if isinstance(existing, list) else str(existing or "").strip()
         hint = clean[:240]
         if hint.lower() in existing_text.lower():
-            return ownership_captured or relief_captured or absence_captured or source_pref_captured
+            return ownership_captured or timetable_clear_captured or relief_captured or absence_captured or duty_captured or source_pref_captured
         profile[field] = f"{existing_text}\n- {hint}".strip() if existing_text else f"- {hint}"
         gs.set_taste_profile(profile)
         return True
     except Exception as exc:
         logger.warning(f"Taste hint capture failed: {exc}")
-        return ownership_captured or relief_captured or absence_captured or source_pref_captured
+        return ownership_captured or timetable_clear_captured or relief_captured or absence_captured or duty_captured or source_pref_captured
 
 
 RELIEF_MEMORY_PREFIX = "relief:"
 ABSENCE_MEMORY_PREFIX = "absence:"
+TIMETABLE_CLEAR_MEMORY_PREFIX = "timetable-clear:"
 
 
 def _date_from_relative_text(text: str, now: datetime | None = None) -> date:
@@ -4632,6 +4635,75 @@ def _date_from_relative_text(text: str, now: datetime | None = None) -> date:
         except Exception:
             pass
     return current.date()
+
+
+def _timetable_clear_range_from_text(text: str, now: datetime | None = None) -> tuple[date, date] | None:
+    current = (now or datetime.now(SGT)).astimezone(SGT).date()
+    clean = str(text or "").lower()
+    explicit_range = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b.{0,40}\b(?:to|until|through|-)\b.{0,40}\b(20\d{2}-\d{2}-\d{2})\b", clean)
+    if explicit_range:
+        try:
+            start = date.fromisoformat(explicit_range.group(1))
+            end = date.fromisoformat(explicit_range.group(2))
+            return (start, end) if start <= end else (end, start)
+        except Exception:
+            pass
+    weeks = re.search(r"\bnext\s+(\d{1,2})\s+weeks?\b", clean)
+    if weeks:
+        span = max(1, min(8, int(weeks.group(1))))
+        return current, current + timedelta(days=(span * 7) - 1)
+    days = re.search(r"\bnext\s+(\d{1,2})\s+days?\b", clean)
+    if days:
+        span = max(1, min(60, int(days.group(1))))
+        return current, current + timedelta(days=span - 1)
+    if re.search(r"\b(?:for|over)\s+the\s+next\s+fortnight\b", clean):
+        return current, current + timedelta(days=13)
+    return None
+
+
+def absorb_timetable_clear_context(text: str, now: datetime | None = None) -> bool:
+    if not google_ok():
+        return False
+    clean = str(text or "").strip()
+    if len(clean) < 12:
+        return False
+    lower = clean.lower()
+    wants_clear = re.search(r"\b(clear|remove|hide|ignore|suspend|override|replace|stop\s+following|don'?t\s+follow)\b", lower)
+    mentions_timetable = re.search(r"\b(?:normal|regular|usual|scheduled|master|hardcoded)?\s*(?:timetable|lesson|lessons|class|classes|teaching)\b", lower)
+    temporary = re.search(r"\b(?:next\s+\d{1,2}\s+(?:weeks?|days?)|next\s+fortnight|uploaded|recently\s+uploaded|temporary|for\s+now)\b", lower)
+    if not (wants_clear and mentions_timetable and temporary):
+        return False
+    range_pair = _timetable_clear_range_from_text(lower, now=now)
+    if not range_pair:
+        return False
+    start, end = range_pair
+    dates = [
+        start + timedelta(days=offset)
+        for offset in range((end - start).days + 1)
+        if (start + timedelta(days=offset)).weekday() < 5
+    ]
+    if not dates:
+        return False
+    markers = [f"{TIMETABLE_CLEAR_MEMORY_PREFIX}{day.isoformat()}" for day in dates]
+    try:
+        memory = gs.get_memory()
+        existing = "\n".join(str(item) for item in memory.get("teaching", []) if item)
+        missing = [marker for marker in markers if marker not in existing]
+        if not missing:
+            return True
+        _add_memory(
+            "teaching",
+            (
+                f"{' '.join(missing)}: Herwanto cleared the normal hardcoded timetable lessons "
+                f"from {start.isoformat()} to {end.isoformat()} so H.I.R.A should follow the uploaded/current calendar schedule instead. "
+                "Hide normal timetable lessons in agenda, workload, availability, and overlap checks for these dates unless newer information contradicts this. "
+                f"Original wording: {_clip_memory_text(clean, 180)}"
+            ),
+        )
+        return True
+    except Exception as exc:
+        logger.warning(f"Timetable clear context capture failed: {exc}")
+        return False
 
 
 def absorb_relief_context(text: str, now: datetime | None = None) -> bool:
@@ -4997,6 +5069,28 @@ def absence_memory_for_date(target: date | datetime | str) -> str:
     return ""
 
 
+def timetable_clear_memory_for_date(target: date | datetime | str) -> str:
+    try:
+        if isinstance(target, datetime):
+            day = target.astimezone(SGT).date()
+        elif isinstance(target, date):
+            day = target
+        else:
+            day = date.fromisoformat(str(target)[:10])
+    except Exception:
+        return ""
+    marker = f"{TIMETABLE_CLEAR_MEMORY_PREFIX}{day.isoformat()}"
+    try:
+        memory = gs.get_memory() if google_ok() else {}
+    except Exception:
+        return ""
+    for item in reversed(memory.get("teaching", []) or []):
+        text = str(item or "").strip()
+        if marker in text:
+            return text
+    return ""
+
+
 def cca_duty_cleared_memory_for_date(target: date | datetime | str) -> str:
     try:
         if isinstance(target, datetime):
@@ -5027,7 +5121,7 @@ def _absence_reason_from_memory(memory_text: str) -> str:
 
 
 def school_day_cleared_memory_for_date(target: date | datetime | str) -> str:
-    return relief_memory_for_date(target) or absence_memory_for_date(target)
+    return timetable_clear_memory_for_date(target) or relief_memory_for_date(target) or absence_memory_for_date(target)
 
 
 SOURCE_CITATION_PREF_PREFIX = "source-citation:"
@@ -5111,6 +5205,10 @@ def absence_memory_response(text: str, now: datetime | None = None, recent_conte
 
 def _effective_lesson_count(target: date, lessons: list) -> int:
     return 0 if school_day_cleared_memory_for_date(target) else len(lessons or [])
+
+
+def _visible_lessons_for_date(target: date, lessons: list) -> list:
+    return [] if school_day_cleared_memory_for_date(target) else list(lessons or [])
 
 
 F1_2026_CALENDAR_SOURCE = "https://www.formula1.com/en/racing/2026"
@@ -5959,6 +6057,7 @@ def find_available_training_slots(
         if target.weekday() >= 5:
             continue
         lessons, wt_label = _lessons_for_date(target)
+        lessons = _visible_lessons_for_date(target, lessons)
         events = _calendar_events_for_date(target)
         event_text = " ".join(_event_text(event) for event in events).lower()
         if avoid and any(keyword in event_text for keyword in avoid):
@@ -6025,6 +6124,7 @@ def find_available_training_slots(
 def _lesson_busy_intervals_for_date(target: date) -> list[tuple[int, int, str]]:
     intervals = []
     lessons, _ = _lessons_for_date(target)
+    lessons = _visible_lessons_for_date(target, lessons)
     for lesson in lessons:
         try:
             start = _hm_to_minutes(lesson["start"])
@@ -6130,6 +6230,33 @@ def build_muis_prayer_time_brief(target_text: str = "", prayer: str = "") -> str
     return f"{source}: {target.isoformat()} ({day}) - " + " · ".join(parts)
 
 
+def _prayer_prompt_config_key(prayer_key: str, target: date) -> str:
+    return f"prayer_prompt:{target.isoformat()}:{prayer_key}"
+
+
+def _prayer_key_from_notification_source(source: str = "") -> str:
+    clean = str(source or "").strip()
+    match = re.match(r"^prayer:(?:(\d{4}-\d{2}-\d{2}):)?([a-z_ -]+)$", clean)
+    if not match:
+        return ""
+    return _normalise_prayer_key(match.group(2))
+
+
+def mark_prayer_prompt_done(prayer_key: str, now: datetime | None = None) -> bool:
+    key = _normalise_prayer_key(prayer_key)
+    if not key:
+        return False
+    current = (now or datetime.now(SGT)).astimezone(SGT)
+    config_key = _prayer_prompt_config_key(key, current.date())
+    value = current.strftime("%H:%M")
+    try:
+        gs.set_config(config_key, value)
+    except Exception as exc:
+        logger.warning("Prayer prompt done marker write unavailable: %s", exc)
+        _PRAYER_PROMPT_FALLBACK_KEYS.add(config_key)
+    return True
+
+
 def _parse_optional_date(target_text: str = "") -> date:
     today = datetime.now(SGT).date()
     clean_date = (target_text or "").strip().lower()
@@ -6166,7 +6293,6 @@ def build_muis_khutbah_brief(target_text: str = "", language: str = "English") -
 
 def _prayer_reminder_due(now: datetime) -> dict | None:
     now = now.astimezone(SGT)
-    today_key = now.strftime("%Y-%m-%d")
     now_minute = now.hour * 60 + now.minute
     window_minutes = _env_int("HIRA_PRAYER_REMINDER_WINDOW_MINUTES", 20, 3)
     try:
@@ -6176,7 +6302,7 @@ def _prayer_reminder_due(now: datetime) -> dict | None:
         return None
 
     for item in plan:
-        key = f"prayer_prompt:{today_key}:{item['key']}"
+        key = _prayer_prompt_config_key(item["key"], now.date())
         try:
             already_prompted = bool(gs.get_config(key))
         except Exception as exc:
@@ -6205,7 +6331,7 @@ def prayer_notification_status(now: datetime | None = None) -> dict:
     today_key = now.strftime("%Y-%m-%d")
     prayers = []
     for item in plan:
-        key = f"prayer_prompt:{today_key}:{item['key']}"
+        key = _prayer_prompt_config_key(item["key"], now.date())
         prompted_at = ""
         try:
             prompted_at = gs.get_config(key) or ""
@@ -6254,6 +6380,7 @@ def _break_aware_slots(checkin: dict, target: date) -> list[str]:
 
     busy = []
     lessons, _ = _lessons_for_date(target)
+    lessons = _visible_lessons_for_date(target, lessons)
     for lesson in lessons:
         busy.append((_hm_to_minutes(lesson["start"]), _hm_to_minutes(lesson["end"])))
 
@@ -7026,6 +7153,68 @@ async def _run_forced_weather_fallback(tool_choice: str | None) -> str | None:
         "include_24h": True,
         "include_4day": False,
     })
+
+
+def _tool_action_fallback_reply(tool_results: list[dict]) -> str:
+    created: list[str] = []
+    reminders: list[str] = []
+    failed: list[str] = []
+    other: list[str] = []
+
+    for item in tool_results or []:
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get("content", "") or "").strip()
+        if not content:
+            continue
+        first_line = content.splitlines()[0].strip()
+        if first_line.startswith("Created:"):
+            created.append(first_line.removeprefix("Created:").strip())
+        elif first_line.startswith("Added reminder"):
+            reminders.append(first_line.strip())
+        elif first_line.lower().startswith("failed"):
+            failed.append(first_line.strip())
+        elif first_line and len(other) < 3:
+            other.append(first_line)
+
+    if not (created or reminders or failed):
+        return ""
+
+    lines: list[str] = []
+    if created:
+        lines.append("I added these to your calendar:")
+        shown = created[:12]
+        lines.extend(f"- {item}" for item in shown)
+        if len(created) > len(shown):
+            lines.append(f"- ...and {len(created) - len(shown)} more calendar item(s).")
+    if reminders:
+        if lines:
+            lines.append("")
+        lines.append("I added these reminders:")
+        shown = reminders[:8]
+        lines.extend(f"- {item}" for item in shown)
+        if len(reminders) > len(shown):
+            lines.append(f"- ...and {len(reminders) - len(shown)} more reminder(s).")
+    if failed:
+        if lines:
+            lines.append("")
+        lines.append("Some actions did not complete:")
+        shown = failed[:8]
+        lines.extend(f"- {item}" for item in shown)
+        if len(failed) > len(shown):
+            lines.append(f"- ...and {len(failed) - len(shown)} more failed action(s).")
+    if other and not (created or reminders):
+        if lines:
+            lines.append("")
+        lines.append("Tool results:")
+        lines.extend(f"- {item}" for item in other)
+
+    lines.append("")
+    lines.append(
+        "The normal follow-up summary was interrupted after the actions ran; "
+        "the completed actions above came directly from the tool results."
+    )
+    return "\n".join(lines)
 
 
 _MONTH_LOOKUP = {
@@ -8537,14 +8726,24 @@ async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
         kwargs = {}
         if tool_choice:
             kwargs["tool_choice"] = tool_choice
-        resp = claude.messages.create(
-            model=_agentic_model_for_messages(messages),
-            max_tokens=max_tokens,
-            system=CACHED_SYSTEM_PROMPT(),
-            tools=tools,
-            messages=messages,
-            **kwargs,
-        )
+        try:
+            resp = claude.messages.create(
+                model=_agentic_model_for_messages(messages),
+                max_tokens=max_tokens,
+                system=CACHED_SYSTEM_PROMPT(),
+                tools=tools,
+                messages=messages,
+                **kwargs,
+            )
+        except Exception as exc:
+            fallback = _tool_action_fallback_reply(all_tool_results)
+            if fallback:
+                logger.warning("Claude follow-up failed after tool actions; returning tool-result fallback: %s", exc)
+                guarded = _memory_tool_failure_guardrail(fallback, all_tool_results)
+                guarded = _backend_claim_guardrail(guarded, all_tool_results)
+                guarded = _cca_sheet_user_burden_guardrail(guarded, all_tool_results)
+                return _correct_weekday_date_mismatches(guarded)
+            raise
 
         if resp.stop_reason != "tool_use":
             segment = await _run_forced_weather_fallback(forced_tool)
@@ -8701,20 +8900,33 @@ async def stream_agentic_claude(messages, max_tokens=650, tools=None):
             kwargs["tool_choice"] = tool_choice
         resp = None
         text_parts = []
-        async with async_claude.messages.stream(
-            model=_agentic_model_for_messages(messages),
-            max_tokens=max_tokens,
-            system=CACHED_SYSTEM_PROMPT(),
-            tools=tools,
-            messages=messages,
-            **kwargs,
-        ) as stream:
-            async for event in stream:
-                if event.type == "content_block_delta" and getattr(event.delta, "type", None) == "text_delta":
-                    text = event.delta.text
-                    text_parts.append(text)
-                    yield {"type": "text", "text": text}
-            resp = await stream.get_final_message()
+        try:
+            async with async_claude.messages.stream(
+                model=_agentic_model_for_messages(messages),
+                max_tokens=max_tokens,
+                system=CACHED_SYSTEM_PROMPT(),
+                tools=tools,
+                messages=messages,
+                **kwargs,
+            ) as stream:
+                async for event in stream:
+                    if event.type == "content_block_delta" and getattr(event.delta, "type", None) == "text_delta":
+                        text = event.delta.text
+                        text_parts.append(text)
+                        yield {"type": "text", "text": text}
+                resp = await stream.get_final_message()
+        except Exception as exc:
+            fallback = _tool_action_fallback_reply(all_tool_results)
+            if fallback:
+                logger.warning("Claude stream follow-up failed after tool actions; returning tool-result fallback: %s", exc)
+                guarded = _memory_tool_failure_guardrail(fallback, all_tool_results)
+                guarded = _backend_claim_guardrail(guarded, all_tool_results)
+                guarded = _cca_sheet_user_burden_guardrail(guarded, all_tool_results)
+                corrected = _correct_weekday_date_mismatches(guarded)
+                yield {"type": "replace", "text": corrected}
+                yield {"type": "done", "text": corrected}
+                return
+            raise
 
         if resp.stop_reason != "tool_use":
             fallback_text = await _run_forced_weather_fallback(forced_tool)
