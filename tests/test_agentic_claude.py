@@ -5705,6 +5705,112 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIsNone(event)
         self.assertEqual(score, 0)
 
+    def test_bulk_duplicate_calendar_tool_is_available_and_forced(self):
+        text = "bulk delete calendar items replicated thrice"
+        tools = bot.pwa_tools_for_message(text)
+        names = {tool["name"] for tool in tools}
+        forced = bot._forced_tool_for_text(text, tools)
+
+        self.assertIn("bulk_delete_duplicate_calendar_events", names)
+        self.assertEqual(forced, "bulk_delete_duplicate_calendar_events")
+
+    def test_bulk_duplicate_calendar_cleanup_deletes_extras_and_keeps_one(self):
+        events = [
+            {
+                "id": "evt-1",
+                "summary": "CCA NSG duty",
+                "location": "",
+                "description": "",
+                "created": "2026-05-01T01:00:00Z",
+                "start": {"dateTime": "2026-05-18T15:00:00+08:00"},
+                "end": {"dateTime": "2026-05-18T18:00:00+08:00"},
+                "_calendar_id": "primary",
+            },
+            {
+                "id": "evt-2",
+                "summary": "CCA NSG duty",
+                "location": "",
+                "description": "",
+                "created": "2026-05-01T01:01:00Z",
+                "start": {"dateTime": "2026-05-18T15:00:00+08:00"},
+                "end": {"dateTime": "2026-05-18T18:00:00+08:00"},
+                "_calendar_id": "primary",
+            },
+            {
+                "id": "evt-3",
+                "summary": "CCA NSG duty",
+                "location": "",
+                "description": "",
+                "created": "2026-05-01T01:02:00Z",
+                "start": {"dateTime": "2026-05-18T15:00:00+08:00"},
+                "end": {"dateTime": "2026-05-18T18:00:00+08:00"},
+                "_calendar_id": "primary",
+            },
+            {
+                "id": "evt-4",
+                "summary": "Team sync",
+                "location": "",
+                "description": "",
+                "start": {"dateTime": "2026-05-19T09:00:00+08:00"},
+                "end": {"dateTime": "2026-05-19T09:30:00+08:00"},
+                "_calendar_id": "primary",
+            },
+            {
+                "id": "evt-5",
+                "summary": "Team sync",
+                "location": "",
+                "description": "",
+                "start": {"dateTime": "2026-05-19T09:00:00+08:00"},
+                "end": {"dateTime": "2026-05-19T09:30:00+08:00"},
+                "_calendar_id": "primary",
+            },
+        ]
+        deleted = []
+
+        with (
+            patch.object(bot.gs, "get_events_between", return_value=events),
+            patch.object(bot.gs, "delete_event", side_effect=lambda event_id, calendar_id="": deleted.append((event_id, calendar_id)) or True),
+        ):
+            result = bot._bulk_delete_duplicate_calendar_events(
+                query="items replicated thrice on my calendar",
+                min_copies=3,
+            )
+
+        self.assertEqual(result["groups_found"], 1)
+        self.assertEqual(result["groups_selected"], 1)
+        self.assertEqual([event["id"] for event in result["deleted"]], ["evt-2", "evt-3"])
+        self.assertEqual(deleted, [("evt-2", "primary"), ("evt-3", "primary")])
+
+    def test_execute_bulk_duplicate_calendar_tool_returns_audited_receipt(self):
+        plan = {
+            "groups_found": 1,
+            "groups_selected": 1,
+            "deleted": [
+                {
+                    "id": "evt-2",
+                    "summary": "CCA NSG duty",
+                    "start": {"dateTime": "2026-05-18T15:00:00+08:00"},
+                    "end": {"dateTime": "2026-05-18T18:00:00+08:00"},
+                    "_calendar_id": "primary",
+                }
+            ],
+            "errors": [],
+            "capped": False,
+        }
+
+        with (
+            patch.object(bot, "_bulk_delete_duplicate_calendar_events", return_value=plan),
+            patch.object(bot, "google_ok", return_value=False),
+        ):
+            result = asyncio.run(bot._execute_tool(
+                "bulk_delete_duplicate_calendar_events",
+                {"query": "CCA NSG duty duplicate", "min_copies": 2},
+            ))
+
+        self.assertIn("Deleted 1 duplicate calendar event", result)
+        self.assertIn("keeping one copy", result)
+        self.assertIn("Action audit: action=bulk_delete_duplicate_calendar_events", result)
+
     def test_work_gmail_request_routes_to_work_account(self):
         account, query = bot._extract_gmail_account_from_text("show my last 5 work emails")
 

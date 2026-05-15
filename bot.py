@@ -961,7 +961,7 @@ Rules:
 - For business: give a direct recommendation.
 - Singapore English and local context always apply.
 - When he asks to add, schedule, or create a calendar event, create it directly if the date and time are clear. If details are incomplete, ask only for the missing detail.
-- When he asks to cancel, remove, delete, or mark a calendar event as done, call delete_calendar_event_by_text with the event description.
+- When he asks to cancel, remove, delete, or mark a calendar event as done, call delete_calendar_event_by_text with the event description. When he asks to clean up duplicates, bulk delete replicated calendar items, or remove events copied two/three times, call bulk_delete_duplicate_calendar_events so exact duplicate groups are cleaned in one pass while one copy is kept.
 - Never offer to generate .ics files. Use Google Calendar directly.
 - The current date and time is already provided at the top of this prompt — always use it for any date/time reasoning.
 - Never guess weekdays. If you mention a date with a weekday, derive the weekday from the actual calendar date. For 2026, 1 May is Friday, not Thursday.
@@ -972,7 +972,7 @@ Rules:
 - Never invent mosque or place locations. If a place location affects the answer and you do not have a verified source/tool result, say what you know and what is unverified. Be especially careful with Singapore masjid names that sound similar.
 - Known mosque correction: Masjid Al-Muttaqin is at 5140 Ang Mo Kio Ave 6, Singapore 569844, not Kovan.
 - For journey-time estimates, use the current device location context when it is provided. If it is not provided, use only explicit user-provided origin/destination or stable stored memory, and label any estimate as rough.
-- You have tools: create_calendar_event, delete_calendar_event_by_text, find_available_training_slots, get_cca_schedule, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_mtl_classlists, analyze_mtl_scores, generate_mtl_score_trend_report, apply_mtl_failure_highlighting, update_mtl_class_score, fill_mtl_percentage_scores, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, create_topic_profile, remember_source_insight, update_project_status, get_nea_weather, get_muis_prayer_times, get_muis_friday_khutbah, get_latest_news, get_liverpool_brief, get_f1_brief, web_search, and fetch_url. Use them proactively.
+- You have tools: create_calendar_event, delete_calendar_event_by_text, bulk_delete_duplicate_calendar_events, find_available_training_slots, get_cca_schedule, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_mtl_classlists, analyze_mtl_scores, generate_mtl_score_trend_report, apply_mtl_failure_highlighting, update_mtl_class_score, fill_mtl_percentage_scores, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, create_topic_profile, remember_source_insight, update_project_status, get_nea_weather, get_muis_prayer_times, get_muis_friday_khutbah, get_latest_news, get_liverpool_brief, get_f1_brief, web_search, and fetch_url. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
 - When the user mentions marking scripts, papers, compositions, kefahaman, karangan, worksheets, or a marking stack, use marking tools instead of ordinary reminders: add_marking_task for a new stack, update_marking_progress when he says how many scripts are marked, reset_marking_load when he asks to reset/clear the marking load or board, and get_marking_brief when he asks what marking is outstanding. Marking tasks are mission-critical and must persist even at 0 outstanding; only complete one when he explicitly says that marking stack is done, completed, can be closed, reset, or cleared.
@@ -1120,6 +1120,21 @@ DELETE_CALENDAR_TOOL = {
             "days_ahead": {"type": "integer", "description": "Days ahead to search, default 30"}
         },
         "required": ["query"]
+    }
+}
+
+BULK_DELETE_DUPLICATE_CALENDAR_TOOL = {
+    "name": "bulk_delete_duplicate_calendar_events",
+    "description": "Bulk delete exact duplicate Google Calendar events while keeping one copy of each event. Use when Herwanto says calendar items are duplicated, replicated, copied twice/thrice, or asks to clean duplicate calendar entries. This only removes extra copies from exact duplicate groups in the selected date range.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Optional event text to narrow duplicate cleanup, e.g. CCA NSG duty. Leave empty or broad to clean all exact duplicate groups in range."},
+            "days_back": {"type": "integer", "description": "Days back to search, default 7"},
+            "days_ahead": {"type": "integer", "description": "Days ahead to search, default 30"},
+            "min_copies": {"type": "integer", "description": "Minimum copies required before cleanup. Use 3 when the user says thrice/three times; otherwise default 2."},
+            "max_deletes": {"type": "integer", "description": "Safety cap on deleted extra copies, default 50"}
+        }
     }
 }
 
@@ -5743,6 +5758,135 @@ def _duplicate_group_text(group: list[dict]) -> str:
     event = group[0]
     return f"{event.get('summary', '')} {_event_when_text(event)}"
 
+_DUPLICATE_CLEANUP_STOPWORDS = {
+    "a",
+    "all",
+    "and",
+    "bulk",
+    "calendar",
+    "cal",
+    "clean",
+    "cleanup",
+    "clear",
+    "copied",
+    "copies",
+    "copy",
+    "delete",
+    "deleted",
+    "duplicate",
+    "duplicated",
+    "duplicates",
+    "event",
+    "events",
+    "extra",
+    "extras",
+    "for",
+    "found",
+    "from",
+    "it",
+    "items",
+    "me",
+    "my",
+    "of",
+    "on",
+    "one",
+    "please",
+    "remove",
+    "removed",
+    "replicate",
+    "replicated",
+    "replicates",
+    "replication",
+    "the",
+    "three",
+    "thrice",
+    "times",
+    "to",
+    "two",
+}
+
+def _duplicate_cleanup_query_is_broad(query: str) -> bool:
+    words = re.findall(r"[a-z0-9]+", str(query or "").lower())
+    meaningful = [word for word in words if word not in _DUPLICATE_CLEANUP_STOPWORDS and not word.isdigit()]
+    return not meaningful
+
+def _calendar_duplicate_keep_sort_key(event: dict) -> tuple[int, str, str]:
+    calendar_id = str(event.get("_calendar_id", "") or "")
+    configured = list(getattr(gs, "CALENDAR_IDS", []) or [])
+    try:
+        calendar_rank = configured.index(calendar_id)
+    except ValueError:
+        calendar_rank = len(configured) + (1 if calendar_id else 0)
+    created = str(event.get("created") or event.get("updated") or "")
+    return (calendar_rank, created, str(event.get("id", "") or ""))
+
+def _select_duplicate_calendar_events_for_deletion(
+    query: str = "",
+    days_back: int = 7,
+    days_ahead: int = 30,
+    min_copies: int = 2,
+    max_deletes: int = 50,
+) -> dict:
+    now = datetime.now(SGT)
+    start = now - timedelta(days=max(0, int(days_back or 7)))
+    end = now + timedelta(days=max(1, int(days_ahead or 30)))
+    events = gs.get_events_between(start, end)
+    groups = [
+        sorted(group, key=_calendar_duplicate_keep_sort_key)
+        for group in _duplicate_event_groups(events)
+        if len(group) >= max(2, int(min_copies or 2))
+    ]
+    broad_query = _duplicate_cleanup_query_is_broad(query)
+    selected = []
+    for group in groups:
+        score = _score_text_match(query, _duplicate_group_text(group)) if query else 0
+        if broad_query or score >= 0.35:
+            selected.append({"keep": group[0], "delete": group[1:], "score": score})
+
+    delete_count = sum(len(item["delete"]) for item in selected)
+    capped = delete_count > max(1, int(max_deletes or 50))
+    if capped:
+        candidates = selected
+        selected = []
+        running = 0
+        limit = max(1, int(max_deletes or 50))
+        for item in sorted(candidates, key=lambda entry: entry["score"], reverse=True):
+            if running + len(item["delete"]) > limit:
+                break
+            selected.append(item)
+            running += len(item["delete"])
+
+    return {
+        "groups_found": len(groups),
+        "groups_selected": len(selected),
+        "delete_count": sum(len(item["delete"]) for item in selected),
+        "selected": selected,
+        "capped": capped,
+        "range_start": start,
+        "range_end": end,
+    }
+
+def _bulk_delete_duplicate_calendar_events(
+    query: str = "",
+    days_back: int = 7,
+    days_ahead: int = 30,
+    min_copies: int = 2,
+    max_deletes: int = 50,
+) -> dict:
+    plan = _select_duplicate_calendar_events_for_deletion(query, days_back, days_ahead, min_copies, max_deletes)
+    deleted = []
+    errors = []
+    for item in plan["selected"]:
+        for event in item["delete"]:
+            try:
+                gs.delete_event(event["id"], event.get("_calendar_id", ""))
+                deleted.append(event)
+            except Exception as exc:
+                errors.append(f"{event.get('summary', '(No title)')} ({_event_when_text(event)}): {exc}")
+    plan["deleted"] = deleted
+    plan["errors"] = errors
+    return plan
+
 def _event_when_text(event: dict) -> str:
     raw_start = event.get("start", {}).get("dateTime", event.get("start", {}).get("date", ""))
     raw_end = event.get("end", {}).get("dateTime", event.get("end", {}).get("date", ""))
@@ -6546,6 +6690,7 @@ def _artifact_result_text(kind: str, path, drive_file: dict | None = None) -> st
 _STATE_CHANGING_ACTIONS = {
     "create_calendar_event",
     "delete_calendar_event_by_text",
+    "bulk_delete_duplicate_calendar_events",
     "add_reminder",
     "create_proactive_nudge",
     "create_daily_checkin",
@@ -6564,6 +6709,8 @@ def _action_subject_for_audit(name: str, inp: dict) -> str:
         return str(inp.get("title", "") or "")
     if name == "delete_calendar_event_by_text":
         return str(inp.get("query", "") or "")
+    if name == "bulk_delete_duplicate_calendar_events":
+        return str(inp.get("query", "") or "duplicate calendar cleanup")
     if name == "add_reminder":
         return str(inp.get("description", "") or "")
     if name == "create_proactive_nudge":
@@ -6581,7 +6728,7 @@ def _validate_state_changing_action(name: str, inp: dict) -> tuple[bool, str]:
     subject = _action_subject_for_audit(name, inp).strip()
     if len(subject) < 3:
         return False, "The action subject is missing or too vague."
-    if _VAGUE_ACTION_REF_RE.fullmatch(subject.lower()):
+    if name != "bulk_delete_duplicate_calendar_events" and _VAGUE_ACTION_REF_RE.fullmatch(subject.lower()):
         return False, "The action subject is only a vague reference."
     if re.search(r"\b(that day|the day|same day)\b", subject, re.I):
         return False, "The action still contains unresolved vague references; ask for or infer the concrete subject before saving."
@@ -6702,6 +6849,12 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
         and parse_delayed_digest_push_request(text)
     ):
         return "create_proactive_nudge"
+    if (
+        "bulk_delete_duplicate_calendar_events" in available
+        and has_any(["duplicate", "duplicates", "duplicated", "replicated", "copies", "copied", "thrice", "three times", "bulk delete", "bulk remove"])
+        and has_any(["delete", "remove", "clean", "clear"])
+    ):
+        return "bulk_delete_duplicate_calendar_events"
     if "remember_user_info" in available and _is_memory_commit_query_text(text):
         return "remember_user_info"
 
@@ -8502,6 +8655,7 @@ def _core_tools():
         CONTEXT_TOOL,
         CALENDAR_TOOL,
         DELETE_CALENDAR_TOOL,
+        BULK_DELETE_DUPLICATE_CALENDAR_TOOL,
         AVAILABILITY_SLOT_TOOL,
         CCA_SCHEDULE_TOOL,
         REMINDER_TOOL,
@@ -8572,10 +8726,11 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         add(CLASSLIST_TOOL, ANALYZE_MTL_SCORES_TOOL, GENERATE_MTL_TREND_REPORT_TOOL, APPLY_MTL_FAILURE_HIGHLIGHTING_TOOL, UPDATE_CLASS_SCORE_TOOL, FILL_PERCENTAGE_SCORES_TOOL, TIMETABLE_TOOL)
     if (
         re.search(r"\b(calendar|schedule|agenda|today|tomorrow|week|meeting|event|appointment|duty|training|match|cca|what'?s on)\b", text)
+        or re.search(r"\b(duplicate|duplicates|duplicated|replicate|replicated|copies|copied|thrice|three times|bulk delete|bulk remove)\b", text)
         or _is_day_planning_query(text)
         or _is_cca_schedule_query_text(text, context)
     ):
-        add(CONTEXT_TOOL, CALENDAR_TOOL, DELETE_CALENDAR_TOOL, AVAILABILITY_SLOT_TOOL, REMINDER_TOOL, TIMETABLE_TOOL)
+        add(CONTEXT_TOOL, CALENDAR_TOOL, DELETE_CALENDAR_TOOL, BULK_DELETE_DUPLICATE_CALENDAR_TOOL, AVAILABILITY_SLOT_TOOL, REMINDER_TOOL, TIMETABLE_TOOL)
         if _is_cca_schedule_query_text(text, context):
             add(CCA_SCHEDULE_TOOL)
     if re.search(r"\b(task|tasks|due|deadline|remind|reminder|prepare|submit|complete|done|priority|prioritise|prioritize|focus)\b", text):
@@ -9420,6 +9575,50 @@ async def _execute_tool(name: str, inp: dict) -> str:
             return f"{result}\n\n{_action_audit_text(name, inp, result, metadata={'event_id': event.get('id', ''), 'calendar_id': event.get('_calendar_id', '')})}"
         except Exception as e:
             return f"Failed to delete calendar event: {e}"
+
+    elif name == "bulk_delete_duplicate_calendar_events":
+        try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
+            plan = _bulk_delete_duplicate_calendar_events(
+                query=inp.get("query", ""),
+                days_back=inp.get("days_back", 7),
+                days_ahead=inp.get("days_ahead", 30),
+                min_copies=inp.get("min_copies", 2),
+                max_deletes=inp.get("max_deletes", 50),
+            )
+            deleted = plan.get("deleted") or []
+            errors = plan.get("errors") or []
+            if not deleted:
+                detail = (
+                    "I found duplicate groups, but the safety cap prevented deletion."
+                    if plan.get("capped")
+                    else "No exact duplicate calendar groups matched that cleanup request."
+                )
+                return f"{detail} Groups found: {plan.get('groups_found', 0)}."
+            examples = "; ".join(
+                f"{event.get('summary', '(No title)')} ({_event_when_text(event)})"
+                for event in deleted[:5]
+            )
+            result = (
+                f"Deleted {len(deleted)} duplicate calendar event copy/copies "
+                f"from {plan.get('groups_selected', 0)} exact duplicate group(s), keeping one copy of each."
+            )
+            if examples:
+                result += f" Removed: {examples}"
+                if len(deleted) > 5:
+                    result += f"; +{len(deleted) - 5} more"
+            if errors:
+                result += " Issues: " + "; ".join(errors[:3])
+            metadata = {
+                "deleted_count": str(len(deleted)),
+                "groups_selected": str(plan.get("groups_selected", 0)),
+                "event_ids": ",".join(str(event.get("id", "")) for event in deleted[:20]),
+            }
+            return f"{result}\n\n{_action_audit_text(name, inp, result, metadata=metadata)}"
+        except Exception as e:
+            return f"Failed to bulk delete duplicate calendar events: {e}"
 
     elif name == "add_reminder":
         try:
