@@ -4999,8 +4999,8 @@ def _normalise_nudges(nudges: list, include_sent=False) -> list:
     for nudge in nudges:
         if not isinstance(nudge, dict):
             continue
-        status = nudge.get("status", "pending")
-        if status == "sent" and not include_sent:
+        status = str(nudge.get("status", "pending") or "pending").strip().lower()
+        if status != "pending" and not include_sent:
             continue
         clean.append({
             "id": str(nudge.get("id", "")),

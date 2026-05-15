@@ -6389,6 +6389,20 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(nudge["message"], "Evening digest")
         self.assertEqual(stored, [nudge])
 
+    def test_get_nudges_default_hides_cancelled_items(self):
+        raw = json.dumps([
+            {"id": "97", "message": "2026-05-17 Teaching", "send_at": "2026-05-17T22:22:00+08:00", "status": "cancelled"},
+            {"id": "99", "message": "Concrete reminder", "send_at": "2026-05-17T23:00:00+08:00", "status": "pending"},
+        ])
+
+        with (
+            patch.object(bot.gs, "get_config", return_value=raw),
+            patch.object(bot.gs, "_redis_nudges", return_value=[]),
+        ):
+            nudges = bot.gs.get_nudges()
+
+        self.assertEqual([nudge["id"] for nudge in nudges], ["99"])
+
     def test_cancel_nudge_persists_primary_storage_before_success(self):
         nudges = [
             {"id": "97", "message": "2026-05-17 Teaching", "send_at": "2026-05-17T22:22:00+08:00", "status": "pending"},
