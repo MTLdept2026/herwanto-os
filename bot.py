@@ -5609,6 +5609,45 @@ def _is_affirmative(text: str) -> bool:
     clean = " ".join(text.lower().replace(".", " ").replace("!", " ").split())
     return clean in AFFIRMATIVE_REPLIES or clean.startswith("done ")
 
+def _explicit_checkin_completion_text(message: str) -> bool:
+    clean = " ".join(str(message or "").lower().replace(".", " ").replace("!", " ").split())
+    if clean in {
+        "done",
+        "did",
+        "completed",
+        "complete",
+        "settled",
+        "yes done",
+        "done already",
+        "alhamdulillah",
+        "alhamdulillah done",
+        "dah",
+        "sudah",
+        "dah buat",
+        "sudah buat",
+    }:
+        return True
+    return clean.startswith("done ")
+
+def _recent_assistant_checkin_prompt(history: list[dict]) -> bool:
+    for item in reversed(history or []):
+        if not isinstance(item, dict) or item.get("role") != "assistant":
+            continue
+        content = str(item.get("content", "") or "").lower()
+        if not content.strip():
+            continue
+        if re.search(r"\b(check-?in|istigh?far|salawat|selawat|dah baca|done for today)\b", content):
+            return True
+        return False
+    return False
+
+def should_complete_checkin_from_affirmation(message: str, history: list[dict]) -> bool:
+    if not _is_affirmative(message):
+        return False
+    if _explicit_checkin_completion_text(message):
+        return True
+    return _recent_assistant_checkin_prompt(history)
+
 def _parse_checkin_times(raw: str) -> list:
     times = []
     for part in raw.replace(";", ",").split(","):
@@ -7124,6 +7163,9 @@ def _forced_tool_for_current_turn(messages: list[dict], tools: list[dict]) -> st
         for item in messages[-6:-1]
         if isinstance(item.get("content"), str)
     ).lower()
+    contextual_tool = _contextual_followup_tool_from_context(content, recent_context, available)
+    if contextual_tool:
+        return contextual_tool
     if (
         "fill_mtl_percentage_scores" in available
         and re.search(r"\b(?:try again|retry|again|nothing filled|not filled|didn'?t fill|did not fill|still blank|same permission|permissions?)\b", clean)
@@ -8732,7 +8774,7 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
     if (
         re.search(r"\b(calendar|schedule|agenda|today|tomorrow|week|meeting|event|appointment|duty|training|match|cca|what'?s on)\b", text)
         or re.search(r"\b(duplicate|duplicates|duplicated|replicate|replicated|copies|copied|thrice|three times|bulk delete|bulk remove)\b", text)
-        or _is_schedule_context_affirmation(text, context)
+        or _contextual_followup_tool_from_context(text, context, {"get_assistant_context"}) == "get_assistant_context"
         or _is_day_planning_query(text)
         or _is_cca_schedule_query_text(text, context)
     ):
@@ -8978,20 +9020,115 @@ def _obvious_quick_chat(text: str) -> bool:
         return True
     return len(clean.split()) <= 5 and bool(re.search(r"\b(thanks?|ok(?:ay)?|yes|no|hi|hello|hey)\b", clean))
 
-def _is_schedule_context_affirmation(text: str, recent_context: str = "") -> bool:
-    clean = re.sub(r"[^\w\s']", "", str(text or "").lower()).strip()
-    if clean not in {"yes", "yes pls", "yes please", "yep", "yeah", "sure", "ok", "okay", "please do", "pls"}:
-        return False
+_CONTEXTUAL_FOLLOWUP_REPLIES = {
+    "yes",
+    "yes pls",
+    "yes please",
+    "yep",
+    "yeah",
+    "sure",
+    "ok",
+    "okay",
+    "please",
+    "pls",
+    "please do",
+    "go ahead",
+    "do it",
+    "do that",
+    "that one",
+    "this one",
+    "same",
+    "again",
+    "proceed",
+    "confirm",
+    "go for it",
+    "sounds good",
+    "lets do it",
+    "let's do it",
+}
+
+_CONTEXTUAL_OFFER_RE = re.compile(
+    r"\b(?:want me to|should i|shall i|i can|do you want me to|want me)\b"
+    r".{0,220}?(?:[?.!]|$)",
+    re.S,
+)
+
+def _normalise_short_reply(text: str) -> str:
+    return re.sub(r"[^\w\s']", "", str(text or "").lower()).strip()
+
+def _is_contextual_followup_reply(text: str) -> bool:
+    clean = _normalise_short_reply(text)
+    if clean in _CONTEXTUAL_FOLLOWUP_REPLIES:
+        return True
+    words = clean.split()
+    return len(words) <= 5 and bool(re.search(r"\b(?:yes|ok(?:ay)?|sure|please|pls|that|this|same|again|proceed)\b", clean))
+
+def _latest_contextual_offer(recent_context: str = "") -> str:
     context = str(recent_context or "").lower()
-    offered_schedule_view = re.search(
-        r"\b(?:want me to|should i|shall i|i can)\b.{0,90}\b(?:pull up|show|check|confirm|review|view)\b",
-        context,
+    if not context:
+        return ""
+    offers = [match.group(0) for match in _CONTEXTUAL_OFFER_RE.finditer(context)]
+    if not offers:
+        return ""
+    latest = offers[-1]
+    if len(offers) > 1 and re.search(r"\b(?:it|that|this)\b", latest):
+        return f"{offers[-2]} {latest}"
+    return latest
+
+def _contextual_followup_requires_full(text: str, recent_context: str = "") -> bool:
+    if not _is_contextual_followup_reply(text):
+        return False
+    offer = _latest_contextual_offer(recent_context)
+    if not offer:
+        return False
+    return bool(re.search(
+        r"\b(?:add|create|schedule|delete|remove|cancel|clean|pull up|show|check|"
+        r"confirm|review|view|draft|write|reply|search|look up|find|mark|complete|push|notify|remind|nudge)\b",
+        offer,
         re.S,
-    )
-    return bool(
-        offered_schedule_view
-        and re.search(r"\b(calendar|schedule|agenda|events?|18-29 may|week|day)\b", context)
-    )
+    ))
+
+def _contextual_followup_tool_from_context(
+    text: str,
+    recent_context: str = "",
+    available: set[str] | None = None,
+) -> str | None:
+    if not _contextual_followup_requires_full(text, recent_context):
+        return None
+    available = available or set()
+    context = _latest_contextual_offer(recent_context)
+
+    def use(name: str, *patterns: str) -> str | None:
+        if available and name not in available:
+            return None
+        if all(re.search(pattern, context, re.S) for pattern in patterns):
+            return name
+        return None
+
+    checks = [
+        ("get_assistant_context", (r"\b(?:pull up|show|check|confirm|review|view)\b", r"\b(?:calendar|schedule|agenda|events?|week|day)\b")),
+        ("bulk_delete_duplicate_calendar_events", (r"\b(?:duplicate|duplicated|replicated|copies|thrice|clean)\b", r"\b(?:calendar|event|schedule)\b")),
+        ("delete_calendar_event_by_text", (r"\b(?:delete|remove|cancel)\b", r"\b(?:calendar|event|meeting|appointment|schedule)\b")),
+        ("create_calendar_event", (r"\b(?:add|create|schedule|book|put)\b", r"\b(?:calendar|event|meeting|appointment|schedule)\b")),
+        ("create_gmail_draft", (r"\b(?:draft|write|reply|compose)\b", r"\b(?:gmail|email|mail|inbox|reply)\b")),
+        ("get_gmail_brief", (r"\b(?:read|check|pull up|show|review)\b", r"\b(?:gmail|email|mail|inbox)\b")),
+        ("add_reminder", (r"\b(?:add|create|set)\b", r"\b(?:reminder|task|deadline)\b")),
+        ("create_proactive_nudge", (r"\b(?:push|notify|notification|nudge|ping|remind)\b",)),
+        ("complete_task_by_text", (r"\b(?:mark|complete|done|settle)\b", r"\b(?:task|reminder|item)\b")),
+        ("complete_followup_by_text", (r"\b(?:mark|complete|done|settle)\b", r"\bfollow[- ]?up\b")),
+        ("web_research", (r"\b(?:research|deep dive|investigate|compare)\b",)),
+        ("get_latest_news", (r"\b(?:latest|news|headlines?|digest)\b",)),
+        ("web_search", (r"\b(?:search|look up|find)\b",)),
+    ]
+    for name, patterns in checks:
+        match = use(name, *patterns)
+        if match:
+            return match
+    return None
+
+def _is_schedule_context_affirmation(text: str, recent_context: str = "") -> bool:
+    tool = _contextual_followup_tool_from_context(text, recent_context, {"get_assistant_context"})
+    return tool == "get_assistant_context"
 
 async def should_route_quick_pwa_chat(messages: list[dict], message: str) -> bool:
     text = (message or "").strip()
@@ -9005,11 +9142,12 @@ async def should_route_quick_pwa_chat(messages: list[dict], message: str) -> boo
         and re.search(r"\b(?:classlist|class list|2g3|3g3|1g2|wa1|wa2|fa1|fa2|percentage|percent|%)\b", recent_context)
     ):
         return False
+    if _contextual_followup_requires_full(text, recent_context):
+        return False
     if (
         _is_day_planning_query(text)
         or _is_timetable_verification_query(text, recent_context)
         or _is_cca_schedule_query_text(text, recent_context)
-        or _is_schedule_context_affirmation(text, recent_context)
         or _is_memory_commit_query_text(text)
     ):
         return False
@@ -9912,6 +10050,7 @@ async def handle_message(update, context):
 
 async def _process_user_text(update, context, text: str):
     user_id = update.effective_user.id
+    history = get_history(user_id)
     absorb_taste_hint(text)
     inferred_week_type, inferred_week_number = _school_week_from_text(text)
     if inferred_week_type and google_ok():
@@ -9926,7 +10065,7 @@ async def _process_user_text(update, context, text: str):
         except Exception as e:
             logger.warning(f"School week update error: {e}")
 
-    if google_ok() and _is_affirmative(text):
+    if google_ok() and should_complete_checkin_from_affirmation(text, history):
         try:
             awaiting = gs.awaiting_checkins()
             if awaiting:
@@ -9989,7 +10128,6 @@ async def _process_user_text(update, context, text: str):
             except Exception as e:
                 logger.warning(f"Natural calendar delete error: {e}")
 
-    history = get_history(user_id)
     user_content = text
     if re.search(r"\b(?:personal|personal\s*2|second(?:ary)?|other\s+personal|work|moe|school)\s+(?:gmail|email|emails|mail|inbox)\b", text, re.I):
         account_hint, _ = _extract_gmail_account_from_text(text)

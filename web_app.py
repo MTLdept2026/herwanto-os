@@ -1117,7 +1117,13 @@ def _update_working_memory(history_key: str, history: list, message: str) -> dic
         if subject and subject.lower() not in {item.lower() for item in seen_subjects}:
             seen_subjects.append(subject)
     competing = [item for item in seen_subjects if current_subject and item.lower() != current_subject.lower()]
-    pending_action = _pending_action_from_text(message) or str(memory.get("pending_action", "") or "")
+    current_action = _pending_action_from_text(message)
+    if current_action:
+        pending_action = current_action
+    elif bot._is_contextual_followup_reply(message) or _FOLLOWUP_GROUNDING_RE.search(message or ""):
+        pending_action = str(memory.get("pending_action", "") or "")
+    else:
+        pending_action = ""
     updated = {
         **memory,
         "current_subject": current_subject,
@@ -2564,6 +2570,11 @@ def _live_briefing_slot(message: str) -> str:
         return ""
     if not re.search(r"\b(brief me|briefing|brief)\b", clean):
         return ""
+    if (
+        re.search(r"\b(?:brief me|briefing|brief)\s+(?:on|about|re:)\b", clean)
+        and not re.search(r"\b(morning|evening|roundup)\b", clean)
+    ):
+        return ""
     if not _wants_live_briefing(clean):
         return ""
     if re.search(r"\b(evening|roundup|tonight)\b", clean):
@@ -2842,45 +2853,15 @@ def _complete_checkins_from_affirmation() -> tuple[str, list[str]]:
 
 
 def _explicit_checkin_completion_text(message: str) -> bool:
-    clean = " ".join(str(message or "").lower().replace(".", " ").replace("!", " ").split())
-    if clean in {
-        "done",
-        "did",
-        "completed",
-        "complete",
-        "settled",
-        "yes done",
-        "done already",
-        "alhamdulillah",
-        "alhamdulillah done",
-        "dah",
-        "sudah",
-        "dah buat",
-        "sudah buat",
-    }:
-        return True
-    return clean.startswith("done ")
+    return bot._explicit_checkin_completion_text(message)
 
 
 def _recent_assistant_checkin_prompt(history: list[dict]) -> bool:
-    for item in reversed(history[:-1] if history else []):
-        if not isinstance(item, dict) or item.get("role") != "assistant":
-            continue
-        content = str(item.get("content", "") or "").lower()
-        if not content.strip():
-            continue
-        if re.search(r"\b(check-?in|istigh?far|salawat|selawat|dah baca|done for today)\b", content):
-            return True
-        return False
-    return False
+    return bot._recent_assistant_checkin_prompt(history[:-1] if history else [])
 
 
 def _should_complete_checkin_from_affirmation(message: str, history: list[dict]) -> bool:
-    if not bot._is_affirmative(message):
-        return False
-    if _explicit_checkin_completion_text(message):
-        return True
-    return _recent_assistant_checkin_prompt(history)
+    return bot.should_complete_checkin_from_affirmation(message, history[:-1] if history else [])
 
 
 def _parse_nudge_ids(raw: str) -> list[str]:

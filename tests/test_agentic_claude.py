@@ -311,6 +311,46 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(forced, "get_assistant_context")
         self.assertFalse(routed_quick)
 
+    def test_pwa_do_it_after_gmail_draft_offer_uses_draft_tool(self):
+        messages = [
+            {"role": "assistant", "content": "I can draft a reply to the latest Gmail thread. Want me to do that?"}
+        ]
+        text = "Do it"
+        tools = bot._core_tools()
+        forced = bot._forced_tool_for_current_turn(
+            messages + [{"role": "user", "content": text}],
+            tools,
+        )
+        routed_quick = asyncio.run(bot.should_route_quick_pwa_chat(messages, text))
+
+        self.assertEqual(forced, "create_gmail_draft")
+        self.assertFalse(routed_quick)
+
+    def test_contextual_followup_uses_latest_offer_not_older_context(self):
+        messages = [
+            {"role": "assistant", "content": "Want me to pull up your calendar to confirm the cleanup?"},
+            {"role": "assistant", "content": "I can draft a reply to the latest Gmail thread. Want me to do that?"},
+        ]
+
+        forced = bot._forced_tool_for_current_turn(
+            messages + [{"role": "user", "content": "Do it"}],
+            bot._core_tools(),
+        )
+
+        self.assertEqual(forced, "create_gmail_draft")
+
+    def test_pwa_go_ahead_after_reminder_offer_uses_reminder_tool(self):
+        messages = [
+            {"role": "assistant", "content": "I can add a reminder for the submission deadline. Want me to add it?"}
+        ]
+        text = "Go ahead"
+        forced = bot._forced_tool_for_current_turn(
+            messages + [{"role": "user", "content": text}],
+            bot._core_tools(),
+        )
+
+        self.assertEqual(forced, "add_reminder")
+
     def test_action_requests_are_not_forced_to_read_only_tools(self):
         calendar_forced = bot._forced_tool_for_text(
             "schedule meeting with HOD tomorrow at 3pm",
@@ -3632,6 +3672,9 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(web_app._live_briefing_slot("Give me a crisp H.I.R.A briefing for right now."), "morning")
         self.assertEqual(web_app._briefing_replay_slot("Give me a crisp H.I.R.A briefing for right now."), "")
 
+    def test_brief_me_about_current_subject_does_not_trigger_daily_briefing(self):
+        self.assertEqual(web_app._live_briefing_slot("Brief me on this calendar cleanup right now"), "")
+
     def test_evening_brief_now_phrase_uses_live_briefing_route(self):
         self.assertEqual(web_app._live_briefing_slot("Now's a good time for evening brief. Let's have it"), "evening")
         self.assertEqual(web_app._live_briefing_slot("Nows a good time for evening brief. Lets have it"), "evening")
@@ -3912,6 +3955,23 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(summary["subject"], "Rhino emergency exercise briefing")
         self.assertEqual(summary["action"], "morning briefing reminder")
         self.assertIn("Latest user correction/clarification", context)
+
+    def test_pwa_working_memory_clears_stale_pending_action_on_fresh_thread(self):
+        history_key = "pwa:test-working-memory-stale"
+        key = web_app._working_memory_storage_key(history_key)
+        web_app._WEB_WORKING_MEMORY.pop(key, None)
+        web_app._WEB_WORKING_MEMORY[key] = {
+            "current_subject": "calendar cleanup",
+            "pending_action": "deletion action",
+        }
+
+        memory = web_app._update_working_memory(
+            history_key,
+            [{"role": "assistant", "content": "Calendar should be tidy now."}],
+            "How is the weather later?",
+        )
+
+        self.assertEqual(memory.get("pending_action", ""), "")
 
     def test_pwa_time_specific_remind_me_includes_nudge_tool(self):
         tools = bot.pwa_tools_for_message(
@@ -5468,6 +5528,7 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertFalse(bot._is_affirmative("Yes pls"))
         self.assertFalse(web_app._should_complete_checkin_from_affirmation("Yes pls", history))
+        self.assertFalse(bot.should_complete_checkin_from_affirmation("Yes pls", history[:-1]))
 
     def test_plain_yes_only_completes_checkin_after_checkin_prompt(self):
         history = [
