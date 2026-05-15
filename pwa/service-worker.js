@@ -1,9 +1,9 @@
-const CACHE_NAME = "hira-os-v116";
-const HIRA_APP_VERSION = "20260513-home-sync-timing-45";
+const CACHE_NAME = "hira-os-v117";
+const HIRA_APP_VERSION = "20260515-checkin-affirmation-47";
 const ASSETS = [
   "/",
-  "/styles.css?v=20260513-home-sync-timing-45",
-  "/app.js?v=20260513-home-sync-timing-45",
+  "/styles.css?v=20260515-checkin-affirmation-47",
+  "/app.js?v=20260515-checkin-affirmation-47",
   "/static/icon.svg",
   "/static/icon-192.png",
   "/static/icon-512.png",

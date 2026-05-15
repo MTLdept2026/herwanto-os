@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260513-home-sync-timing-45";
-const APP_SCRIPT = "app.js?v=20260513-home-sync-timing-45";
-const EXPECTED_SW_CACHE = "hira-os-v116";
+const APP_VERSION = "20260515-checkin-affirmation-47";
+const APP_SCRIPT = "app.js?v=20260515-checkin-affirmation-47";
+const EXPECTED_SW_CACHE = "hira-os-v117";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
 const AGENDA_CACHE_KEY = "hira_pwa_agenda_snapshot_v1";
 const HOME_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
@@ -3238,6 +3238,14 @@ async function sendChat(message) {
         setStatus("Continuing response to avoid cutoff...", "muted");
       }
       if (event.type === "tool") appendToolStatus(pending, event.name);
+      if (event.type === "notifications_archived" && Array.isArray(event.ids)) {
+        const archivedIds = new Set(event.ids.map(String));
+        state.dismissedNotificationIds.push(...archivedIds);
+        saveDismissedNotificationIds();
+        state.notifications = state.notifications.filter((item) => !archivedIds.has(String(item.id)));
+        saveNotifications();
+        renderNotifications();
+      }
       if (event.type === "text" || event.type === "replace") {
         latestText = streamedText;
         pending.classList.toggle("pending", !latestText);

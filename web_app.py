@@ -36,8 +36,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260514-home-status-priority-46"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v116"
+PWA_APP_VERSION = "20260515-checkin-affirmation-47"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v117"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -2649,18 +2649,88 @@ def _quick_sse_response(reply: str, history_key: str, history: list, route_name:
     return StreamingResponse(events(), media_type="text/event-stream")
 
 
-def _archive_nudge_notifications(nudge_id: str) -> int:
-    source = f"nudge:{str(nudge_id or '').strip()}"
-    if source == "nudge:":
-        return 0
+def _archive_notifications_by_source(source: str) -> list[str]:
+    clean_source = str(source or "").strip()
+    if not clean_source:
+        return []
     notifications = bot.gs.get_app_notifications(include_archived=True)
     ids = [
         str(item.get("id", "")).strip()
         for item in notifications
-        if str(item.get("source", "")).strip() == source and not item.get("archived")
+        if str(item.get("source", "")).strip() == clean_source and not item.get("archived")
     ]
     ids = [item_id for item_id in ids if item_id]
-    return bot.gs.archive_app_notifications(ids) if ids else 0
+    return ids if ids and bot.gs.archive_app_notifications(ids) else []
+
+
+def _archive_nudge_notifications(nudge_id: str) -> int:
+    source = f"nudge:{str(nudge_id or '').strip()}"
+    if source == "nudge:":
+        return 0
+    return len(_archive_notifications_by_source(source))
+
+
+def _active_checkin_notification_ids() -> list[str]:
+    try:
+        notifications = bot.gs.get_app_notifications(include_archived=True)
+    except Exception as exc:
+        bot.logger.warning(f"Could not inspect active check-in notifications: {exc}")
+        return []
+    checkin_ids: list[str] = []
+    seen: set[str] = set()
+    for item in reversed(notifications):
+        if item.get("archived"):
+            continue
+        match = re.fullmatch(r"checkin:(\w[\w-]*)", str(item.get("source", "") or "").strip())
+        if not match:
+            continue
+        checkin_id = match.group(1)
+        if checkin_id not in seen:
+            seen.add(checkin_id)
+            checkin_ids.append(checkin_id)
+    return checkin_ids
+
+
+def _complete_checkins_from_affirmation() -> tuple[str, list[str]]:
+    if not bot.google_ok():
+        return "", []
+    try:
+        all_checkins = {
+            str(checkin.get("id", "")): checkin
+            for checkin in bot.gs.get_checkins(include_inactive=True)
+            if str(checkin.get("id", "")).strip()
+        }
+        target_ids: list[str] = []
+        seen: set[str] = set()
+        for checkin in bot.gs.awaiting_checkins():
+            checkin_id = str(checkin.get("id", "")).strip()
+            if checkin_id and checkin_id not in seen:
+                seen.add(checkin_id)
+                target_ids.append(checkin_id)
+        for checkin_id in _active_checkin_notification_ids():
+            checkin = all_checkins.get(checkin_id)
+            if not checkin or not checkin.get("active", True) or checkin_id in seen:
+                continue
+            seen.add(checkin_id)
+            target_ids.append(checkin_id)
+
+        completed: list[str] = []
+        archived_ids: list[str] = []
+        for checkin_id in target_ids:
+            if bot.gs.complete_checkin_today(checkin_id):
+                checkin = all_checkins.get(checkin_id, {})
+                completed.append(str(checkin.get("name", "") or f"check-in #{checkin_id}"))
+                archived_ids.extend(_archive_notifications_by_source(f"checkin:{checkin_id}"))
+        if not completed:
+            return "", []
+        reply = (
+            f"Marked done for today: {', '.join(completed)}. "
+            "I’ll leave you in peace until tomorrow."
+        )
+        return reply, archived_ids
+    except Exception as exc:
+        bot.logger.warning(f"PWA check-in affirmation error: {exc}")
+        return "", []
 
 
 def _parse_nudge_ids(raw: str) -> list[str]:
@@ -2681,6 +2751,87 @@ def _nudge_id_from_source(source: str) -> str:
     return match.group(1) if match else ""
 
 
+def _parse_checkin_ids(raw: str) -> list[str]:
+    ids: list[str] = []
+    seen: set[str] = set()
+    for part in re.split(r"[\s,]+", str(raw or "").strip()):
+        checkin_id = part.strip().lstrip("#")
+        if not re.fullmatch(r"\d+", checkin_id):
+            continue
+        if checkin_id not in seen:
+            seen.add(checkin_id)
+            ids.append(checkin_id)
+    return ids
+
+
+def _archive_checkin_notifications(checkin_id: str) -> int:
+    source = f"checkin:{str(checkin_id or '').strip()}"
+    if source == "checkin:":
+        return 0
+    return len(_archive_notifications_by_source(source))
+
+
+def _pwa_checkin_command_reply(message: str) -> tuple[str, str] | None:
+    clean = str(message or "").strip()
+    if not clean:
+        return None
+    lower = clean.lower()
+    if lower in {"/checkins", "checkins"}:
+        try:
+            checkins = bot.gs.get_checkins()
+        except Exception as exc:
+            return f"Check-ins unavailable: {exc}", "list_checkins"
+        if not checkins:
+            return "No active daily check-ins.", "list_checkins"
+        lines = ["Active daily check-ins"]
+        for checkin in checkins:
+            lines.append(bot._format_checkin(checkin))
+        lines.append("\nTap Done on a check-in notification, reply yes/done when it asks, or use `/cancelcheckin <id>`.")
+        return "\n".join(lines), "list_checkins"
+
+    match = re.match(r"^/(?:cancelcheckin|cancel_checkin)\s+(.+?)\s*$", clean, re.I)
+    if not match:
+        return None
+    checkin_ids = _parse_checkin_ids(match.group(1))
+    if not checkin_ids:
+        return "Send `/cancelcheckin 7` or `/cancelcheckin 7, 8` to stop daily check-ins.", "cancel_checkin"
+
+    cancelled: list[str] = []
+    missing: list[str] = []
+    errors: list[str] = []
+    archived = 0
+    for checkin_id in checkin_ids:
+        try:
+            ok = bot.gs.cancel_checkin(checkin_id)
+            if ok:
+                cancelled.append(checkin_id)
+                archived += _archive_checkin_notifications(checkin_id)
+            else:
+                missing.append(checkin_id)
+        except Exception as exc:
+            errors.append(f"#{checkin_id}: {exc}")
+
+    if len(checkin_ids) == 1:
+        checkin_id = checkin_ids[0]
+        if errors:
+            return f"Could not cancel check-in #{checkin_id}: {errors[0].split(': ', 1)[-1]}", "cancel_checkin"
+        if missing:
+            return f"Check-in #{checkin_id} was not found.", "cancel_checkin"
+        extra = f" I also removed {archived} matching app notification{'s' if archived != 1 else ''} from H.I.R.A." if archived else ""
+        return f"Check-in #{checkin_id} cancelled.{extra}", "cancel_checkin"
+
+    lines: list[str] = []
+    if cancelled:
+        lines.append(f"Cancelled check-ins: {', '.join(f'#{item}' for item in cancelled)}.")
+    if archived:
+        lines.append(f"Removed {archived} matching app notification{'s' if archived != 1 else ''}.")
+    if missing:
+        lines.append(f"Not found: {', '.join(f'#{item}' for item in missing)}.")
+    if errors:
+        lines.append(f"Could not cancel: {'; '.join(errors)}.")
+    return "\n".join(lines) if lines else "No matching check-ins found.", "cancel_checkin"
+
+
 def _pwa_nudge_command_reply(message: str) -> tuple[str, str] | None:
     clean = str(message or "").strip()
     if not clean:
@@ -2692,7 +2843,7 @@ def _pwa_nudge_command_reply(message: str) -> tuple[str, str] | None:
         except Exception as exc:
             return f"Nudges unavailable: {exc}", "list_nudges"
         if not nudges:
-            return "No pending nudges.", "list_nudges"
+            return "No pending nudges. Daily check-ins are separate; use `/checkins` to review recurring habit prompts.", "list_nudges"
         lines = ["Pending nudges"]
         for nudge in nudges:
             lines.append(bot._format_nudge(nudge))
@@ -2816,25 +2967,20 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
     if f1_sync_reply:
         return _quick_sse_response(f1_sync_reply, history_key, history, route_name="f1_calendar_sync", tool_name="sync_f1_calendar")
 
+    checkin_command = _pwa_checkin_command_reply(message)
+    if checkin_command:
+        reply, tool_name = checkin_command
+        return _quick_sse_response(reply, history_key, history, route_name="checkin_admin", tool_name=tool_name)
+
     nudge_command = _pwa_nudge_command_reply(message)
     if nudge_command:
         reply, tool_name = nudge_command
         return _quick_sse_response(reply, history_key, history, route_name="nudge_admin", tool_name=tool_name)
 
     quick_checkin_reply = ""
-    if bot.google_ok() and bot._is_affirmative(message):
-        try:
-            completed = []
-            for checkin in bot.gs.awaiting_checkins():
-                if bot.gs.complete_checkin_today(checkin["id"]):
-                    completed.append(checkin["name"])
-            if completed:
-                quick_checkin_reply = (
-                    f"Marked done for today: {', '.join(completed)}. "
-                    "I’ll leave you in peace until tomorrow."
-                )
-        except Exception as exc:
-            bot.logger.warning(f"PWA check-in affirmation error: {exc}")
+    archived_checkin_notification_ids: list[str] = []
+    if bot._is_affirmative(message):
+        quick_checkin_reply, archived_checkin_notification_ids = _complete_checkins_from_affirmation()
 
     if quick_checkin_reply:
         history.append({"role": "assistant", "content": quick_checkin_reply})
@@ -2846,6 +2992,8 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
 
             try:
                 yield sse({"type": "route", "name": "quick"})
+                if archived_checkin_notification_ids:
+                    yield sse({"type": "notifications_archived", "ids": archived_checkin_notification_ids})
                 yield sse({"type": "text", "text": quick_checkin_reply})
                 yield sse({"type": "done", "text": quick_checkin_reply})
                 yield sse({"type": "saved"})

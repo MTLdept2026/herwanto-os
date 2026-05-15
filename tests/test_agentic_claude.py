@@ -5298,6 +5298,46 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual([call.args[0] for call in cancel.call_args_list], ["78", "79", "80"])
         self.assertEqual([call.args[0] for call in archive.call_args_list], [["91"], ["92"], ["93"]])
 
+    def test_pwa_affirmative_completes_active_checkin_notification(self):
+        checkins = [{
+            "id": "7",
+            "name": "Selawat & Istighfar",
+            "question": "Dah baca istighfar dan selawat hari ni?",
+            "active": True,
+        }]
+        notifications = [{"id": "91", "source": "checkin:7", "archived": False}]
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "get_checkins", return_value=checkins),
+            patch.object(bot.gs, "awaiting_checkins", return_value=[]),
+            patch.object(bot.gs, "get_app_notifications", return_value=notifications),
+            patch.object(bot.gs, "complete_checkin_today", return_value=True) as complete,
+            patch.object(bot.gs, "archive_app_notifications", return_value=1) as archive,
+        ):
+            reply, archived_ids = web_app._complete_checkins_from_affirmation()
+
+        self.assertIn("Selawat & Istighfar", reply)
+        self.assertEqual(archived_ids, ["91"])
+        complete.assert_called_once_with("7")
+        archive.assert_called_once_with(["91"])
+
+    def test_pwa_cancelcheckin_command_cancels_and_archives_notification(self):
+        notifications = [{"id": "91", "source": "checkin:7", "archived": False}]
+
+        with (
+            patch.object(bot.gs, "cancel_checkin", return_value=True) as cancel,
+            patch.object(bot.gs, "get_app_notifications", return_value=notifications),
+            patch.object(bot.gs, "archive_app_notifications", return_value=1) as archive,
+        ):
+            reply, tool = web_app._pwa_checkin_command_reply("/cancelcheckin 7")
+
+        self.assertEqual(tool, "cancel_checkin")
+        self.assertIn("Check-in #7 cancelled.", reply)
+        self.assertIn("removed 1 matching app notification", reply.lower())
+        cancel.assert_called_once_with("7")
+        archive.assert_called_once_with(["91"])
+
     def test_notification_action_done_completes_linked_task(self):
         item = {
             "id": "9",
