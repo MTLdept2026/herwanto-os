@@ -1,9 +1,9 @@
-const CACHE_NAME = "hira-os-v118";
-const HIRA_APP_VERSION = "20260515-prayer-done-48";
+const CACHE_NAME = "hira-os-v119";
+const HIRA_APP_VERSION = "20260515-upload-resilience-49";
 const ASSETS = [
   "/",
-  "/styles.css?v=20260515-prayer-done-48",
-  "/app.js?v=20260515-prayer-done-48",
+  "/styles.css?v=20260515-upload-resilience-49",
+  "/app.js?v=20260515-upload-resilience-49",
   "/static/icon.svg",
   "/static/icon-192.png",
   "/static/icon-512.png",

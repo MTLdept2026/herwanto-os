@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import asyncio
 import gc
+import io
 import json
 import os
 import re
@@ -18,7 +19,7 @@ import ipaddress
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -36,8 +37,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260515-prayer-done-48"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v118"
+PWA_APP_VERSION = "20260515-upload-resilience-49"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v119"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -868,6 +869,7 @@ class ClassOpsReflectionRequest(BaseModel):
 
 
 _UPLOAD_JOBS: OrderedDict[str, dict] = OrderedDict()
+_UPLOAD_REQUESTS: OrderedDict[str, str] = OrderedDict()
 _MAX_LOCAL_UPLOAD_JOBS = _env_int("HIRA_WEB_MAX_LOCAL_UPLOAD_JOBS", 100)
 _WEB_WORKING_MEMORY: OrderedDict[str, dict] = OrderedDict()
 _MAX_LOCAL_WORKING_MEMORIES = _env_int("HIRA_WEB_MAX_LOCAL_WORKING_MEMORIES", 100)
@@ -2197,6 +2199,12 @@ def _upload_job_key(job_id: str) -> str:
     return f"hira:upload_job:{job_id}"
 
 
+def _upload_request_key(client_key: str, request_id: str) -> str:
+    safe_client = re.sub(r"[^a-zA-Z0-9_.:-]", "_", str(client_key or "pwa").strip() or "pwa")[:80]
+    safe_request = re.sub(r"[^a-zA-Z0-9_.:-]", "_", str(request_id or "").strip())[:120]
+    return f"hira:upload_request:{safe_client}:{safe_request}"
+
+
 def _upload_job_public(job: dict) -> dict:
     return {
         "job_id": job.get("job_id", ""),
@@ -2266,6 +2274,40 @@ def _set_upload_job(job_id: str, update: dict) -> dict:
     return job
 
 
+def _get_upload_job_id_for_request(client_key: str, request_id: str) -> str:
+    request_id = str(request_id or "").strip()
+    if not request_id:
+        return ""
+    key = _upload_request_key(client_key, request_id)
+    r = bot._get_redis()
+    if r:
+        try:
+            raw = r.get(key)
+            if raw:
+                return str(raw.decode() if isinstance(raw, bytes) else raw)
+        except Exception as exc:
+            bot.logger.warning(f"Upload request Redis read failed: {exc}")
+    return _UPLOAD_REQUESTS.get(key, "")
+
+
+def _set_upload_request_job(client_key: str, request_id: str, job_id: str) -> None:
+    request_id = str(request_id or "").strip()
+    job_id = str(job_id or "").strip()
+    if not request_id or not job_id:
+        return
+    key = _upload_request_key(client_key, request_id)
+    r = bot._get_redis()
+    if r:
+        try:
+            r.setex(key, 86400, job_id)
+        except Exception as exc:
+            bot.logger.warning(f"Upload request Redis write failed: {exc}")
+    _UPLOAD_REQUESTS[key] = job_id
+    _UPLOAD_REQUESTS.move_to_end(key)
+    while len(_UPLOAD_REQUESTS) > _MAX_LOCAL_UPLOAD_JOBS:
+        _UPLOAD_REQUESTS.popitem(last=False)
+
+
 def _get_upload_job(job_id: str, include_missing: bool = False) -> dict | None:
     job_id = str(job_id or "").strip()
     if not job_id:
@@ -2313,6 +2355,71 @@ async def _spool_upload_to_temp(file: UploadFile, max_bytes: int) -> tuple[str, 
             except Exception:
                 pass
         raise
+
+
+def _prepare_image_for_vision(data: bytes, mime: str = "", filename: str = "") -> tuple[bytes, str, str]:
+    original_size = len(data or b"")
+    if not data:
+        return data, mime or "image/png", ""
+    max_edge = _env_int("HIRA_VISION_MAX_IMAGE_EDGE", 2200, minimum=512)
+    max_bytes = _env_int("HIRA_VISION_MAX_IMAGE_MB", 4, minimum=1) * 1024 * 1024
+    try:
+        from PIL import Image, ImageOps
+
+        Image.MAX_IMAGE_PIXELS = max(Image.MAX_IMAGE_PIXELS or 0, 80_000_000)
+        with Image.open(io.BytesIO(data)) as raw:
+            image = ImageOps.exif_transpose(raw)
+            original_size_px = image.size
+            if image.mode not in {"RGB", "L"}:
+                background = Image.new("RGB", image.size, "white")
+                alpha = image.getchannel("A") if "A" in image.getbands() else None
+                background.paste(image.convert("RGBA"), mask=alpha)
+                image = background
+            else:
+                image = image.convert("RGB")
+            image.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+
+            def encode_jpeg(quality: int) -> bytes:
+                output = io.BytesIO()
+                image.save(output, format="JPEG", quality=quality, optimize=True, progressive=True)
+                return output.getvalue()
+
+            encoded = encode_jpeg(88)
+            quality = 82
+            while len(encoded) > max_bytes and quality >= 58:
+                encoded = encode_jpeg(quality)
+                quality -= 8
+            note = ""
+            if image.size != original_size_px or len(encoded) < original_size:
+                note = (
+                    f"Image normalised for vision: {filename or 'upload'} "
+                    f"{original_size_px[0]}x{original_size_px[1]} -> {image.size[0]}x{image.size[1]}, "
+                    f"{original_size // 1024}KB -> {len(encoded) // 1024}KB."
+                )
+            return encoded, "image/jpeg", note
+    except Exception as exc:
+        bot.logger.warning("Image normalisation unavailable for %s: %s", filename or mime or "upload", exc)
+        return data, mime or "image/png", ""
+
+
+async def _analyse_image_bytes(data: bytes, mime: str, filename: str, note: str):
+    prepared, media_type, normalise_note = _prepare_image_for_vision(data, mime, filename)
+    encoded = base64.b64encode(prepared).decode()
+    user_note = note or "Extract useful schedule items, actions, dates, and reminders from this image."
+    if normalise_note:
+        user_note = f"{user_note}\n\nProcessing note: {normalise_note}"
+    reply_text = await bot._run_agentic_claude(
+        [{"role": "user", "content": [
+            {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": encoded}},
+            {"type": "text", "text": f"{bot.MEDIA_SCHEDULE_INSTRUCTION}\n\nUser note: {user_note}"}
+        ]}],
+        max_tokens=2200,
+        tools=[bot.CONTEXT_TOOL, bot.CALENDAR_TOOL, bot.REMINDER_TOOL, bot.MEMORY_TOOL],
+    )
+    index = f"Image analysed: {filename or 'uploaded image'}"
+    if normalise_note:
+        index = f"{index}\n{normalise_note}"
+    return {"reply": reply_text, "index": index}
 
 
 @app.get("/healthz")
@@ -4303,7 +4410,7 @@ def gmail_draft(
 async def upload_document(
     request: Request,
     file: UploadFile = File(...),
-    note: str = "",
+    note: str = Form(""),
     x_hira_token: Optional[str] = Header(default=None),
 ):
     _require_token(x_hira_token)
@@ -4329,10 +4436,18 @@ async def upload_document(
 async def create_upload_job(
     request: Request,
     file: UploadFile = File(...),
-    note: str = "",
+    note: str = Form(""),
+    request_id: str = Form(""),
     x_hira_token: Optional[str] = Header(default=None),
+    x_hira_client: Optional[str] = Header(default=None),
 ):
     _require_token(x_hira_token)
+    client_key = _client_key(x_hira_client)
+    existing_job_id = _get_upload_job_id_for_request(client_key, request_id)
+    if existing_job_id:
+        existing_job = _get_upload_job(existing_job_id)
+        if existing_job and existing_job.get("status") != "missing":
+            return _upload_job_public(existing_job)
     if not await _UPLOAD_RATE_LIMITER.is_allowed(_request_ip(request)):
         raise HTTPException(status_code=429, detail="Too many uploads. Wait a minute and try again.")
     mime = (file.content_type or "").lower()
@@ -4350,8 +4465,10 @@ async def create_upload_job(
         "filename": filename,
         "mime": mime,
         "note": note,
+        "request_id": request_id,
         "size": total,
     })
+    _set_upload_request_job(client_key, request_id, job_id)
     try:
         await _enqueue_upload_job({
             "job_id": job_id,
@@ -4444,16 +4561,7 @@ async def _process_upload_document(file: UploadFile, note: str = ""):
         raise HTTPException(status_code=413, detail=f"Upload is too large. Limit is {max_bytes // (1024 * 1024)} MB.")
 
     if mime.startswith("image/") or filename.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
-        encoded = base64.b64encode(data).decode()
-        reply_text = await bot._run_agentic_claude(
-            [{"role": "user", "content": [
-                {"type": "image", "source": {"type": "base64", "media_type": mime or "image/png", "data": encoded}},
-                {"type": "text", "text": f"{bot.MEDIA_SCHEDULE_INSTRUCTION}\n\nUser note: {note or 'Extract useful schedule items, actions, dates, and reminders from this image.'}"}
-            ]}],
-            max_tokens=2200,
-            tools=[bot.CONTEXT_TOOL, bot.CALENDAR_TOOL, bot.REMINDER_TOOL, bot.MEMORY_TOOL],
-        )
-        return {"reply": reply_text, "index": f"Image analysed: {filename or 'uploaded image'}"}
+        return await _analyse_image_bytes(data, mime, filename, note)
 
     if mime.startswith("audio/") or filename.lower().endswith((".ogg", ".m4a", ".mp3", ".wav")):
         if not os.environ.get("OPENAI_API_KEY", "").strip():
@@ -4504,16 +4612,8 @@ async def _process_upload_path(tmp_path: str, mime: str, filename: str, note: st
     name = (filename or "").lower()
     if mime.startswith("image/") or name.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
         with open(tmp_path, "rb") as fh:
-            encoded = base64.b64encode(fh.read()).decode()
-        reply_text = await bot._run_agentic_claude(
-            [{"role": "user", "content": [
-                {"type": "image", "source": {"type": "base64", "media_type": mime or "image/png", "data": encoded}},
-                {"type": "text", "text": f"{bot.MEDIA_SCHEDULE_INSTRUCTION}\n\nUser note: {note or 'Extract useful schedule items, actions, dates, and reminders from this image.'}"}
-            ]}],
-            max_tokens=2200,
-            tools=[bot.CONTEXT_TOOL, bot.CALENDAR_TOOL, bot.REMINDER_TOOL, bot.MEMORY_TOOL],
-        )
-        return {"reply": reply_text, "index": f"Image analysed: {filename or 'uploaded image'}"}
+            data = fh.read()
+        return await _analyse_image_bytes(data, mime, filename, note)
 
     if mime.startswith("audio/") or name.endswith((".ogg", ".m4a", ".mp3", ".wav")):
         if not os.environ.get("OPENAI_API_KEY", "").strip():

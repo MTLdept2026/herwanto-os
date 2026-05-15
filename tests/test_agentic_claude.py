@@ -1,4 +1,5 @@
 import asyncio
+import io
 import json
 import os
 import unittest
@@ -994,6 +995,29 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(data["service_worker_cache"], web_app.PWA_SERVICE_WORKER_CACHE)
         self.assertEqual(data["git_commit"], "abcdef123456")
         self.assertIn("server_time", data)
+
+    def test_upload_request_keys_make_retries_idempotent(self):
+        web_app._UPLOAD_REQUESTS.clear()
+
+        web_app._set_upload_request_job("phone", "upload-123", "job-9")
+
+        self.assertEqual(web_app._get_upload_job_id_for_request("phone", "upload-123"), "job-9")
+
+    def test_prepare_image_for_vision_normalises_large_png(self):
+        from PIL import Image
+
+        source = io.BytesIO()
+        Image.new("RGBA", (3600, 2400), (255, 255, 255, 255)).save(source, format="PNG")
+
+        data, mime, note = web_app._prepare_image_for_vision(
+            source.getvalue(),
+            "image/png",
+            "large.png",
+        )
+
+        self.assertEqual(mime, "image/jpeg")
+        self.assertLess(len(data), 4 * 1024 * 1024)
+        self.assertIn("Image normalised", note)
 
     def test_relief_context_becomes_teaching_memory(self):
         now = bot.SGT.localize(bot.datetime(2026, 5, 6, 6, 21))

@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260515-prayer-done-48";
-const APP_SCRIPT = "app.js?v=20260515-prayer-done-48";
-const EXPECTED_SW_CACHE = "hira-os-v118";
+const APP_VERSION = "20260515-upload-resilience-49";
+const APP_SCRIPT = "app.js?v=20260515-upload-resilience-49";
+const EXPECTED_SW_CACHE = "hira-os-v119";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
 const AGENDA_CACHE_KEY = "hira_pwa_agenda_snapshot_v1";
 const HOME_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
@@ -331,7 +331,34 @@ function withAuth(options = {}) {
 }
 
 async function api(path, options = {}, tokenPrompted = false) {
-  const response = await fetch(path, withAuth(options));
+  const {
+    retryNetwork = false,
+    retryLabel = "request",
+    ...fetchOptions
+  } = options || {};
+  let response;
+  let networkError = null;
+  const maxAttempts = retryNetwork ? 4 : 1;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      response = await fetch(path, withAuth(fetchOptions));
+      networkError = null;
+      break;
+    } catch (error) {
+      networkError = error;
+      if (attempt >= maxAttempts - 1) break;
+      const delay = 900 + attempt * 1400;
+      setStatus(`Connection dropped during ${retryLabel}. Retrying...`, "warn");
+      await wait(delay);
+    }
+  }
+  if (!response) {
+    throw new Error(
+      retryNetwork
+        ? `Could not reach H.I.R.A during ${retryLabel}. The upload was not abandoned; try again on a stable connection.`
+        : (networkError?.message || "Network request failed.")
+    );
+  }
   if (response.status === 401) {
     if (tokenPrompted) {
       $("#settingsPanel").hidden = false;
@@ -3183,10 +3210,14 @@ function wait(ms) {
 }
 
 async function submitUploadJob(form, onProgress) {
+  const requestId = window.crypto?.randomUUID?.() || `upload-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  form.append("request_id", requestId);
   const created = await api("/api/upload/jobs", {
     method: "POST",
     headers: headers(false),
     body: form,
+    retryNetwork: true,
+    retryLabel: "upload start",
   });
   let job = created;
   onProgress?.(job);
@@ -3196,7 +3227,11 @@ async function submitUploadJob(form, onProgress) {
       throw new Error(job.error || "Upload analysis failed.");
     }
     await wait(attempt < 10 ? 1000 : 2000);
-    job = await api(`/api/upload/jobs/${encodeURIComponent(job.job_id)}`, { headers: headers(false) });
+    job = await api(`/api/upload/jobs/${encodeURIComponent(job.job_id)}`, {
+      headers: headers(false),
+      retryNetwork: true,
+      retryLabel: "upload status check",
+    });
     onProgress?.(job);
   }
   throw new Error("Upload analysis is still running. Check Files again in a moment.");
