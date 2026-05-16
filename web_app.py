@@ -1089,8 +1089,36 @@ def _pending_action_from_text(text: str) -> str:
     return ""
 
 
+def _pwa_casual_status_prompt(message: str) -> bool:
+    clean = bot._normalise_short_reply(message)
+    return clean in {
+        "whats up",
+        "what's up",
+        "sup",
+        "wassup",
+        "what up",
+        "what is up",
+        "hows it going",
+        "how's it going",
+        "how are things",
+        "whats happening",
+        "what's happening",
+        "what is happening",
+    }
+
+
 def _update_working_memory(history_key: str, history: list, message: str) -> dict:
     memory = _load_working_memory(history_key)
+    if _pwa_casual_status_prompt(message):
+        updated = {
+            **memory,
+            "current_subject": "",
+            "pending_action": "",
+            "competing_subjects": [],
+            "updated_at": datetime.now(bot.SGT).isoformat(),
+        }
+        _save_working_memory(history_key, updated)
+        return updated
     previous_subject = str(memory.get("current_subject", "") or "")
     candidates: list[tuple[str, str, str]] = []
     for item in history[-8:]:
@@ -3097,6 +3125,12 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
     f1_sync_reply = bot.f1_calendar_sync_response(message)
     if f1_sync_reply:
         return _quick_sse_response(f1_sync_reply, history_key, history, route_name="f1_calendar_sync", tool_name="sync_f1_calendar")
+
+    if _pwa_casual_status_prompt(message):
+        status_reply = await bot._execute_tool_offloop("get_assistant_context", {"days": 3})
+        if not status_reply:
+            status_reply = "I could not pull the current status brief right now. Try again in a moment."
+        return _quick_sse_response(status_reply, history_key, history, route_name="natural_intent", tool_name="get_assistant_context")
 
     checkin_command = _pwa_checkin_command_reply(message)
     if checkin_command:

@@ -3812,6 +3812,34 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("not going to guess from memory", reply)
         self.assertIn("FotMob team-page probe", reply)
 
+    def test_whats_up_uses_local_status_brief_before_model_route(self):
+        async def fake_execute_tool(name, inp):
+            self.assertEqual(name, "get_assistant_context")
+            self.assertEqual(inp, {"days": 3})
+            return "Quick read: clear block now, Zohor window next, no urgent task spike."
+
+        async def run():
+            response = await web_app._chat_stream_response("Whats up", None, "phone")
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(web_app, "_update_working_memory", return_value={}),
+            patch.object(web_app, "_schedule_background_call"),
+            patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool),
+            patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("should not route to model")),
+        ):
+            body = asyncio.run(run())
+
+        self.assertIn("Quick read: clear block", body)
+        self.assertIn('"name": "natural_intent"', body)
+        self.assertIn('"name": "get_assistant_context"', body)
+        self.assertNotIn('"final_mode": "backend_error"', body)
+
     def test_source_contract_guardrail_blocks_unconfirmed_result(self):
         messages = [{"role": "user", "content": "is that the latest result?"}]
         tool_results = [{
@@ -3972,6 +4000,25 @@ class AgenticClaudeTests(unittest.TestCase):
         )
 
         self.assertEqual(memory.get("pending_action", ""), "")
+
+    def test_pwa_whats_up_clears_stale_working_subject(self):
+        history_key = "pwa:test-working-memory-whats-up"
+        key = web_app._working_memory_storage_key(history_key)
+        web_app._WEB_WORKING_MEMORY.pop(key, None)
+        web_app._WEB_WORKING_MEMORY[key] = {
+            "current_subject": "time-sensitive facts (F1 standings)",
+            "pending_action": "live source check",
+        }
+
+        memory = web_app._update_working_memory(
+            history_key,
+            [{"role": "assistant", "content": "F1 standings need a live check."}],
+            "Whats up",
+        )
+
+        self.assertEqual(memory.get("current_subject", ""), "")
+        self.assertEqual(memory.get("pending_action", ""), "")
+        self.assertEqual(web_app._working_memory_summary(memory), {})
 
     def test_pwa_time_specific_remind_me_includes_nudge_tool(self):
         tools = bot.pwa_tools_for_message(
