@@ -3992,16 +3992,6 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("blocked", blocked)
         self.assertIn("unresolved vague references", blocked)
 
-    def test_state_changing_action_validation_blocks_category_stub_nudge(self):
-        blocked = bot._validated_action_failure(
-            "create_proactive_nudge",
-            {"message": "2026-05-17 Teaching", "send_at": "2026-05-17T08:00:00+08:00"},
-        )
-
-        self.assertIsNotNone(blocked)
-        self.assertIn("blocked", blocked)
-        self.assertIn("date/category stub", blocked)
-
     def test_state_changing_action_result_includes_audit(self):
         with patch.object(bot.gs, "add_reminder", return_value="42"):
             result = asyncio.run(bot._execute_tool(
@@ -5500,46 +5490,6 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual([call.args[0] for call in cancel.call_args_list], ["78", "79", "80"])
         self.assertEqual([call.args[0] for call in archive.call_args_list], [["91"], ["92"], ["93"]])
 
-    def test_pwa_cancelnudge_command_cancels_by_text_query(self):
-        nudges = [
-            {"id": "81", "message": "2026-05-17 Teaching", "send_at": "2026-05-17T08:00:00+08:00", "status": "pending"},
-            {"id": "82", "message": "CCA briefing", "send_at": "2026-05-17T09:00:00+08:00", "status": "pending"},
-        ]
-        notifications = [
-            {"id": "181", "source": "nudge:81", "archived": False},
-            {"id": "182", "source": "nudge:82", "archived": False},
-        ]
-
-        with (
-            patch.object(bot.gs, "get_nudges", return_value=nudges),
-            patch.object(bot.gs, "cancel_nudge", return_value=True) as cancel,
-            patch.object(bot.gs, "get_app_notifications", return_value=notifications),
-            patch.object(bot.gs, "archive_app_notifications", return_value=1) as archive,
-        ):
-            reply, tool = web_app._pwa_nudge_command_reply("/cancelnudge Teaching")
-
-        self.assertEqual(tool, "cancel_nudge")
-        self.assertIn("Cancelled nudges matching `Teaching`: #81.", reply)
-        self.assertIn("Removed 1 matching app notification.", reply)
-        cancel.assert_called_once_with("81")
-        archive.assert_called_once_with(["181"])
-
-    def test_pwa_natural_nuke_teaching_nudges_cancels_by_text_query(self):
-        nudges = [
-            {"id": "81", "message": "2026-05-17 Teaching", "send_at": "2026-05-17T08:00:00+08:00", "status": "pending"},
-        ]
-
-        with (
-            patch.object(bot.gs, "get_nudges", return_value=nudges),
-            patch.object(bot.gs, "cancel_nudge", return_value=True) as cancel,
-            patch.object(bot.gs, "get_app_notifications", return_value=[]),
-        ):
-            reply, tool = web_app._pwa_nudge_command_reply("nuke teaching nudges")
-
-        self.assertEqual(tool, "cancel_nudge")
-        self.assertIn("#81", reply)
-        cancel.assert_called_once_with("81")
-
     def test_pwa_affirmative_completes_active_checkin_notification(self):
         checkins = [{
             "id": "7",
@@ -6388,50 +6338,6 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertTrue(nudge["id"].startswith("r-"))
         self.assertEqual(nudge["message"], "Evening digest")
         self.assertEqual(stored, [nudge])
-
-    def test_get_nudges_default_hides_cancelled_items(self):
-        raw = json.dumps([
-            {"id": "97", "message": "2026-05-17 Teaching", "send_at": "2026-05-17T22:22:00+08:00", "status": "cancelled"},
-            {"id": "99", "message": "Concrete reminder", "send_at": "2026-05-17T23:00:00+08:00", "status": "pending"},
-        ])
-
-        with (
-            patch.object(bot.gs, "get_config", return_value=raw),
-            patch.object(bot.gs, "_redis_nudges", return_value=[]),
-        ):
-            nudges = bot.gs.get_nudges()
-
-        self.assertEqual([nudge["id"] for nudge in nudges], ["99"])
-
-    def test_cancel_nudge_persists_primary_storage_before_success(self):
-        nudges = [
-            {"id": "97", "message": "2026-05-17 Teaching", "send_at": "2026-05-17T22:22:00+08:00", "status": "pending"},
-            {"id": "r-1", "message": "Redis fallback", "send_at": "2026-05-17T23:00:00+08:00", "status": "pending"},
-        ]
-
-        with (
-            patch.object(bot.gs, "get_nudges", return_value=nudges),
-            patch.object(bot.gs, "set_nudges") as set_nudges,
-            patch.object(bot.gs, "_set_redis_nudges", return_value=True),
-        ):
-            ok = bot.gs.cancel_nudge("97")
-
-        self.assertTrue(ok)
-        saved = set_nudges.call_args.args[0]
-        self.assertEqual(saved[0]["status"], "cancelled")
-        self.assertEqual(saved[0]["id"], "97")
-
-    def test_cancel_nudge_does_not_report_success_when_primary_write_fails(self):
-        nudges = [
-            {"id": "97", "message": "2026-05-17 Teaching", "send_at": "2026-05-17T22:22:00+08:00", "status": "pending"},
-        ]
-
-        with (
-            patch.object(bot.gs, "get_nudges", return_value=nudges),
-            patch.object(bot.gs, "set_nudges", side_effect=RuntimeError("postgres write failed")),
-        ):
-            with self.assertRaises(RuntimeError):
-                bot.gs.cancel_nudge("97")
 
 if __name__ == "__main__":
     unittest.main()

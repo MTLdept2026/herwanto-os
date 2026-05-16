@@ -2877,23 +2877,6 @@ def _parse_nudge_ids(raw: str) -> list[str]:
     return ids
 
 
-def _nudge_cancel_query_from_message(message: str) -> str:
-    clean = str(message or "").strip()
-    if not clean:
-        return ""
-    patterns = [
-        r"^/(?:cancelnudge|cancel_nudge)\s+(.+?)\s*$",
-        r"^(?:cancel|delete|remove|clear|nuke|stop)\s+(?:the\s+|this\s+|these\s+)?(.+?)\s+nudges?\s*$",
-        r"^(?:cancel|delete|remove|clear|nuke|stop)\s+nudges?\s+(?:for|about|called|matching)?\s*(.+?)\s*$",
-        r"^(?:i\s+)?(?:no\s+longer|don't|do\s+not)\s+want\s+(?:the\s+|this\s+|these\s+)?(.+?)\s+nudges?\s*$",
-    ]
-    for pattern in patterns:
-        match = re.match(pattern, clean, re.I)
-        if match:
-            return match.group(1).strip(" \t\r\n'\"`“”‘’")
-    return ""
-
-
 def _nudge_id_from_source(source: str) -> str:
     match = re.fullmatch(r"nudge:((?:r-)?\d+)", str(source or "").strip(), re.I)
     return match.group(1) if match else ""
@@ -2998,29 +2981,12 @@ def _pwa_nudge_command_reply(message: str) -> tuple[str, str] | None:
         lines.append("\nTap Done on a nudge notification, or use `/cancelnudge <id>` / `/cancelnudge 78, 79, 80`.")
         return "\n".join(lines), "list_nudges"
 
-    cancel_query = _nudge_cancel_query_from_message(clean)
-    if not cancel_query:
+    match = re.match(r"^/(?:cancelnudge|cancel_nudge)\s+(.+?)\s*$", clean, re.I)
+    if not match:
         return None
-    nudge_ids = _parse_nudge_ids(cancel_query)
+    nudge_ids = _parse_nudge_ids(match.group(1))
     if not nudge_ids:
-        try:
-            result = bot.cancel_pending_nudges_by_query(cancel_query)
-        except Exception as exc:
-            return f"Could not inspect pending nudges: {exc}", "cancel_nudge"
-        cancelled = [str(item) for item in result.get("cancelled", [])]
-        errors = [str(item) for item in result.get("errors", [])]
-        matched = result.get("matched", [])
-        archived = sum(_archive_nudge_notifications(nudge_id) for nudge_id in cancelled)
-        if not matched:
-            return f"No pending nudges matched `{cancel_query}`.", "cancel_nudge"
-        lines: list[str] = []
-        if cancelled:
-            lines.append(f"Cancelled nudges matching `{cancel_query}`: {', '.join(f'#{item}' for item in cancelled)}.")
-        if archived:
-            lines.append(f"Removed {archived} matching app notification{'s' if archived != 1 else ''}.")
-        if errors:
-            lines.append(f"Could not cancel: {'; '.join(errors)}.")
-        return "\n".join(lines) if lines else f"No pending nudges matching `{cancel_query}` could be cancelled.", "cancel_nudge"
+        return "Send `/cancelnudge 78` or `/cancelnudge 78, 79, 80` to clear pending nudges.", "cancel_nudge"
 
     cancelled: list[str] = []
     missing: list[str] = []
