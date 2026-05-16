@@ -11,13 +11,15 @@ import os
 import logging
 import re
 import hashlib
+import ipaddress
 import requests
 import feedparser
+import socket
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -116,23 +118,90 @@ def _looks_like_url(value: str) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
-def fetch_url(url: str, max_chars: int = 6000) -> dict:
-    """Fetch and extract readable text from a URL. Does not require Tavily."""
-    url = (url or "").strip()
-    if not _looks_like_url(url):
-        return {"ok": False, "error": "Invalid URL. Use a full http(s) link.", "url": url}
+def _host_is_blocked_name(hostname: str) -> bool:
+    host = (hostname or "").strip().strip("[]").lower().rstrip(".")
+    return (
+        not host
+        or host in {"localhost", "localhost.localdomain"}
+        or host.endswith(".localhost")
+        or host.endswith(".local")
+        or host.endswith(".internal")
+    )
 
+
+def _ip_is_public(ip_text: str) -> bool:
     try:
+        ip = ipaddress.ip_address(ip_text)
+    except ValueError:
+        return False
+    return bool(ip.is_global)
+
+
+def _resolve_public_host(hostname: str) -> tuple[bool, str]:
+    host = (hostname or "").strip().strip("[]")
+    if _host_is_blocked_name(host):
+        return False, "Blocked local hostname"
+    try:
+        ip = ipaddress.ip_address(host)
+        return (bool(ip.is_global), "Blocked non-public IP address")
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except Exception as exc:
+        return False, f"Could not resolve hostname: {exc}"
+    addresses = {info[4][0] for info in infos if info and info[4]}
+    if not addresses:
+        return False, "Hostname resolved to no addresses"
+    blocked = [address for address in addresses if not _ip_is_public(address)]
+    if blocked:
+        return False, "Hostname resolves to a non-public address"
+    return True, ""
+
+
+def _validate_public_http_url(url: str) -> tuple[bool, str]:
+    parsed = urlparse((url or "").strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False, "Invalid URL. Use a full public http(s) link."
+    if parsed.username or parsed.password:
+        return False, "URL credentials are not allowed."
+    return _resolve_public_host(parsed.hostname or "")
+
+
+def _get_public_url(url: str, timeout: int = 10, max_redirects: int = 5) -> requests.Response:
+    current = (url or "").strip()
+    for _ in range(max_redirects + 1):
+        ok, reason = _validate_public_http_url(current)
+        if not ok:
+            raise ValueError(reason)
         resp = requests.get(
-            url,
+            current,
             headers={
                 "User-Agent": (
                     "Mozilla/5.0 (compatible; HIRA/1.0; +https://example.com/hira)"
                 )
             },
-            timeout=10,
-            allow_redirects=True,
+            timeout=timeout,
+            allow_redirects=False,
         )
+        if not resp.is_redirect:
+            return resp
+        location = resp.headers.get("location", "")
+        if not location:
+            return resp
+        current = urljoin(current, location)
+    raise ValueError("Too many redirects")
+
+
+def fetch_url(url: str, max_chars: int = 6000) -> dict:
+    """Fetch and extract readable text from a URL. Does not require Tavily."""
+    url = (url or "").strip()
+    ok, reason = _validate_public_http_url(url)
+    if not ok:
+        return {"ok": False, "error": reason, "url": url}
+
+    try:
+        resp = _get_public_url(url, timeout=10)
         resp.raise_for_status()
     except Exception as e:
         logger.warning(f"URL fetch error for '{url}': {e}")

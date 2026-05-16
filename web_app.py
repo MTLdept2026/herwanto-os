@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import base64
 import asyncio
+import contextvars
 import gc
+import hashlib
+import hmac
 import io
 import json
 import os
@@ -111,6 +114,9 @@ _STATIC_PATHS = {
 }
 _UPLOAD_QUEUE: asyncio.Queue[dict] | None = None
 _UPLOAD_QUEUE_TASKS: list[asyncio.Task] = []
+_REQUEST_CONTEXT: contextvars.ContextVar[Request | None] = contextvars.ContextVar("hira_request", default=None)
+_SESSION_COOKIE_NAME = "hira_session"
+_SESSION_MAX_AGE_SECONDS = _env_int("HIRA_WEB_SESSION_MAX_AGE_SECONDS", 60 * 60 * 24 * 30)
 
 
 def _memory_usage_ratio() -> float | None:
@@ -180,61 +186,69 @@ async def _web_memory_watchdog():
 
 @app.middleware("http")
 async def add_static_cache_headers(request: Request, call_next):
-    content_length = request.headers.get("content-length")
-    if content_length and content_length.isdigit() and int(content_length) > _MAX_REQUEST_BYTES:
-        return JSONResponse(
-            {"detail": f"Request is too large. Limit is {_MAX_REQUEST_BYTES // (1024 * 1024)} MB."},
-            status_code=413,
-        )
-    if request.url.path.startswith("/api/"):
-        expected = _expected_web_token()
-        if not expected:
+    context_token = _REQUEST_CONTEXT.set(request)
+    try:
+        content_length = request.headers.get("content-length")
+        if content_length and content_length.isdigit() and int(content_length) > _MAX_REQUEST_BYTES:
             return JSONResponse(
-                {"detail": "HIRA_WEB_TOKEN is not configured. Set it in Railway environment variables."},
-                status_code=503,
+                {"detail": f"Request is too large. Limit is {_MAX_REQUEST_BYTES // (1024 * 1024)} MB."},
+                status_code=413,
             )
-        if not _token_matches(request.headers.get("x-hira-token"), expected):
-            if not await _AUTH_RATE_LIMITER.is_allowed(_request_ip(request)):
+        if request.url.path.startswith("/api/") and request.url.path not in {"/api/auth/session"}:
+            expected = _expected_web_token()
+            if not expected:
                 return JSONResponse(
-                    {"detail": "Too many invalid token attempts. Try again in a minute."},
-                    status_code=429,
-                    headers={"Retry-After": "60"},
+                    {"detail": "HIRA_WEB_TOKEN is not configured. Set it in Railway environment variables."},
+                    status_code=503,
                 )
-            return JSONResponse({"detail": "Invalid H.I.R.A web token"}, status_code=401)
-    is_static_path = request.url.path in _STATIC_PATHS or request.url.path.startswith("/static/")
-    if _memory_pressure_high() and not is_static_path:
-        gc.collect()
-        return JSONResponse(
-            {"detail": "H.I.R.A is under memory pressure. Try again in a moment."},
-            status_code=503,
-            headers={"Retry-After": "20"},
-        )
-    response = await call_next(request)
-    if request.url.path in {
-        "/",
-        "/growth",
-        "/hira-growth",
-        "/classops",
-        "/service-worker.js",
-        "/app.js",
-        "/styles.css",
-        "/hira-growth.css",
-        "/hira-growth.js",
-        "/hira-growth-data.json",
-        "/classops.css",
-        "/classops.js",
-        "/static/app.js",
-        "/static/styles.css",
-        "/static/hira-growth.css",
-        "/static/hira-growth.js",
-        "/static/hira-growth-data.json",
-        "/static/classops.css",
-        "/static/classops.js",
-    }:
-        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Expires"] = "0"
-    return response
+            header_ok = _token_matches(request.headers.get("x-hira-token"), expected)
+            session_ok = _request_session_valid(request, expected)
+            if session_ok and not header_ok and not _csrf_request_allowed(request):
+                return JSONResponse({"detail": "Cross-site request blocked"}, status_code=403)
+            if not header_ok and not session_ok:
+                if not await _AUTH_RATE_LIMITER.is_allowed(_auth_rate_key(request, request.headers.get("x-hira-token"))):
+                    return JSONResponse(
+                        {"detail": "Too many invalid token attempts. Try again in a minute."},
+                        status_code=429,
+                        headers={"Retry-After": "60"},
+                    )
+                return JSONResponse({"detail": "Invalid H.I.R.A web token"}, status_code=401)
+        is_static_path = request.url.path in _STATIC_PATHS or request.url.path.startswith("/static/")
+        if _memory_pressure_high() and not is_static_path:
+            gc.collect()
+            return JSONResponse(
+                {"detail": "H.I.R.A is under memory pressure. Try again in a moment."},
+                status_code=503,
+                headers={"Retry-After": "20"},
+            )
+        response = await call_next(request)
+        if request.url.path in {
+            "/",
+            "/growth",
+            "/hira-growth",
+            "/classops",
+            "/service-worker.js",
+            "/app.js",
+            "/styles.css",
+            "/hira-growth.css",
+            "/hira-growth.js",
+            "/hira-growth-data.json",
+            "/classops.css",
+            "/classops.js",
+            "/static/app.js",
+            "/static/styles.css",
+            "/static/hira-growth.css",
+            "/static/hira-growth.js",
+            "/static/hira-growth-data.json",
+            "/static/classops.css",
+            "/static/classops.js",
+        }:
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
+    finally:
+        _REQUEST_CONTEXT.reset(context_token)
 
 
 async def _web_daily_briefing_loop(
@@ -782,6 +796,10 @@ class DeviceLocation(BaseModel):
     lon: float
     accuracy: Optional[float] = None
     timestamp: Optional[str] = None
+
+
+class AuthSessionRequest(BaseModel):
+    token: str
 
 
 class ChatRequest(BaseModel):
@@ -2076,6 +2094,40 @@ def app_version():
     }
 
 
+@app.post("/api/auth/session")
+async def auth_session(request: Request, req: AuthSessionRequest):
+    expected = _expected_web_token()
+    if not expected:
+        raise HTTPException(status_code=503, detail="HIRA_WEB_TOKEN is not configured. Set it in Railway environment variables.")
+    if not _token_matches(req.token, expected):
+        if not await _AUTH_RATE_LIMITER.is_allowed(_auth_rate_key(request, req.token)):
+            raise HTTPException(
+                status_code=429,
+                detail="Too many invalid token attempts. Try again in a minute.",
+                headers={"Retry-After": "60"},
+            )
+        raise HTTPException(status_code=401, detail="Invalid H.I.R.A web token")
+    response = JSONResponse({"ok": True, "expires_in": _SESSION_MAX_AGE_SECONDS})
+    response.set_cookie(
+        _SESSION_COOKIE_NAME,
+        _new_session_cookie(expected),
+        max_age=_SESSION_MAX_AGE_SECONDS,
+        httponly=True,
+        secure=_cookie_secure_for_request(request),
+        samesite="strict",
+        path="/api",
+    )
+    return response
+
+
+@app.post("/api/auth/logout")
+def auth_logout(x_hira_token: Optional[str] = Header(default=None)):
+    _require_token(x_hira_token)
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(_SESSION_COOKIE_NAME, path="/api")
+    return response
+
+
 def _marking_display_title(title: str) -> str:
     clean = " ".join((title or "").split())
     if not clean or "[" in clean:
@@ -2145,11 +2197,91 @@ def _token_matches(candidate: str | None, expected: str) -> bool:
     return bool(expected) and secrets.compare_digest(candidate, expected)
 
 
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
+
+
+def _b64url_decode(value: str) -> bytes:
+    padding = "=" * ((4 - len(value) % 4) % 4)
+    return base64.urlsafe_b64decode((value + padding).encode("ascii"))
+
+
+def _session_signature(payload: str, expected: str) -> str:
+    digest = hmac.new(expected.encode("utf-8"), payload.encode("ascii"), hashlib.sha256).digest()
+    return _b64url_encode(digest)
+
+
+def _new_session_cookie(expected: str) -> str:
+    payload = _b64url_encode(json.dumps({
+        "exp": int(time.time()) + _SESSION_MAX_AGE_SECONDS,
+        "nonce": secrets.token_urlsafe(18),
+    }, separators=(",", ":")).encode("utf-8"))
+    return f"{payload}.{_session_signature(payload, expected)}"
+
+
+def _session_cookie_valid(value: str | None, expected: str) -> bool:
+    if not value or not expected or "." not in value:
+        return False
+    payload, signature = value.rsplit(".", 1)
+    if not secrets.compare_digest(signature, _session_signature(payload, expected)):
+        return False
+    try:
+        data = json.loads(_b64url_decode(payload).decode("utf-8"))
+    except Exception:
+        return False
+    return int(data.get("exp", 0) or 0) >= int(time.time())
+
+
+def _request_session_valid(request: Request | None, expected: str | None = None) -> bool:
+    if request is None:
+        return False
+    expected = expected if expected is not None else _expected_web_token()
+    return _session_cookie_valid(request.cookies.get(_SESSION_COOKIE_NAME), expected)
+
+
+def _cookie_secure_for_request(request: Request) -> bool:
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",", 1)[0].strip().lower()
+    production = bool(os.environ.get("RAILWAY_ENVIRONMENT", "").strip() or os.environ.get("RAILWAY_SERVICE_NAME", "").strip())
+    return production or proto == "https"
+
+
+def _same_origin(request: Request, origin: str) -> bool:
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(origin)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return False
+        request_scheme = request.headers.get("x-forwarded-proto", request.url.scheme).split(",", 1)[0].strip().lower()
+        request_host = request.headers.get("host", request.url.netloc).strip().lower()
+        return parsed.scheme.lower() == request_scheme and parsed.netloc.lower() == request_host
+    except Exception:
+        return False
+
+
+def _csrf_request_allowed(request: Request) -> bool:
+    if request.method.upper() in {"GET", "HEAD", "OPTIONS"}:
+        return True
+    fetch_site = request.headers.get("sec-fetch-site", "").strip().lower()
+    if fetch_site and fetch_site not in {"same-origin", "same-site", "none"}:
+        return False
+    origin = request.headers.get("origin", "").strip()
+    if origin:
+        return _same_origin(request, origin)
+    referer = request.headers.get("referer", "").strip()
+    if referer:
+        return _same_origin(request, referer)
+    return bool(fetch_site)
+
+
 def _require_token(x_hira_token: Optional[str] = Header(default=None)):
     expected = _expected_web_token()
     if not expected:
         raise HTTPException(status_code=503, detail="HIRA_WEB_TOKEN is not configured. Set it in Railway environment variables.")
     if not _token_matches(x_hira_token, expected):
+        request = _REQUEST_CONTEXT.get()
+        if _request_session_valid(request, expected) and _csrf_request_allowed(request):
+            return
         raise HTTPException(status_code=401, detail="Invalid H.I.R.A web token")
 
 
@@ -2159,15 +2291,43 @@ from collections import defaultdict as _defaultdict
 
 
 class _SlidingWindowRateLimiter:
-    """In-memory sliding window rate limiter keyed by IP address."""
+    """Sliding window rate limiter keyed by IP, Redis-backed when available."""
 
-    def __init__(self, max_requests: int, window_seconds: int = 60):
+    def __init__(self, name: str, max_requests: int, window_seconds: int = 60):
+        self._name = re.sub(r"[^a-z0-9_-]+", "-", str(name or "default").lower()).strip("-") or "default"
         self._max = max_requests
         self._window = window_seconds
         self._buckets: dict[str, list[float]] = _defaultdict(list)
-        self._lock = asyncio.Lock()
+        self._lock: asyncio.Lock | None = None
 
     async def is_allowed(self, key: str) -> bool:
+        redis = bot._get_redis()
+        if redis:
+            try:
+                return await asyncio.to_thread(self._redis_is_allowed, redis, key)
+            except Exception as exc:
+                bot.logger.warning(f"Redis rate limiter {self._name} failed; using local fallback: {exc}")
+        return await self._local_is_allowed(key)
+
+    def _redis_key(self, key: str) -> str:
+        digest = hashlib.sha256(str(key or "unknown").encode("utf-8")).hexdigest()[:32]
+        return f"hira:rate:{self._name}:{digest}"
+
+    def _redis_is_allowed(self, redis, key: str) -> bool:
+        now = _time.time()
+        member = f"{now:.6f}:{secrets.token_hex(4)}"
+        redis_key = self._redis_key(key)
+        pipe = redis.pipeline()
+        pipe.zremrangebyscore(redis_key, 0, now - self._window)
+        pipe.zadd(redis_key, {member: now})
+        pipe.zcard(redis_key)
+        pipe.expire(redis_key, max(2, self._window * 2))
+        _removed, _added, count, _expire = pipe.execute()
+        return int(count or 0) <= self._max
+
+    async def _local_is_allowed(self, key: str) -> bool:
+        if self._lock is None:
+            self._lock = asyncio.Lock()
         async with self._lock:
             now = _time.monotonic()
             cutoff = now - self._window
@@ -2182,6 +2342,8 @@ class _SlidingWindowRateLimiter:
 
     async def prune(self):
         """Remove stale buckets — call periodically to avoid memory growth."""
+        if self._lock is None:
+            return
         async with self._lock:
             cutoff = _time.monotonic() - self._window
             stale = [k for k, v in self._buckets.items() if not v or v[-1] < cutoff]
@@ -2189,9 +2351,9 @@ class _SlidingWindowRateLimiter:
                 del self._buckets[k]
 
 
-_CHAT_RATE_LIMITER   = _SlidingWindowRateLimiter(max_requests=_env_int("HIRA_CHAT_RATE_LIMIT", 20), window_seconds=60)
-_UPLOAD_RATE_LIMITER = _SlidingWindowRateLimiter(max_requests=_env_int("HIRA_UPLOAD_RATE_LIMIT", 10), window_seconds=60)
-_AUTH_RATE_LIMITER   = _SlidingWindowRateLimiter(max_requests=_AUTH_RATE_LIMIT, window_seconds=60)
+_CHAT_RATE_LIMITER   = _SlidingWindowRateLimiter("chat", max_requests=_env_int("HIRA_CHAT_RATE_LIMIT", 20), window_seconds=60)
+_UPLOAD_RATE_LIMITER = _SlidingWindowRateLimiter("upload", max_requests=_env_int("HIRA_UPLOAD_RATE_LIMIT", 10), window_seconds=60)
+_AUTH_RATE_LIMITER   = _SlidingWindowRateLimiter("auth", max_requests=_AUTH_RATE_LIMIT, window_seconds=60)
 
 
 def _request_ip(request: Request) -> str:
@@ -2222,6 +2384,11 @@ def _request_ip(request: Request) -> str:
             except ValueError:
                 return direct
     return direct
+
+
+def _auth_rate_key(request: Request, candidate: str | None = None) -> str:
+    token_hint = hashlib.sha256(str(candidate or "").encode("utf-8")).hexdigest()[:12] if candidate else "missing"
+    return f"{_request_ip(request)}:{token_hint}"
 
 
 def _client_key(client_id: str | None) -> str:
@@ -4523,6 +4690,7 @@ async def create_upload_job(
         "mime": mime,
         "note": note,
         "request_id": request_id,
+        "client_key": client_key,
         "size": total,
     })
     _set_upload_request_job(client_key, request_id, job_id)
@@ -4544,9 +4712,18 @@ async def create_upload_job(
 
 
 @app.get("/api/upload/jobs/{job_id}")
-def get_upload_job(job_id: str, x_hira_token: Optional[str] = Header(default=None)):
+def get_upload_job(
+    job_id: str,
+    x_hira_token: Optional[str] = Header(default=None),
+    x_hira_client: Optional[str] = Header(default=None),
+):
     _require_token(x_hira_token)
-    return _upload_job_public(_get_upload_job(job_id) or {"job_id": job_id, "status": "missing"})
+    job = _get_upload_job(job_id)
+    if job and job.get("status") != "missing":
+        owner = str(job.get("client_key", "") or "").strip()
+        if owner and owner != _client_key(x_hira_client):
+            return _upload_job_public({"job_id": job_id, "status": "missing", "error": "Upload job not found or expired."})
+    return _upload_job_public(job or {"job_id": job_id, "status": "missing"})
 
 
 async def _run_upload_job(job_id: str, tmp_path: str, mime: str, filename: str, note: str):

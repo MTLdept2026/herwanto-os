@@ -27,9 +27,11 @@ const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
 const AGENDA_CACHE_KEY = "hira_pwa_agenda_snapshot_v1";
 const HOME_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const HOME_REFRESH_THROTTLE_MS = 45 * 1000;
+const legacyWebToken = localStorage.getItem("hira_web_token") || "";
 
 const state = {
-  token: localStorage.getItem("hira_web_token") || "",
+  token: legacyWebToken,
+  sessionUnlocked: localStorage.getItem("hira_session_unlocked") === "1" || Boolean(legacyWebToken),
   theme: localStorage.getItem("hira_theme") || "light",
   clientId: localStorage.getItem("hira_client_id") || (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `hira-${Date.now()}`),
   deferredInstall: null,
@@ -330,6 +332,45 @@ function withAuth(options = {}) {
   return next;
 }
 
+async function createSession(token) {
+  const clean = String(token || "").trim();
+  if (!clean) throw new Error("Paste the H.I.R.A web token first.");
+  const response = await fetch("/api/auth/session", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(state.clientId ? { "X-Hira-Client": state.clientId } : {}),
+    },
+    body: JSON.stringify({ token: clean }),
+  });
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}));
+    throw new Error(detail.detail || `Session unlock failed: ${response.status}`);
+  }
+  state.token = "";
+  localStorage.removeItem("hira_web_token");
+  state.sessionUnlocked = true;
+  localStorage.setItem("hira_session_unlocked", "1");
+  const tokenInput = $("#tokenInput");
+  if (tokenInput) tokenInput.value = "";
+  return response.json().catch(() => ({ ok: true }));
+}
+
+async function migrateLegacyToken() {
+  if (!legacyWebToken) return;
+  try {
+    await createSession(legacyWebToken);
+    setStatus("Session restored on this device.", "ok");
+  } catch (error) {
+    state.token = "";
+    state.sessionUnlocked = false;
+    localStorage.removeItem("hira_web_token");
+    localStorage.removeItem("hira_session_unlocked");
+    $("#settingsPanel").hidden = false;
+    setStatus(`Saved token was rejected: ${error.message}`, "warn");
+  }
+}
+
 async function api(path, options = {}, tokenPrompted = false) {
   const {
     retryNetwork = false,
@@ -366,9 +407,7 @@ async function api(path, options = {}, tokenPrompted = false) {
     }
     const token = prompt("Enter H.I.R.A web token");
     if (token) {
-      state.token = token.trim();
-      localStorage.setItem("hira_web_token", state.token);
-      $("#tokenInput").value = state.token;
+      await createSession(token);
       return api(path, options, true);
     }
     $("#settingsPanel").hidden = false;
@@ -390,9 +429,7 @@ async function fetchWithToken(path, options = {}, tokenPrompted = false) {
     }
     const token = prompt("Enter H.I.R.A web token");
     if (token) {
-      state.token = token.trim();
-      localStorage.setItem("hira_web_token", state.token);
-      $("#tokenInput").value = state.token;
+      await createSession(token);
       return fetchWithToken(path, options, true);
     }
     $("#settingsPanel").hidden = false;
@@ -677,7 +714,7 @@ async function updateNotificationControls() {
   try {
     const registration = await navigator.serviceWorker.ready;
     let subscription = await registration.pushManager.getSubscription();
-    if (state.token) {
+    if (state.sessionUnlocked) {
       const synced = await ensurePushSubscription().catch((error) => {
         setStatus(`Push reconnect: ${error.message}`, "warn");
         return false;
@@ -753,7 +790,7 @@ async function subscribeForPushNotifications() {
 
 async function ensurePushSubscription({ force = false } = {}) {
   if (!("serviceWorker" in navigator) || !("PushManager" in window)) return false;
-  if (!state.token) return false;
+  if (!state.sessionUnlocked) return false;
   const config = await api("/api/notifications/config", { headers: headers(false) });
   const publicKey = (config.vapid_public_key || "").trim();
   if (!publicKey) return false;
@@ -775,7 +812,7 @@ async function ensurePushSubscription({ force = false } = {}) {
 
 async function syncPushSubscription(subscription, { force = false } = {}) {
   if (!subscription) return false;
-  if (!state.token) return false;
+  if (!state.sessionUnlocked) return false;
   const now = Date.now();
   if (!force && now - state.lastPushSyncAt < 1000 * 60 * 30) return true;
   await api("/api/notifications/subscribe", {
@@ -1116,7 +1153,6 @@ async function performNotificationAction(action, item = {}) {
 }
 
 async function pollNotifications() {
-  if (!state.token && $("#settingsPanel")?.hidden === false) return;
   try {
     const data = await api("/api/notifications?limit=12", { headers: headers(false) });
     const items = data.notifications || [];
@@ -1570,9 +1606,8 @@ function renderMorningDigest(data = {}, { limit = 0 } = {}) {
     const meta = [item.label, item.source].filter(Boolean).join(" · ");
     const why = item.why ? `<p><strong>Why:</strong> ${markdownish(item.why)}</p>` : "";
     const title = markdownish(item.title || "Digest item");
-    const link = item.url
-      ? `<p><a href="${encodeURI(item.url)}" target="_blank" rel="noopener">Read source</a></p>`
-      : "";
+    const safeLink = safeExternalLink(item.url);
+    const link = safeLink ? `<p>${safeLink}</p>` : "";
     return `
       <article class="agenda-card digest-card">
         <div class="agenda-card-head">
@@ -2125,6 +2160,24 @@ function escapeHtml(text) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function safeHttpUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    const parsed = new URL(raw, window.location.href);
+    if (!["http:", "https:"].includes(parsed.protocol)) return "";
+    return parsed.href;
+  } catch (_) {
+    return "";
+  }
+}
+
+function safeExternalLink(url, label = "Read source") {
+  const safeUrl = safeHttpUrl(url);
+  if (!safeUrl) return "";
+  return `<a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`;
 }
 
 function notificationKindClass(kind) {
@@ -3454,19 +3507,36 @@ document.querySelectorAll("[data-theme-choice], .theme-btn").forEach((button) =>
     setStatus(`Theme set to ${state.theme}.`, "ok");
   });
 });
-$("#saveTokenBtn").addEventListener("click", () => {
-  state.token = $("#tokenInput").value.trim();
-  localStorage.setItem("hira_web_token", state.token);
-  $("#settingsPanel").hidden = true;
-  setStatus("Token saved on this device.", "ok");
-  updateNotificationControls();
-  startNotificationPolling();
+$("#saveTokenBtn").addEventListener("click", async () => {
+  const button = $("#saveTokenBtn");
+  const previous = button.textContent;
+  button.disabled = true;
+  button.textContent = "Unlocking";
+  try {
+    await createSession($("#tokenInput").value);
+    $("#settingsPanel").hidden = true;
+    setStatus("Session unlocked on this device.", "ok");
+    updateNotificationControls();
+    startNotificationPolling();
+  } catch (error) {
+    $("#settingsPanel").hidden = false;
+    setStatus(error.message, "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = previous;
+  }
 });
 $("#clearTokenBtn").addEventListener("click", () => {
   state.token = "";
+  state.sessionUnlocked = false;
   $("#tokenInput").value = "";
   localStorage.removeItem("hira_web_token");
-  setStatus("Saved token removed.", "ok");
+  localStorage.removeItem("hira_session_unlocked");
+  fetch("/api/auth/logout", {
+    method: "POST",
+    headers: state.clientId ? { "X-Hira-Client": state.clientId } : {},
+  }).catch(() => {});
+  setStatus("Saved token removed and session cleared.", "ok");
 });
 
 document.querySelectorAll(".nav-tab").forEach((tab) => {
@@ -3670,5 +3740,6 @@ updateLiveClock();
 renderNothingGlyph("time");
 initBatteryGlyph();
 setInterval(updateLiveClock, 1000);
+migrateLegacyToken();
 loadHome({ background: true });
 startNotificationPolling();

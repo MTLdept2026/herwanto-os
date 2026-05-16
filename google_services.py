@@ -3631,13 +3631,18 @@ def _compact_notification_body(body: str) -> str:
 
 
 def enqueue_app_notification(kind: str, title: str, body: str, source: str = "") -> dict:
+    clean_kind = (kind or "notice").strip()
+    clean_title = (title or "H.I.R.A").strip()
+    clean_body = (body or "").strip()
+    clean_source = (source or "").strip()
+    if _postgres_available():
+        try:
+            return pg_storage.enqueue_app_notification(clean_kind, clean_title, clean_body, clean_source)
+        except Exception as exc:
+            raise RuntimeError(f"storage unavailable: Postgres notification enqueue failed: {exc}") from exc
     with _storage_mutation_lock("app_notifications", _app_notifications_mutation_lock):
         notifications = get_app_notifications(include_archived=True)
         now = datetime.now(SGT).isoformat()
-        clean_kind = (kind or "notice").strip()
-        clean_title = (title or "H.I.R.A").strip()
-        clean_body = (body or "").strip()
-        clean_source = (source or "").strip()
         if not clean_body:
             return {
                 "id": "",
@@ -3697,6 +3702,11 @@ def unseen_app_notifications(client_id: str, limit: int = 12) -> list:
 
 
 def mark_app_notifications_seen(client_id: str, notification_ids: list[str]) -> int:
+    if _postgres_available():
+        try:
+            return pg_storage.mark_app_notifications_seen(client_id, notification_ids)
+        except Exception as exc:
+            raise RuntimeError(f"storage unavailable: Postgres notification seen update failed: {exc}") from exc
     with _storage_mutation_lock("app_notifications", _app_notifications_mutation_lock):
         client_id = str(client_id or "default").strip() or "default"
         ids = {str(item_id) for item_id in notification_ids}
@@ -3718,6 +3728,11 @@ def mark_app_notifications_seen(client_id: str, notification_ids: list[str]) -> 
 
 
 def archive_app_notifications(notification_ids: list[str]) -> int:
+    if _postgres_available():
+        try:
+            return pg_storage.archive_app_notifications(notification_ids)
+        except Exception as exc:
+            raise RuntimeError(f"storage unavailable: Postgres notification archive failed: {exc}") from exc
     with _storage_mutation_lock("app_notifications", _app_notifications_mutation_lock):
         ids = {str(item_id) for item_id in notification_ids}
         if not ids:
@@ -4163,8 +4178,26 @@ def save_web_push_subscription(client_id: str, subscription: dict, metadata: dic
     display_mode = str(metadata.get("display_mode", "") or "").strip() or "unknown"
     app_version = str(metadata.get("app_version", "") or "").strip()
     user_agent = str(metadata.get("user_agent", "") or "").strip()[:180]
-    subscriptions = get_web_push_subscriptions()
     now = datetime.now(SGT).isoformat()
+    new_item = {
+        "client_id": client_id,
+        "subscription": subscription,
+        "created": now,
+        "last_seen": now,
+        "display_mode": display_mode,
+        "app_version": app_version,
+        "user_agent": user_agent,
+    }
+    if _postgres_available():
+        try:
+            pg_storage.upsert_web_push_subscription(new_item)
+            clean = get_web_push_subscriptions()
+            if clean:
+                _redis_json_set(_REDIS_WEB_PUSH_SUBSCRIPTIONS_KEY, clean)
+            return True
+        except Exception as exc:
+            raise RuntimeError(f"storage unavailable: Postgres web push subscription write failed: {exc}") from exc
+    subscriptions = get_web_push_subscriptions()
     updated = False
     for item in subscriptions:
         if item["subscription"].get("endpoint") == endpoint or item["client_id"] == client_id:
@@ -4281,6 +4314,19 @@ def add_web_push_delivery_log(
         "last_error": str(last_error or "").strip()[:300],
         "payload_bytes": int(payload_bytes or 0),
     }
+    if _postgres_available():
+        try:
+            pg_storage.append_web_push_delivery_log(entry)
+            entries = _clean_web_push_delivery_log(_redis_json_get(_REDIS_WEB_PUSH_DELIVERY_LOG_KEY, []))
+            entries.append(entry)
+            _redis_json_set(_REDIS_WEB_PUSH_DELIVERY_LOG_KEY, _clean_web_push_delivery_log(entries))
+            return get_web_push_delivery_log()
+        except Exception as exc:
+            logger.warning(f"Web push delivery log persisted to Redis only after Postgres append failed: {exc}")
+            entries = _clean_web_push_delivery_log(_redis_json_get(_REDIS_WEB_PUSH_DELIVERY_LOG_KEY, []))
+            entries.append(entry)
+            _redis_json_set(_REDIS_WEB_PUSH_DELIVERY_LOG_KEY, _clean_web_push_delivery_log(entries))
+            return entries
     try:
         entries = get_web_push_delivery_log()
     except Exception as exc:
@@ -4369,8 +4415,10 @@ def send_web_push_notification(title: str, body: str, data: dict | None = None) 
         key_for_webpush = private_key
 
     sent = 0
-    kept = []
-    subscriptions = _preferred_web_push_subscriptions(get_web_push_subscriptions())
+    all_subscriptions = get_web_push_subscriptions()
+    subscriptions = _preferred_web_push_subscriptions(all_subscriptions)
+    expired_client_ids = []
+    expired_endpoints = []
     expired = 0
     errors = {}
     last_error = ""
@@ -4384,7 +4432,6 @@ def send_web_push_notification(title: str, body: str, data: dict | None = None) 
                     vapid_claims={"sub": subject},
                 )
                 sent += 1
-                kept.append(item)
             except WebPushException as exc:
                 status_code = getattr(getattr(exc, "response", None), "status_code", None)
                 label = _web_push_error_label(exc)
@@ -4396,10 +4443,10 @@ def send_web_push_notification(title: str, body: str, data: dict | None = None) 
                     status_code or "",
                     last_error,
                 )
-                if status_code not in (404, 410):
-                    kept.append(item)
-                else:
+                if status_code in (404, 410):
                     expired += 1
+                    expired_client_ids.append(str(item.get("client_id", "") or ""))
+                    expired_endpoints.append(str((item.get("subscription") or {}).get("endpoint", "") or ""))
             except Exception as exc:
                 label = _web_push_error_label(exc)
                 errors[label] = errors.get(label, 0) + 1
@@ -4409,15 +4456,31 @@ def send_web_push_notification(title: str, body: str, data: dict | None = None) 
                     item.get("client_id", ""),
                     last_error,
                 )
-                kept.append(item)
     finally:
         if key_file:
             try:
                 os.unlink(key_file.name)
             except Exception:
                 pass
-    if len(kept) != len(subscriptions):
-        set_web_push_subscriptions(kept)
+    if expired_client_ids or expired_endpoints:
+        if _postgres_available():
+            try:
+                pg_storage.delete_web_push_subscriptions(expired_client_ids, expired_endpoints)
+                clean = get_web_push_subscriptions()
+                _redis_json_set(_REDIS_WEB_PUSH_SUBSCRIPTIONS_KEY, clean)
+            except Exception as exc:
+                logger.warning(f"Expired web push subscriptions persisted to Redis only after Postgres delete failed: {exc}")
+        expired_endpoint_set = {endpoint for endpoint in expired_endpoints if endpoint}
+        expired_client_set = {client_id for client_id in expired_client_ids if client_id}
+        remaining = [
+            item for item in all_subscriptions
+            if str(item.get("client_id", "") or "") not in expired_client_set
+            and str((item.get("subscription") or {}).get("endpoint", "") or "") not in expired_endpoint_set
+        ]
+        if not _postgres_available():
+            set_web_push_subscriptions(remaining)
+        else:
+            _redis_json_set(_REDIS_WEB_PUSH_SUBSCRIPTIONS_KEY, _clean_web_push_subscriptions(remaining))
     add_web_push_delivery_log(
         source=str(payload_data.get("source", "")).strip(),
         kind=str(payload_data.get("kind", "")).strip(),

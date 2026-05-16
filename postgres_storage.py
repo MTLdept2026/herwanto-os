@@ -338,6 +338,87 @@ def load_web_push_subscriptions() -> list[dict]:
     ]
 
 
+def upsert_web_push_subscription(item: dict) -> None:
+    ensure_schema()
+    if not isinstance(item, dict):
+        return
+    client_id = str(item.get("client_id", "")).strip()
+    subscription = item.get("subscription") if isinstance(item.get("subscription"), dict) else {}
+    endpoint = str(subscription.get("endpoint", "")).strip()
+    if not client_id or not endpoint:
+        return
+    with connect() as conn:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM web_push_subscriptions WHERE client_id = %s OR endpoint = %s",
+                    (client_id, endpoint),
+                )
+                cur.execute(
+                    """
+                    INSERT INTO web_push_subscriptions (
+                        client_id, endpoint, subscription, created_at, last_seen,
+                        display_mode, app_version, user_agent
+                    )
+                    VALUES (
+                        %s, %s, %s,
+                        COALESCE(NULLIF(%s, '')::timestamptz, now()),
+                        COALESCE(NULLIF(%s, '')::timestamptz, now()),
+                        %s, %s, %s
+                    )
+                    """,
+                    (
+                        client_id,
+                        endpoint,
+                        _jsonb(subscription),
+                        str(item.get("created", "") or ""),
+                        str(item.get("last_seen", "") or ""),
+                        str(item.get("display_mode", "") or "unknown"),
+                        str(item.get("app_version", "") or ""),
+                        str(item.get("user_agent", "") or "")[:180],
+                    ),
+                )
+                cur.execute(
+                    """
+                    DELETE FROM web_push_subscriptions
+                    WHERE client_id NOT IN (
+                        SELECT client_id
+                        FROM web_push_subscriptions
+                        ORDER BY last_seen DESC
+                        LIMIT 30
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    INSERT INTO app_config (key, value, updated_at)
+                    VALUES ('web_push_subscriptions_initialized', '1', now())
+                    ON CONFLICT (key)
+                    DO UPDATE SET value = '1', updated_at = now()
+                    """
+                )
+
+
+def delete_web_push_subscriptions(client_ids: list[str] | None = None, endpoints: list[str] | None = None) -> int:
+    ensure_schema()
+    clean_ids = [str(item).strip() for item in (client_ids or []) if str(item).strip()]
+    clean_endpoints = [str(item).strip() for item in (endpoints or []) if str(item).strip()]
+    if not clean_ids and not clean_endpoints:
+        return 0
+    with connect() as conn:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM web_push_subscriptions
+                    WHERE client_id = ANY(%s::text[]) OR endpoint = ANY(%s::text[])
+                    """,
+                    (clean_ids, clean_endpoints),
+                )
+                deleted = cur.rowcount or 0
+    return int(deleted)
+
+
 def set_web_push_subscriptions(subscriptions: list[dict]) -> None:
     ensure_schema()
     with connect() as conn:
@@ -470,6 +551,58 @@ def set_web_push_delivery_log(entries: list[dict]) -> None:
                 )
 
 
+def append_web_push_delivery_log(item: dict) -> None:
+    ensure_schema()
+    if not isinstance(item, dict):
+        return
+    with connect() as conn:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO web_push_delivery_log (
+                        created_at, source, kind, title, attempted, sent, expired,
+                        errors, last_error, payload_bytes
+                    )
+                    VALUES (
+                        COALESCE(NULLIF(%s, '')::timestamptz, now()),
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    )
+                    """,
+                    (
+                        str(item.get("created", "") or ""),
+                        str(item.get("source", "") or "")[:240],
+                        str(item.get("kind", "") or "")[:40],
+                        str(item.get("title", "") or "")[:240],
+                        int(item.get("attempted", 0) or 0),
+                        int(item.get("sent", 0) or 0),
+                        int(item.get("expired", 0) or 0),
+                        _jsonb(item.get("errors", {}) if isinstance(item.get("errors"), dict) else {}),
+                        str(item.get("last_error", "") or "")[:300],
+                        int(item.get("payload_bytes", 0) or 0),
+                    ),
+                )
+                cur.execute(
+                    """
+                    DELETE FROM web_push_delivery_log
+                    WHERE id NOT IN (
+                        SELECT id
+                        FROM web_push_delivery_log
+                        ORDER BY id DESC
+                        LIMIT 80
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    INSERT INTO app_config (key, value, updated_at)
+                    VALUES ('web_push_delivery_log_initialized', '1', now())
+                    ON CONFLICT (key)
+                    DO UPDATE SET value = '1', updated_at = now()
+                    """
+                )
+
+
 def load_app_notifications(include_archived: bool = False) -> list[dict]:
     ensure_schema()
     where = "" if include_archived else "WHERE archived = false"
@@ -497,6 +630,167 @@ def load_app_notifications(include_archived: bool = False) -> list[dict]:
         }
         for notification_id, kind, title, body, created_at, source, seen_by, archived in rows
     ]
+
+
+def enqueue_app_notification(kind: str, title: str, body: str, source: str = "") -> dict:
+    ensure_schema()
+    clean_kind = str(kind or "notice").strip()[:40] or "notice"
+    clean_title = str(title or "H.I.R.A").strip()[:240] or "H.I.R.A"
+    clean_body = str(body or "").strip()
+    clean_source = str(source or "").strip()[:240]
+    with connect() as conn:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                cur.execute("LOCK TABLE notification_state IN EXCLUSIVE MODE")
+                if not clean_body:
+                    return {
+                        "id": "",
+                        "kind": clean_kind,
+                        "title": clean_title,
+                        "body": clean_body,
+                        "created": datetime.utcnow().isoformat() + "Z",
+                        "source": clean_source,
+                        "seen_by": [],
+                        "archived": False,
+                    }
+                if clean_source:
+                    cur.execute(
+                        """
+                        SELECT id
+                        FROM notification_state
+                        WHERE archived = false AND source = %s
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        """,
+                        (clean_source,),
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        notification_id = str(row[0])
+                        cur.execute(
+                            """
+                            UPDATE notification_state
+                            SET kind = %s, title = %s, body = %s, created_at = now(), updated_at = now()
+                            WHERE id = %s
+                            RETURNING id, kind, title, body, created_at, source, seen_by, archived
+                            """,
+                            (clean_kind, clean_title, clean_body, notification_id),
+                        )
+                        return _notification_row_to_dict(cur.fetchone(), duplicate=True)
+                else:
+                    cur.execute(
+                        """
+                        SELECT id, kind, title, body, created_at, source, seen_by, archived
+                        FROM notification_state
+                        WHERE archived = false AND kind = %s AND title = %s AND body = %s
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        """,
+                        (clean_kind, clean_title, clean_body),
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        return _notification_row_to_dict(row, duplicate=True)
+                cur.execute(
+                    """
+                    SELECT COALESCE(MAX(id::bigint), 0) + 1
+                    FROM notification_state
+                    WHERE id ~ '^[0-9]+$'
+                    """
+                )
+                notification_id = str(cur.fetchone()[0])
+                cur.execute(
+                    """
+                    INSERT INTO notification_state (
+                        id, kind, title, body, source, seen_by, archived, created_at, updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, '[]'::jsonb, false, now(), now())
+                    RETURNING id, kind, title, body, created_at, source, seen_by, archived
+                    """,
+                    (notification_id, clean_kind, clean_title, clean_body, clean_source),
+                )
+                cur.execute(
+                    """
+                    INSERT INTO app_config (key, value, updated_at)
+                    VALUES ('notification_state_initialized', '1', now())
+                    ON CONFLICT (key)
+                    DO UPDATE SET value = '1', updated_at = now()
+                    """
+                )
+                return _notification_row_to_dict(cur.fetchone())
+
+
+def _notification_row_to_dict(row, duplicate: bool = False) -> dict:
+    notification_id, kind, title, body, created_at, source, seen_by, archived = row
+    item = {
+        "id": str(notification_id),
+        "kind": kind or "notice",
+        "title": title or "H.I.R.A",
+        "body": body or "",
+        "created": created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at or ""),
+        "source": source or "",
+        "seen_by": seen_by if isinstance(seen_by, list) else [],
+        "archived": bool(archived),
+    }
+    if duplicate:
+        item["_duplicate"] = True
+    return item
+
+
+def mark_app_notifications_seen(client_id: str, notification_ids: list[str]) -> int:
+    ensure_schema()
+    clean_client = str(client_id or "default").strip() or "default"
+    ids = [str(item_id).strip() for item_id in notification_ids if str(item_id).strip()]
+    if not ids:
+        return 0
+    changed = 0
+    with connect() as conn:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, seen_by
+                    FROM notification_state
+                    WHERE id = ANY(%s::text[])
+                    FOR UPDATE
+                    """,
+                    (ids,),
+                )
+                for notification_id, seen_by in cur.fetchall():
+                    current = seen_by if isinstance(seen_by, list) else []
+                    if clean_client in current:
+                        continue
+                    current.append(clean_client)
+                    cur.execute(
+                        """
+                        UPDATE notification_state
+                        SET seen_by = %s, updated_at = now()
+                        WHERE id = %s
+                        """,
+                        (_jsonb(current[-20:]), notification_id),
+                    )
+                    changed += 1
+    return changed
+
+
+def archive_app_notifications(notification_ids: list[str]) -> int:
+    ensure_schema()
+    ids = [str(item_id).strip() for item_id in notification_ids if str(item_id).strip()]
+    if not ids:
+        return 0
+    with connect() as conn:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE notification_state
+                    SET archived = true, updated_at = now()
+                    WHERE id = ANY(%s::text[]) AND archived = false
+                    """,
+                    (ids,),
+                )
+                changed = cur.rowcount or 0
+    return int(changed)
 
 
 def set_app_notifications(notifications: list[dict]) -> None:

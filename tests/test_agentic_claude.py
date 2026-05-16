@@ -723,6 +723,39 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(entry["errors"], {"http_401": 1})
         self.assertIn("Unauthorized registration", entry["last_error"])
 
+    def test_postgres_web_push_delivery_uses_append_not_snapshot_rewrite(self):
+        with (
+            patch.object(bot.gs, "_postgres_available", return_value=True),
+            patch.object(bot.gs.pg_storage, "append_web_push_delivery_log") as append_log,
+            patch.object(bot.gs, "get_web_push_delivery_log", return_value=[{"source": "test"}]),
+            patch.object(bot.gs, "set_web_push_delivery_log") as set_log,
+        ):
+            entries = bot.gs.add_web_push_delivery_log(
+                source="test",
+                kind="notice",
+                title="Push",
+                attempted=1,
+                sent=1,
+            )
+
+        append_log.assert_called_once()
+        set_log.assert_not_called()
+        self.assertEqual(entries, [{"source": "test"}])
+
+    def test_postgres_notification_enqueue_uses_targeted_write(self):
+        expected = {"id": "1", "kind": "notice", "title": "Title", "body": "Body"}
+
+        with (
+            patch.object(bot.gs, "_postgres_available", return_value=True),
+            patch.object(bot.gs.pg_storage, "enqueue_app_notification", return_value=expected) as enqueue,
+            patch.object(bot.gs, "set_app_notifications") as set_notifications,
+        ):
+            item = bot.gs.enqueue_app_notification("notice", "Title", "Body", source="unit")
+
+        enqueue.assert_called_once_with("notice", "Title", "Body", "unit")
+        set_notifications.assert_not_called()
+        self.assertEqual(item, expected)
+
     def test_duplicate_source_notification_refreshes_body_before_retry(self):
         existing = {
             "id": "7",
@@ -1051,6 +1084,9 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("GET_HIRA_VERSION", service_worker)
         self.assertIn("renderAppVersion", app_js)
         self.assertIn("versionOutput", index_html)
+        self.assertIn("createSession", app_js)
+        self.assertIn("safeHttpUrl", app_js)
+        self.assertNotIn('localStorage.setItem("hira_web_token"', app_js)
         self.assertEqual(manifest["id"], "/")
 
     def test_app_version_endpoint_reports_commit_and_pwa_versions(self):
@@ -1062,12 +1098,120 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(data["git_commit"], "abcdef123456")
         self.assertIn("server_time", data)
 
+    def test_session_cookie_validates_and_csrf_blocks_cross_site(self):
+        cookie = web_app._new_session_cookie("secret-token")
+        same_origin = SimpleNamespace(
+            cookies={web_app._SESSION_COOKIE_NAME: cookie},
+            method="POST",
+            headers={
+                "sec-fetch-site": "same-origin",
+                "origin": "http://testserver",
+                "host": "testserver",
+            },
+            url=SimpleNamespace(scheme="http", netloc="testserver"),
+        )
+        cross_site = SimpleNamespace(
+            cookies={web_app._SESSION_COOKIE_NAME: cookie},
+            method="POST",
+            headers={
+                "sec-fetch-site": "cross-site",
+                "origin": "https://evil.example",
+                "host": "testserver",
+            },
+            url=SimpleNamespace(scheme="http", netloc="testserver"),
+        )
+
+        self.assertTrue(web_app._request_session_valid(same_origin, "secret-token"))
+        self.assertTrue(web_app._csrf_request_allowed(same_origin))
+        self.assertFalse(web_app._csrf_request_allowed(cross_site))
+
+    def test_fetch_url_blocks_private_and_local_targets(self):
+        blocked = [
+            "http://localhost/",
+            "http://127.0.0.1:8000/",
+            "http://10.0.0.5/",
+            "http://192.168.1.10/",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://[::1]/",
+        ]
+
+        for url in blocked:
+            ok, reason = search_service._validate_public_http_url(url)
+            self.assertFalse(ok, url)
+            self.assertTrue(reason)
+
+        ok, reason = search_service._validate_public_http_url("https://1.1.1.1/")
+        self.assertTrue(ok, reason)
+
+    def test_fetch_url_revalidates_redirect_targets(self):
+        response = SimpleNamespace(is_redirect=True, headers={"location": "http://127.0.0.1/admin"})
+
+        with patch.object(search_service.requests, "get", return_value=response) as get:
+            with self.assertRaises(ValueError):
+                search_service._get_public_url("https://1.1.1.1/")
+
+        get.assert_called_once()
+
+    def test_rate_limiter_uses_redis_counter_when_available(self):
+        class FakePipeline:
+            def __init__(self):
+                self.calls = []
+
+            def zremrangebyscore(self, *args):
+                self.calls.append(("zremrangebyscore", args))
+                return self
+
+            def zadd(self, *args):
+                self.calls.append(("zadd", args))
+                return self
+
+            def zcard(self, *args):
+                self.calls.append(("zcard", args))
+                return self
+
+            def expire(self, *args):
+                self.calls.append(("expire", args))
+                return self
+
+            def execute(self):
+                return [0, 1, 1, True]
+
+        class FakeRedis:
+            def __init__(self):
+                self.pipeline_obj = FakePipeline()
+
+            def pipeline(self):
+                return self.pipeline_obj
+
+        fake_redis = FakeRedis()
+        limiter = web_app._SlidingWindowRateLimiter("unit", max_requests=1, window_seconds=60)
+
+        with patch.object(web_app.bot, "_get_redis", return_value=fake_redis):
+            allowed = asyncio.run(limiter.is_allowed("1.2.3.4"))
+
+        self.assertTrue(allowed)
+        self.assertEqual(fake_redis.pipeline_obj.calls[0][0], "zremrangebyscore")
+        self.assertEqual(fake_redis.pipeline_obj.calls[1][0], "zadd")
+
     def test_upload_request_keys_make_retries_idempotent(self):
         web_app._UPLOAD_REQUESTS.clear()
 
         web_app._set_upload_request_job("phone", "upload-123", "job-9")
 
         self.assertEqual(web_app._get_upload_job_id_for_request("phone", "upload-123"), "job-9")
+
+    def test_upload_job_status_is_bound_to_creating_client(self):
+        web_app._UPLOAD_JOBS.clear()
+        web_app._set_upload_job("job-1", {"status": "done", "client_key": "phone", "reply": "private"})
+
+        with patch.object(web_app, "_require_token"):
+            owner = web_app.get_upload_job("job-1", x_hira_token="token", x_hira_client="phone")
+            stranger = web_app.get_upload_job("job-1", x_hira_token="token", x_hira_client="tablet")
+            missing_client = web_app.get_upload_job("job-1", x_hira_token="token", x_hira_client="")
+
+        self.assertEqual(owner["status"], "done")
+        self.assertEqual(stranger["status"], "missing")
+        self.assertEqual(missing_client["status"], "missing")
 
     def test_prepare_image_for_vision_normalises_large_png(self):
         from PIL import Image
