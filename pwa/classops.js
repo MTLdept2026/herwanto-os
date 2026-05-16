@@ -1,5 +1,9 @@
+let legacyWebToken = localStorage.getItem("hira_web_token") || "";
+if (legacyWebToken) localStorage.removeItem("hira_web_token");
+
 const state = {
-  token: localStorage.getItem("hira_web_token") || "",
+  token: "",
+  sessionUnlocked: localStorage.getItem("hira_session_unlocked") === "1" || Boolean(legacyWebToken),
   data: null,
   selectedClass: "",
   selectedFolder: "",
@@ -75,15 +79,56 @@ function setButtonBusy(target, busy) {
 }
 
 async function api(path, options = {}) {
-  const headers = { ...(options.headers || {}) };
+  const headers = { "X-Hira-CSRF": "1", ...(options.headers || {}) };
   if (state.token) headers["X-Hira-Token"] = state.token;
   const response = await fetch(path, { ...options, headers });
+  if (response.status === 401) {
+    state.sessionUnlocked = false;
+    localStorage.removeItem("hira_session_unlocked");
+    $("#tokenPanel").hidden = false;
+  }
   const contentType = response.headers.get("content-type") || "";
   const data = contentType.includes("application/json") ? await response.json() : await response.text();
   if (!response.ok) {
     throw new Error(typeof data === "string" ? data : data.detail || "Request failed");
   }
   return data;
+}
+
+async function createSession(token) {
+  const clean = String(token || "").trim();
+  if (!clean) throw new Error("Paste the H.I.R.A web token first.");
+  const response = await fetch("/api/auth/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: clean }),
+  });
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}));
+    throw new Error(detail.detail || `Session unlock failed: ${response.status}`);
+  }
+  state.token = "";
+  state.sessionUnlocked = true;
+  localStorage.removeItem("hira_web_token");
+  localStorage.setItem("hira_session_unlocked", "1");
+  const tokenInput = $("#tokenInput");
+  if (tokenInput) tokenInput.value = "";
+  return response.json().catch(() => ({ ok: true }));
+}
+
+async function migrateLegacyToken() {
+  const token = legacyWebToken;
+  legacyWebToken = "";
+  if (!token) return;
+  try {
+    await createSession(token);
+    setStatus("Session restored on this device.", "ok");
+  } catch (error) {
+    state.sessionUnlocked = false;
+    localStorage.removeItem("hira_session_unlocked");
+    $("#tokenPanel").hidden = false;
+    setStatus(`Saved token was rejected: ${error.message}`, "warn");
+  }
 }
 
 function fileSummary(files = []) {
@@ -863,8 +908,9 @@ function renderDashboard(data) {
 }
 
 async function loadDashboard() {
-  if (!state.token) {
-    setStatus("Save your H.I.R.A web token first.", "warn");
+  if (!state.sessionUnlocked && !state.token) {
+    setStatus("Unlock this device first.", "warn");
+    $("#tokenPanel").hidden = false;
     return;
   }
   setButtonBusy("#scanBtn", true);
@@ -885,10 +931,18 @@ async function loadDashboard() {
   }
 }
 
-$("#saveTokenBtn").addEventListener("click", () => {
-  state.token = $("#tokenInput").value.trim();
-  localStorage.setItem("hira_web_token", state.token);
-  setStatus("Token saved. Ready to scan.", "ok");
+$("#saveTokenBtn").addEventListener("click", async () => {
+  setButtonBusy("#saveTokenBtn", true);
+  try {
+    await createSession($("#tokenInput").value);
+    $("#tokenPanel").hidden = true;
+    setStatus("Session unlocked. Ready to scan.", "ok");
+    loadDashboard();
+  } catch (error) {
+    setStatus(error.message, "error");
+  } finally {
+    setButtonBusy("#saveTokenBtn", false);
+  }
 });
 
 $("#scanBtn").addEventListener("click", loadDashboard);
@@ -1082,7 +1136,12 @@ document.addEventListener("click", (event) => {
   selectClass(button.dataset.selectClass);
 });
 
-if (state.token) {
-  $("#tokenPanel").hidden = true;
-  loadDashboard();
+async function initClassOpsAuth() {
+  if (legacyWebToken) await migrateLegacyToken();
+  if (state.sessionUnlocked) {
+    $("#tokenPanel").hidden = true;
+    loadDashboard();
+  }
 }
+
+initClassOpsAuth();

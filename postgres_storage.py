@@ -46,6 +46,25 @@ def _jsonb(value):
     return Jsonb(value)
 
 
+def _advisory_xact_lock(cur, name: str) -> None:
+    cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (name,))
+
+
+def _sync_notification_sequence(cur) -> None:
+    cur.execute(
+        """
+        SELECT setval(
+            'notification_state_id_seq',
+            GREATEST(
+                COALESCE((SELECT MAX(id::bigint) FROM notification_state WHERE id ~ '^[0-9]+$'), 0),
+                COALESCE((SELECT last_value FROM notification_state_id_seq), 0)
+            ),
+            true
+        )
+        """
+    )
+
+
 @contextmanager
 def connect():
     psycopg = _psycopg()
@@ -142,6 +161,8 @@ def ensure_schema() -> None:
                     )
                     """
                 )
+                cur.execute("CREATE SEQUENCE IF NOT EXISTS notification_state_id_seq")
+                _sync_notification_sequence(cur)
             conn.commit()
         _schema_ready = True
 
@@ -476,6 +497,77 @@ def set_web_push_subscriptions(subscriptions: list[dict]) -> None:
                 )
 
 
+def import_web_push_subscriptions(subscriptions: list[dict]) -> None:
+    ensure_schema()
+    with connect() as conn:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                _advisory_xact_lock(cur, "hira:web_push_subscriptions:migration")
+                for item in list(subscriptions or [])[-30:]:
+                    if not isinstance(item, dict):
+                        continue
+                    client_id = str(item.get("client_id", "")).strip()
+                    subscription = item.get("subscription") if isinstance(item.get("subscription"), dict) else {}
+                    endpoint = str(subscription.get("endpoint", "")).strip()
+                    if not client_id or not endpoint:
+                        continue
+                    cur.execute(
+                        "DELETE FROM web_push_subscriptions WHERE endpoint = %s AND client_id <> %s",
+                        (endpoint, client_id),
+                    )
+                    cur.execute(
+                        """
+                        INSERT INTO web_push_subscriptions (
+                            client_id, endpoint, subscription, created_at, last_seen,
+                            display_mode, app_version, user_agent
+                        )
+                        VALUES (
+                            %s, %s, %s,
+                            COALESCE(NULLIF(%s, '')::timestamptz, now()),
+                            COALESCE(NULLIF(%s, '')::timestamptz, now()),
+                            %s, %s, %s
+                        )
+                        ON CONFLICT (client_id)
+                        DO UPDATE SET
+                            endpoint = EXCLUDED.endpoint,
+                            subscription = EXCLUDED.subscription,
+                            last_seen = GREATEST(web_push_subscriptions.last_seen, EXCLUDED.last_seen),
+                            display_mode = EXCLUDED.display_mode,
+                            app_version = EXCLUDED.app_version,
+                            user_agent = EXCLUDED.user_agent
+                        """,
+                        (
+                            client_id,
+                            endpoint,
+                            _jsonb(subscription),
+                            str(item.get("created", "") or ""),
+                            str(item.get("last_seen", "") or ""),
+                            str(item.get("display_mode", "") or "unknown"),
+                            str(item.get("app_version", "") or ""),
+                            str(item.get("user_agent", "") or "")[:180],
+                        ),
+                    )
+                cur.execute(
+                    """
+                    DELETE FROM web_push_subscriptions
+                    WHERE client_id NOT IN (
+                        SELECT client_id
+                        FROM web_push_subscriptions
+                        ORDER BY last_seen DESC
+                        LIMIT 30
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    INSERT INTO app_config (key, value, updated_at)
+                    VALUES ('web_push_subscriptions_initialized', '1', now())
+                    ON CONFLICT (key)
+                    DO UPDATE SET value = '1', updated_at = now()
+                    """
+                )
+
+
 def load_web_push_delivery_log(limit: int = 80) -> list[dict]:
     ensure_schema()
     with connect() as conn:
@@ -541,6 +633,61 @@ def set_web_push_delivery_log(entries: list[dict]) -> None:
                             int(item.get("payload_bytes", 0) or 0),
                         ),
                     )
+                cur.execute(
+                    """
+                    INSERT INTO app_config (key, value, updated_at)
+                    VALUES ('web_push_delivery_log_initialized', '1', now())
+                    ON CONFLICT (key)
+                    DO UPDATE SET value = '1', updated_at = now()
+                    """
+                )
+
+
+def import_web_push_delivery_log(entries: list[dict]) -> None:
+    ensure_schema()
+    kept = list(entries or [])[-80:]
+    with connect() as conn:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                _advisory_xact_lock(cur, "hira:web_push_delivery_log:migration")
+                for item in kept:
+                    if not isinstance(item, dict):
+                        continue
+                    cur.execute(
+                        """
+                        INSERT INTO web_push_delivery_log (
+                            created_at, source, kind, title, attempted, sent, expired,
+                            errors, last_error, payload_bytes
+                        )
+                        VALUES (
+                            COALESCE(NULLIF(%s, '')::timestamptz, now()),
+                            %s, %s, %s, %s, %s, %s, %s, %s, %s
+                        )
+                        """,
+                        (
+                            str(item.get("created", "") or ""),
+                            str(item.get("source", "") or "")[:240],
+                            str(item.get("kind", "") or "")[:40],
+                            str(item.get("title", "") or "")[:240],
+                            int(item.get("attempted", 0) or 0),
+                            int(item.get("sent", 0) or 0),
+                            int(item.get("expired", 0) or 0),
+                            _jsonb(item.get("errors", {}) if isinstance(item.get("errors"), dict) else {}),
+                            str(item.get("last_error", "") or "")[:300],
+                            int(item.get("payload_bytes", 0) or 0),
+                        ),
+                    )
+                cur.execute(
+                    """
+                    DELETE FROM web_push_delivery_log
+                    WHERE id NOT IN (
+                        SELECT id
+                        FROM web_push_delivery_log
+                        ORDER BY id DESC
+                        LIMIT 80
+                    )
+                    """
+                )
                 cur.execute(
                     """
                     INSERT INTO app_config (key, value, updated_at)
@@ -641,7 +788,6 @@ def enqueue_app_notification(kind: str, title: str, body: str, source: str = "")
     with connect() as conn:
         with conn.transaction():
             with conn.cursor() as cur:
-                cur.execute("LOCK TABLE notification_state IN EXCLUSIVE MODE")
                 if not clean_body:
                     return {
                         "id": "",
@@ -691,13 +837,7 @@ def enqueue_app_notification(kind: str, title: str, body: str, source: str = "")
                     row = cur.fetchone()
                     if row:
                         return _notification_row_to_dict(row, duplicate=True)
-                cur.execute(
-                    """
-                    SELECT COALESCE(MAX(id::bigint), 0) + 1
-                    FROM notification_state
-                    WHERE id ~ '^[0-9]+$'
-                    """
-                )
+                cur.execute("SELECT nextval('notification_state_id_seq')")
                 notification_id = str(cur.fetchone()[0])
                 cur.execute(
                     """
@@ -709,6 +849,7 @@ def enqueue_app_notification(kind: str, title: str, body: str, source: str = "")
                     """,
                     (notification_id, clean_kind, clean_title, clean_body, clean_source),
                 )
+                inserted = cur.fetchone()
                 cur.execute(
                     """
                     INSERT INTO app_config (key, value, updated_at)
@@ -717,7 +858,7 @@ def enqueue_app_notification(kind: str, title: str, body: str, source: str = "")
                     DO UPDATE SET value = '1', updated_at = now()
                     """
                 )
-                return _notification_row_to_dict(cur.fetchone())
+                return _notification_row_to_dict(inserted)
 
 
 def _notification_row_to_dict(row, duplicate: bool = False) -> dict:
@@ -836,8 +977,77 @@ def set_app_notifications(notifications: list[dict]) -> None:
                     VALUES ('notification_state_initialized', '1', now())
                     ON CONFLICT (key)
                     DO UPDATE SET value = '1', updated_at = now()
+                        """
+                    )
+                _sync_notification_sequence(cur)
+
+
+def import_app_notifications(notifications: list[dict]) -> None:
+    ensure_schema()
+    kept = list(notifications or [])[-80:]
+    with connect() as conn:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                _advisory_xact_lock(cur, "hira:notification_state:migration")
+                for item in kept:
+                    if not isinstance(item, dict):
+                        continue
+                    notification_id = str(item.get("id", "")).strip()
+                    body = str(item.get("body", "") or "").strip()
+                    if not notification_id or not body:
+                        continue
+                    cur.execute(
+                        """
+                        INSERT INTO notification_state (
+                            id, kind, title, body, source, seen_by, archived,
+                            created_at, updated_at
+                        )
+                        VALUES (
+                            %s, %s, %s, %s, %s, %s, %s,
+                            COALESCE(NULLIF(%s, '')::timestamptz, now()),
+                            now()
+                        )
+                        ON CONFLICT (id)
+                        DO UPDATE SET
+                            kind = EXCLUDED.kind,
+                            title = EXCLUDED.title,
+                            body = EXCLUDED.body,
+                            source = EXCLUDED.source,
+                            seen_by = EXCLUDED.seen_by,
+                            archived = EXCLUDED.archived,
+                            updated_at = now()
+                        """,
+                        (
+                            notification_id,
+                            str(item.get("kind", "") or "notice")[:40],
+                            str(item.get("title", "") or "H.I.R.A")[:240],
+                            body,
+                            str(item.get("source", "") or "")[:240],
+                            _jsonb(item.get("seen_by", []) if isinstance(item.get("seen_by"), list) else []),
+                            bool(item.get("archived", False)),
+                            str(item.get("created", "") or ""),
+                        ),
+                    )
+                cur.execute(
+                    """
+                    DELETE FROM notification_state
+                    WHERE id NOT IN (
+                        SELECT id
+                        FROM notification_state
+                        ORDER BY created_at DESC
+                        LIMIT 80
+                    )
                     """
                 )
+                cur.execute(
+                    """
+                    INSERT INTO app_config (key, value, updated_at)
+                    VALUES ('notification_state_initialized', '1', now())
+                    ON CONFLICT (key)
+                    DO UPDATE SET value = '1', updated_at = now()
+                    """
+                )
+                _sync_notification_sequence(cur)
 
 
 def storage_status() -> dict:

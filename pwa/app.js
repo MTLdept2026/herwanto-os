@@ -20,17 +20,18 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260515-upload-resilience-49";
-const APP_SCRIPT = "app.js?v=20260515-upload-resilience-49";
-const EXPECTED_SW_CACHE = "hira-os-v119";
+const APP_VERSION = "20260516-security-hardening-50";
+const APP_SCRIPT = "app.js?v=20260516-security-hardening-50";
+const EXPECTED_SW_CACHE = "hira-os-v120";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
 const AGENDA_CACHE_KEY = "hira_pwa_agenda_snapshot_v1";
 const HOME_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const HOME_REFRESH_THROTTLE_MS = 45 * 1000;
-const legacyWebToken = localStorage.getItem("hira_web_token") || "";
+let legacyWebToken = localStorage.getItem("hira_web_token") || "";
+if (legacyWebToken) localStorage.removeItem("hira_web_token");
 
 const state = {
-  token: legacyWebToken,
+  token: "",
   sessionUnlocked: localStorage.getItem("hira_session_unlocked") === "1" || Boolean(legacyWebToken),
   theme: localStorage.getItem("hira_theme") || "light",
   clientId: localStorage.getItem("hira_client_id") || (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `hira-${Date.now()}`),
@@ -318,7 +319,7 @@ function applyTheme() {
 }
 
 function headers(json = true) {
-  const base = {};
+  const base = { "X-Hira-CSRF": "1" };
   if (json) base["Content-Type"] = "application/json";
   if (state.token) base["X-Hira-Token"] = state.token;
   if (state.clientId) base["X-Hira-Client"] = state.clientId;
@@ -327,6 +328,7 @@ function headers(json = true) {
 
 function withAuth(options = {}) {
   const next = { ...options, headers: { ...(options.headers || {}) } };
+  next.headers["X-Hira-CSRF"] = "1";
   if (state.token) next.headers["X-Hira-Token"] = state.token;
   if (state.clientId) next.headers["X-Hira-Client"] = state.clientId;
   return next;
@@ -357,9 +359,11 @@ async function createSession(token) {
 }
 
 async function migrateLegacyToken() {
-  if (!legacyWebToken) return;
+  const token = legacyWebToken;
+  legacyWebToken = "";
+  if (!token) return;
   try {
-    await createSession(legacyWebToken);
+    await createSession(token);
     setStatus("Session restored on this device.", "ok");
   } catch (error) {
     state.token = "";
@@ -401,6 +405,8 @@ async function api(path, options = {}, tokenPrompted = false) {
     );
   }
   if (response.status === 401) {
+    state.sessionUnlocked = false;
+    localStorage.removeItem("hira_session_unlocked");
     if (tokenPrompted) {
       $("#settingsPanel").hidden = false;
       throw new Error("That token was rejected. Paste the H.I.R.A web token in Settings and save it once.");
@@ -423,6 +429,8 @@ async function api(path, options = {}, tokenPrompted = false) {
 async function fetchWithToken(path, options = {}, tokenPrompted = false) {
   const response = await fetch(path, withAuth(options));
   if (response.status === 401) {
+    state.sessionUnlocked = false;
+    localStorage.removeItem("hira_session_unlocked");
     if (tokenPrompted) {
       $("#settingsPanel").hidden = false;
       throw new Error("That token was rejected. Paste the H.I.R.A web token in Settings and save it once.");
@@ -1026,14 +1034,11 @@ function rememberNotificationFromUrl() {
   if (!params.has("notification_id")) return;
   const item = {
     id: params.get("notification_id"),
-    kind: params.get("notification_kind") || "reminder",
-    source: params.get("notification_source") || "",
-    title: params.get("notification_title") || "H.I.R.A",
-    body: params.get("notification_body") || "",
+    kind: "reminder",
+    source: "",
+    title: "H.I.R.A",
+    body: "",
   };
-  rememberPushedNotification({
-    ...item,
-  });
   const action = params.get("notification_action") || "";
   params.delete("notification_id");
   params.delete("notification_kind");
@@ -3740,6 +3745,11 @@ updateLiveClock();
 renderNothingGlyph("time");
 initBatteryGlyph();
 setInterval(updateLiveClock, 1000);
-migrateLegacyToken();
-loadHome({ background: true });
-startNotificationPolling();
+
+async function startAuthenticatedApp() {
+  await migrateLegacyToken();
+  loadHome({ background: true });
+  startNotificationPolling();
+}
+
+startAuthenticatedApp();

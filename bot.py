@@ -8850,17 +8850,67 @@ def _tool_timeout_seconds() -> int:
         return 45
 
 
+_SIDE_EFFECT_TOOL_PREFIXES = (
+    "add_",
+    "apply_",
+    "bulk_delete_",
+    "complete_",
+    "create_",
+    "delete_",
+    "fill_",
+    "remember_",
+    "reset_",
+    "update_",
+)
+
+
+def _tool_has_side_effect(name: str) -> bool:
+    clean = str(name or "").strip()
+    return clean.startswith(_SIDE_EFFECT_TOOL_PREFIXES)
+
+
+def _tool_log_input_summary(value) -> dict | str:
+    if not isinstance(value, dict):
+        return f"<{type(value).__name__}>"
+    summary = {}
+    for key, item in value.items():
+        if isinstance(item, str):
+            summary[key] = f"<str:{len(item)}>"
+        elif isinstance(item, (list, tuple, set)):
+            summary[key] = f"<{type(item).__name__}:{len(item)}>"
+        elif isinstance(item, dict):
+            summary[key] = f"<dict:{len(item)}>"
+        elif isinstance(item, (int, float, bool)) or item is None:
+            summary[key] = item
+        else:
+            summary[key] = f"<{type(item).__name__}>"
+    return summary
+
+
 def _execute_tool_in_thread(name: str, inp: dict) -> str:
     return asyncio.run(_execute_tool(name, inp))
 
 
 async def _execute_tool_offloop(name: str, inp: dict) -> str:
+    task = asyncio.create_task(asyncio.to_thread(_execute_tool_in_thread, name, inp))
     try:
-        return await asyncio.wait_for(
-            asyncio.to_thread(_execute_tool_in_thread, name, inp),
-            timeout=_tool_timeout_seconds(),
-        )
+        return await asyncio.wait_for(asyncio.shield(task), timeout=_tool_timeout_seconds())
     except asyncio.TimeoutError:
+        if _tool_has_side_effect(name):
+            logger.warning(
+                "Side-effecting tool %s exceeded %s seconds; waiting for completion to avoid hidden late mutation.",
+                name,
+                _tool_timeout_seconds(),
+            )
+            return await task
+
+        def _log_late_tool_result(done: asyncio.Task) -> None:
+            try:
+                done.result()
+            except Exception as exc:
+                logger.warning("Timed-out read-only tool %s later failed: %s", name, exc)
+
+        task.add_done_callback(_log_late_tool_result)
         return f"Failed to run {name}: tool timed out after {_tool_timeout_seconds()} seconds."
 
 
@@ -8968,7 +9018,7 @@ async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
 
         async def run_tool(block):
             tool_input = _normalise_memory_tool_input(block.input, messages) if block.name == "remember_user_info" else block.input
-            logger.info(f"Tool call: {block.name} {tool_input}")
+            logger.info("Tool call: %s %s", block.name, _tool_log_input_summary(tool_input))
             result = await _execute_tool_offloop(block.name, tool_input)
             return {
                 "type": "tool_result",
@@ -9269,7 +9319,7 @@ async def stream_agentic_claude(messages, max_tokens=650, tools=None):
 
         async def run_tool(block):
             tool_input = _normalise_memory_tool_input(block.input, messages) if block.name == "remember_user_info" else block.input
-            logger.info(f"Tool call: {block.name} {tool_input}")
+            logger.info("Tool call: %s %s", block.name, _tool_log_input_summary(tool_input))
             result = await _execute_tool_offloop(block.name, tool_input)
             return {
                 "type": "tool_result",

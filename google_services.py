@@ -3557,7 +3557,7 @@ def get_app_notifications(include_archived=False) -> list:
             legacy = _legacy_config_app_notifications(include_archived=True)
             merged = _merge_app_notifications(sheet_clean, legacy)
             if merged:
-                pg_storage.set_app_notifications(merged)
+                pg_storage.import_app_notifications(merged)
                 return merged if include_archived else [item for item in merged if not item["archived"]]
             return []
         except Exception as exc:
@@ -4117,7 +4117,7 @@ def get_web_push_subscriptions() -> list:
                 except Exception:
                     clean = []
                 if clean:
-                    pg_storage.set_web_push_subscriptions(clean[-30:])
+                    pg_storage.import_web_push_subscriptions(clean[-30:])
                     _redis_json_set(_REDIS_WEB_PUSH_SUBSCRIPTIONS_KEY, clean[-30:])
                     return clean[-30:]
             return _clean_web_push_subscriptions(_redis_json_get(_REDIS_WEB_PUSH_SUBSCRIPTIONS_KEY, []))
@@ -4247,7 +4247,7 @@ def get_web_push_delivery_log() -> list:
                 except Exception:
                     clean = []
                 if clean:
-                    pg_storage.set_web_push_delivery_log(clean)
+                    pg_storage.import_web_push_delivery_log(clean)
                     _redis_json_set(_REDIS_WEB_PUSH_DELIVERY_LOG_KEY, clean)
                     return clean
             return _clean_web_push_delivery_log(_redis_json_get(_REDIS_WEB_PUSH_DELIVERY_LOG_KEY, []))

@@ -21,6 +21,7 @@ from datetime import date, datetime, timedelta
 import ipaddress
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
@@ -40,8 +41,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260515-upload-resilience-49"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v119"
+PWA_APP_VERSION = "20260516-security-hardening-50"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v120"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -2247,14 +2248,23 @@ def _cookie_secure_for_request(request: Request) -> bool:
 
 def _same_origin(request: Request, origin: str) -> bool:
     try:
-        from urllib.parse import urlparse
-
         parsed = urlparse(origin)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             return False
         request_scheme = request.headers.get("x-forwarded-proto", request.url.scheme).split(",", 1)[0].strip().lower()
-        request_host = request.headers.get("host", request.url.netloc).strip().lower()
-        return parsed.scheme.lower() == request_scheme and parsed.netloc.lower() == request_host
+        request_host_header = request.headers.get("x-forwarded-host", request.headers.get("host", request.url.netloc)).split(",", 1)[0].strip()
+        request_host = urlparse(f"//{request_host_header}")
+
+        def default_port(scheme: str) -> int:
+            return 443 if scheme == "https" else 80
+
+        parsed_port = parsed.port or default_port(parsed.scheme.lower())
+        request_port = request_host.port or default_port(request_scheme)
+        return (
+            parsed.scheme.lower() == request_scheme
+            and (parsed.hostname or "").lower() == (request_host.hostname or "").lower()
+            and parsed_port == request_port
+        )
     except Exception:
         return False
 
@@ -2263,15 +2273,17 @@ def _csrf_request_allowed(request: Request) -> bool:
     if request.method.upper() in {"GET", "HEAD", "OPTIONS"}:
         return True
     fetch_site = request.headers.get("sec-fetch-site", "").strip().lower()
-    if fetch_site and fetch_site not in {"same-origin", "same-site", "none"}:
+    if fetch_site and fetch_site != "same-origin":
         return False
+    if request.headers.get("x-hira-csrf", "").strip() == "1":
+        return True
     origin = request.headers.get("origin", "").strip()
     if origin:
         return _same_origin(request, origin)
     referer = request.headers.get("referer", "").strip()
     if referer:
         return _same_origin(request, referer)
-    return bool(fetch_site)
+    return False
 
 
 def _require_token(x_hira_token: Optional[str] = Header(default=None)):

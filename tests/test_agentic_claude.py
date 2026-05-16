@@ -2,6 +2,7 @@ import asyncio
 import io
 import json
 import os
+import time
 import unittest
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -1074,6 +1075,7 @@ class AgenticClaudeTests(unittest.TestCase):
     def test_pwa_notification_click_prefers_standalone_client(self):
         service_worker = (REPO_ROOT / "pwa" / "service-worker.js").read_text()
         app_js = (REPO_ROOT / "pwa" / "app.js").read_text()
+        classops_js = (REPO_ROOT / "pwa" / "classops.js").read_text()
         index_html = (REPO_ROOT / "pwa" / "index.html").read_text()
         manifest = json.loads((REPO_ROOT / "pwa" / "manifest.webmanifest").read_text())
 
@@ -1087,6 +1089,9 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("createSession", app_js)
         self.assertIn("safeHttpUrl", app_js)
         self.assertNotIn('localStorage.setItem("hira_web_token"', app_js)
+        self.assertNotIn('localStorage.setItem("hira_web_token"', classops_js)
+        self.assertNotIn("notification_body", service_worker)
+        self.assertNotIn("notification_title", service_worker)
         self.assertEqual(manifest["id"], "/")
 
     def test_app_version_endpoint_reports_commit_and_pwa_versions(self):
@@ -1125,6 +1130,29 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertTrue(web_app._csrf_request_allowed(same_origin))
         self.assertFalse(web_app._csrf_request_allowed(cross_site))
 
+        same_site_without_origin = SimpleNamespace(
+            cookies={web_app._SESSION_COOKIE_NAME: cookie},
+            method="POST",
+            headers={
+                "sec-fetch-site": "same-site",
+                "host": "testserver",
+            },
+            url=SimpleNamespace(scheme="http", netloc="testserver"),
+        )
+        self.assertFalse(web_app._csrf_request_allowed(same_site_without_origin))
+
+        same_origin_custom_header = SimpleNamespace(
+            cookies={web_app._SESSION_COOKIE_NAME: cookie},
+            method="POST",
+            headers={
+                "sec-fetch-site": "same-origin",
+                "x-hira-csrf": "1",
+                "host": "testserver",
+            },
+            url=SimpleNamespace(scheme="http", netloc="testserver"),
+        )
+        self.assertTrue(web_app._csrf_request_allowed(same_origin_custom_header))
+
     def test_fetch_url_blocks_private_and_local_targets(self):
         blocked = [
             "http://localhost/",
@@ -1144,13 +1172,50 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertTrue(ok, reason)
 
     def test_fetch_url_revalidates_redirect_targets(self):
-        response = SimpleNamespace(is_redirect=True, headers={"location": "http://127.0.0.1/admin"})
+        class FakeResponse:
+            is_redirect = True
+            headers = {"location": "http://127.0.0.1/admin"}
 
-        with patch.object(search_service.requests, "get", return_value=response) as get:
+            def close(self):
+                pass
+
+        class FakeSession:
+            def __init__(self):
+                self.calls = []
+
+            def get(self, url, **kwargs):
+                self.calls.append((url, kwargs))
+                return FakeResponse()
+
+            def close(self):
+                pass
+
+        session = FakeSession()
+        with patch.object(search_service, "_public_requests_session", return_value=session):
             with self.assertRaises(ValueError):
                 search_service._get_public_url("https://1.1.1.1/")
 
-        get.assert_called_once()
+        self.assertEqual(len(session.calls), 1)
+
+    def test_fetch_url_limits_response_bytes(self):
+        class FakeResponse:
+            def iter_content(self, chunk_size=1):
+                yield b"a" * 5
+                yield b"b" * 6
+
+        with self.assertRaises(ValueError):
+            search_service._read_limited_response(FakeResponse(), 10)
+
+    def test_side_effect_tool_timeout_waits_for_completion(self):
+        def fake_tool(name, inp):
+            time.sleep(0.02)
+            return f"{name}:done"
+
+        with patch.object(bot, "_tool_timeout_seconds", return_value=0.001), \
+                patch.object(bot, "_execute_tool_in_thread", side_effect=fake_tool):
+            result = asyncio.run(bot._execute_tool_offloop("create_calendar_event", {"summary": "private"}))
+
+        self.assertEqual(result, "create_calendar_event:done")
 
     def test_rate_limiter_uses_redis_counter_when_available(self):
         class FakePipeline:

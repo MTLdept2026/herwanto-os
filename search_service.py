@@ -15,11 +15,17 @@ import ipaddress
 import requests
 import feedparser
 import socket
+from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
+from requests.adapters import HTTPAdapter
+from urllib3 import PoolManager
+from urllib3.connection import HTTPConnection, HTTPSConnection
+from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
+from urllib3.exceptions import NewConnectionError
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +33,27 @@ GOOGLE_NEWS_TIMEOUT = 8
 RSS_FEED_TIMEOUT = 4
 WEB_SEARCH_TIMEOUT = 8
 RESEARCH_WORKERS = 4
+
+
+def _env_int(name: str, default: int, minimum: int = 1, maximum: int | None = None) -> int:
+    try:
+        value = max(minimum, int(os.environ.get(name, str(default)) or default))
+    except ValueError:
+        value = default
+    if maximum is not None:
+        value = min(value, maximum)
+    return value
+
+
+URL_FETCH_MAX_BYTES = _env_int("HIRA_FETCH_URL_MAX_BYTES", 1_500_000, minimum=64_000, maximum=8_000_000)
+
+
+@dataclass
+class _PublicAddress:
+    family: int
+    socktype: int
+    proto: int
+    sockaddr: tuple
 
 # Google News RSS — one per digest topic, no API key needed
 # Format: news.google.com/rss/search?q=QUERY&hl=en-SG&gl=SG&ceid=SG:en
@@ -159,6 +186,114 @@ def _resolve_public_host(hostname: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _resolve_public_addresses(host: str, port: int) -> list[_PublicAddress]:
+    clean_host = (host or "").strip().strip("[]")
+    if _host_is_blocked_name(clean_host):
+        raise OSError("Blocked local hostname")
+    try:
+        infos = socket.getaddrinfo(clean_host, port, type=socket.SOCK_STREAM)
+    except Exception as exc:
+        raise OSError(f"Could not resolve hostname: {exc}") from exc
+
+    addresses: list[_PublicAddress] = []
+    blocked: list[str] = []
+    for family, socktype, proto, _canonname, sockaddr in infos:
+        ip_text = sockaddr[0] if sockaddr else ""
+        if not _ip_is_public(ip_text):
+            blocked.append(ip_text)
+            continue
+        addresses.append(_PublicAddress(family, socktype, proto, sockaddr))
+    if blocked:
+        raise OSError("Hostname resolves to a non-public address")
+    if not addresses:
+        raise OSError("Hostname resolved to no public addresses")
+    return addresses
+
+
+def _create_public_connection(
+    address,
+    timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
+    source_address=None,
+    socket_options=None,
+):
+    host, port = address
+    last_error: Exception | None = None
+    for candidate in _resolve_public_addresses(host, int(port)):
+        sock = None
+        try:
+            sock = socket.socket(candidate.family, candidate.socktype, candidate.proto)
+            if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                sock.settimeout(timeout)
+            for opt in socket_options or ():
+                sock.setsockopt(*opt)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(candidate.sockaddr)
+            return sock
+        except Exception as exc:
+            last_error = exc
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+    if last_error:
+        raise last_error
+    raise OSError("Could not connect to any public address")
+
+
+class _PublicHTTPConnection(HTTPConnection):
+    def _new_conn(self):
+        try:
+            return _create_public_connection(
+                (self.host, self.port),
+                self.timeout,
+                source_address=self.source_address,
+                socket_options=self.socket_options,
+            )
+        except OSError as exc:
+            raise NewConnectionError(self, f"Failed to establish a public connection: {exc}") from exc
+
+
+class _PublicHTTPSConnection(HTTPSConnection):
+    def _new_conn(self):
+        try:
+            return _create_public_connection(
+                (self.host, self.port),
+                self.timeout,
+                source_address=self.source_address,
+                socket_options=self.socket_options,
+            )
+        except OSError as exc:
+            raise NewConnectionError(self, f"Failed to establish a public connection: {exc}") from exc
+
+
+class _PublicHTTPConnectionPool(HTTPConnectionPool):
+    ConnectionCls = _PublicHTTPConnection
+
+
+class _PublicHTTPSConnectionPool(HTTPSConnectionPool):
+    ConnectionCls = _PublicHTTPSConnection
+
+
+class _PublicHTTPAdapter(HTTPAdapter):
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+        self.poolmanager = PoolManager(num_pools=connections, maxsize=maxsize, block=block, **pool_kwargs)
+        self.poolmanager.pool_classes_by_scheme = {
+            "http": _PublicHTTPConnectionPool,
+            "https": _PublicHTTPSConnectionPool,
+        }
+
+
+def _public_requests_session() -> requests.Session:
+    session = requests.Session()
+    session.trust_env = False
+    adapter = _PublicHTTPAdapter()
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+
 def _validate_public_http_url(url: str) -> tuple[bool, str]:
     parsed = urlparse((url or "").strip())
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -170,27 +305,54 @@ def _validate_public_http_url(url: str) -> tuple[bool, str]:
 
 def _get_public_url(url: str, timeout: int = 10, max_redirects: int = 5) -> requests.Response:
     current = (url or "").strip()
-    for _ in range(max_redirects + 1):
-        ok, reason = _validate_public_http_url(current)
-        if not ok:
-            raise ValueError(reason)
-        resp = requests.get(
-            current,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (compatible; HIRA/1.0; +https://example.com/hira)"
-                )
-            },
-            timeout=timeout,
-            allow_redirects=False,
-        )
-        if not resp.is_redirect:
-            return resp
-        location = resp.headers.get("location", "")
-        if not location:
-            return resp
-        current = urljoin(current, location)
+    session = _public_requests_session()
+    try:
+        for _ in range(max_redirects + 1):
+            ok, reason = _validate_public_http_url(current)
+            if not ok:
+                raise ValueError(reason)
+            resp = session.get(
+                current,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (compatible; HIRA/1.0; +https://example.com/hira)"
+                    )
+                },
+                timeout=timeout,
+                allow_redirects=False,
+                stream=True,
+            )
+            if not resp.is_redirect:
+                if resp.status_code < 400:
+                    resp._content = _read_limited_response(resp, URL_FETCH_MAX_BYTES)
+                    resp._content_consumed = True
+                else:
+                    resp._content = b""
+                    resp._content_consumed = True
+                return resp
+            location = resp.headers.get("location", "")
+            if not location:
+                resp._content = b""
+                resp._content_consumed = True
+                return resp
+            resp.close()
+            current = urljoin(current, location)
+    finally:
+        session.close()
     raise ValueError("Too many redirects")
+
+
+def _read_limited_response(resp: requests.Response, max_bytes: int) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    for chunk in resp.iter_content(chunk_size=32 * 1024):
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError(f"URL response is too large. Limit is {max_bytes // 1024} KB.")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def fetch_url(url: str, max_chars: int = 6000) -> dict:

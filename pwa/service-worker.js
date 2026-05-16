@@ -1,9 +1,9 @@
-const CACHE_NAME = "hira-os-v119";
-const HIRA_APP_VERSION = "20260515-upload-resilience-49";
+const CACHE_NAME = "hira-os-v120";
+const HIRA_APP_VERSION = "20260516-security-hardening-50";
 const ASSETS = [
   "/",
-  "/styles.css?v=20260515-upload-resilience-49",
-  "/app.js?v=20260515-upload-resilience-49",
+  "/styles.css?v=20260516-security-hardening-50",
+  "/app.js?v=20260516-security-hardening-50",
   "/static/icon.svg",
   "/static/icon-192.png",
   "/static/icon-512.png",
@@ -111,10 +111,6 @@ self.addEventListener("notificationclick", (event) => {
   const action = event.action || "";
   const params = new URLSearchParams();
   if (data.id) params.set("notification_id", data.id);
-  if (data.kind) params.set("notification_kind", data.kind);
-  if (data.source) params.set("notification_source", data.source);
-  if (data.title) params.set("notification_title", data.title);
-  if (data.body) params.set("notification_body", data.body);
   if (action) params.set("notification_action", action);
   const targetUrl = params.toString() ? `/?${params.toString()}` : "/";
   event.notification.close();
