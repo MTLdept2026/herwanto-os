@@ -66,9 +66,9 @@ python3 scripts/dev_check.py --smoke-url http://127.0.0.1:4173
 
 ---
 
-### Step 2 — Anthropic API key (5 min)
+### Step 2 — OpenAI API key (5 min)
 
-1. `https://console.anthropic.com` → API Keys → Create Key
+1. `https://platform.openai.com` → API Keys → Create Key
 2. Copy it
 
 ---
@@ -185,16 +185,17 @@ git push -u origin main
 
 1. `https://railway.app` → sign up with GitHub
 2. **New Project** → **Deploy from GitHub repo** → select `herwanto-os`
-3. Go to **Variables** tab → add all 4 required env vars:
+3. Go to **Variables** tab → add the required env vars:
    - `TELEGRAM_BOT_TOKEN`
-   - `ANTHROPIC_API_KEY`
+   - `OPENAI_API_KEY`
+   - `HIRA_LLM_PROVIDER=openai`
    - `GOOGLE_SERVICE_ACCOUNT_JSON`
    - `GOOGLE_SHEET_ID`
    - `HIRA_ALLOWED_USER_IDS` with your numeric Telegram user ID(s)
    - Optional but recommended for editing classlists as you: `GOOGLE_SHEETS_CLIENT_ID`, `GOOGLE_SHEETS_CLIENT_SECRET`, `GOOGLE_SHEETS_REFRESH_TOKEN`
    - Optional for editing classlists as your work Google account: `GOOGLE_WORK_SHEETS_CLIENT_ID`, `GOOGLE_WORK_SHEETS_CLIENT_SECRET`, `GOOGLE_WORK_SHEETS_REFRESH_TOKEN`
    - Optional for editable generated Google Docs/Slides links: `GOOGLE_ARTIFACT_SHARE_EMAIL`
-   - Optional for voice notes: `OPENAI_API_KEY`
+   - Optional fallback if deliberately using Anthropic: `ANTHROPIC_API_KEY`
    - Optional for Gmail: `GOOGLE_GMAIL_USER`
 4. Add Railway Postgres to the same project. Railway injects `DATABASE_URL`; add it to both H.I.R.A services if they do not inherit shared variables.
 5. After the first Postgres deploy, run `python3 scripts/migrate_memory_to_postgres.py` once from an environment that has both `DATABASE_URL` and the old Google Sheets variables.
@@ -457,7 +458,7 @@ The PWA backend includes Railway Hobby guardrails: two active chats/uploads by d
 
 Proactive intelligence runs in the worker alongside nudges/check-ins. It scans workload, due tasks, marking, follow-ups, upcoming packed days, reminder-worthy calendar events, and action-looking Work Gmail messages, then sends only deduplicated high-signal app notifications. Calendar/task reminders use the same web push path and only mark themselves delivered after confirmed phone push. Calendar events with off-site-looking locations can also trigger a rough "Time to leave" push using explicit event notes, per-place overrides, or default travel minutes. The Work Gmail monitor seeds the current inbox on first run so old mail does not spam the phone, while still allowing very recent action-looking messages through the first-run window. It then checks `HIRA_WORK_GMAIL_MONITOR_QUERY` every `HIRA_WORK_GMAIL_MONITOR_INTERVAL` seconds, defaulting to 30 minutes, and alerts on messages that look like replies, approvals, deadlines, forms, meetings, submissions, or questions. Tune with `HIRA_CALENDAR_REMINDER_INTERVAL`, `HIRA_CALENDAR_REMINDER_LOOKAHEAD_MINUTES`, `HIRA_CALENDAR_REMINDER_CATCHUP_MINUTES`, `HIRA_CALENDAR_REMINDER_KEYWORDS`, `HIRA_DEFAULT_TRAVEL_MINUTES`, `HIRA_TRAVEL_BUFFER_MINUTES`, `HIRA_TRAVEL_TIME_OVERRIDES`, `HIRA_PROACTIVE_INTELLIGENCE_INTERVAL`, `HIRA_PROACTIVE_INTELLIGENCE_START_HOUR`, `HIRA_PROACTIVE_INTELLIGENCE_END_HOUR`, `HIRA_WORK_GMAIL_MONITOR_ENABLED`, `HIRA_WORK_GMAIL_MONITOR_INTERVAL`, `HIRA_WORK_GMAIL_MONITOR_QUERY`, `HIRA_WORK_GMAIL_MONITOR_MAX_RESULTS`, `HIRA_WORK_GMAIL_ACTION_SCORE`, and `HIRA_WORK_GMAIL_FIRST_RUN_GRACE_MINUTES`. The notification health panel also shows push recovery status: last attempt, last success, recent misses, and the likely blocking issue.
 
-Model routing is configurable with `HIRA_QUICK_MODEL`, `HIRA_ROUTER_MODEL`, `HIRA_STRUCTURED_MODEL`, `HIRA_AGENTIC_MODEL`, and `HIRA_DEEP_MODEL`. Keep quick/router/structured on cheaper fast models, and point `HIRA_DEEP_MODEL` at a stronger model when you want coding, architecture, documents, research, business strategy, or high-stakes reasoning to use the bigger brain.
+Model routing is configurable with `HIRA_LLM_PROVIDER`, `HIRA_QUICK_MODEL`, `HIRA_ROUTER_MODEL`, `HIRA_STRUCTURED_MODEL`, `HIRA_AGENTIC_MODEL`, and `HIRA_DEEP_MODEL`. Set `HIRA_LLM_PROVIDER=openai` to route H.I.R.A's core chat/tool calls through OpenAI. Keep quick/router/structured on cheaper fast models, and point `HIRA_DEEP_MODEL` at a stronger model when you want coding, architecture, documents, research, business strategy, or high-stakes reasoning to use the bigger brain.
 
 Liverpool and F1 prompts use dedicated structured sports adapters before generic web search. `get_liverpool_brief` gathers table/form, fixtures/results/line-ups, competition progress, injuries, and transfers/rumours; `get_f1_brief` gathers standings, race results, Mercedes/Russell/Antonelli, Hamilton, and team news/upgrades.
 
@@ -526,16 +527,16 @@ What should my next milestone for Rūḥ be?
 | Service | Cost |
 |---|---|
 | Railway (hobby plan) | ~$5 USD |
-| Claude Sonnet API (~50 msgs/day) | ~$4-6 USD |
+| OpenAI API usage | Token-based, depends on model and usage |
 | Google APIs | Free |
-| **Total** | **~$10-11 USD/month** |
+| **Total** | **Railway + OpenAI token usage** |
 
 ---
 
 ## Upgrading later
 
-- **Voice messages** → Telegram voice → Whisper transcription → Claude
-- **Document upload** → Send PDFs/worksheets for Claude to read and summarise
+- **Voice messages** → Telegram voice → OpenAI transcription → H.I.R.A chat
+- **Document upload** → Send PDFs/worksheets for H.I.R.A to read and summarise
 - **WhatsApp** → Same backend, swap to Meta WhatsApp Cloud API when you're ready
 - **Persistent AI memory** → Assistant memory/config/notifications use Postgres when `DATABASE_URL` is set; Redis is only cache/retry safety net, and Sheets stay for external classlists/schedules.
 

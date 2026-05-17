@@ -5211,6 +5211,56 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("Football Training on 2026-05-18 15:00-16:00", reply)
         self.assertEqual(len(fake_messages.calls), 2)
 
+    def test_openai_provider_runs_tool_loop_without_claude_client(self):
+        class FakeOpenAIResponses:
+            def __init__(self):
+                self.calls = []
+
+            def create(self, **kwargs):
+                self.calls.append(kwargs)
+                if len(self.calls) == 1:
+                    return SimpleNamespace(
+                        status="completed",
+                        output_text="",
+                        output=[
+                            SimpleNamespace(
+                                type="function_call",
+                                call_id="call-1",
+                                name="get_gmail_brief",
+                                arguments=json.dumps({"query": "", "max_items": 5}),
+                            )
+                        ],
+                    )
+                return SimpleNamespace(
+                    status="completed",
+                    output_text="Your last five emails are mostly about school admin and project updates.",
+                    output=[],
+                )
+
+        fake_responses = FakeOpenAIResponses()
+        fake_openai = SimpleNamespace(responses=fake_responses)
+        fake_claude = SimpleNamespace(messages=SimpleNamespace(create=lambda **_: (_ for _ in ()).throw(AssertionError("Claude should not be called"))))
+
+        async def fake_execute_tool(name, inp):
+            return "- Subject | From: sender@example.com | Snippet"
+
+        messages = [{"role": "user", "content": "tell me about my last 5 emails"}]
+        tools = [{"name": "get_gmail_brief", "input_schema": {"type": "object", "properties": {}}}]
+
+        with (
+            patch.object(bot, "LLM_PROVIDER", "openai"),
+            patch.object(bot, "openai_client", fake_openai),
+            patch.object(bot, "claude", fake_claude),
+            patch.object(bot, "SYSTEM_PROMPT", return_value="system"),
+            patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool),
+        ):
+            reply = asyncio.run(bot._run_agentic_claude(messages, tools=tools))
+
+        self.assertIn("last five emails", reply)
+        self.assertEqual(fake_responses.calls[0]["tool_choice"], {"type": "function", "name": "get_gmail_brief"})
+        self.assertEqual(fake_responses.calls[0]["tools"][0]["type"], "function")
+        self.assertEqual(fake_responses.calls[1]["input"][-1]["type"], "function_call_output")
+
     def test_email_followup_forces_gmail_before_action(self):
         messages = [{"role": "user", "content": "read my latest personal email and note the meeting details for follow up"}]
         tools = [{"name": "get_gmail_brief"}, {"name": "create_followup"}]

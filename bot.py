@@ -14,9 +14,11 @@ from collections import OrderedDict, defaultdict
 from datetime import datetime, timedelta, time as dt_time, date
 from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
+from types import SimpleNamespace
 import pytz
 
 from anthropic import Anthropic, AsyncAnthropic
+from openai import OpenAI, AsyncOpenAI
 
 import google_services as gs
 import classops_intelligence as classops_ai
@@ -77,11 +79,22 @@ except ValueError:
     logger.warning("Invalid HIRA_MORNING_DIGEST_ITEM_LIMIT; using 16 items")
     MORNING_DIGEST_ITEM_LIMIT = 16
 
+LLM_PROVIDER = os.environ.get("HIRA_LLM_PROVIDER", "anthropic").strip().lower() or "anthropic"
+if LLM_PROVIDER not in {"anthropic", "openai"}:
+    logger.warning("Invalid HIRA_LLM_PROVIDER=%r; using anthropic", LLM_PROVIDER)
+    LLM_PROVIDER = "anthropic"
+
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-if not ANTHROPIC_API_KEY:
+if LLM_PROVIDER == "anthropic" and not ANTHROPIC_API_KEY:
     logger.warning("ANTHROPIC_API_KEY is not set; Claude calls will fail until it is configured.")
 claude = Anthropic(api_key=ANTHROPIC_API_KEY or "missing-key")
 async_claude = AsyncAnthropic(api_key=ANTHROPIC_API_KEY or "missing-key")
+
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+if LLM_PROVIDER == "openai" and not OPENAI_API_KEY:
+    logger.warning("OPENAI_API_KEY is not set; OpenAI calls will fail until it is configured.")
+openai_client = OpenAI(api_key=OPENAI_API_KEY or "missing-key")
+async_openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY or "missing-key")
 _SYSTEM_PROMPT_CACHE = {"key": None, "value": None}
 
 
@@ -143,11 +156,21 @@ async def _is_authorized(update) -> bool:
     except Exception:
         pass
     return False
-AGENTIC_MODEL = os.environ.get("HIRA_AGENTIC_MODEL", "claude-sonnet-4-6").strip() or "claude-sonnet-4-6"
-DEEP_MODEL = os.environ.get("HIRA_DEEP_MODEL", AGENTIC_MODEL).strip() or AGENTIC_MODEL
-QUICK_MODEL = os.environ.get("HIRA_QUICK_MODEL", "claude-haiku-4-5-20251001").strip() or "claude-haiku-4-5-20251001"
-ROUTER_MODEL = os.environ.get("HIRA_ROUTER_MODEL", QUICK_MODEL).strip() or QUICK_MODEL
-STRUCTURED_MODEL = os.environ.get("HIRA_STRUCTURED_MODEL", QUICK_MODEL).strip() or QUICK_MODEL
+def _model_from_env(key: str, default: str) -> str:
+    raw = os.environ.get(key, "").strip()
+    if LLM_PROVIDER == "openai" and raw.lower().startswith("claude"):
+        logger.warning("%s=%r is an Anthropic model while HIRA_LLM_PROVIDER=openai; using %s", key, raw, default)
+        return default
+    return raw or default
+
+
+_DEFAULT_AGENTIC_MODEL = "gpt-5.4" if LLM_PROVIDER == "openai" else "claude-sonnet-4-6"
+_DEFAULT_QUICK_MODEL = "gpt-5.4-mini" if LLM_PROVIDER == "openai" else "claude-haiku-4-5-20251001"
+AGENTIC_MODEL = _model_from_env("HIRA_AGENTIC_MODEL", _DEFAULT_AGENTIC_MODEL)
+DEEP_MODEL = _model_from_env("HIRA_DEEP_MODEL", AGENTIC_MODEL)
+QUICK_MODEL = _model_from_env("HIRA_QUICK_MODEL", _DEFAULT_QUICK_MODEL)
+ROUTER_MODEL = _model_from_env("HIRA_ROUTER_MODEL", QUICK_MODEL)
+STRUCTURED_MODEL = _model_from_env("HIRA_STRUCTURED_MODEL", QUICK_MODEL)
 
 WORK_DRIVE_REFERENCES = [
     (
@@ -1033,6 +1056,195 @@ def CACHED_SYSTEM_PROMPT():
         _SYSTEM_PROMPT_CACHE["key"] = key
         _SYSTEM_PROMPT_CACHE["value"] = SYSTEM_PROMPT()
     return _SYSTEM_PROMPT_CACHE["value"]
+
+
+def _openai_text_from_response(resp) -> str:
+    text = getattr(resp, "output_text", None)
+    if text:
+        return str(text)
+    parts: list[str] = []
+    for item in getattr(resp, "output", []) or []:
+        if getattr(item, "type", None) != "message":
+            continue
+        for block in getattr(item, "content", []) or []:
+            block_type = getattr(block, "type", "")
+            if block_type in {"output_text", "text"}:
+                parts.append(str(getattr(block, "text", "") or ""))
+    return "".join(parts)
+
+
+def _openai_incomplete_reason(resp) -> str:
+    details = getattr(resp, "incomplete_details", None)
+    return str(getattr(details, "reason", "") or "")
+
+
+def _openai_hit_max_tokens(resp) -> bool:
+    return getattr(resp, "status", "") == "incomplete" and _openai_incomplete_reason(resp) == "max_output_tokens"
+
+
+def _openai_content_blocks(content) -> list[dict] | str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content)
+    blocks: list[dict] = []
+    for block in content:
+        block_type = getattr(block, "type", None) if not isinstance(block, dict) else block.get("type")
+        if block_type == "text":
+            text = getattr(block, "text", None) if not isinstance(block, dict) else block.get("text")
+            blocks.append({"type": "input_text", "text": str(text or "")})
+        elif block_type == "image":
+            source = getattr(block, "source", None) if not isinstance(block, dict) else block.get("source", {})
+            source = source or {}
+            media_type = source.get("media_type", "image/jpeg")
+            data = source.get("data", "")
+            blocks.append({"type": "input_image", "image_url": f"data:{media_type};base64,{data}"})
+        elif block_type == "tool_result":
+            # Tool results are represented as top-level function_call_output items.
+            continue
+        else:
+            text = getattr(block, "text", None) if not isinstance(block, dict) else block.get("text")
+            if text:
+                blocks.append({"type": "input_text", "text": str(text)})
+    return blocks or ""
+
+
+def _openai_input_from_messages(messages: list[dict]) -> list[dict]:
+    items: list[dict] = []
+    for message in messages or []:
+        role = message.get("role", "user")
+        content = message.get("content", "")
+        if isinstance(content, list) and all(isinstance(block, dict) and block.get("type") == "tool_result" for block in content):
+            for block in content:
+                items.append({
+                    "type": "function_call_output",
+                    "call_id": block.get("tool_use_id", ""),
+                    "output": str(block.get("content", "")),
+                })
+            continue
+        if role not in {"user", "assistant", "system", "developer"}:
+            role = "user"
+        item = {"role": role, "content": _openai_content_blocks(content)}
+        if role in {"system", "developer"}:
+            item["role"] = "developer"
+        items.append(item)
+    return items
+
+
+def _openai_tools_from_anthropic(tools: list[dict] | None) -> list[dict] | None:
+    converted = []
+    for tool in tools or []:
+        converted.append({
+            "type": "function",
+            "name": tool.get("name", ""),
+            "description": tool.get("description", ""),
+            "parameters": tool.get("input_schema") or {"type": "object", "properties": {}},
+        })
+    return converted or None
+
+
+def _openai_tool_choice(forced_tool: str | None):
+    if not forced_tool:
+        return None
+    return {"type": "function", "name": forced_tool}
+
+
+def _openai_response_call_items(resp) -> list[dict]:
+    items: list[dict] = []
+    for item in getattr(resp, "output", []) or []:
+        if getattr(item, "type", None) != "function_call":
+            continue
+        call_id = getattr(item, "call_id", None) or getattr(item, "id", "")
+        items.append({
+            "type": "function_call",
+            "call_id": call_id,
+            "name": getattr(item, "name", ""),
+            "arguments": getattr(item, "arguments", "{}") or "{}",
+        })
+    return items
+
+
+def _openai_tool_calls(resp) -> list[SimpleNamespace]:
+    calls: list[SimpleNamespace] = []
+    for item in getattr(resp, "output", []) or []:
+        if getattr(item, "type", None) != "function_call":
+            continue
+        raw_args = getattr(item, "arguments", "{}") or "{}"
+        try:
+            parsed_args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+        except Exception:
+            parsed_args = {}
+        calls.append(SimpleNamespace(
+            type="tool_use",
+            id=getattr(item, "call_id", None) or getattr(item, "id", ""),
+            name=getattr(item, "name", ""),
+            input=parsed_args,
+        ))
+    return calls
+
+
+def _openai_create_response(model: str, max_tokens: int, messages: list[dict], system: str | None = None, tools=None, forced_tool: str | None = None):
+    kwargs = {
+        "model": model,
+        "input": _openai_input_from_messages(messages),
+        "max_output_tokens": max_tokens,
+    }
+    if system:
+        kwargs["instructions"] = system
+    converted_tools = _openai_tools_from_anthropic(tools)
+    if converted_tools:
+        kwargs["tools"] = converted_tools
+    tool_choice = _openai_tool_choice(forced_tool)
+    if tool_choice:
+        kwargs["tool_choice"] = tool_choice
+    return openai_client.responses.create(**kwargs)
+
+
+async def _openai_create_response_async(model: str, max_tokens: int, messages: list[dict], system: str | None = None, tools=None, forced_tool: str | None = None):
+    kwargs = {
+        "model": model,
+        "input": _openai_input_from_messages(messages),
+        "max_output_tokens": max_tokens,
+    }
+    if system:
+        kwargs["instructions"] = system
+    converted_tools = _openai_tools_from_anthropic(tools)
+    if converted_tools:
+        kwargs["tools"] = converted_tools
+    tool_choice = _openai_tool_choice(forced_tool)
+    if tool_choice:
+        kwargs["tool_choice"] = tool_choice
+    return await async_openai_client.responses.create(**kwargs)
+
+
+def _llm_text(model: str, max_tokens: int, messages: list[dict], system: str | None = None) -> str:
+    if LLM_PROVIDER == "openai":
+        resp = _openai_create_response(model=model, max_tokens=max_tokens, messages=messages, system=system)
+        return _openai_text_from_response(resp)
+    kwargs = dict(
+        model=model,
+        max_tokens=max_tokens,
+        messages=messages,
+    )
+    if system:
+        kwargs["system"] = system
+    resp = claude.messages.create(**kwargs)
+    return resp.content[0].text
+
+
+async def _llm_text_async(model: str, max_tokens: int, messages: list[dict], system: str | None = None) -> str:
+    if LLM_PROVIDER == "openai":
+        resp = await _openai_create_response_async(model=model, max_tokens=max_tokens, messages=messages, system=system)
+        return _openai_text_from_response(resp)
+    kwargs = dict(
+        model=model,
+        max_tokens=max_tokens,
+        messages=messages,
+    )
+    if system:
+        kwargs["system"] = system
+    resp = await async_claude.messages.create(**kwargs)
+    return resp.content[0].text
 
 # Claude tool definition for web search
 SEARCH_TOOL = {
@@ -2158,12 +2370,11 @@ async def _detect_implicit_correction(user_text: str, history: list[dict]) -> No
             "Reply with ONLY: CORRECTION: <one-sentence description of what was corrected>\n"
             "Or if no correction: NO"
         )
-        resp = await async_claude.messages.create(
+        verdict = (await _llm_text_async(
             model=ROUTER_MODEL,
             max_tokens=60,
             messages=[{"role": "user", "content": prompt}],
-        )
-        verdict = (resp.content[0].text or "").strip()
+        ) or "").strip()
         if verdict.upper().startswith("CORRECTION:"):
             correction_text = verdict[len("CORRECTION:"):].strip()
             now_str = datetime.now(SGT).strftime("%Y-%m-%d %H:%M SGT")
@@ -2204,7 +2415,7 @@ def _summarise_conversation_to_memory(history: list[dict]) -> None:
         prompt_messages = [m for m in window if isinstance(m.get("content"), str)]
         if not prompt_messages:
             return
-        summary_resp = claude.messages.create(
+        summary = (_llm_text(
             model=QUICK_MODEL,
             max_tokens=100,
             messages=prompt_messages + [
@@ -2213,8 +2424,7 @@ def _summarise_conversation_to_memory(history: list[dict]) -> None:
                     "Focus on outcomes and actions, not the chat mechanics. No preamble."
                 )}
             ],
-        )
-        summary = (summary_resp.content[0].text or "").strip()
+        ) or "").strip()
         if summary:
             date_str = datetime.now(SGT).strftime("%Y-%m-%d")
             _add_memory("recent_summaries", f"{date_str}: {summary}")
@@ -6667,12 +6877,12 @@ Rules:
 - For lesson plans, include objectives, materials, flow, checks for understanding, differentiation, and exit ticket.
 - Keep section body text concise but complete.
 - Return ONLY JSON."""
-    resp = claude.messages.create(
+    raw = _llm_text(
         model=DEEP_MODEL,
         max_tokens=3000,
         messages=[{"role": "user", "content": prompt}]
     )
-    return _json_from_claude_text(resp.content[0].text)
+    return _json_from_claude_text(raw)
 
 def _generate_slide_spec(title: str, instructions: str, audience: str = "", slide_count: int = 8, language: str = "") -> dict:
     template_context = _artifact_template_context()
@@ -6703,12 +6913,12 @@ Rules:
 - Use concise slide bullets and put details in notes.
 - Include a strong opening and useful closing/action slide.
 - Return ONLY JSON."""
-    resp = claude.messages.create(
+    raw = _llm_text(
         model=DEEP_MODEL,
         max_tokens=3000,
         messages=[{"role": "user", "content": prompt}]
     )
-    return _json_from_claude_text(resp.content[0].text)
+    return _json_from_claude_text(raw)
 
 def _upload_artifact_if_possible(path: str, convert_to: str, category: str = "General") -> dict | None:
     if not google_ok():
@@ -7890,12 +8100,11 @@ Return exactly:
 {{"message":"message to send later","send_at":"YYYY-MM-DDTHH:MM:SS+08:00"}}
 
 Rules: Use Asia/Singapore time. If no year is mentioned, use 2026. If the time/date is unclear, return {{"error":"missing date/time"}}. Return ONLY JSON."""
-            parse_resp = claude.messages.create(
+            raw = _llm_text(
                 model=STRUCTURED_MODEL,
                 max_tokens=200,
                 messages=[{"role": "user", "content": parse_prompt}]
-            )
-            raw = parse_resp.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+            ).strip().replace("```json", "").replace("```", "").strip()
             start = min((raw.find(c) for c in ["{", "["] if c in raw), default=0)
             data = json.loads(raw[start:])
             if "error" in data:
@@ -8657,12 +8866,12 @@ Return exactly:
 
 Rules: the current year is 2026 — ALWAYS use 2026 if no year is mentioned, 24hr time, add 1hr if no end time specified. Return ONLY the JSON."""
     try:
-        parse_resp = claude.messages.create(
+        raw = _llm_text(
             model=STRUCTURED_MODEL,
             max_tokens=200,
             messages=[{"role": "user", "content": parse_prompt}]
         )
-        raw = parse_resp.content[0].text.strip()
+        raw = raw.strip()
         # Strip markdown fences
         raw = raw.replace("```json","").replace("```","").strip()
         # Strip anything before first { or [
@@ -8967,7 +9176,96 @@ def _normalise_memory_tool_input(inp: dict, messages: list[dict]) -> dict:
     return clean
 
 
+async def _run_agentic_openai(messages, max_tokens=2048, tools=None):
+    tools = tools or _core_tools()
+    reply_text = ""
+    max_iterations = 8
+    all_tool_results: list[dict] = []
+    openai_input = _openai_input_from_messages(messages)
+
+    for _ in range(max_iterations):
+        forced_tool = _forced_tool_for_current_turn(messages, tools)
+        try:
+            kwargs = {
+                "model": _agentic_model_for_messages(messages),
+                "input": openai_input,
+                "instructions": CACHED_SYSTEM_PROMPT(),
+                "max_output_tokens": max_tokens,
+            }
+            converted_tools = _openai_tools_from_anthropic(tools)
+            if converted_tools:
+                kwargs["tools"] = converted_tools
+            tool_choice = _openai_tool_choice(forced_tool)
+            if tool_choice:
+                kwargs["tool_choice"] = tool_choice
+            resp = openai_client.responses.create(**kwargs)
+        except Exception as exc:
+            fallback = _tool_action_fallback_reply(all_tool_results)
+            if fallback:
+                logger.warning("OpenAI follow-up failed after tool actions; returning tool-result fallback: %s", exc)
+                guarded = _memory_tool_failure_guardrail(fallback, all_tool_results)
+                guarded = _backend_claim_guardrail(guarded, all_tool_results)
+                guarded = _cca_sheet_user_burden_guardrail(guarded, all_tool_results)
+                return _correct_weekday_date_mismatches(guarded)
+            raise
+
+        tool_blocks = _openai_tool_calls(resp)
+        if not tool_blocks:
+            segment = await _run_forced_weather_fallback(forced_tool)
+            if not segment:
+                segment = _openai_text_from_response(resp)
+            reply_text = f"{reply_text}{segment}"
+            if _openai_hit_max_tokens(resp):
+                messages.append({"role": "assistant", "content": segment})
+                messages.append({
+                    "role": "user",
+                    "content": "Continue exactly where you stopped. Finish the response completely without restarting or summarising earlier text.",
+                })
+                openai_input.append({"role": "assistant", "content": segment})
+                openai_input.append({
+                    "role": "user",
+                    "content": "Continue exactly where you stopped. Finish the response completely without restarting or summarising earlier text.",
+                })
+                logger.warning("OpenAI hit max_output_tokens in chat; requesting continuation.")
+                continue
+            break
+
+        messages.append({"role": "assistant", "content": tool_blocks})
+        openai_input.extend(_openai_response_call_items(resp))
+
+        async def run_tool(block):
+            tool_input = _normalise_memory_tool_input(block.input, messages) if block.name == "remember_user_info" else block.input
+            logger.info("Tool call: %s %s", block.name, _tool_log_input_summary(tool_input))
+            result = await _execute_tool_offloop(block.name, tool_input)
+            return {
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": result,
+            }
+
+        tool_results = await asyncio.gather(*(run_tool(block) for block in tool_blocks))
+        all_tool_results.extend(tool_results)
+        messages.append({"role": "user", "content": tool_results})
+        for item in tool_results:
+            openai_input.append({
+                "type": "function_call_output",
+                "call_id": item.get("tool_use_id", ""),
+                "output": str(item.get("content", "")),
+            })
+        guarded = _source_contract_guardrail(messages, tool_results)
+        if guarded:
+            return guarded
+
+    guarded_reply = _memory_tool_failure_guardrail(reply_text or "Done.", all_tool_results)
+    guarded_reply = _backend_claim_guardrail(guarded_reply, all_tool_results)
+    guarded_reply = _cca_sheet_user_burden_guardrail(guarded_reply, all_tool_results)
+    return _correct_weekday_date_mismatches(guarded_reply)
+
+
 async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
+    if LLM_PROVIDER == "openai":
+        return await _run_agentic_openai(messages, max_tokens=max_tokens, tools=tools)
+
     tools = tools or _core_tools()
     reply_text = ""
     max_iterations = 8
@@ -9217,12 +9515,11 @@ async def should_route_quick_pwa_chat(messages: list[dict], message: str) -> boo
             "Reply with only QUICK or FULL.\n\n"
             f"Message: {text}"
         )
-        resp = await async_claude.messages.create(
+        verdict = (await _llm_text_async(
             model=ROUTER_MODEL,
             max_tokens=10,
             messages=[{"role": "user", "content": prompt}],
-        )
-        verdict = (resp.content[0].text or "").strip().upper()
+        ) or "").strip().upper()
         return verdict.startswith("QUICK")
     except Exception as exc:
         logger.warning(f"Quick-route classifier failed: {exc}")
@@ -9233,6 +9530,20 @@ async def stream_quick_pwa_reply(messages: list[dict], message: str):
     prompt_messages = context + [{"role": "user", "content": message}]
     lens = intent_lens_hint(message)
     try:
+        if LLM_PROVIDER == "openai":
+            text = await _llm_text_async(
+                model=QUICK_MODEL,
+                max_tokens=220,
+                system=(
+                    "You are H.I.R.A, Herwanto's concise personal assistant. "
+                    "Answer lightweight chat naturally in one or two short sentences. "
+                    "Do not use tools or pretend to have checked live data."
+                    f"{lens}"
+                ),
+                messages=prompt_messages,
+            )
+            yield {"type": "text", "text": text}
+            return
         async with async_claude.messages.stream(
             model=QUICK_MODEL,
             max_tokens=220,
@@ -9252,6 +9563,12 @@ async def stream_quick_pwa_reply(messages: list[dict], message: str):
         raise
 
 async def stream_agentic_claude(messages, max_tokens=650, tools=None):
+    if LLM_PROVIDER == "openai":
+        reply_text = await _run_agentic_openai(messages, max_tokens=max_tokens, tools=tools)
+        yield {"type": "text", "text": reply_text}
+        yield {"type": "done", "text": reply_text}
+        return
+
     tools = tools or _core_tools()
     reply_text = ""
     max_iterations = 8
@@ -11380,12 +11697,12 @@ Return ONLY valid JSON:
 
 Rules: be conservative — only promote genuinely durable rules. Return ONLY JSON."""
 
-        resp = claude.messages.create(
+        raw = _llm_text(
             model=QUICK_MODEL,
             max_tokens=800,
             messages=[{"role": "user", "content": prompt}],
         )
-        result = _json_from_claude_text(resp.content[0].text)
+        result = _json_from_claude_text(raw)
         promoted = result.get("promote") or []
         growth_note = result.get("growth_note", "")
 
