@@ -9176,6 +9176,24 @@ def _normalise_memory_tool_input(inp: dict, messages: list[dict]) -> dict:
     return clean
 
 
+def _llm_provider_status_reply(messages: list[dict]) -> str | None:
+    text = _latest_user_text(messages).lower()
+    if not text:
+        return None
+    asks_provider = bool(re.search(r"\b(provider|llm|model|engine|backend|api)\b", text))
+    asks_openai_anthropic = bool(re.search(r"\b(openai|anthropic|claude|gpt)\b", text))
+    asks_identity = bool(re.search(r"\b(is|are|what|which|who|using|running|powered|backing|underneath|behind)\b", text))
+    if not (asks_identity and (asks_provider or asks_openai_anthropic)):
+        return None
+
+    provider_label = "OpenAI" if LLM_PROVIDER == "openai" else "Anthropic"
+    model = _agentic_model_for_messages(messages)
+    return (
+        f"I'm currently routed through {provider_label} "
+        f"(`HIRA_LLM_PROVIDER={LLM_PROVIDER}`), using `{model}` for this turn."
+    )
+
+
 async def _run_agentic_openai(messages, max_tokens=2048, tools=None):
     tools = tools or _core_tools()
     reply_text = ""
@@ -9263,6 +9281,10 @@ async def _run_agentic_openai(messages, max_tokens=2048, tools=None):
 
 
 async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
+    provider_status = _llm_provider_status_reply(messages)
+    if provider_status:
+        return provider_status
+
     if LLM_PROVIDER == "openai":
         return await _run_agentic_openai(messages, max_tokens=max_tokens, tools=tools)
 
@@ -9563,6 +9585,12 @@ async def stream_quick_pwa_reply(messages: list[dict], message: str):
         raise
 
 async def stream_agentic_claude(messages, max_tokens=650, tools=None):
+    provider_status = _llm_provider_status_reply(messages)
+    if provider_status:
+        yield {"type": "text", "text": provider_status}
+        yield {"type": "done", "text": provider_status}
+        return
+
     if LLM_PROVIDER == "openai":
         reply_text = await _run_agentic_openai(messages, max_tokens=max_tokens, tools=tools)
         yield {"type": "text", "text": reply_text}

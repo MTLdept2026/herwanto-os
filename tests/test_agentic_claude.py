@@ -5261,6 +5261,33 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(fake_responses.calls[0]["tools"][0]["type"], "function")
         self.assertEqual(fake_responses.calls[1]["input"][-1]["type"], "function_call_output")
 
+    def test_provider_status_question_is_answered_from_config(self):
+        fake_openai = SimpleNamespace(
+            responses=SimpleNamespace(
+                create=lambda **_: (_ for _ in ()).throw(AssertionError("OpenAI should not be called"))
+            )
+        )
+        fake_claude = SimpleNamespace(
+            messages=SimpleNamespace(
+                create=lambda **_: (_ for _ in ()).throw(AssertionError("Claude should not be called"))
+            )
+        )
+
+        with (
+            patch.object(bot, "LLM_PROVIDER", "openai"),
+            patch.object(bot, "AGENTIC_MODEL", "gpt-test"),
+            patch.object(bot, "DEEP_MODEL", "gpt-test"),
+            patch.object(bot, "openai_client", fake_openai),
+            patch.object(bot, "claude", fake_claude),
+        ):
+            reply = asyncio.run(bot._run_agentic_claude([
+                {"role": "user", "content": "is it anthropic or openai?"}
+            ]))
+
+        self.assertIn("OpenAI", reply)
+        self.assertIn("HIRA_LLM_PROVIDER=openai", reply)
+        self.assertIn("gpt-test", reply)
+
     def test_email_followup_forces_gmail_before_action(self):
         messages = [{"role": "user", "content": "read my latest personal email and note the meeting details for follow up"}]
         tools = [{"name": "get_gmail_brief"}, {"name": "create_followup"}]
