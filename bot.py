@@ -1575,6 +1575,68 @@ def _openai_native_event_tool_name(event) -> str:
     return ""
 
 
+def _openai_degraded_request_kwargs(kwargs: dict, exc: Exception | None = None) -> dict:
+    message = str(exc or "").lower()
+    if not any(token in message for token in (
+        "unsupported",
+        "unknown parameter",
+        "invalid",
+        "not supported",
+        "tool",
+        "web_search",
+        "file_search",
+        "code_interpreter",
+        "prompt_cache",
+        "safety_identifier",
+        "parallel_tool_calls",
+        "truncation",
+        "verbosity",
+    )):
+        return {}
+    degraded = dict(kwargs)
+    for key in (
+        "prompt_cache_key",
+        "prompt_cache_retention",
+        "safety_identifier",
+        "parallel_tool_calls",
+        "truncation",
+        "service_tier",
+    ):
+        degraded.pop(key, None)
+    if isinstance(degraded.get("text"), dict) and set(degraded["text"].keys()) == {"verbosity"}:
+        degraded.pop("text", None)
+    tools = degraded.get("tools")
+    if tools:
+        function_tools = [tool for tool in tools if isinstance(tool, dict) and tool.get("type") == "function"]
+        if function_tools:
+            degraded["tools"] = function_tools
+        else:
+            degraded.pop("tools", None)
+    return degraded if degraded != kwargs else {}
+
+
+def _openai_create_with_retry(kwargs: dict):
+    try:
+        return openai_client.responses.create(**kwargs)
+    except Exception as exc:
+        degraded = _openai_degraded_request_kwargs(kwargs, exc)
+        if not degraded:
+            raise
+        logger.warning("OpenAI Responses request failed; retrying with conservative options: %s", exc)
+        return openai_client.responses.create(**degraded)
+
+
+async def _openai_create_with_retry_async(kwargs: dict):
+    try:
+        return await async_openai_client.responses.create(**kwargs)
+    except Exception as exc:
+        degraded = _openai_degraded_request_kwargs(kwargs, exc)
+        if not degraded:
+            raise
+        logger.warning("OpenAI Responses async request failed; retrying with conservative options: %s", exc)
+        return await async_openai_client.responses.create(**degraded)
+
+
 def _openai_create_response(
     model: str,
     max_tokens: int,
@@ -1595,7 +1657,7 @@ def _openai_create_response(
     tool_choice = _openai_tool_choice(forced_tool)
     if tool_choice:
         kwargs["tool_choice"] = tool_choice
-    resp = openai_client.responses.create(**kwargs)
+    resp = _openai_create_with_retry(kwargs)
     return resp
 
 
@@ -1619,7 +1681,7 @@ async def _openai_create_response_async(
     tool_choice = _openai_tool_choice(forced_tool)
     if tool_choice:
         kwargs["tool_choice"] = tool_choice
-    return await async_openai_client.responses.create(**kwargs)
+    return await _openai_create_with_retry_async(kwargs)
 
 
 def _llm_text(model: str, max_tokens: int, messages: list[dict], system: str | None = None) -> str:
@@ -9826,11 +9888,22 @@ def _openai_text_delta_from_event(event) -> str:
 
 
 async def _openai_stream_response(kwargs: dict):
-    async with async_openai_client.responses.stream(**kwargs) as stream:
-        async for event in stream:
-            yield event
-        final_response = await stream.get_final_response()
-    yield SimpleNamespace(type="hira.final_response", response=final_response)
+    try:
+        async with async_openai_client.responses.stream(**kwargs) as stream:
+            async for event in stream:
+                yield event
+            final_response = await stream.get_final_response()
+        yield SimpleNamespace(type="hira.final_response", response=final_response)
+    except Exception as exc:
+        degraded = _openai_degraded_request_kwargs(kwargs, exc)
+        if not degraded:
+            raise
+        logger.warning("OpenAI Responses stream failed; retrying with conservative options: %s", exc)
+        async with async_openai_client.responses.stream(**degraded) as stream:
+            async for event in stream:
+                yield event
+            final_response = await stream.get_final_response()
+        yield SimpleNamespace(type="hira.final_response", response=final_response)
 
 
 async def _run_agentic_openai(messages, max_tokens=2048, tools=None, openai_state_key: str | None = None):
@@ -9862,7 +9935,7 @@ async def _run_agentic_openai(messages, max_tokens=2048, tools=None, openai_stat
             tool_choice = _openai_tool_choice(forced_tool)
             if tool_choice:
                 kwargs["tool_choice"] = tool_choice
-            resp = await async_openai_client.responses.create(**kwargs)
+            resp = await _openai_create_with_retry_async(kwargs)
             response_id = _openai_response_id(resp)
             if response_id:
                 _remember_openai_response_id(openai_state_key, response_id)

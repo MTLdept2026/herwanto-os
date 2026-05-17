@@ -4248,6 +4248,52 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("Latest completed: Liverpool 1-1 Chelsea", summary)
         self.assertNotIn("filler", summary)
 
+    def test_backend_news_fallback_does_not_dump_rss_urls(self):
+        raw = "\n".join([
+            "*News: Any idea when android 17 is getting rolled out*",
+            "- Google previews Android 17 features ahead of I/O (Business Standard · Wed, 13 May 2026 10:03:33 GMT)",
+            "  https://news.google.com/rss/articles/CBMi2wFBVV95cUxNeVlXYlztYVhoMmxJOWs1VWM5dD5rOTg3M2VBaWhhRHp...",
+            "- Google unveils new Android AI features ahead of Apple Siri revamp (The Business Times · Wed, 13 May 2026 10:19:00 GMT)",
+            "  https://news.google.com/rss/articles/CBMirwFBVV95cUxPX3JBMHZ0QmRaRjJTNnFIeWJRX0pHVEtPRWlp...",
+        ])
+
+        answer = web_app._format_source_fallback_answer(
+            "Any idea when android 17 is getting rolled out",
+            "news",
+            raw,
+        )
+
+        self.assertIn("couldn’t confirm an official rollout date", answer)
+        self.assertIn("Google previews Android 17 features", answer)
+        self.assertNotIn("https://", answer)
+        self.assertNotIn("news.google.com/rss", answer)
+
+    def test_openai_degraded_request_keeps_function_tools_but_drops_native_tools(self):
+        kwargs = {
+            "model": "gpt-5.5",
+            "input": [{"role": "user", "content": "hi"}],
+            "prompt_cache_key": "hira-prompt:test",
+            "prompt_cache_retention": "24h",
+            "safety_identifier": "hira-user:test",
+            "parallel_tool_calls": True,
+            "truncation": "auto",
+            "text": {"verbosity": "medium"},
+            "tools": [
+                {"type": "function", "name": "get_latest_news", "parameters": {"type": "object"}},
+                {"type": "web_search", "search_context_size": "medium"},
+            ],
+        }
+
+        degraded = bot._openai_degraded_request_kwargs(kwargs, ValueError("unsupported tool type web_search"))
+
+        self.assertNotIn("prompt_cache_key", degraded)
+        self.assertNotIn("prompt_cache_retention", degraded)
+        self.assertNotIn("safety_identifier", degraded)
+        self.assertNotIn("parallel_tool_calls", degraded)
+        self.assertNotIn("truncation", degraded)
+        self.assertNotIn("text", degraded)
+        self.assertEqual(degraded["tools"], [{"type": "function", "name": "get_latest_news", "parameters": {"type": "object"}}])
+
     def test_source_contracts_from_tool_results_are_structured(self):
         contracts = bot._source_contracts_from_tool_results([{
             "content": (

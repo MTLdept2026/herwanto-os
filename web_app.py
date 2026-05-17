@@ -3790,11 +3790,64 @@ async def _source_check_backend_fallback_payload(message: str) -> tuple[str, str
             "I hit the model/backend step, and the live source check also failed, "
             "so I’m not going to answer from memory. Try again in a moment."
         ), tool_name, result or ""
-    clipped = _summarise_source_fallback(result, limit=2200)
+    return _format_source_fallback_answer(message, label, result), tool_name, result
+
+
+def _format_source_fallback_answer(message: str, label: str, result: str) -> str:
+    if label == "news":
+        return _summarise_news_fallback(message, result)
+    clipped = _summarise_source_fallback(result, limit=1600)
     return (
-        "I hit the model/backend step, so I’m not going to guess from memory. "
-        f"I did run the live {label} source check:\n\n{clipped}"
-    ), tool_name, result
+        f"I couldn’t complete the normal answer, so I’m not going to guess from memory. "
+        f"I did run the live {label} source check.\n\n"
+        f"{clipped}"
+    )
+
+
+def _fallback_news_items(result: str, limit: int = 3) -> list[str]:
+    items: list[str] = []
+    seen: set[str] = set()
+    for raw in str(result or "").splitlines():
+        line = raw.strip()
+        if not line.startswith("-"):
+            continue
+        clean = re.sub(r"^\-\s*", "", line).strip()
+        clean = clean.replace("*", "").strip()
+        if not clean or clean.lower().startswith("http"):
+            continue
+        if re.search(r"https?://", clean):
+            clean = re.sub(r"\s*https?://\S+", "", clean).strip()
+        key = clean.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(clean)
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _summarise_news_fallback(message: str, result: str) -> str:
+    items = _fallback_news_items(result, limit=3)
+    lowered = str(message or "").lower()
+    asks_rollout = bool(re.search(r"\b(?:when|roll(?:ed|ing)? out|rollout|release date|available|stable)\b", lowered))
+    has_rollout_answer = any(
+        re.search(r"\b(?:roll(?:ed|ing)? out|rollout|release date|stable|available|starts|begins|launch(?:es|ed)?)\b", item, re.I)
+        for item in items
+    )
+    if not items:
+        return (
+            "I couldn’t complete the normal answer, and the quick live news check did not return a usable item. "
+            "I’m not going to guess from memory."
+        )
+    bullets = "\n".join(f"- {item}" for item in items)
+    if asks_rollout and not has_rollout_answer:
+        return (
+            "I couldn’t confirm an official rollout date from the quick live check. "
+            "The recent items I found are related, but they look like preview/features coverage rather than a rollout schedule:\n\n"
+            f"{bullets}"
+        )
+    return f"The quick live news check found:\n\n{bullets}"
 
 
 def _summarise_source_fallback(result: str, limit: int = 2200) -> str:
@@ -3805,8 +3858,11 @@ def _summarise_source_fallback(result: str, limit: int = 2200) -> str:
     picked: list[str] = []
     for line in lines:
         lower = line.lower()
+        if re.search(r"https?://", line):
+            continue
         if (
             line.startswith("SOURCE CONTRACT:")
+            or line.startswith("*News:")
             or "latest completed:" in lower
             or "recent results from fotmob" in lower
             or "scoreline candidates" in lower
@@ -3817,7 +3873,7 @@ def _summarise_source_fallback(result: str, limit: int = 2200) -> str:
         ):
             picked.append(line)
     if not picked:
-        picked = lines[:12]
+        picked = [line for line in lines if not re.search(r"https?://", line)][:12]
     summary = "\n".join(picked)
     if len(summary) > limit:
         summary = summary[:limit].rsplit("\n", 1)[0].rstrip()
