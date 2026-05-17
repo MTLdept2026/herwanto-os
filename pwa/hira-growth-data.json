@@ -5,9 +5,9 @@
   "summary": {
     "start": "2026-04-28",
     "current": "2026-05-17",
-    "commitsTracked": 185,
-    "majorPhases": 31,
-    "currentStage": "OpenAI provider migration with calmer daily check-in completion"
+    "commitsTracked": 186,
+    "majorPhases": 32,
+    "currentStage": "OpenAI-native H.I.R.A upgrade with stronger thread memory, source discipline, and realtime voice groundwork"
   },
   "metrics": [
     {
@@ -17,7 +17,7 @@
     },
     {
       "label": "Tracked upgrade commits",
-      "value": "185",
+      "value": "186",
       "note": "Grouped from git history through the growth-log minisite."
     },
     {
@@ -49,13 +49,13 @@
     },
     {
       "name": "Live Knowledge",
-      "score": 92,
-      "description": "Weather, MUIS, dual personal Gmail inbox support, experimental Work Gmail OAuth, Work Gmail action monitoring with runtime health, Google News, Tavily/search fallbacks, bounded X/Twitter-style social leads for digest topics, fetch URL, source notes, live-check hints, structured Liverpool and F1 briefers."
+      "score": 94,
+      "description": "Weather, MUIS, dual personal Gmail inbox support, experimental Work Gmail OAuth, Work Gmail action monitoring with runtime health, Google News, Tavily/search fallbacks, bounded X/Twitter-style social leads for digest topics, OpenAI-native web search hooks, fetch URL, source notes, live-check hints, structured Liverpool and F1 briefers."
     },
     {
       "name": "Self-Improvement",
       "score": 99,
-      "description": "Postgres-backed memory commits, priority-weighted memory prompt, relevant recall, working memory, conversation-continuation guardrails, action validation/audits, persistent action ledger, source/memory trace visibility, ClassOps blind-spot checks, intent lens, proactive workload insights, OS readiness scoring, forecast radar, adaptive planning, 7-day trial loop, notification feedback learning, implicit correction detection, weekly consolidation, and conversation summarisation."
+      "description": "Postgres-backed memory commits, priority-weighted memory prompt, relevant recall, working memory, conversation-continuation guardrails, OpenAI response-state continuity, action validation/audits, persistent action ledger, source/memory/native-tool trace visibility, ClassOps blind-spot checks, intent lens, proactive workload insights, OS readiness scoring, forecast radar, adaptive planning, 7-day trial loop, notification feedback learning, implicit correction detection, weekly consolidation, and conversation summarisation."
     }
   ],
   "chapters": [
@@ -571,6 +571,27 @@
         "Done actions on phone notifications archive sibling check-in notifications with the same source so push recovery does not resurrect old duplicates after a habit is completed for the day."
       ],
       "impact": "H.I.R.A is no longer tied to Anthropic for its main intelligence loop and is more honest about its runtime, while daily worship nudges behave closer to Herwanto's intent: one fixed reminder, then peace for the rest of the day."
+    },
+    {
+      "date": "2026-05-17",
+      "era": "OpenAI-Native Intelligence",
+      "title": "Hira gets a sharper brain and better memory in the moment",
+      "commit": "0f90cf1",
+      "tag": "OpenAI + Thread Trust",
+      "summary": "H.I.R.A's OpenAI migration was deepened into a more native, safer assistant loop: it now keeps better conversation state, uses newer OpenAI Responses features, traces native tools, and blocks the old istighfar/selawat reminder loop entirely.",
+      "details": [
+        "OpenAI Responses streaming now stores response IDs per chat thread, so H.I.R.A can continue from the right conversation instead of treating every turn as fresh.",
+        "A model policy router now chooses reasoning effort, verbosity, specialist mode, native tools, and deep/agentic routing from the user's actual request.",
+        "Specialist modes now change the system instructions for calendar actions, teaching, sports, research, email, artifacts, and memory work.",
+        "OpenAI-native web search, file search, and code interpreter hooks are available through environment flags, with Singapore location context for live searches and safer disabled-network defaults for code interpreter.",
+        "Structured document and slide generation now use strict JSON schema responses on OpenAI, reducing malformed artifact specs.",
+        "The PWA trace now shows model policy, thread state, response IDs, source contracts, OpenAI-native tool activity, and citations so failures are easier to inspect.",
+        "The provider-status bug was fixed so normal questions no longer get derailed by injected debug text like HIRA_LLM_PROVIDER=openai.",
+        "Blank Done-style answers and false no-access claims now trigger fallback checks instead of pretending the task was answered.",
+        "Istighfar and selawat reminders are now removed, archived where possible, and blocked from being created or pushed again.",
+        "Backend endpoints now prepare OpenAI Realtime voice sessions, giving H.I.R.A the plumbing for future live spoken conversation."
+      ],
+      "impact": "For Herwanto, H.I.R.A should feel less forgetful, less helpless, and more honest: it can keep the thread, check live topics properly, show its work in the trace, stop unwanted devotional reminders, and grow toward proper voice without pretending the voice layer is finished."
     }
   ],
   "currentCapabilities": [
@@ -603,7 +624,9 @@
     "Priority-weighted memory prompt: corrections and constraints always visible; low-signal buckets trimmed.",
     "Closed learning loop: implicit + explicit correction capture → weekly consolidation job → promoted to preferences/constraints.",
     "Security: Telegram fail-closed allowlist, web API fail-closed auth, invalid-token throttling, safer notification rendering, /forget confirmation gate, and file upload size guards.",
-    "OpenAI-first model routing via the Responses API for quick replies, structured parsing, agentic work, and deep work, with Anthropic retained only as an optional fallback."
+    "OpenAI-first model routing via the Responses API for quick replies, structured parsing, agentic work, and deep work, with Anthropic retained only as an optional fallback.",
+    "OpenAI response-state continuity, prompt caching, specialist instruction modes, native tool tracing, strict structured outputs, and realtime voice session groundwork.",
+    "Istighfar and selawat reminder suppression that removes matching check-ins, archives queued notifications where storage allows, and blocks future creation/delivery."
   ],
   "updateProtocol": [
     "Append a new chapter to pwa/hira-growth-data.json for every meaningful H.I.R.A upgrade.",
