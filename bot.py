@@ -9847,9 +9847,27 @@ def _normalise_memory_tool_input(inp: dict, messages: list[dict]) -> dict:
     return clean
 
 
+_INJECTED_CHAT_CONTEXT_RE = re.compile(
+    r"\n\s*\[(?:"
+    r"Email account hint|"
+    r"Working memory(?: for this PWA chat)?|"
+    r"Recent[- ]turn grounding(?: for follow-up resolution)?|"
+    r"Thread state|"
+    r"Intent lens|"
+    r"Source discipline|"
+    r"Device location"
+    r"):",
+    re.I,
+)
+
+
+def _strip_injected_chat_context(text: str = "") -> str:
+    return _INJECTED_CHAT_CONTEXT_RE.split(str(text or ""), maxsplit=1)[0].strip()
+
+
 def _llm_provider_status_reply(messages: list[dict]) -> str | None:
     raw_text = _latest_user_text(messages)
-    text = re.split(r"\n\s*\[(?:Working memory|Recent turn grounding|Thread state|Intent lens|Source discipline|Device location):", raw_text, maxsplit=1)[0].lower()
+    text = _strip_injected_chat_context(raw_text).lower()
     if not text:
         return None
     asks_provider = bool(re.search(r"\b(provider|llm|model|engine|backend|api)\b", text))

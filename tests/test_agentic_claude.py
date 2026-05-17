@@ -5760,6 +5760,28 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertIsNone(reply)
 
+    def test_provider_status_ignores_pwa_working_memory_provider_text(self):
+        message = (
+            "Anything in my recent work mail that needs my immediate attention\n\n"
+            "[Email account hint: use account=\"work\" for Gmail tools.]"
+            "\n\n[Working memory for this PWA chat: Current subject: pixels in April. "
+            "Older competing subjects in this chat: HIRA_LLM_PROVIDER=openai, using gpt-5.5.]"
+            "\n\n[Recent-turn grounding for follow-up resolution: H.I.R.A: I'm currently routed through OpenAI "
+            "(`HIRA_LLM_PROVIDER=openai`), using `gpt-5.5` for this turn.]"
+        )
+
+        with patch.object(bot, "LLM_PROVIDER", "openai"):
+            reply = bot._llm_provider_status_reply([{"role": "user", "content": message}])
+
+        self.assertIsNone(reply)
+        self.assertEqual(
+            bot._forced_tool_for_current_turn(
+                [{"role": "user", "content": message}],
+                [{"name": "get_gmail_brief"}, {"name": "create_gmail_draft"}],
+            ),
+            "get_gmail_brief",
+        )
+
     def test_email_followup_forces_gmail_before_action(self):
         messages = [{"role": "user", "content": "read my latest personal email and note the meeting details for follow up"}]
         tools = [{"name": "get_gmail_brief"}, {"name": "create_followup"}]
@@ -6805,6 +6827,12 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(account, "work")
         self.assertEqual(query, "show my last 5")
         self.assertFalse(bot.is_removed_work_gmail_request("show my last 5 work emails"))
+
+        attention_account, attention_query = bot._extract_gmail_account_from_text(
+            "Anything in my recent work mail that needs my immediate attention"
+        )
+        self.assertEqual(attention_account, "work")
+        self.assertEqual(attention_query, "Anything in my recent that needs my immediate attention")
 
     def test_work_gmail_env_can_enable_service_layer(self):
         env = {
