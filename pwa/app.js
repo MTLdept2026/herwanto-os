@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260518-clean-chat-55";
-const APP_SCRIPT = "app.js?v=20260518-clean-chat-55";
-const EXPECTED_SW_CACHE = "hira-os-v125";
+const APP_VERSION = "20260518-clean-chat-56";
+const APP_SCRIPT = "app.js?v=20260518-clean-chat-56";
+const EXPECTED_SW_CACHE = "hira-os-v126";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
@@ -2258,6 +2258,7 @@ function normaliseQuotedJson(text) {
 function objectHasInternalToolShape(value) {
   if (!value || typeof value !== "object") return false;
   const keys = Object.keys(value).map((key) => key.toLowerCase());
+  const compactKeys = keys.map((key) => key.replace(/[^a-z0-9]/g, ""));
   const joined = keys.join(" ");
   const internalSignals = [
     "avoid_keywords",
@@ -2272,7 +2273,14 @@ function objectHasInternalToolShape(value) {
   const hasSchedulingBundle =
     keys.includes("days") &&
     (keys.includes("purpose") || keys.includes("duration_minutes") || keys.includes("window_start"));
-  return hasToolSignal || hasSchedulingBundle;
+  const hasReminderBundle =
+    compactKeys.includes("description") &&
+    compactKeys.some((key) => key === "duedate" || key === "due") &&
+    (compactKeys.includes("category") || /teaching|cca|gameplan|ruh|personal/i.test(String(value.category || "")));
+  const hasMarkingBundle =
+    compactKeys.includes("title") &&
+    (compactKeys.includes("totalscripts") || compactKeys.includes("stackcount") || compactKeys.includes("collecteddate"));
+  return hasToolSignal || hasSchedulingBundle || hasReminderBundle || hasMarkingBundle;
 }
 
 function isInternalToolPayload(text) {
@@ -2289,6 +2297,7 @@ function isInternalToolPayload(text) {
   }
   return (
     /"?(?:duration_minutes|window_start|window_end|avoid_keywords)"?\s*:/.test(clean) ||
+    /"?(?:due_date|due date|duedate)"?\s*:/.test(clean) ||
     (/"?days"?\s*:/.test(clean) && /"?(?:purpose|window_start)"?\s*:/.test(clean))
   );
 }

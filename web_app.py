@@ -41,8 +41,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260518-clean-chat-55"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v125"
+PWA_APP_VERSION = "20260518-clean-chat-56"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v126"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -3633,6 +3633,21 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                 yield sse(event)
 
             reply_text = final_text or "".join(reply_parts).strip()
+            recovered_action_text = ""
+            if not trace.get("tools_called"):
+                try:
+                    recovered_action_text = await _recover_leaked_action_payload(reply_text)
+                except Exception as recovery_exc:
+                    bot.logger.warning(f"PWA leaked action recovery failed: {recovery_exc}")
+            if recovered_action_text:
+                reply_text = recovered_action_text
+                _merge_chat_trace(trace, {
+                    "tools_called": ["add_reminder"],
+                    "final_mode": "leaked_action_recovered",
+                    "response_contract": {"status": "recovered_leaked_action_payload"},
+                })
+                yield sse({"type": "replace", "text": reply_text})
+                yield sse({"type": "done", "text": reply_text})
             response_contract = response_contract_for_reply(reply_text, trace)
             _merge_chat_trace(trace, {"response_contract": response_contract})
             if _empty_chat_reply(reply_text):
@@ -3738,6 +3753,57 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
 async def _source_check_backend_fallback(message: str) -> str:
     text, _tool_name, _result = await _source_check_backend_fallback_payload(message)
     return text
+
+
+def _normalise_action_key(key: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(key or "").lower())
+
+
+def _parse_leaked_json_payload(text: str):
+    clean = str(text or "").strip().replace("“", "\"").replace("”", "\"").replace("‘", "'").replace("’", "'")
+    if not clean or len(clean) > 2400 or not clean.startswith(("{", "[")):
+        return None
+    try:
+        return json.loads(clean)
+    except Exception:
+        return None
+
+
+def _reminder_payload_from_leaked_item(item: dict) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+    normalised = {_normalise_action_key(key): value for key, value in item.items()}
+    description = str(normalised.get("description", "") or "").strip()
+    due_date = str(normalised.get("duedate", "") or normalised.get("due", "") or "").strip()
+    category = str(normalised.get("category", "") or "Teaching").strip() or "Teaching"
+    if not description or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", due_date):
+        return None
+    if len(description) < 4:
+        return None
+    return {
+        "description": description[:500],
+        "due_date": due_date,
+        "category": category[:80],
+    }
+
+
+async def _recover_leaked_action_payload(text: str) -> str:
+    parsed = _parse_leaked_json_payload(text)
+    if parsed is None:
+        return ""
+    items = parsed if isinstance(parsed, list) else [parsed]
+    reminder_payloads = [_reminder_payload_from_leaked_item(item) for item in items]
+    reminder_payloads = [item for item in reminder_payloads if item]
+    if not reminder_payloads or len(reminder_payloads) != len(items):
+        return ""
+    results = []
+    for payload in reminder_payloads[:5]:
+        result = await bot._execute_tool_offloop("add_reminder", payload)
+        first_line = str(result or "").strip().splitlines()[0] if result else ""
+        results.append(first_line or f"Added reminder: {payload['description']} by {payload['due_date']}")
+    if len(results) == 1:
+        return results[0]
+    return "Added these tasks:\n" + "\n".join(f"- {line}" for line in results)
 
 
 def _empty_chat_reply(text: str) -> bool:
