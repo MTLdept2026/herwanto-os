@@ -2989,6 +2989,23 @@ def _archive_notifications_by_source(source: str) -> list[str]:
     return ids if ids and bot.gs.archive_app_notifications(ids) else []
 
 
+def _archive_completed_notification(req_id: str, source: str) -> list[str]:
+    archived_ids: list[str] = []
+    if source:
+        try:
+            archived_ids = _archive_notifications_by_source(source)
+        except Exception as exc:
+            bot.logger.warning(f"Could not archive notification siblings for source={source}: {exc}")
+    req_id = str(req_id or "").strip()
+    if req_id and req_id not in archived_ids:
+        try:
+            if bot.gs.archive_app_notifications([req_id]):
+                archived_ids.append(req_id)
+        except Exception as exc:
+            bot.logger.warning(f"Could not archive completed notification {req_id}: {exc}")
+    return archived_ids
+
+
 def _archive_nudge_notifications(nudge_id: str) -> int:
     source = f"nudge:{str(nudge_id or '').strip()}"
     if source == "nudge:":
@@ -4470,9 +4487,11 @@ def notifications_action(
                 client_id=client_key,
                 title=title,
             )
-            bot.gs.archive_app_notifications([req.id])
+            archived_ids = _archive_completed_notification(req.id, source)
             if result.get("completed"):
                 ledger_meta = {"notification_id": str(req.id), "source": source, "kind": kind}
+                if archived_ids:
+                    ledger_meta["archived_notification_ids"] = archived_ids
                 if task_match:
                     ledger_meta["reminder_id"] = task_match.group(1)
                 elif followup_match:

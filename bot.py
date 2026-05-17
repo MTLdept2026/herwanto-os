@@ -1002,8 +1002,8 @@ Rules:
 - PWA Web Push can deliver OS notifications to subscribed Android/browser devices through the service worker even when the app is closed. Scheduled nudges, reminders, digests, and briefings should use the app notification/Web Push path. Do not tell Herwanto the PWA must be open or Telegram must be active for OS push if the device is subscribed; if delivery fails, diagnose Web Push delivery/logging instead.
 - When the user asks you to nudge, ping, notify, push a notification, check in, remind him at a specific time, or initiate a chat later — call create_proactive_nudge. Use this for time-specific heads-ups, not ordinary all-day deadlines.
 - If the user asks for a digest/news/briefing to be pushed or notified later ("in 5 mins", "at 6:30", etc.), schedule a proactive nudge containing the digest/news content for that time. Do not return the digest immediately unless he also asks to see it now.
-- When the user asks for a recurring daily ping/check-in until he replies yes/done — call create_daily_checkin.
-- When the user asks for daily reminders/check-ins to adapt around his schedule, breaks, timetable, lessons, or calendar, call create_break_aware_daily_checkin. This is especially appropriate for selawat, salawat, selawat ke atas Nabi, istighfar, zikr/dhikr, and similar habits he wants during free pockets of the day.
+- When the user asks for a recurring daily ping/check-in at a fixed time, or says once per day / once every day / every day at HH:MM, call create_daily_checkin. This includes selawat, salawat, istighfar, zikr/dhikr habits when a fixed time is specified.
+- When the user asks for daily reminders/check-ins to adapt around his schedule, breaks, timetable, lessons, calendar, free pockets, or "whenever I have a break", call create_break_aware_daily_checkin. Do not use break-aware check-ins when he gives a fixed time or says only once per day.
 - Islamic practice is first-class context: use MUIS Singapore prayer times, Hijri context, fasting windows, and his timetable/calendar to help him protect prayer time. If a prayer enters during a lesson, advise praying as soon as the lesson ends.
 - When the user asks about Subuh/Fajr, Syuruk, Zohor/Zuhur/Zuhr/Dhuhr, Asar/Asr, Maghrib, Isyak/Isha, prayer times, solat, salah, or whether there is time to pray, call get_muis_prayer_times before answering.
 - When the user asks about khutbah, Friday sermon, Jumu'ah sermon, or what the sermon is about, call get_muis_friday_khutbah before answering.
@@ -1410,7 +1410,7 @@ NUDGE_TOOL = {
 
 DAILY_CHECKIN_TOOL = {
     "name": "create_daily_checkin",
-    "description": "Create a recurring daily check-in. H.I.R.A pings at configured times until Herwanto replies affirmatively, then stops for that day.",
+    "description": "Create a recurring daily check-in at fixed configured times. Use this for fixed-time habits, especially when Herwanto says once per day, every day at a time, or only at a specific time. H.I.R.A pings until Herwanto replies affirmatively, then stops for that day.",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -1428,7 +1428,7 @@ DAILY_CHECKIN_TOOL = {
 
 BREAK_AWARE_CHECKIN_TOOL = {
     "name": "create_break_aware_daily_checkin",
-    "description": "Create a recurring daily check-in that recalculates today's reminder times from Herwanto's lessons and Google Calendar, then pings during free breaks.",
+    "description": "Create a recurring daily check-in that recalculates today's reminder times from Herwanto's lessons and Google Calendar, then pings during free breaks. Do not use this for fixed-time or once-per-day-at-HH:MM requests; use create_daily_checkin instead.",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -5812,15 +5812,49 @@ def _create_nudge(message: str, send_at: str) -> dict:
 AFFIRMATIVE_REPLIES = {
     "yes", "y", "done", "did", "completed", "complete", "settled", "ok",
     "okay", "yup", "yep", "yes done", "done already", "alhamdulillah",
-    "alhamdulillah done", "dah", "sudah", "dah buat", "sudah buat"
+    "alhamdulillah done", "ok done alhamdulillah", "okay done alhamdulillah",
+    "dah", "sudah", "dah buat", "sudah buat", "dah baca", "sudah baca",
 }
 
+_AFFIRMATIVE_COMPLETION_WORDS = {
+    "ok", "okay", "yes", "y", "yup", "yep", "done", "did", "completed",
+    "complete", "settled", "alhamdulillah", "dah", "sudah", "buat", "baca",
+    "already", "today", "ni", "ini",
+}
+
+def _normalise_affirmation_text(text: str) -> str:
+    return " ".join(
+        str(text or "")
+        .lower()
+        .replace(".", " ")
+        .replace("!", " ")
+        .replace(",", " ")
+        .split()
+    )
+
+def _looks_negated_completion(clean: str) -> bool:
+    return bool(re.search(
+        r"\b(?:not|no|haven'?t|havent|belum|tak|tidak|jangan|don'?t|dont)\b.{0,24}"
+        r"\b(?:done|complete|completed|settled|buat|baca)\b",
+        clean,
+    ))
+
+def _completion_phrase_from_allowed_words(clean: str) -> bool:
+    if not clean or _looks_negated_completion(clean):
+        return False
+    words = clean.split()
+    if not words or len(words) > 8:
+        return False
+    if any(word not in _AFFIRMATIVE_COMPLETION_WORDS for word in words):
+        return False
+    return bool(re.search(r"\b(?:done|completed|complete|settled|alhamdulillah|dah|sudah)\b", clean))
+
 def _is_affirmative(text: str) -> bool:
-    clean = " ".join(text.lower().replace(".", " ").replace("!", " ").split())
-    return clean in AFFIRMATIVE_REPLIES or clean.startswith("done ")
+    clean = _normalise_affirmation_text(text)
+    return clean in AFFIRMATIVE_REPLIES or clean.startswith("done ") or _completion_phrase_from_allowed_words(clean)
 
 def _explicit_checkin_completion_text(message: str) -> bool:
-    clean = " ".join(str(message or "").lower().replace(".", " ").replace("!", " ").split())
+    clean = _normalise_affirmation_text(message)
     if clean in {
         "done",
         "did",
@@ -5831,13 +5865,17 @@ def _explicit_checkin_completion_text(message: str) -> bool:
         "done already",
         "alhamdulillah",
         "alhamdulillah done",
+        "ok done alhamdulillah",
+        "okay done alhamdulillah",
         "dah",
         "sudah",
         "dah buat",
         "sudah buat",
+        "dah baca",
+        "sudah baca",
     }:
         return True
-    return clean.startswith("done ")
+    return clean.startswith("done ") or _completion_phrase_from_allowed_words(clean)
 
 def _recent_assistant_checkin_prompt(history: list[dict]) -> bool:
     for item in reversed(history or []):
@@ -7098,6 +7136,13 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
         and parse_delayed_digest_push_request(text)
     ):
         return "create_proactive_nudge"
+    if (
+        "create_daily_checkin" in available
+        and re.search(r"\b(?:daily|every day|each day|once a day|once every day|per day)\b", clean)
+        and re.search(r"\b(?:at\s*)?\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b", clean)
+        and has_any(["check in", "check-in", "remind", "reminder", "nudge", "ping", "selawat", "salawat", "istighfar", "zikr", "dhikr"])
+    ):
+        return "create_daily_checkin"
     if (
         "bulk_delete_duplicate_calendar_events" in available
         and has_any(["duplicate", "duplicates", "duplicated", "replicated", "copies", "copied", "thrice", "three times", "bulk delete", "bulk remove"])

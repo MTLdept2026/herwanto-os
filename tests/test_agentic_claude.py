@@ -5101,6 +5101,14 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(forced, "reset_marking_load")
 
+    def test_fixed_time_daily_selawat_forces_fixed_checkin(self):
+        forced = bot._forced_tool_for_text(
+            "Remind me to do selawat and istighfar once every day at 4pm",
+            [{"name": "create_daily_checkin"}, {"name": "create_break_aware_daily_checkin"}],
+        )
+
+        self.assertEqual(forced, "create_daily_checkin")
+
     def test_forced_tool_does_not_repeat_after_tool_result(self):
         fake_messages = FakeMessages()
         fake_claude = SimpleNamespace(messages=fake_messages)
@@ -5879,6 +5887,26 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertTrue(web_app._should_complete_checkin_from_affirmation("done already", history))
 
+    def test_ok_done_alhamdulillah_completes_checkin_affirmation(self):
+        history = [
+            {"role": "assistant", "content": "H.I.R.A check-in: Dah baca istighfar dan selawat hari ni?"},
+            {"role": "user", "content": "ok done alhamdulillah"},
+        ]
+
+        self.assertTrue(bot._is_affirmative("ok done alhamdulillah"))
+        self.assertTrue(bot._explicit_checkin_completion_text("ok done alhamdulillah"))
+        self.assertTrue(web_app._should_complete_checkin_from_affirmation("ok done alhamdulillah", history))
+
+    def test_negated_done_does_not_complete_checkin(self):
+        history = [
+            {"role": "assistant", "content": "H.I.R.A check-in: Dah baca istighfar dan selawat hari ni?"},
+            {"role": "user", "content": "not done yet"},
+        ]
+
+        self.assertFalse(bot._is_affirmative("not done yet"))
+        self.assertFalse(bot._explicit_checkin_completion_text("not done yet"))
+        self.assertFalse(web_app._should_complete_checkin_from_affirmation("not done yet", history))
+
     def test_pwa_cancelcheckin_command_cancels_and_archives_notification(self):
         notifications = [{"id": "91", "source": "checkin:7", "archived": False}]
 
@@ -5943,6 +5971,36 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertTrue(result["completed"])
         complete.assert_called_once_with("7")
+
+    def test_notification_action_done_archives_checkin_siblings(self):
+        item = {
+            "id": "9",
+            "kind": "reminder",
+            "title": "Check-in",
+            "body": "Dah baca istighfar dan selawat?",
+            "source": "checkin:7",
+        }
+        notifications = [
+            {"id": "9", "source": "checkin:7", "archived": False},
+            {"id": "10", "source": "checkin:7", "archived": False},
+            {"id": "11", "source": "nudge:7", "archived": False},
+        ]
+        req = web_app.NotificationActionRequest(id="9", action="done")
+
+        with (
+            patch.object(web_app, "_require_token"),
+            patch.object(bot.gs, "get_app_notification", return_value=item),
+            patch.object(bot.gs, "get_app_notifications", return_value=notifications),
+            patch.object(bot.gs, "complete_checkin_today", return_value=True),
+            patch.object(bot, "_record_notification_outcome"),
+            patch.object(bot.gs, "archive_app_notifications", return_value=2) as archive,
+            patch.object(bot.gs, "add_action_ledger") as ledger,
+        ):
+            result = web_app.notifications_action(req, x_hira_token="token", x_hira_client="phone")
+
+        self.assertTrue(result["completed"])
+        archive.assert_called_once_with(["9", "10"])
+        self.assertEqual(ledger.call_args.kwargs["metadata"]["archived_notification_ids"], ["9", "10"])
 
     def test_notification_action_done_clears_prayer_for_today(self):
         item = {
