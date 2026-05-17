@@ -20,9 +20,11 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260517-openai-native-53";
-const APP_SCRIPT = "app.js?v=20260517-openai-native-53";
-const EXPECTED_SW_CACHE = "hira-os-v122";
+const APP_VERSION = "20260518-clean-chat-55";
+const APP_SCRIPT = "app.js?v=20260518-clean-chat-55";
+const EXPECTED_SW_CACHE = "hira-os-v125";
+const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
+const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
 const AGENDA_CACHE_KEY = "hira_pwa_agenda_snapshot_v1";
 const HOME_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
@@ -57,6 +59,8 @@ const state = {
   homeTimelineItems: [],
   actionLedger: [],
 };
+state.chatHistory = cleanStoredChatHistory(state.chatHistory);
+saveChatHistory();
 
 const $ = (selector) => document.querySelector(selector);
 const urlTheme = new URLSearchParams(window.location.search).get("theme");
@@ -1180,6 +1184,9 @@ async function pollNotifications() {
       }
     }
     await markNotificationsSeen(activeItems.map((item) => item.id));
+    if (fresh.length) {
+      Promise.allSettled(fresh.map((item) => showSystemNotification(item))).catch(() => {});
+    }
     if (fresh.length) setStatus(`${fresh.length} app notification${fresh.length === 1 ? "" : "s"} received.`, "ok");
   } catch (error) {
     if (!/token/i.test(error.message)) setStatus(`Notifications: ${error.message}`, "warn");
@@ -2241,6 +2248,70 @@ function renderChatText(text) {
   return blocks.join("");
 }
 
+function normaliseQuotedJson(text) {
+  return String(text || "")
+    .trim()
+    .replace(/[“”]/g, "\"")
+    .replace(/[‘’]/g, "'");
+}
+
+function objectHasInternalToolShape(value) {
+  if (!value || typeof value !== "object") return false;
+  const keys = Object.keys(value).map((key) => key.toLowerCase());
+  const joined = keys.join(" ");
+  const internalSignals = [
+    "avoid_keywords",
+    "duration_minutes",
+    "window_start",
+    "window_end",
+    "tool_call",
+    "tool_name",
+    "arguments",
+  ];
+  const hasToolSignal = internalSignals.some((signal) => joined.includes(signal));
+  const hasSchedulingBundle =
+    keys.includes("days") &&
+    (keys.includes("purpose") || keys.includes("duration_minutes") || keys.includes("window_start"));
+  return hasToolSignal || hasSchedulingBundle;
+}
+
+function isInternalToolPayload(text) {
+  const clean = normaliseQuotedJson(text);
+  if (!clean || clean.length > 1400) return false;
+  if (!/^[\[{]/.test(clean)) return false;
+  try {
+    const parsed = JSON.parse(clean);
+    const items = Array.isArray(parsed) ? parsed : [parsed];
+    if (items.length && items.every(objectHasInternalToolShape)) return true;
+  } catch (_) {
+    // Some model/tool payloads arrive with smart quotes or partial formatting; use
+    // a conservative shape check so those do not leak into the chat transcript.
+  }
+  return (
+    /"?(?:duration_minutes|window_start|window_end|avoid_keywords)"?\s*:/.test(clean) ||
+    (/"?days"?\s*:/.test(clean) && /"?(?:purpose|window_start)"?\s*:/.test(clean))
+  );
+}
+
+function visibleChatText(text, { final = false } = {}) {
+  const clean = String(text || "").trim();
+  if (!clean) return "";
+  if (isInternalToolPayload(clean)) return final ? INTERNAL_TOOL_FALLBACK : "";
+  return text;
+}
+
+function cleanStoredChatHistory(items = []) {
+  return items
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const text = item.role === "hira" ? visibleChatText(item.text || "", { final: true }) : String(item.text || "");
+      if (!text.trim()) return null;
+      return CHAT_DEBUG_TRACE && item.trace ? { ...item, text } : { role: item.role, text };
+    })
+    .filter(Boolean)
+    .slice(-30);
+}
+
 function renderAgendaCards(text, { limit = 0 } = {}) {
   const lines = (text || "")
     .split("\n")
@@ -2433,13 +2504,14 @@ async function completeTask(taskId, control) {
 }
 
 function addMessage(role, text, persist = true) {
+  const visibleText = role === "hira" ? visibleChatText(text, { final: true }) : String(text || "");
   const el = document.createElement("article");
   el.className = `message ${role}`;
-  el.innerHTML = `<div class="message-body">${renderChatText(text)}</div>`;
+  el.innerHTML = `<div class="message-body">${renderChatText(visibleText)}</div>`;
   $("#messages").appendChild(el);
   scrollMessagesToBottom();
   if (persist) {
-    state.chatHistory.push({ role, text });
+    state.chatHistory.push({ role, text: visibleText });
     state.chatHistory = state.chatHistory.slice(-30);
     saveChatHistory();
     updateChatChrome();
@@ -2454,6 +2526,7 @@ function traceValue(value) {
 }
 
 function renderTrace(el, trace) {
+  if (!CHAT_DEBUG_TRACE) return;
   if (!el || !trace || typeof trace !== "object") return;
   let panel = el.querySelector(".chat-trace");
   if (!panel) {
@@ -2576,7 +2649,7 @@ function setHiraSpeaking(el, speaking) {
 }
 
 function updateMessage(el, text) {
-  el.querySelector(".message-body").innerHTML = renderChatText(text || "");
+  el.querySelector(".message-body").innerHTML = renderChatText(visibleChatText(text || "") || "");
   scrollMessagesToBottom();
 }
 
@@ -2598,6 +2671,8 @@ function appendToolStatus(el, name) {
     web_search: "Searching...",
     fetch_url: "Reading link...",
   };
+  setStatus(labels[name] || "Working in the background...", "muted");
+  if (!CHAT_DEBUG_TRACE) return;
   const status = document.createElement("div");
   status.className = "tool-status";
   status.innerHTML = `<span data-lucide="loader-2" aria-hidden="true"></span>${labels[name] || "Using a tool..."}`;
@@ -2607,6 +2682,7 @@ function appendToolStatus(el, name) {
 }
 
 function renderUnderstanding(el, understanding) {
+  if (!CHAT_DEBUG_TRACE) return;
   if (!el || !understanding) return;
   let cue = el.querySelector(".understanding-cue");
   if (!cue) {
@@ -3271,15 +3347,16 @@ async function uploadChatAttachment(note) {
       ].filter(Boolean).join("\n\n");
       reply = await streamChatResponse(combined, (event, streamedText = "") => {
         if (event.type === "text" || event.type === "replace") {
-          updateMessage(pending, streamedText);
+          updateMessage(pending, visibleChatText(streamedText));
         }
       });
     }
+    const visibleReply = visibleChatText(reply, { final: true });
     pending.classList.remove("pending");
     setHiraSpeaking(pending, false);
-    updateMessage(pending, reply);
+    updateMessage(pending, visibleReply);
     clearToolStatuses(pending);
-    state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: reply };
+    state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: visibleReply };
     saveChatHistory();
     setStatus(`${files.length} attachment${files.length === 1 ? "" : "s"} analysed.`, "ok");
   } catch (error) {
@@ -3378,19 +3455,22 @@ async function sendChat(message) {
         renderNotifications();
       }
       if (event.type === "text" || event.type === "replace") {
-        latestText = streamedText;
+        latestText = visibleChatText(streamedText);
         pending.classList.toggle("pending", !latestText);
         updateMessage(pending, latestText);
         renderUnderstanding(pending, understanding);
       }
     });
+    const visibleReply = visibleChatText(reply, { final: true });
     pending.classList.remove("pending");
     setHiraSpeaking(pending, false);
-    updateMessage(pending, reply);
+    updateMessage(pending, visibleReply);
     renderUnderstanding(pending, understanding);
     renderTrace(pending, trace);
     clearToolStatuses(pending);
-    state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: reply, trace };
+    state.chatHistory[state.chatHistory.length - 1] = CHAT_DEBUG_TRACE
+      ? { role: "hira", text: visibleReply, trace }
+      : { role: "hira", text: visibleReply };
     saveChatHistory();
     setStatus("H.I.R.A replied.", "ok");
   } catch (error) {
@@ -3400,7 +3480,9 @@ async function sendChat(message) {
     clearToolStatuses(pending);
     updateMessage(pending, friendly);
     renderTrace(pending, trace);
-    state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: friendly, trace };
+    state.chatHistory[state.chatHistory.length - 1] = CHAT_DEBUG_TRACE
+      ? { role: "hira", text: friendly, trace }
+      : { role: "hira", text: friendly };
     saveChatHistory();
     console.error(error);
     setStatus(friendly, "error");
