@@ -57,6 +57,13 @@ def sheet_row(*values):
     return {"values": [{"formattedValue": str(value)} for value in values]}
 
 
+async def _collect_async(aiter):
+    items = []
+    async for item in aiter:
+        items.append(item)
+    return items
+
+
 class FakeSheetsRequest:
     def __init__(self, payload=None, callback=None):
         self.payload = payload or {}
@@ -339,6 +346,62 @@ class AgenticClaudeTests(unittest.TestCase):
         )
 
         self.assertEqual(forced, "create_gmail_draft")
+
+    def test_contextual_followup_keeps_latest_news_topic(self):
+        messages = [
+            {"role": "assistant", "content": "I can look up the latest Android update and cite current sources. Want me to do that?"}
+        ]
+        text = "Yes pls do so now"
+        tools = bot.pwa_tools_for_message(text, recent_context=messages[0]["content"])
+        names = {tool["name"] for tool in tools}
+        forced = bot._forced_tool_for_current_turn(
+            messages + [{"role": "user", "content": text}],
+            tools,
+        )
+        routed_quick = asyncio.run(bot.should_route_quick_pwa_chat(messages, text))
+
+        self.assertIn("get_latest_news", names)
+        self.assertEqual(forced, "get_latest_news")
+        self.assertFalse(routed_quick)
+
+    def test_contextual_followup_keeps_weather_topic(self):
+        messages = [
+            {"role": "assistant", "content": "I can check the current NEA rain forecast for Yishun. Want me to check it?"}
+        ]
+        text = "Yes please"
+        tools = bot.pwa_tools_for_message(text, recent_context=messages[0]["content"])
+        forced = bot._forced_tool_for_current_turn(
+            messages + [{"role": "user", "content": text}],
+            tools,
+        )
+
+        self.assertEqual(forced, "get_nea_weather")
+
+    def test_contextual_followup_keeps_f1_topic(self):
+        messages = [
+            {"role": "assistant", "content": "I can check the latest F1 driver standings and Mercedes result. Want me to do that?"}
+        ]
+        text = "Go ahead"
+        tools = bot.pwa_tools_for_message(text, recent_context=messages[0]["content"])
+        forced = bot._forced_tool_for_current_turn(
+            messages + [{"role": "user", "content": text}],
+            tools,
+        )
+
+        self.assertEqual(forced, "get_f1_brief")
+
+    def test_contextual_followup_keeps_document_topic(self):
+        messages = [
+            {"role": "assistant", "content": "I can create a worksheet document from that outline. Want me to build it?"}
+        ]
+        text = "Do it"
+        tools = bot.pwa_tools_for_message(text, recent_context=messages[0]["content"])
+        forced = bot._forced_tool_for_current_turn(
+            messages + [{"role": "user", "content": text}],
+            tools,
+        )
+
+        self.assertEqual(forced, "create_document_artifact")
 
     def test_pwa_go_ahead_after_reminder_offer_uses_reminder_tool(self):
         messages = [
@@ -3969,6 +4032,78 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertIn("get_liverpool_brief", names)
 
+    def test_thread_state_resolves_lfc_affirmation_to_live_context(self):
+        state = bot.thread_state_for_turn(
+            "Yes pls do so now",
+            recent_context=(
+                "Calculate the odds of Liverpool making next season's Champions League. "
+                "I should have checked live EPL standings instead. I can do that properly now."
+            ),
+            available_tools={"get_liverpool_brief", "web_research"},
+        )
+
+        self.assertTrue(state["is_followup"])
+        self.assertTrue(state["needs_live_check"])
+        self.assertIn("liverpool", state["topic_signals"])
+        self.assertIn("get_liverpool_brief", state["recommended_tools"])
+        self.assertEqual(state["contextual_tool"], "get_liverpool_brief")
+
+    def test_thread_state_resolves_weather_affirmation(self):
+        state = bot.thread_state_for_turn(
+            "ok do it",
+            recent_context="I can check the current Singapore weather and rain forecast now.",
+            available_tools={"get_nea_weather"},
+        )
+
+        self.assertTrue(state["is_followup"])
+        self.assertIn("weather", state["topic_signals"])
+        self.assertEqual(state["contextual_tool"], "get_nea_weather")
+
+    def test_thread_state_resolves_document_affirmation(self):
+        state = bot.thread_state_for_turn(
+            "yes make it",
+            recent_context="I can create a worksheet document artifact for that lesson plan.",
+            available_tools={"create_document_artifact"},
+        )
+
+        self.assertTrue(state["is_followup"])
+        self.assertIn("teaching", state["topic_signals"])
+        self.assertEqual(state["contextual_tool"], "create_document_artifact")
+
+    def test_response_contract_flags_no_access_claim_when_tools_available(self):
+        trace = web_app._new_chat_trace("latest Liverpool standings")
+        web_app._merge_chat_trace(trace, {
+            "tools_available": ["get_liverpool_brief", "web_research"],
+            "source_discipline": {
+                "needs_live_check": True,
+                "recommended_tools": ["get_liverpool_brief"],
+                "confidence": "needs_live_source",
+            },
+        })
+
+        contract = web_app.response_contract_for_reply(
+            "I can do it, but I don't have live standings access here.",
+            trace,
+        )
+
+        self.assertEqual(contract["status"], "unsupported_no_access_claim")
+        self.assertTrue(contract["unsupported_no_access_claim"])
+
+    def test_source_fallback_uses_resolved_followup_context(self):
+        with patch.object(
+            bot,
+            "_execute_tool_offloop",
+            return_value="SOURCE CONTRACT: status=confirmed as_of=2026-05-17 source=FotMob\nTable note: Liverpool are in the race.",
+        ) as execute_tool:
+            text, tool, result = asyncio.run(web_app._source_check_backend_fallback_payload(
+                "Calculate Liverpool Champions League odds from current standings\nYes pls do so now"
+            ))
+
+        self.assertEqual(tool, "get_liverpool_brief")
+        self.assertIn("live Liverpool source check", text)
+        self.assertIn("SOURCE CONTRACT", result)
+        execute_tool.assert_called_once()
+
     def test_liverpool_brief_uses_fotmob_before_news_snippets(self):
         fotmob_text = (
             "Recent results for Liverpool: "
@@ -4416,6 +4551,15 @@ class AgenticClaudeTests(unittest.TestCase):
             ])
 
         self.assertEqual(selected, "deep-model")
+
+    def test_model_policy_explains_deep_selection(self):
+        with patch.object(bot, "DEEP_MODEL", "deep-model"), patch.object(bot, "AGENTIC_MODEL", "agentic-model"):
+            policy = bot.model_policy_for_text("research the current AI policy and compare official sources")
+
+        self.assertEqual(policy["tier"], "deep")
+        self.assertEqual(policy["model"], "deep-model")
+        self.assertEqual(policy["reason"], "complex_domain_or_deliberate_work")
+        self.assertTrue(policy["needs_live_check"])
 
     def test_agentic_model_selected_for_ordinary_chat(self):
         with patch.object(bot, "DEEP_MODEL", "deep-model"), patch.object(bot, "AGENTIC_MODEL", "agentic-model"):
@@ -5109,6 +5253,62 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(forced, "create_daily_checkin")
 
+    def test_devotional_checkins_are_removed_and_notifications_archived(self):
+        checkins = [
+            {"id": "7", "name": "Istighfar", "question": "Dah baca istighfar dan selawat?", "active": True},
+            {"id": "8", "name": "Water", "question": "Drink water?", "active": True},
+        ]
+        nudges = [
+            {"id": "3", "message": "Selawat now", "status": "pending"},
+            {"id": "4", "message": "Call mum", "status": "pending"},
+        ]
+        notifications = [
+            {"id": "91", "source": "checkin:7", "title": "H.I.R.A check-in", "body": "Dah baca istighfar dan selawat?"},
+            {"id": "92", "source": "task:4", "title": "Task", "body": "Call mum"},
+        ]
+
+        with (
+            patch.object(bot.gs, "get_checkins", return_value=checkins),
+            patch.object(bot.gs, "cancel_checkin", return_value=True) as cancel_checkin,
+            patch.object(bot.gs, "get_nudges", return_value=nudges),
+            patch.object(bot.gs, "cancel_nudge", return_value=True) as cancel_nudge,
+            patch.object(bot.gs, "get_app_notifications", return_value=notifications),
+            patch.object(bot.gs, "archive_app_notifications", return_value=1) as archive,
+        ):
+            result = bot.remove_devotional_reminders()
+
+        cancel_checkin.assert_called_once_with("7")
+        cancel_nudge.assert_called_once_with("3")
+        archive.assert_called_once_with(["91"])
+        self.assertEqual(result["checkins"], ["7"])
+        self.assertEqual(result["nudges"], ["3"])
+        self.assertEqual(result["notifications"], ["91"])
+
+    def test_devotional_checkin_notifications_are_blocked_before_queue(self):
+        with (
+            patch.object(bot, "_record_notification_outcome") as record,
+            patch.object(bot.gs, "enqueue_app_notification") as enqueue,
+        ):
+            item = bot._queue_app_notification(
+                "reminder",
+                "H.I.R.A check-in",
+                "Dah baca istighfar dan selawat?",
+                source="checkin:7",
+            )
+
+        self.assertIsNone(item)
+        enqueue.assert_not_called()
+        record.assert_called_once()
+
+    def test_devotional_checkin_creation_is_blocked(self):
+        blocked = bot._validated_action_failure(
+            "create_daily_checkin",
+            {"name": "Istighfar", "question": "Dah baca istighfar dan selawat?", "times": ["16:00"]},
+        )
+
+        self.assertIsNotNone(blocked)
+        self.assertIn("disabled", blocked)
+
     def test_forced_tool_does_not_repeat_after_tool_result(self):
         fake_messages = FakeMessages()
         fake_claude = SimpleNamespace(messages=fake_messages)
@@ -5246,7 +5446,15 @@ class AgenticClaudeTests(unittest.TestCase):
                 )
 
         fake_responses = FakeOpenAIResponses()
+        class FakeAsyncOpenAIResponses:
+            def __init__(self, sync_responses):
+                self.sync_responses = sync_responses
+
+            async def create(self, **kwargs):
+                return self.sync_responses.create(**kwargs)
+
         fake_openai = SimpleNamespace(responses=fake_responses)
+        fake_async_openai = SimpleNamespace(responses=FakeAsyncOpenAIResponses(fake_responses))
         fake_claude = SimpleNamespace(messages=SimpleNamespace(create=lambda **_: (_ for _ in ()).throw(AssertionError("Claude should not be called"))))
 
         async def fake_execute_tool(name, inp):
@@ -5258,6 +5466,7 @@ class AgenticClaudeTests(unittest.TestCase):
         with (
             patch.object(bot, "LLM_PROVIDER", "openai"),
             patch.object(bot, "openai_client", fake_openai),
+            patch.object(bot, "async_openai_client", fake_async_openai),
             patch.object(bot, "claude", fake_claude),
             patch.object(bot, "SYSTEM_PROMPT", return_value="system"),
             patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool),
@@ -5268,6 +5477,204 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(fake_responses.calls[0]["tool_choice"], {"type": "function", "name": "get_gmail_brief"})
         self.assertEqual(fake_responses.calls[0]["tools"][0]["type"], "function")
         self.assertEqual(fake_responses.calls[1]["input"][-1]["type"], "function_call_output")
+
+    def test_openai_streaming_yields_text_chunks_and_stores_response_id(self):
+        async def fake_stream(kwargs):
+            yield SimpleNamespace(type="response.output_text.delta", delta="Hello ")
+            yield SimpleNamespace(type="response.output_text.delta", delta="there")
+            yield SimpleNamespace(
+                type="hira.final_response",
+                response=SimpleNamespace(id="resp-stream-1", status="completed", output_text="Hello there", output=[]),
+            )
+
+        bot._OPENAI_RESPONSE_STATE.clear()
+        with (
+            patch.object(bot, "LLM_PROVIDER", "openai"),
+            patch.object(bot, "OPENAI_STORE_RESPONSES", True),
+            patch.object(bot, "OPENAI_USE_PREVIOUS_RESPONSE_ID", True),
+            patch.object(bot, "_openai_stream_response", side_effect=fake_stream),
+            patch.object(bot, "CACHED_SYSTEM_PROMPT", return_value="system"),
+        ):
+            events = asyncio.run(_collect_async(bot.stream_agentic_claude(
+                [{"role": "user", "content": "hello"}],
+                tools=[],
+                openai_state_key="pwa:test-openai-stream",
+            )))
+
+        text = "".join(event.get("text", "") for event in events if event.get("type") == "text")
+        self.assertEqual(text, "Hello there")
+        self.assertEqual(events[-1], {"type": "done", "text": "Hello there"})
+        self.assertEqual(bot._OPENAI_RESPONSE_STATE["pwa:test-openai-stream"], "resp-stream-1")
+
+    def test_openai_request_options_use_previous_response_and_reasoning(self):
+        bot._OPENAI_RESPONSE_STATE.clear()
+        bot._OPENAI_RESPONSE_STATE["pwa:test-state"] = "resp-prev"
+        with (
+            patch.object(bot, "LLM_PROVIDER", "openai"),
+            patch.object(bot, "OPENAI_STORE_RESPONSES", True),
+            patch.object(bot, "OPENAI_USE_PREVIOUS_RESPONSE_ID", True),
+            patch.object(bot, "OPENAI_REASONING_KWARGS", True),
+        ):
+            policy = bot.model_policy_for_text("research current policy")
+            kwargs = bot._openai_request_options(
+                "gpt-5.5",
+                650,
+                [{"role": "user", "content": "research current policy"}],
+                policy=policy,
+                state_key="pwa:test-state",
+            )
+
+        self.assertTrue(kwargs["store"])
+        self.assertEqual(kwargs["previous_response_id"], "resp-prev")
+        self.assertEqual(kwargs["reasoning"]["effort"], "high")
+        self.assertEqual(kwargs["text"]["verbosity"], "medium")
+
+    def test_openai_response_state_uses_redis_when_available(self):
+        class FakeRedis:
+            def __init__(self):
+                self.store = {}
+
+            def get(self, key):
+                return self.store.get(key)
+
+            def setex(self, key, ttl, value):
+                self.store[key] = value
+
+            def delete(self, key):
+                self.store.pop(key, None)
+
+        fake_redis = FakeRedis()
+        with (
+            patch.object(bot, "OPENAI_STORE_RESPONSES", True),
+            patch.object(bot, "OPENAI_USE_PREVIOUS_RESPONSE_ID", True),
+            patch.object(bot, "_get_redis", return_value=fake_redis),
+        ):
+            bot._remember_openai_response_id("pwa:phone", "resp-1")
+            self.assertEqual(bot._openai_previous_response_id("pwa:phone"), "resp-1")
+            bot.clear_openai_response_state("pwa:phone")
+            self.assertEqual(bot._openai_previous_response_id("pwa:phone"), "")
+
+    def test_openai_native_web_search_is_added_for_live_questions(self):
+        with patch.object(bot, "OPENAI_NATIVE_WEB_SEARCH", True):
+            policy = bot.model_policy_for_text("Any recent interesting updates on android or teenage engineering")
+            tools = bot._openai_tools_for_request([{"name": "get_latest_news"}], policy)
+
+        self.assertIn("web_search", policy["native_tools"])
+        self.assertTrue(any(tool.get("type") == "web_search" for tool in tools))
+        web_tool = next(tool for tool in tools if tool.get("type") == "web_search")
+        self.assertEqual(web_tool["user_location"]["country"], "SG")
+
+    def test_openai_request_options_add_cache_safety_and_specialist_metadata(self):
+        with (
+            patch.object(bot, "OPENAI_STORE_RESPONSES", True),
+            patch.object(bot, "OPENAI_PROMPT_CACHE_RETENTION", "24h"),
+            patch.object(bot, "OPENAI_TRACE_METADATA", True),
+        ):
+            policy = bot.model_policy_for_text("research the latest Android update")
+            kwargs = bot._openai_request_options(
+                "gpt-5.5",
+                650,
+                [{"role": "user", "content": "research the latest Android update"}],
+                policy=policy,
+                state_key="pwa:phone",
+            )
+
+        self.assertEqual(kwargs["prompt_cache_retention"], "24h")
+        self.assertTrue(kwargs["prompt_cache_key"].startswith("hira-prompt:"))
+        self.assertTrue(kwargs["safety_identifier"].startswith("hira-user:"))
+        self.assertEqual(kwargs["metadata"]["specialist"], "research")
+        self.assertTrue(kwargs["parallel_tool_calls"])
+
+    def test_openai_streaming_traces_native_tool_observations_and_citations(self):
+        annotation = SimpleNamespace(type="url_citation", title="Android Developers", url="https://developer.android.com")
+        message = SimpleNamespace(type="message", content=[SimpleNamespace(annotations=[annotation])])
+        web_call = SimpleNamespace(
+            type="web_search_call",
+            id="ws-1",
+            status="completed",
+            action=SimpleNamespace(query="Android latest update"),
+        )
+
+        async def fake_stream(kwargs):
+            yield SimpleNamespace(type="response.web_search_call.in_progress")
+            yield SimpleNamespace(type="response.output_text.delta", delta="Found it.")
+            yield SimpleNamespace(
+                type="hira.final_response",
+                response=SimpleNamespace(id="resp-native-1", status="completed", output_text="Found it.", output=[web_call, message]),
+            )
+
+        with (
+            patch.object(bot, "LLM_PROVIDER", "openai"),
+            patch.object(bot, "_openai_stream_response", side_effect=fake_stream),
+            patch.object(bot, "CACHED_SYSTEM_PROMPT", return_value="system"),
+        ):
+            events = asyncio.run(_collect_async(bot.stream_agentic_claude(
+                [{"role": "user", "content": "latest Android news"}],
+                tools=[],
+                openai_state_key="pwa:native-trace",
+            )))
+
+        self.assertTrue(any(event.get("type") == "tool" and event.get("name") == "openai_web_search" for event in events))
+        trace_patches = [event.get("patch") for event in events if event.get("type") == "trace"]
+        self.assertTrue(any((patch or {}).get("openai_native_observations") for patch in trace_patches))
+        self.assertTrue(any((patch or {}).get("openai_citations") for patch in trace_patches))
+
+    def test_openai_realtime_session_config_is_voice_ready(self):
+        config = bot.build_openai_realtime_session_config("Continue the current HIRA chat.", voice="sage")
+
+        self.assertEqual(config["model"], bot.OPENAI_REALTIME_MODEL)
+        self.assertEqual(config["voice"], "sage")
+        self.assertEqual(config["modalities"], ["text", "audio"])
+        self.assertEqual(config["turn_detection"]["type"], "semantic_vad")
+        self.assertEqual(config["client_secret"]["expires_after"]["seconds"], 600)
+
+    def test_pwa_realtime_session_endpoint_returns_ephemeral_session(self):
+        async def fake_create(extra_instructions="", voice=""):
+            return {"session": {"id": "sess_1", "client_secret": {"value": "ephemeral"}}, "config": {"voice": voice}}
+
+        with (
+            patch.object(web_app, "_require_token"),
+            patch.object(bot, "openai_realtime_status", return_value={"enabled": True, "configured": True}),
+            patch.object(bot, "create_openai_realtime_session", side_effect=fake_create) as create,
+        ):
+            payload = asyncio.run(web_app.realtime_session(
+                web_app.RealtimeSessionRequest(voice="sage", instructions="keep it brief"),
+                x_hira_token="test-token",
+            ))
+
+        self.assertEqual(payload["session"]["client_secret"]["value"], "ephemeral")
+        create.assert_called_once_with(extra_instructions="keep it brief", voice="sage")
+
+    def test_openai_document_spec_uses_strict_structured_outputs(self):
+        class FakeResponses:
+            def __init__(self):
+                self.calls = []
+
+            def create(self, **kwargs):
+                self.calls.append(kwargs)
+                return SimpleNamespace(
+                    output_text=json.dumps({
+                        "title": "Worksheet",
+                        "subtitle": "",
+                        "author": "",
+                        "sections": [{"heading": "Task", "body": "Answer the questions.", "bullets": []}],
+                    }),
+                    output=[],
+                )
+
+        fake_responses = FakeResponses()
+        with (
+            patch.object(bot, "LLM_PROVIDER", "openai"),
+            patch.object(bot, "DEEP_MODEL", "gpt-5.5"),
+            patch.object(bot, "openai_client", SimpleNamespace(responses=fake_responses)),
+            patch.object(bot, "_artifact_template_context", return_value=""),
+        ):
+            spec = bot._generate_document_spec("Worksheet", "Make a short worksheet")
+
+        self.assertEqual(spec["title"], "Worksheet")
+        text_config = fake_responses.calls[0]["text"]
+        self.assertEqual(text_config["format"]["type"], "json_schema")
+        self.assertTrue(text_config["format"]["strict"])
 
     def test_provider_status_question_is_answered_from_config(self):
         fake_openai = SimpleNamespace(
@@ -5295,6 +5702,17 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("OpenAI", reply)
         self.assertIn("HIRA_LLM_PROVIDER=openai", reply)
         self.assertIn("gpt-test", reply)
+
+    def test_provider_status_ignores_injected_grounding_context(self):
+        message = (
+            "Any recent interesting updates on android or teenage engineering\n\n"
+            "[Recent turn grounding: previous assistant said HIRA_LLM_PROVIDER=openai and gpt-5.5.]"
+        )
+
+        with patch.object(bot, "LLM_PROVIDER", "openai"):
+            reply = bot._llm_provider_status_reply([{"role": "user", "content": message}])
+
+        self.assertIsNone(reply)
 
     def test_email_followup_forces_gmail_before_action(self):
         messages = [{"role": "user", "content": "read my latest personal email and note the meeting details for follow up"}]
@@ -5830,6 +6248,21 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("Removed 3 matching app notifications.", reply)
         self.assertEqual([call.args[0] for call in cancel.call_args_list], ["78", "79", "80"])
         self.assertEqual([call.args[0] for call in archive.call_args_list], [["91"], ["92"], ["93"]])
+
+    def test_pwa_natural_request_removes_devotional_reminders(self):
+        with patch.object(bot, "remove_devotional_reminders", return_value={
+            "checkins": ["7"],
+            "nudges": ["3"],
+            "notifications": ["91"],
+            "errors": [],
+        }) as remove:
+            reply, tool = web_app._pwa_checkin_command_reply("remove all istighfar and selawat reminders")
+
+        self.assertEqual(tool, "remove_devotional_reminders")
+        self.assertIn("Removed 1 daily check-in", reply)
+        self.assertIn("1 pending nudge", reply)
+        self.assertIn("1 queued app notification", reply)
+        remove.assert_called_once()
 
     def test_pwa_affirmative_completes_active_checkin_notification(self):
         checkins = [{

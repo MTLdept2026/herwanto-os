@@ -1,9 +1,9 @@
-const CACHE_NAME = "hira-os-v120";
-const HIRA_APP_VERSION = "20260516-security-hardening-50";
+const CACHE_NAME = "hira-os-v123";
+const HIRA_APP_VERSION = "20260517-openai-native-53";
 const ASSETS = [
   "/",
-  "/styles.css?v=20260516-security-hardening-50",
-  "/app.js?v=20260516-security-hardening-50",
+  "/styles.css?v=20260517-openai-native-53",
+  "/app.js?v=20260517-openai-native-53",
   "/static/icon.svg",
   "/static/icon-192.png",
   "/static/icon-512.png",

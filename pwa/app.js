@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260516-security-hardening-50";
-const APP_SCRIPT = "app.js?v=20260516-security-hardening-50";
-const EXPECTED_SW_CACHE = "hira-os-v120";
+const APP_VERSION = "20260517-openai-native-53";
+const APP_SCRIPT = "app.js?v=20260517-openai-native-53";
+const EXPECTED_SW_CACHE = "hira-os-v122";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
 const AGENDA_CACHE_KEY = "hira_pwa_agenda_snapshot_v1";
 const HOME_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
@@ -2475,12 +2475,29 @@ function renderTrace(el, trace) {
 
   const contracts = Array.isArray(trace.source_contracts_seen) ? trace.source_contracts_seen : [];
   const memorySources = Array.isArray(trace.memory_sources) ? trace.memory_sources : [];
+  const modelPolicy = trace.model_policy && typeof trace.model_policy === "object" ? trace.model_policy : {};
+  const threadState = trace.thread_state && typeof trace.thread_state === "object" ? trace.thread_state : {};
+  const responseContract = trace.response_contract && typeof trace.response_contract === "object" ? trace.response_contract : {};
+  const nativeEvents = Array.isArray(trace.openai_native_tool_events) ? trace.openai_native_tool_events : [];
+  const nativeObservations = Array.isArray(trace.openai_native_observations) ? trace.openai_native_observations : [];
+  const openaiCitations = Array.isArray(trace.openai_citations) ? trace.openai_citations : [];
   const rows = [
     ["Route", route],
+    ["Model", modelPolicy.model || "-"],
+    ["Tier", modelPolicy.tier || "-"],
+    ["Specialist", modelPolicy.specialist || "-"],
+    ["Reasoning", modelPolicy.reasoning_effort || "-"],
+    ["Native tools", modelPolicy.native_tools || []],
+    ["Native events", nativeEvents],
+    ["Stateful", trace.openai_stateful ? "yes" : modelPolicy.stateful ? "ready" : "-"],
+    ["Response ID", trace.openai_response_id || "-"],
     ["Forced tool", trace.forced_tool || "-"],
     ["Tools available", trace.tools_available || []],
     ["Tools called", trace.tools_called || []],
+    ["Thread", threadState.is_followup ? "follow-up" : "standalone"],
+    ["Topics", threadState.topic_signals || []],
     ["Confidence gate", gate],
+    ["Contract", responseContract.status || "-"],
     ["Final mode", mode],
     ["Error phase", trace.error_phase || "-"],
   ];
@@ -2504,6 +2521,24 @@ function renderTrace(el, trace) {
     for (const contract of contracts) {
       const item = document.createElement("p");
       item.textContent = `${contract.status || "unknown"} · ${contract.as_of || "no date"} · ${contract.source || "source"} · ${contract.reason || ""}`;
+      section.appendChild(item);
+    }
+    body.appendChild(section);
+  }
+  if (nativeObservations.length || openaiCitations.length) {
+    const section = document.createElement("div");
+    section.className = "chat-trace-contracts";
+    const heading = document.createElement("span");
+    heading.textContent = "OpenAI native tools";
+    section.appendChild(heading);
+    for (const observation of nativeObservations.slice(0, 4)) {
+      const item = document.createElement("p");
+      item.textContent = `${observation.type || "tool"} · ${observation.status || "observed"} · ${traceValue(observation.queries || observation.action || observation.results || observation.outputs || "")}`;
+      section.appendChild(item);
+    }
+    for (const citation of openaiCitations.slice(0, 4)) {
+      const item = document.createElement("p");
+      item.textContent = `${citation.title || citation.type || "citation"} · ${citation.url || ""}`;
       section.appendChild(item);
     }
     body.appendChild(section);
@@ -2641,9 +2676,10 @@ async function streamChatResponse(message, onEvent) {
   const contentType = response.headers.get("content-type") || "";
   if (!contentType.includes("text/event-stream")) {
     const data = await response.json();
-    onEvent({ type: "text", text: data.reply || "Done." });
-    onEvent({ type: "done", text: data.reply || "Done." });
-    return data.reply || "Done.";
+    const fallback = "I didn’t receive a usable H.I.R.A response. Try again in a moment.";
+    onEvent({ type: "text", text: data.reply || fallback });
+    onEvent({ type: "done", text: data.reply || fallback });
+    return data.reply || fallback;
   }
 
   const reader = response.body.getReader();
@@ -2676,7 +2712,7 @@ async function streamChatResponse(message, onEvent) {
       }
     }
   }
-  return finalText || streamedText || "Done.";
+  return finalText || streamedText || "I didn’t receive a usable H.I.R.A response. Try again in a moment.";
 }
 
 function renderStoredChat() {

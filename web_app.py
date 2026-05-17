@@ -41,8 +41,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260516-security-hardening-50"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v120"
+PWA_APP_VERSION = "20260517-openai-native-53"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v123"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -437,6 +437,22 @@ def recover_missed_push_notifications(limit: int | None = None) -> dict:
             skipped += 1
             continue
         item_id = str(item.get("id", "") or "").strip()
+        devotional_block = bot._devotional_notification_block_reason(source, title, body)
+        if devotional_block:
+            skipped += 1
+            if item_id:
+                try:
+                    bot.gs.archive_app_notifications([item_id])
+                except Exception as exc:
+                    bot.logger.warning(f"Could not archive devotional recovered notification {item_id}: {exc}")
+            bot._record_notification_outcome(
+                "blocked_devotional",
+                notification_id=item_id,
+                source=source,
+                kind=kind,
+                title=title,
+            )
+            continue
         expired_reason = bot._notification_expired_action_reason(source, title, body, now=current)
         if expired_reason:
             skipped += 1
@@ -806,6 +822,11 @@ class AuthSessionRequest(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     location: Optional[DeviceLocation] = None
+
+
+class RealtimeSessionRequest(BaseModel):
+    voice: str = ""
+    instructions: str = ""
 
 
 class GmailRequest(BaseModel):
@@ -2882,6 +2903,9 @@ def _new_chat_trace(message: str, route_name: str = "") -> dict:
             "recommended_tools": list(discipline.get("recommended_tools") or []),
             "confidence": discipline.get("confidence", ""),
         },
+        "thread_state": {},
+        "model_policy": {},
+        "response_contract": {},
     }
 
 
@@ -2930,14 +2954,79 @@ def _merge_chat_trace(trace: dict, patch: dict | None = None) -> dict:
             timings = dict(trace.get("timings") or {})
             timings.update(value)
             trace["timings"] = timings
+        elif key in {"thread_state", "model_policy", "response_contract"} and isinstance(value, dict):
+            merged = dict(trace.get(key) or {})
+            merged.update(value)
+            trace[key] = merged
         elif value not in (None, ""):
             trace[key] = value
     return trace
 
 
+def _thread_state_context(thread_state: dict) -> str:
+    if not thread_state or not thread_state.get("is_followup"):
+        return ""
+    payload = {
+        "is_followup": True,
+        "topic_signals": thread_state.get("topic_signals", []),
+        "contextual_tool": thread_state.get("contextual_tool", ""),
+        "needs_live_check": bool(thread_state.get("needs_live_check")),
+        "effective_text": str(thread_state.get("effective_text", ""))[:700],
+    }
+    return (
+        "\n\n[Thread state: The user is continuing a recent offer/topic. "
+        f"Use this resolved state instead of treating the message as standalone: {json.dumps(payload, ensure_ascii=False)}]"
+    )
+
+
+def response_contract_for_reply(reply_text: str, trace: dict | None = None) -> dict:
+    text = " ".join(str(reply_text or "").split())
+    lowered = text.lower()
+    trace = trace or {}
+    source_discipline = trace.get("source_discipline") or {}
+    tools_available = set(str(item) for item in trace.get("tools_available", []) if item)
+    live_tool_available = bool(tools_available & {
+        "get_liverpool_brief",
+        "get_f1_brief",
+        "get_nea_weather",
+        "get_muis_prayer_times",
+        "get_muis_friday_khutbah",
+        "get_latest_news",
+        "web_research",
+        "web_search",
+        "fetch_url",
+    })
+    no_access_claim = bool(re.search(
+        r"\b(?:don'?t|do not|can'?t|cannot)\s+(?:have|access|check|browse|see|get)\b.{0,80}\b(?:live|current|latest|standings?|web|internet|source|sources|data)\b",
+        lowered,
+    ))
+    missing_source_contract = (
+        bool(source_discipline.get("needs_live_check"))
+        and not trace.get("source_contracts_seen")
+        and not trace.get("tools_called")
+    )
+    empty_answer = _empty_chat_reply(text)
+    status = "ok"
+    if empty_answer:
+        status = "empty_answer"
+    elif no_access_claim and live_tool_available:
+        status = "unsupported_no_access_claim"
+    elif missing_source_contract:
+        status = "missing_source_contract"
+    return {
+        "status": status,
+        "empty_answer": empty_answer,
+        "unsupported_no_access_claim": bool(no_access_claim and live_tool_available),
+        "missing_source_contract": bool(missing_source_contract),
+    }
+
+
 def _finalise_chat_trace(trace: dict, final_mode: str = "answered") -> dict:
     if not trace.get("final_mode"):
         trace["final_mode"] = final_mode
+    contract = trace.get("response_contract") or {}
+    if contract.get("status") in {"empty_answer", "unsupported_no_access_claim"}:
+        trace["confidence_gate"] = "review_needed"
     contracts = trace.get("source_contracts_seen") or []
     if contracts and trace.get("confidence_gate") in {"pending", "passed"}:
         statuses = {str(item.get("status", "")).lower() for item in contracts if isinstance(item, dict)}
@@ -3131,6 +3220,27 @@ def _pwa_checkin_command_reply(message: str) -> tuple[str, str] | None:
     if not clean:
         return None
     lower = clean.lower()
+    if (
+        re.search(r"\b(?:remove|cancel|delete|stop|disable|turn off|clear)\b", lower)
+        and bot._is_devotional_reminder_text(lower)
+    ):
+        result = bot.remove_devotional_reminders()
+        checkins = len(result.get("checkins") or [])
+        nudges = len(result.get("nudges") or [])
+        notifications = len(result.get("notifications") or [])
+        errors = result.get("errors") or []
+        pieces = []
+        if checkins:
+            pieces.append(f"{checkins} daily check-in{'s' if checkins != 1 else ''}")
+        if nudges:
+            pieces.append(f"{nudges} pending nudge{'s' if nudges != 1 else ''}")
+        if notifications:
+            pieces.append(f"{notifications} queued app notification{'s' if notifications != 1 else ''}")
+        if errors:
+            return f"I tried to remove the istighfar/selawat reminders, but storage returned: {'; '.join(errors)}", "remove_devotional_reminders"
+        if not pieces:
+            return "No active istighfar/selawat reminders or queued notifications were found.", "remove_devotional_reminders"
+        return f"Removed {'; '.join(pieces)} for istighfar/selawat.", "remove_devotional_reminders"
     if lower in {"/checkins", "checkins"}:
         try:
             checkins = bot.gs.get_checkins()
@@ -3278,6 +3388,13 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
     working_memory = _update_working_memory(history_key, history, message)
     working_summary = _working_memory_summary(working_memory)
     _schedule_background_call("taste hint capture", bot.absorb_taste_hint, message)
+    recent_context_for_followup = "\n".join(
+        str(item.get("content", ""))[:600]
+        for item in history[-6:]
+        if isinstance(item, dict) and isinstance(item.get("content"), str)
+    )
+    source_hint_message = bot._contextual_followup_effective_text(message, recent_context_for_followup)
+    initial_thread_state = bot.thread_state_for_turn(message, recent_context_for_followup)
     user_content = message
     if bot.re.search(r"\b(?:personal|personal\s*2|second(?:ary)?|other\s+personal|work|moe|school)\s+(?:gmail|email|emails|mail|inbox)\b", message, bot.re.I):
         account_hint, _ = bot._extract_gmail_account_from_text(message)
@@ -3286,8 +3403,9 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
         f"{user_content}"
         f"{_working_memory_context(working_memory)}"
         f"{_recent_turn_grounding_context(history, message)}"
+        f"{_thread_state_context(initial_thread_state)}"
         f"{bot.intent_lens_hint(message)}"
-        f"{bot.source_discipline_hint(message)}"
+        f"{bot.source_discipline_hint(source_hint_message)}"
     )
     location_context = _device_location_context(location)
     if location_context:
@@ -3401,6 +3519,10 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
         started = time.perf_counter()
         phase_started = started
         trace = _new_chat_trace(message)
+        _merge_chat_trace(trace, {
+            "thread_state": initial_thread_state,
+            "model_policy": bot.model_policy_for_messages(list(history)),
+        })
 
         def sse(payload: dict) -> str:
             return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
@@ -3440,7 +3562,38 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                 for item in history[-6:-1]
                 if isinstance(item.get("content"), str)
             )
+            if bot._is_contextual_followup_reply(message):
+                contextual_offer = bot._latest_contextual_offer(recent_context)
+                if contextual_offer:
+                    contextual_discipline = bot.source_discipline_for_text(f"{contextual_offer}\n{message}")
+                    _merge_chat_trace(trace, {
+                        "confidence_gate": "pending" if contextual_discipline.get("needs_live_check") else trace.get("confidence_gate"),
+                        "source_discipline": {
+                            "needs_live_check": bool(contextual_discipline.get("needs_live_check")),
+                            "recommended_tools": list(contextual_discipline.get("recommended_tools") or []),
+                            "confidence": contextual_discipline.get("confidence", ""),
+                        },
+                    })
             tools = [] if quick else bot.pwa_tools_for_message(message, recent_context=recent_context)
+            thread_state = bot.thread_state_for_turn(
+                message,
+                recent_context,
+                {tool["name"] for tool in tools},
+            )
+            model_policy = bot.model_policy_for_messages(list(history))
+            _merge_chat_trace(trace, {
+                "thread_state": thread_state,
+                "model_policy": model_policy,
+            })
+            if thread_state.get("needs_live_check"):
+                _merge_chat_trace(trace, {
+                    "confidence_gate": "pending",
+                    "source_discipline": {
+                        "needs_live_check": True,
+                        "recommended_tools": list(thread_state.get("recommended_tools") or []),
+                        "confidence": "needs_live_source",
+                    },
+                })
             if not quick:
                 forced_tool = bot._forced_tool_for_current_turn(list(history), tools) or ""
                 _merge_chat_trace(trace, {
@@ -3452,7 +3605,12 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             stream = (
                 bot.stream_quick_pwa_reply(list(history[:-1]), message)
                 if quick
-                else bot.stream_agentic_claude(list(history), max_tokens=_CHAT_MAX_TOKENS, tools=tools)
+                else bot.stream_agentic_claude(
+                    list(history),
+                    max_tokens=_CHAT_MAX_TOKENS,
+                    tools=tools,
+                    openai_state_key=history_key,
+                )
             )
             first_text = True
             async for event in stream:
@@ -3474,7 +3632,57 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                     continue
                 yield sse(event)
 
-            reply_text = final_text or "".join(reply_parts).strip() or "Done."
+            reply_text = final_text or "".join(reply_parts).strip()
+            response_contract = response_contract_for_reply(reply_text, trace)
+            _merge_chat_trace(trace, {"response_contract": response_contract})
+            if _empty_chat_reply(reply_text):
+                fallback_text = ""
+                fallback_result = ""
+                fallback_tool = ""
+                try:
+                    fallback_text, fallback_tool, fallback_result = await _source_check_backend_fallback_payload(source_hint_message)
+                except Exception as fallback_exc:
+                    bot.logger.warning(f"PWA empty-answer source fallback failed: {fallback_exc}")
+                if fallback_text:
+                    contracts = bot._source_contracts_from_text(fallback_result)
+                    _merge_chat_trace(trace, {
+                        "tools_called": [fallback_tool],
+                        "source_contracts_seen": contracts,
+                        "confidence_gate": "fallback",
+                        "final_mode": "empty_answer_fallback",
+                    })
+                    reply_text = fallback_text
+                else:
+                    _merge_chat_trace(trace, {
+                        "confidence_gate": "failed" if trace.get("source_discipline", {}).get("needs_live_check") else trace.get("confidence_gate"),
+                        "final_mode": "empty_answer",
+                    })
+                    reply_text = (
+                        "I lost the actual answer before it reached the chat, so I’m not going to pretend that was done. "
+                        "Try again in a moment."
+                    )
+                yield sse({"type": "replace", "text": reply_text})
+                yield sse({"type": "done", "text": reply_text})
+            elif response_contract.get("unsupported_no_access_claim"):
+                fallback_text = ""
+                fallback_result = ""
+                fallback_tool = ""
+                try:
+                    fallback_text, fallback_tool, fallback_result = await _source_check_backend_fallback_payload(source_hint_message)
+                except Exception as fallback_exc:
+                    bot.logger.warning(f"PWA no-access source fallback failed: {fallback_exc}")
+                if fallback_text:
+                    contracts = bot._source_contracts_from_text(fallback_result)
+                    _merge_chat_trace(trace, {
+                        "tools_called": [fallback_tool],
+                        "source_contracts_seen": contracts,
+                        "confidence_gate": "fallback",
+                        "final_mode": "no_access_claim_fallback",
+                        "response_contract": {"status": "fallback_replaced_no_access_claim"},
+                    })
+                    reply_text = fallback_text
+                    yield sse({"type": "replace", "text": reply_text})
+                    yield sse({"type": "done", "text": reply_text})
             history.append({"role": "assistant", "content": reply_text})
             bot.save_history(history_key, history[-bot.MAX_TURNS:])
             _schedule_background_call(
@@ -3495,7 +3703,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             fallback_result = ""
             fallback_tool = ""
             try:
-                fallback_text, fallback_tool, fallback_result = await _source_check_backend_fallback_payload(message)
+                fallback_text, fallback_tool, fallback_result = await _source_check_backend_fallback_payload(source_hint_message)
             except Exception as fallback_exc:
                 bot.logger.warning(f"PWA source fallback failed: {fallback_exc}")
             if fallback_text:
@@ -3532,6 +3740,11 @@ async def _source_check_backend_fallback(message: str) -> str:
     return text
 
 
+def _empty_chat_reply(text: str) -> bool:
+    clean = " ".join(str(text or "").strip().split()).lower()
+    return clean in {"", "done", "done."}
+
+
 async def _source_check_backend_fallback_payload(message: str) -> tuple[str, str, str]:
     discipline = bot.source_discipline_for_text(message)
     recommended = set(discipline.get("recommended_tools") or [])
@@ -3543,10 +3756,35 @@ async def _source_check_backend_fallback_payload(message: str) -> tuple[str, str
     elif "get_f1_brief" in recommended:
         tool_name = "get_f1_brief"
         label = "F1"
+    elif "get_nea_weather" in recommended:
+        tool_name = "get_nea_weather"
+        label = "weather"
+    elif "get_muis_prayer_times" in recommended:
+        tool_name = "get_muis_prayer_times"
+        label = "MUIS prayer times"
+    elif "get_muis_friday_khutbah" in recommended:
+        tool_name = "get_muis_friday_khutbah"
+        label = "MUIS khutbah"
+    elif "get_latest_news" in recommended:
+        tool_name = "get_latest_news"
+        label = "news"
+    elif "web_research" in recommended:
+        tool_name = "web_research"
+        label = "web research"
     if not tool_name:
         return "", "", ""
 
-    result = await bot._execute_tool_offloop(tool_name, {"focus": message, "max_items": 2})
+    if tool_name in {"get_liverpool_brief", "get_f1_brief"}:
+        tool_input = {"focus": message, "max_items": 2}
+    elif tool_name == "get_nea_weather":
+        tool_input = {"area": "Yishun", "include_24h": True, "include_4day": False}
+    elif tool_name in {"get_muis_prayer_times", "get_muis_friday_khutbah"}:
+        tool_input = {"date": ""}
+    elif tool_name == "web_research":
+        tool_input = {"query": message, "max_sources": 3, "fetch_pages": 1, "freshness": "latest"}
+    else:
+        tool_input = {"query": message, "max_items": 3}
+    result = await bot._execute_tool_offloop(tool_name, tool_input)
     if not result or result.startswith("Failed to fetch"):
         return (
             "I hit the model/backend step, and the live source check also failed, "
@@ -3593,8 +3831,36 @@ def reset_chat(
     x_hira_client: Optional[str] = Header(default=None),
 ):
     _require_token(x_hira_token)
-    bot.save_history(_history_key(x_hira_client), [])
+    history_key = _history_key(x_hira_client)
+    bot.save_history(history_key, [])
+    bot.clear_openai_response_state(history_key)
     return {"ok": True}
+
+
+@app.get("/api/realtime/status")
+def realtime_status(x_hira_token: Optional[str] = Header(default=None)):
+    _require_token(x_hira_token)
+    return bot.openai_realtime_status()
+
+
+@app.post("/api/realtime/session")
+async def realtime_session(
+    req: RealtimeSessionRequest,
+    x_hira_token: Optional[str] = Header(default=None),
+):
+    _require_token(x_hira_token)
+    status = bot.openai_realtime_status()
+    if not status.get("enabled"):
+        raise HTTPException(status_code=400, detail="OpenAI realtime voice is disabled")
+    if not status.get("configured"):
+        raise HTTPException(status_code=503, detail="OpenAI realtime voice needs OPENAI_API_KEY configured")
+    try:
+        return await bot.create_openai_realtime_session(
+            extra_instructions=req.instructions,
+            voice=req.voice,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not create realtime session: {exc}") from exc
 
 
 @app.get("/api/agenda")

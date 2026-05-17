@@ -6,6 +6,7 @@ import asyncio
 import gc
 import json
 import base64
+import hashlib
 import logging
 import re
 import resource
@@ -164,6 +165,13 @@ def _model_from_env(key: str, default: str) -> str:
     return raw or default
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on", "enabled"}
+
+
 _DEFAULT_AGENTIC_MODEL = "gpt-5.5" if LLM_PROVIDER == "openai" else "claude-sonnet-4-6"
 _DEFAULT_QUICK_MODEL = "gpt-5.4-mini" if LLM_PROVIDER == "openai" else "claude-haiku-4-5-20251001"
 AGENTIC_MODEL = _model_from_env("HIRA_AGENTIC_MODEL", _DEFAULT_AGENTIC_MODEL)
@@ -171,6 +179,30 @@ DEEP_MODEL = _model_from_env("HIRA_DEEP_MODEL", AGENTIC_MODEL)
 QUICK_MODEL = _model_from_env("HIRA_QUICK_MODEL", _DEFAULT_QUICK_MODEL)
 ROUTER_MODEL = _model_from_env("HIRA_ROUTER_MODEL", QUICK_MODEL)
 STRUCTURED_MODEL = _model_from_env("HIRA_STRUCTURED_MODEL", QUICK_MODEL)
+OPENAI_STORE_RESPONSES = _env_flag("HIRA_OPENAI_STORE_RESPONSES", True)
+OPENAI_USE_PREVIOUS_RESPONSE_ID = _env_flag("HIRA_OPENAI_USE_PREVIOUS_RESPONSE_ID", True)
+OPENAI_REASONING_KWARGS = _env_flag("HIRA_OPENAI_REASONING_KWARGS", True)
+OPENAI_TRACE_METADATA = _env_flag("HIRA_OPENAI_TRACE_METADATA", True)
+OPENAI_NATIVE_WEB_SEARCH = _env_flag("HIRA_OPENAI_NATIVE_WEB_SEARCH", True)
+OPENAI_NATIVE_CODE_INTERPRETER = _env_flag("HIRA_OPENAI_NATIVE_CODE_INTERPRETER", False)
+OPENAI_CODE_INTERPRETER_FILE_IDS = [
+    item.strip()
+    for item in os.environ.get("HIRA_OPENAI_CODE_INTERPRETER_FILE_IDS", "").split(",")
+    if item.strip()
+]
+OPENAI_CODE_INTERPRETER_MEMORY_LIMIT = os.environ.get("HIRA_OPENAI_CODE_INTERPRETER_MEMORY_LIMIT", "1g").strip() or "1g"
+OPENAI_CODE_INTERPRETER_NETWORK = os.environ.get("HIRA_OPENAI_CODE_INTERPRETER_NETWORK", "disabled").strip().lower() or "disabled"
+OPENAI_FILE_SEARCH_VECTOR_STORE_IDS = [
+    item.strip()
+    for item in os.environ.get("HIRA_OPENAI_FILE_SEARCH_VECTOR_STORE_IDS", "").split(",")
+    if item.strip()
+]
+OPENAI_PROMPT_CACHE_RETENTION = os.environ.get("HIRA_OPENAI_PROMPT_CACHE_RETENTION", "24h").strip()
+OPENAI_SERVICE_TIER = os.environ.get("HIRA_OPENAI_SERVICE_TIER", "").strip()
+OPENAI_REALTIME_ENABLED = _env_flag("HIRA_OPENAI_REALTIME_ENABLED", LLM_PROVIDER == "openai")
+OPENAI_REALTIME_MODEL = os.environ.get("HIRA_OPENAI_REALTIME_MODEL", "gpt-realtime").strip() or "gpt-realtime"
+OPENAI_REALTIME_VOICE = os.environ.get("HIRA_OPENAI_REALTIME_VOICE", "verse").strip() or "verse"
+SUPPRESS_DEVOTIONAL_CHECKIN_NOTIFICATIONS = _env_flag("HIRA_SUPPRESS_DEVOTIONAL_CHECKIN_NOTIFICATIONS", True)
 
 WORK_DRIVE_REFERENCES = [
     (
@@ -268,16 +300,89 @@ def _message_text_for_routing(messages: list[dict]) -> str:
     return ""
 
 
-def _agentic_model_for_messages(messages: list[dict]) -> str:
-    text = _message_text_for_routing(messages).lower()
-    if DEEP_MODEL != AGENTIC_MODEL and re.search(
+def model_policy_for_text(text: str = "") -> dict:
+    clean = str(text or "")
+    lowered = clean.lower()
+    source_policy = source_discipline_for_text(clean)
+    deep_reason = ""
+    if re.search(
         r"\b(code|debug|architecture|refactor|proposal|strategy|analyse|analyze|"
         r"document|pdf|slides?|deck|lesson plan|rubric|business|contract|legal|"
-        r"medical|religious ruling|fatwa|research|compare|decision)\b",
-        text,
+        r"medical|religious ruling|fatwa|research|compare|decision|migration|"
+        r"multi[- ]?step|plan|investigate|evaluate|audit|review)\b",
+        lowered,
     ):
-        return DEEP_MODEL
-    return AGENTIC_MODEL
+        deep_reason = "complex_domain_or_deliberate_work"
+    elif len(clean) > 1800:
+        deep_reason = "long_context_turn"
+    elif source_policy.get("needs_live_check") and re.search(
+        r"\b(?:odds|probabilit(?:y|ies)|chance|compare|analysis|standings?|table|qualification|policy|official|evidence)\b",
+        lowered,
+    ):
+        deep_reason = "source_sensitive_reasoning"
+
+    use_deep = bool(deep_reason) and DEEP_MODEL != AGENTIC_MODEL
+    reasoning_effort = "medium"
+    verbosity = "medium"
+    if deep_reason in {"complex_domain_or_deliberate_work", "long_context_turn"}:
+        reasoning_effort = "high"
+    elif deep_reason == "source_sensitive_reasoning":
+        reasoning_effort = "medium"
+    elif re.search(r"\b(?:quick|brief|short|simple|fast)\b", lowered):
+        reasoning_effort = "low"
+        verbosity = "low"
+    return {
+        "provider": LLM_PROVIDER,
+        "tier": "deep" if use_deep else "agentic",
+        "model": DEEP_MODEL if use_deep else AGENTIC_MODEL,
+        "reason": deep_reason or "ordinary_chat_or_tool_execution",
+        "specialist": specialist_policy_for_text(clean)["specialist"],
+        "reasoning_effort": reasoning_effort,
+        "verbosity": verbosity,
+        "store": bool(OPENAI_STORE_RESPONSES),
+        "stateful": bool(OPENAI_USE_PREVIOUS_RESPONSE_ID),
+        "max_tool_calls": 8,
+        "native_tools": openai_native_tool_policy_for_text(clean),
+        "needs_live_check": bool(source_policy.get("needs_live_check")),
+        "recommended_tools": list(source_policy.get("recommended_tools") or []),
+    }
+
+
+def model_policy_for_messages(messages: list[dict]) -> dict:
+    return model_policy_for_text(_message_text_for_routing(messages))
+
+
+def _agentic_model_for_messages(messages: list[dict]) -> str:
+    return str(model_policy_for_messages(messages).get("model") or AGENTIC_MODEL)
+
+
+def specialist_policy_for_text(text: str = "") -> dict:
+    clean = str(text or "").lower()
+    checks = [
+        ("calendar_actions", r"\b(?:calendar|schedule|appointment|meeting|reminder|nudge|task|deadline|done|delete|cancel|book)\b"),
+        ("teaching", r"\b(?:classlist|class list|students?|marks?|scores?|lesson plan|worksheet|rubric|marking|mtl|oral|exam)\b"),
+        ("sports_live", r"\b(?:liverpool|lfc|f1|formula 1|grand prix|premier league|epl|champions league|standings?|score|result)\b"),
+        ("research", r"\b(?:research|deep dive|investigate|compare|sources?|official|evidence|docs|documentation|policy|latest|current|news)\b"),
+        ("email", r"\b(?:gmail|email|inbox|draft|reply|mail)\b"),
+        ("artifacts", r"\b(?:document|docx|slides?|deck|ppt|pptx|presentation|artifact|worksheet|report)\b"),
+        ("memory", r"\b(?:remember|memory|preference|correction|forget|i told you)\b"),
+    ]
+    for specialist, pattern in checks:
+        if re.search(pattern, clean):
+            return {"specialist": specialist, "reason": f"matched_{specialist}"}
+    return {"specialist": "general", "reason": "ordinary_chat"}
+
+
+def openai_native_tool_policy_for_text(text: str = "") -> list[str]:
+    clean = str(text or "").lower()
+    native: list[str] = []
+    if OPENAI_NATIVE_WEB_SEARCH and source_discipline_for_text(clean).get("needs_live_check"):
+        native.append("web_search")
+    if OPENAI_FILE_SEARCH_VECTOR_STORE_IDS and re.search(r"\b(?:file|document|docs|uploaded|pdf|drive|source|memory|find in)\b", clean):
+        native.append("file_search")
+    if OPENAI_NATIVE_CODE_INTERPRETER and re.search(r"\b(?:calculate|spreadsheet|csv|xlsx|analyse|analyze|statistics|chart|graph|python|compute)\b", clean):
+        native.append("code_interpreter")
+    return native
 
 
 _mem_histories = OrderedDict()
@@ -455,6 +560,22 @@ def build_runtime_status() -> dict:
             "quick": QUICK_MODEL,
             "router": ROUTER_MODEL,
             "structured": STRUCTURED_MODEL,
+        },
+        "openai_upgrade": {
+            "thread_state_resolver": "enabled",
+            "model_policy_router": "enabled",
+            "responses_streaming": "enabled" if LLM_PROVIDER == "openai" else "provider_disabled",
+            "responses_state": "enabled" if OPENAI_STORE_RESPONSES and OPENAI_USE_PREVIOUS_RESPONSE_ID else "disabled",
+            "strict_structured_outputs": "enabled" if LLM_PROVIDER == "openai" else "provider_disabled",
+            "native_web_search": "enabled" if OPENAI_NATIVE_WEB_SEARCH else "disabled",
+            "native_file_search": "enabled" if OPENAI_FILE_SEARCH_VECTOR_STORE_IDS else "not_configured",
+            "native_code_interpreter": "enabled" if OPENAI_NATIVE_CODE_INTERPRETER else "disabled",
+            "prompt_cache": "enabled" if OPENAI_PROMPT_CACHE_RETENTION else "disabled",
+            "source_contract_trace": "enabled",
+            "proactive_intelligence": "enabled" if JOB_INTERVALS.get("proactive_intelligence") else "disabled",
+            "realtime_voice": "enabled" if OPENAI_REALTIME_ENABLED and OPENAI_API_KEY else "missing_api_key" if OPENAI_REALTIME_ENABLED else "disabled",
+            "specialist_policy": "enabled",
+            "specialist_agents": "enabled_via_policy",
         },
         "memory_buckets": memory_counts,
         "memory_error": memory_error,
@@ -1143,10 +1264,207 @@ def _openai_tools_from_anthropic(tools: list[dict] | None) -> list[dict] | None:
     return converted or None
 
 
+def _openai_native_tools_for_policy(policy: dict | None = None) -> list[dict]:
+    policy = policy or {}
+    requested = set(policy.get("native_tools") or [])
+    native: list[dict] = []
+    if "web_search" in requested:
+        native.append({
+            "type": "web_search",
+            "search_context_size": "medium",
+            "user_location": {
+                "type": "approximate",
+                "city": "Singapore",
+                "country": "SG",
+                "timezone": "Asia/Singapore",
+            },
+        })
+    if "file_search" in requested and OPENAI_FILE_SEARCH_VECTOR_STORE_IDS:
+        native.append({
+            "type": "file_search",
+            "vector_store_ids": OPENAI_FILE_SEARCH_VECTOR_STORE_IDS,
+            "max_num_results": 6,
+        })
+    if "code_interpreter" in requested and OPENAI_NATIVE_CODE_INTERPRETER:
+        container = {
+            "type": "auto",
+            "memory_limit": OPENAI_CODE_INTERPRETER_MEMORY_LIMIT,
+        }
+        if OPENAI_CODE_INTERPRETER_FILE_IDS:
+            container["file_ids"] = OPENAI_CODE_INTERPRETER_FILE_IDS
+        if OPENAI_CODE_INTERPRETER_NETWORK == "disabled":
+            container["network_policy"] = {"type": "disabled"}
+        native.append({"type": "code_interpreter", "container": container})
+    return native
+
+
+def _openai_tools_for_request(tools: list[dict] | None, policy: dict | None = None) -> list[dict] | None:
+    merged = []
+    converted = _openai_tools_from_anthropic(tools) or []
+    merged.extend(converted)
+    merged.extend(_openai_native_tools_for_policy(policy))
+    return merged or None
+
+
 def _openai_tool_choice(forced_tool: str | None):
     if not forced_tool:
         return None
     return {"type": "function", "name": forced_tool}
+
+
+_OPENAI_RESPONSE_STATE: OrderedDict[str, str] = OrderedDict()
+_MAX_OPENAI_RESPONSE_STATE = 200
+
+
+def _openai_response_state_redis_key(state_key: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9:_-]+", "_", str(state_key or ""))[:180]
+    return f"openai:response_state:{safe}"
+
+
+def _openai_previous_response_id(state_key: str | None = None) -> str:
+    if not (OPENAI_STORE_RESPONSES and OPENAI_USE_PREVIOUS_RESPONSE_ID and state_key):
+        return ""
+    redis = _get_redis()
+    if redis:
+        try:
+            value = redis.get(_openai_response_state_redis_key(str(state_key))) or ""
+            if value:
+                _OPENAI_RESPONSE_STATE[str(state_key)] = value
+                _OPENAI_RESPONSE_STATE.move_to_end(str(state_key))
+                return str(value)
+        except Exception as exc:
+            logger.warning("OpenAI response state Redis read failed: %s", exc)
+    value = _OPENAI_RESPONSE_STATE.get(str(state_key), "")
+    if value:
+        _OPENAI_RESPONSE_STATE.move_to_end(str(state_key))
+    return value
+
+
+def _remember_openai_response_id(state_key: str | None, response_id: str | None) -> None:
+    if not (OPENAI_STORE_RESPONSES and OPENAI_USE_PREVIOUS_RESPONSE_ID and state_key and response_id):
+        return
+    key = str(state_key)
+    _OPENAI_RESPONSE_STATE[key] = str(response_id)
+    _OPENAI_RESPONSE_STATE.move_to_end(key)
+    while len(_OPENAI_RESPONSE_STATE) > _MAX_OPENAI_RESPONSE_STATE:
+        _OPENAI_RESPONSE_STATE.popitem(last=False)
+    redis = _get_redis()
+    if redis:
+        try:
+            redis.setex(_openai_response_state_redis_key(key), 86400 * 14, str(response_id))
+        except Exception as exc:
+            logger.warning("OpenAI response state Redis write failed: %s", exc)
+
+
+def clear_openai_response_state(state_key: str | None = None) -> None:
+    if not state_key:
+        _OPENAI_RESPONSE_STATE.clear()
+        return
+    key = str(state_key)
+    _OPENAI_RESPONSE_STATE.pop(key, None)
+    redis = _get_redis()
+    if redis:
+        try:
+            redis.delete(_openai_response_state_redis_key(key))
+        except Exception as exc:
+            logger.warning("OpenAI response state Redis delete failed: %s", exc)
+
+
+def _openai_supports_reasoning(model: str = "") -> bool:
+    clean = str(model or "").lower()
+    return clean.startswith(("gpt-5", "o1", "o3", "o4"))
+
+
+def _openai_stable_key(value: str | None, prefix: str = "hira") -> str:
+    clean = str(value or "default").strip() or "default"
+    digest = hashlib.sha256(clean.encode("utf-8")).hexdigest()[:32]
+    return f"{prefix}:{digest}"
+
+
+def _openai_specialist_instruction(policy: dict | None = None) -> str:
+    specialist = str((policy or {}).get("specialist") or "general")
+    instructions = {
+        "calendar_actions": (
+            "Specialist mode: schedule/action operator. Resolve dates against Asia/Singapore, "
+            "call calendar/task/nudge tools before claiming changes, and echo exact created or removed items."
+        ),
+        "teaching": (
+            "Specialist mode: teaching workload analyst. Prefer classlists, marking and timetable tools; "
+            "be precise with class names, score columns, due dates, and student-facing wording."
+        ),
+        "sports_live": (
+            "Specialist mode: live sports analyst. Use source-backed tools for fixtures, tables, scores, "
+            "injuries, lineups, rumours and odds; label stale or speculative information plainly."
+        ),
+        "research": (
+            "Specialist mode: research analyst. Search or fetch primary/current sources when facts may have changed, "
+            "separate evidence from inference, and preserve useful source notes after tool output."
+        ),
+        "email": (
+            "Specialist mode: email chief of staff. Read the relevant mailbox before summarising or drafting, "
+            "capture sender/date/action items, and do not invent inbox access."
+        ),
+        "artifacts": (
+            "Specialist mode: artifact producer. Generate structured document or slide specs, reuse stored templates, "
+            "and return concrete artifact paths or next edits."
+        ),
+        "memory": (
+            "Specialist mode: memory curator. Write durable facts through memory tools, classify corrections with high priority, "
+            "and never claim persistence unless the tool confirms it."
+        ),
+    }
+    detail = instructions.get(specialist)
+    return f"\n\n{detail}" if detail else ""
+
+
+def _openai_instructions_for_policy(policy: dict | None = None) -> str:
+    return f"{CACHED_SYSTEM_PROMPT()}{_openai_specialist_instruction(policy)}"
+
+
+def _openai_request_options(
+    model: str,
+    max_tokens: int,
+    messages: list[dict],
+    policy: dict | None = None,
+    state_key: str | None = None,
+    previous_response_id: str | None = None,
+    text_format: dict | None = None,
+) -> dict:
+    policy = policy or model_policy_for_messages(messages)
+    kwargs: dict = {
+        "model": model,
+        "max_output_tokens": max_tokens,
+        "truncation": "auto",
+    }
+    if text_format:
+        kwargs["text"] = {"format": text_format}
+    elif policy.get("verbosity"):
+        kwargs["text"] = {"verbosity": str(policy.get("verbosity") or "medium")}
+    if OPENAI_STORE_RESPONSES:
+        kwargs["store"] = True
+    if state_key:
+        kwargs["prompt_cache_key"] = _openai_stable_key(state_key, prefix="hira-prompt")
+        kwargs["safety_identifier"] = _openai_stable_key(state_key, prefix="hira-user")
+    if OPENAI_PROMPT_CACHE_RETENTION in {"24h", "in-memory"}:
+        kwargs["prompt_cache_retention"] = OPENAI_PROMPT_CACHE_RETENTION
+    if OPENAI_SERVICE_TIER:
+        kwargs["service_tier"] = OPENAI_SERVICE_TIER
+    if OPENAI_TRACE_METADATA:
+        kwargs["metadata"] = {
+            "app": "hira",
+            "tier": str(policy.get("tier", "")),
+            "reason": str(policy.get("reason", ""))[:96],
+            "specialist": str(policy.get("specialist", ""))[:64],
+        }
+    if policy.get("max_tool_calls"):
+        kwargs["max_tool_calls"] = int(policy.get("max_tool_calls") or 8)
+    kwargs["parallel_tool_calls"] = True
+    if OPENAI_REASONING_KWARGS and _openai_supports_reasoning(model):
+        kwargs["reasoning"] = {"effort": str(policy.get("reasoning_effort") or "medium")}
+    prior = previous_response_id or _openai_previous_response_id(state_key)
+    if prior:
+        kwargs["previous_response_id"] = prior
+    return kwargs
 
 
 def _openai_response_call_items(resp) -> list[dict]:
@@ -1183,32 +1501,119 @@ def _openai_tool_calls(resp) -> list[SimpleNamespace]:
     return calls
 
 
-def _openai_create_response(model: str, max_tokens: int, messages: list[dict], system: str | None = None, tools=None, forced_tool: str | None = None):
-    kwargs = {
-        "model": model,
-        "input": _openai_input_from_messages(messages),
-        "max_output_tokens": max_tokens,
-    }
+def _openai_value_to_plain(value, depth: int = 3):
+    if depth <= 0:
+        return str(value)[:240]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _openai_value_to_plain(v, depth - 1) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_openai_value_to_plain(item, depth - 1) for item in value[:8]]
+    if hasattr(value, "model_dump"):
+        try:
+            return _openai_value_to_plain(value.model_dump(exclude_none=True), depth - 1)
+        except Exception:
+            pass
+    if hasattr(value, "__dict__"):
+        return {
+            key: _openai_value_to_plain(val, depth - 1)
+            for key, val in vars(value).items()
+            if not key.startswith("_")
+        }
+    return str(value)[:240]
+
+
+def _openai_native_observations(resp) -> list[dict]:
+    observations: list[dict] = []
+    for item in getattr(resp, "output", []) or []:
+        item_type = str(getattr(item, "type", "") or "")
+        if item_type in {"function_call", "message"}:
+            continue
+        if not any(marker in item_type for marker in ("web_search", "file_search", "code_interpreter")):
+            continue
+        observation = {
+            "type": item_type,
+            "id": str(getattr(item, "id", "") or getattr(item, "call_id", "") or ""),
+            "status": str(getattr(item, "status", "") or ""),
+        }
+        for attr in ("action", "queries", "results", "code", "outputs", "container_id"):
+            if hasattr(item, attr):
+                observation[attr] = _openai_value_to_plain(getattr(item, attr), depth=3)
+        observations.append({k: v for k, v in observation.items() if v not in ("", None, [], {})})
+    return observations
+
+
+def _openai_response_citations(resp) -> list[dict]:
+    citations: list[dict] = []
+    for item in getattr(resp, "output", []) or []:
+        if str(getattr(item, "type", "") or "") != "message":
+            continue
+        for content in getattr(item, "content", []) or []:
+            for annotation in getattr(content, "annotations", []) or []:
+                plain = _openai_value_to_plain(annotation, depth=2)
+                if isinstance(plain, dict):
+                    url = plain.get("url") or plain.get("uri")
+                    title = plain.get("title") or plain.get("text") or ""
+                    if url or title:
+                        citations.append({
+                            "url": str(url or "")[:500],
+                            "title": str(title or "")[:180],
+                            "type": str(plain.get("type", "") or ""),
+                        })
+    return citations[:8]
+
+
+def _openai_native_event_tool_name(event) -> str:
+    event_type = str(getattr(event, "type", "") or "")
+    if "web_search" in event_type:
+        return "openai_web_search"
+    if "file_search" in event_type:
+        return "openai_file_search"
+    if "code_interpreter" in event_type:
+        return "openai_code_interpreter"
+    return ""
+
+
+def _openai_create_response(
+    model: str,
+    max_tokens: int,
+    messages: list[dict],
+    system: str | None = None,
+    tools=None,
+    forced_tool: str | None = None,
+    text_format: dict | None = None,
+):
+    policy = model_policy_for_messages(messages)
+    kwargs = _openai_request_options(model, max_tokens, messages, policy=policy, text_format=text_format)
+    kwargs["input"] = _openai_input_from_messages(messages)
     if system:
         kwargs["instructions"] = system
-    converted_tools = _openai_tools_from_anthropic(tools)
+    converted_tools = _openai_tools_for_request(tools, policy)
     if converted_tools:
         kwargs["tools"] = converted_tools
     tool_choice = _openai_tool_choice(forced_tool)
     if tool_choice:
         kwargs["tool_choice"] = tool_choice
-    return openai_client.responses.create(**kwargs)
+    resp = openai_client.responses.create(**kwargs)
+    return resp
 
 
-async def _openai_create_response_async(model: str, max_tokens: int, messages: list[dict], system: str | None = None, tools=None, forced_tool: str | None = None):
-    kwargs = {
-        "model": model,
-        "input": _openai_input_from_messages(messages),
-        "max_output_tokens": max_tokens,
-    }
+async def _openai_create_response_async(
+    model: str,
+    max_tokens: int,
+    messages: list[dict],
+    system: str | None = None,
+    tools=None,
+    forced_tool: str | None = None,
+    text_format: dict | None = None,
+):
+    policy = model_policy_for_messages(messages)
+    kwargs = _openai_request_options(model, max_tokens, messages, policy=policy, text_format=text_format)
+    kwargs["input"] = _openai_input_from_messages(messages)
     if system:
         kwargs["instructions"] = system
-    converted_tools = _openai_tools_from_anthropic(tools)
+    converted_tools = _openai_tools_for_request(tools, policy)
     if converted_tools:
         kwargs["tools"] = converted_tools
     tool_choice = _openai_tool_choice(forced_tool)
@@ -3581,6 +3986,8 @@ def build_proactive_v2_queue(now: datetime | None = None, days: int = 7, familie
         try:
             if allow("checkin"):
                 for checkin in gs.due_checkins(current) + _due_break_aware_checkins(current):
+                    if _is_devotional_reminder_text(checkin.get("name", ""), checkin.get("question", "")):
+                        continue
                     slot = str(checkin.get("due_slot", ""))
                     score = 78 if checkin.get("schedule_aware") else 72
                     why = f"Check-in window due{f' at {slot}' if slot else ''}."
@@ -3847,6 +4254,16 @@ async def _dispatch_proactive_candidates(context, candidates: list[dict], limit:
         kind = str(candidate.get("kind", "update")).strip() or "update"
         source = str(candidate.get("source", "")).strip()
         family = str(candidate.get("family", "")).strip()
+        devotional_block = _devotional_notification_block_reason(source, title, body)
+        if devotional_block:
+            logger.info(f"Notification blocked at dispatch for source={source}: {devotional_block}")
+            _record_notification_outcome(
+                "blocked_devotional",
+                source=source,
+                kind=kind,
+                title=title,
+            )
+            continue
         block_reason = _calendar_notification_block_reason(source, title, body, now=current)
         if block_reason:
             logger.info(f"Calendar notification blocked at dispatch for source={source}: {block_reason}")
@@ -5129,6 +5546,69 @@ def _notification_expired_action_reason(
             if end_dt and current > end_dt + timedelta(minutes=catchup):
                 return "timed task event end time has passed"
     return ""
+
+
+DEVOTIONAL_REMINDER_RE = re.compile(r"\b(?:istigh?far|selawat|salawat)\b", re.I)
+
+
+def _is_devotional_reminder_text(*parts: str) -> bool:
+    return bool(DEVOTIONAL_REMINDER_RE.search(" ".join(str(part or "") for part in parts)))
+
+
+def _devotional_notification_block_reason(source: str = "", title: str = "", body: str = "") -> str:
+    if not SUPPRESS_DEVOTIONAL_CHECKIN_NOTIFICATIONS:
+        return ""
+    if not _is_devotional_reminder_text(source, title, body):
+        return ""
+    return "istighfar/selawat reminders are disabled"
+
+
+def remove_devotional_reminders() -> dict:
+    removed = {
+        "checkins": [],
+        "nudges": [],
+        "notifications": [],
+        "errors": [],
+    }
+    try:
+        for checkin in gs.get_checkins(include_inactive=True):
+            if not _is_devotional_reminder_text(
+                checkin.get("name", ""),
+                checkin.get("question", ""),
+            ):
+                continue
+            if gs.cancel_checkin(str(checkin.get("id", ""))):
+                removed["checkins"].append(str(checkin.get("id", "")))
+    except Exception as exc:
+        removed["errors"].append(f"checkins: {exc}")
+    try:
+        for nudge in gs.get_nudges(include_sent=True):
+            if str(nudge.get("status", "")).lower() == "sent":
+                continue
+            if not _is_devotional_reminder_text(nudge.get("message", "")):
+                continue
+            if gs.cancel_nudge(str(nudge.get("id", ""))):
+                removed["nudges"].append(str(nudge.get("id", "")))
+    except Exception as exc:
+        removed["errors"].append(f"nudges: {exc}")
+    try:
+        notifications = gs.get_app_notifications(include_archived=False)
+        archive_ids = [
+            str(item.get("id", ""))
+            for item in notifications
+            if str(item.get("id", ""))
+            and _is_devotional_reminder_text(
+                item.get("source", ""),
+                item.get("title", ""),
+                item.get("body", ""),
+            )
+        ]
+        if archive_ids:
+            gs.archive_app_notifications(archive_ids)
+            removed["notifications"].extend(archive_ids)
+    except Exception as exc:
+        removed["errors"].append(f"notifications: {exc}")
+    return removed
 
 
 def _archive_conflicting_day_notifications(target: date, *, duty_only: bool = False) -> int:
@@ -6886,6 +7366,82 @@ def _json_from_claude_text(raw: str):
     start = min((clean.find(c) for c in ["{", "["] if c in clean), default=0)
     return json.loads(clean[start:])
 
+
+def _llm_json_schema(
+    name: str,
+    schema: dict,
+    model: str,
+    max_tokens: int,
+    messages: list[dict],
+    system: str | None = None,
+) -> dict:
+    if LLM_PROVIDER == "openai":
+        resp = _openai_create_response(
+            model=model,
+            max_tokens=max_tokens,
+            messages=messages,
+            system=system,
+            text_format={
+                "type": "json_schema",
+                "name": name,
+                "schema": schema,
+                "strict": True,
+            },
+        )
+        return json.loads(_openai_text_from_response(resp))
+    return _json_from_claude_text(_llm_text(model=model, max_tokens=max_tokens, messages=messages, system=system))
+
+
+DOCUMENT_SPEC_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "title": {"type": "string"},
+        "subtitle": {"type": "string"},
+        "author": {"type": "string"},
+        "sections": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "heading": {"type": "string"},
+                    "body": {"type": "string"},
+                    "bullets": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["heading", "body", "bullets"],
+            },
+        },
+    },
+    "required": ["title", "subtitle", "author", "sections"],
+}
+
+
+SLIDE_SPEC_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "title": {"type": "string"},
+        "subtitle": {"type": "string"},
+        "audience": {"type": "string"},
+        "slides": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "title": {"type": "string"},
+                    "bullets": {"type": "array", "items": {"type": "string"}},
+                    "notes": {"type": "string"},
+                },
+                "required": ["title", "bullets", "notes"],
+            },
+        },
+    },
+    "required": ["title", "subtitle", "audience", "slides"],
+}
+
+
 def _generate_document_spec(title: str, instructions: str, doc_type: str = "general", audience: str = "", language: str = "") -> dict:
     template_context = _artifact_template_context()
     prompt = f"""Create a structured DOCX content spec for H.I.R.A to render.
@@ -6915,12 +7471,13 @@ Rules:
 - For lesson plans, include objectives, materials, flow, checks for understanding, differentiation, and exit ticket.
 - Keep section body text concise but complete.
 - Return ONLY JSON."""
-    raw = _llm_text(
+    return _llm_json_schema(
+        "hira_document_spec",
+        DOCUMENT_SPEC_SCHEMA,
         model=DEEP_MODEL,
         max_tokens=3000,
         messages=[{"role": "user", "content": prompt}]
     )
-    return _json_from_claude_text(raw)
 
 def _generate_slide_spec(title: str, instructions: str, audience: str = "", slide_count: int = 8, language: str = "") -> dict:
     template_context = _artifact_template_context()
@@ -6951,12 +7508,13 @@ Rules:
 - Use concise slide bullets and put details in notes.
 - Include a strong opening and useful closing/action slide.
 - Return ONLY JSON."""
-    raw = _llm_text(
+    return _llm_json_schema(
+        "hira_slide_spec",
+        SLIDE_SPEC_SCHEMA,
         model=DEEP_MODEL,
         max_tokens=3000,
         messages=[{"role": "user", "content": prompt}]
     )
-    return _json_from_claude_text(raw)
 
 def _upload_artifact_if_possible(path: str, convert_to: str, category: str = "General") -> dict | None:
     if not google_ok():
@@ -7029,9 +7587,13 @@ def _validate_state_changing_action(name: str, inp: dict) -> tuple[bool, str]:
     elif name == "create_proactive_nudge":
         if not str(inp.get("send_at", "") or "").strip():
             return False, "Nudge needs a concrete send_at datetime."
+        if _is_devotional_reminder_text(inp.get("message", "")):
+            return False, "Istighfar/selawat reminders are disabled."
     elif name in {"create_daily_checkin", "create_break_aware_daily_checkin"}:
         if not str(inp.get("question", "") or "").strip():
             return False, "Check-in needs a concrete question."
+        if _is_devotional_reminder_text(inp.get("name", ""), inp.get("question", "")):
+            return False, "Istighfar/selawat check-ins are disabled."
     elif name == "create_followup":
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(inp.get("due_date", "") or "")):
             return False, "Follow-up needs a concrete YYYY-MM-DD due date."
@@ -7408,9 +7970,6 @@ def _forced_tool_for_current_turn(messages: list[dict], tools: list[dict]) -> st
     content = last_message.get("content")
     if not isinstance(content, str):
         return None
-    forced = _forced_tool_for_text(content, tools)
-    if forced:
-        return forced
     available = {tool["name"] for tool in tools}
     clean = " ".join(content.lower().split())
     recent_context = "\n".join(
@@ -7418,9 +7977,13 @@ def _forced_tool_for_current_turn(messages: list[dict], tools: list[dict]) -> st
         for item in messages[-6:-1]
         if isinstance(item.get("content"), str)
     ).lower()
+    effective_content = _contextual_followup_effective_text(content, recent_context)
     contextual_tool = _contextual_followup_tool_from_context(content, recent_context, available)
     if contextual_tool:
         return contextual_tool
+    forced = _forced_tool_for_text(effective_content, tools)
+    if forced:
+        return forced
     if (
         "fill_mtl_percentage_scores" in available
         and re.search(r"\b(?:try again|retry|again|nothing filled|not filled|didn'?t fill|did not fill|still blank|same permission|permissions?)\b", clean)
@@ -9004,7 +9567,8 @@ def _core_tools():
 def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
     text = (text or "").lower()
     context = (recent_context or "").lower()
-    combined = f"{context}\n{text}"
+    effective_text = _contextual_followup_effective_text(text, context).lower()
+    combined = f"{context}\n{effective_text}"
     classlist_followup = (
         re.search(r"\b(?:try again|retry|again|nothing filled|not filled|didn'?t fill|did not fill|still blank|same permission|permissions?)\b", text)
         and re.search(r"\b(?:classlist|class list|2g3|3g3|1g2|wa1|wa2|fa1|fa2|percentage|percent|%)\b", context)
@@ -9016,18 +9580,18 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
             if item not in tools:
                 tools.append(item)
 
-    if re.search(r"\b(gmail|email|emails|mail|inbox|unread|draft|reply)\b", text):
+    if re.search(r"\b(gmail|email|emails|mail|inbox|unread|draft|reply)\b", effective_text):
         add(GMAIL_BRIEF_TOOL, GMAIL_DRAFT_TOOL)
     if (
-        re.search(r"\b(timetable|lesson|lessons|class|classes|period|odd week|even week|school week|plt|professional learning teams?)\b", text)
+        re.search(r"\b(timetable|lesson|lessons|class|classes|period|odd week|even week|school week|plt|professional learning teams?)\b", effective_text)
         or _is_timetable_verification_query(text, context)
     ):
         add(TIMETABLE_TOOL, WEEK_TYPE_TOOL)
-    if classlist_followup or re.search(r"\b(classlist|class list|students?|names?|my classes|mtl group|grouping|1 flagship|2g3|3g3|4nt|4nt bml|scores?|marks?|results?|wa1|wa2|fa1|fa2|prelim|eoy|weighted assessment|formative assessment|exam|assessment|percentage|percent|%|analyse|analyze|analysis|graph|graphs|chart|charts|trend|mean|median|average|pass rate|underperforming|watchlist|most improved|progress|drop|dropped|colour|color|highlight|red|failures?|failed|below 50|less than 50)\b", text):
+    if classlist_followup or re.search(r"\b(classlist|class list|students?|names?|my classes|mtl group|grouping|1 flagship|2g3|3g3|4nt|4nt bml|scores?|marks?|results?|wa1|wa2|fa1|fa2|prelim|eoy|weighted assessment|formative assessment|exam|assessment|percentage|percent|%|analyse|analyze|analysis|graph|graphs|chart|charts|trend|mean|median|average|pass rate|underperforming|watchlist|most improved|progress|drop|dropped|colour|color|highlight|red|failures?|failed|below 50|less than 50)\b", effective_text):
         add(CLASSLIST_TOOL, ANALYZE_MTL_SCORES_TOOL, GENERATE_MTL_TREND_REPORT_TOOL, APPLY_MTL_FAILURE_HIGHLIGHTING_TOOL, UPDATE_CLASS_SCORE_TOOL, FILL_PERCENTAGE_SCORES_TOOL, TIMETABLE_TOOL)
     if (
-        re.search(r"\b(calendar|schedule|agenda|today|tomorrow|week|meeting|event|appointment|duty|training|match|cca|what'?s on)\b", text)
-        or re.search(r"\b(duplicate|duplicates|duplicated|replicate|replicated|copies|copied|thrice|three times|bulk delete|bulk remove)\b", text)
+        re.search(r"\b(calendar|schedule|agenda|today|tomorrow|week|meeting|event|appointment|duty|training|match|cca|what'?s on)\b", effective_text)
+        or re.search(r"\b(duplicate|duplicates|duplicated|replicate|replicated|copies|copied|thrice|three times|bulk delete|bulk remove)\b", effective_text)
         or _contextual_followup_tool_from_context(text, context, {"get_assistant_context"}) == "get_assistant_context"
         or _is_day_planning_query(text)
         or _is_cca_schedule_query_text(text, context)
@@ -9035,32 +9599,32 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         add(CONTEXT_TOOL, CALENDAR_TOOL, DELETE_CALENDAR_TOOL, BULK_DELETE_DUPLICATE_CALENDAR_TOOL, AVAILABILITY_SLOT_TOOL, REMINDER_TOOL, TIMETABLE_TOOL)
         if _is_cca_schedule_query_text(text, context):
             add(CCA_SCHEDULE_TOOL)
-    if re.search(r"\b(task|tasks|due|deadline|remind|reminder|prepare|submit|complete|done|priority|prioritise|prioritize|focus)\b", text):
+    if re.search(r"\b(task|tasks|due|deadline|remind|reminder|prepare|submit|complete|done|priority|prioritise|prioritize|focus)\b", effective_text):
         add(CONTEXT_TOOL, TASK_BRIEF_TOOL, REMINDER_TOOL, COMPLETE_TASK_TOOL)
-        if re.search(r"\bremind(?: me)?\b", text) and re.search(
+        if re.search(r"\bremind(?: me)?\b", effective_text) and re.search(
             r"\b(at|by|before|after|during|morning|evening|tonight|tomorrow|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b",
-            text,
+            effective_text,
         ):
             add(NUDGE_TOOL)
-    if re.search(r"\b(marking|scripts?|papers?|compositions?|kefahaman|karangan|worksheets?|marked|unmarked)\b", text):
+    if re.search(r"\b(marking|scripts?|papers?|compositions?|kefahaman|karangan|worksheets?|marked|unmarked)\b", effective_text):
         add(ADD_MARKING_TOOL, UPDATE_MARKING_TOOL, RESET_MARKING_TOOL, MARKING_BRIEF_TOOL)
-    if re.search(r"\b(nudge|ping|notify|notification|notifications|push|check[- ]?in|check in|selawat|salawat|istighfar|zikir|zikr|dhikr)\b", text):
+    if re.search(r"\b(nudge|ping|notify|notification|notifications|push|check[- ]?in|check in|selawat|salawat|istighfar|zikir|zikr|dhikr)\b", effective_text):
         add(NUDGE_TOOL, DAILY_CHECKIN_TOOL, BREAK_AWARE_CHECKIN_TOOL)
-    if re.search(r"\b(follow[- ]?up|follow up|owe replies|chase)\b", text):
+    if re.search(r"\b(follow[- ]?up|follow up|owe replies|chase)\b", effective_text):
         add(FOLLOWUP_TOOL, COMPLETE_FOLLOWUP_TOOL, GMAIL_BRIEF_TOOL, TASK_BRIEF_TOOL)
-    if re.search(r"\b(research|deep dive|investigate|compare|comparison|find out|look up|source|sources|official|policy|documentation|docs|evidence|study|review)\b", text):
+    if re.search(r"\b(research|deep dive|investigate|compare|comparison|find out|look up|source|sources|official|policy|documentation|docs|evidence|study|review)\b", effective_text):
         add(WEB_RESEARCH_TOOL, FETCH_URL_TOOL, SOURCE_NOTE_TOOL)
         if ss.search_enabled():
             add(SEARCH_TOOL)
     sports_followup = (
-        re.search(r"\b(match|result|results|recap|details?|score|home|away|host(?:ed)?|fixture|game|what was it like)\b", text)
+        re.search(r"\b(match|result|results|recap|details?|score|home|away|host(?:ed)?|fixture|game|what was it like)\b", effective_text)
         and re.search(r"\b(football|f1|formula 1|liverpool|lfc|man utd|man united|manchester united|premier league|epl|grand prix|mercedes|ferrari|mclaren|red bull)\b", combined)
     )
-    correction_followup = _looks_like_correction(text) and re.search(
+    correction_followup = _looks_like_correction(effective_text) and re.search(
         r"\b(football|f1|formula 1|liverpool|lfc|man utd|man united|manchester united|premier league|epl|grand prix|mercedes|ferrari|mclaren|red bull)\b",
         combined,
     )
-    if re.search(r"\b(digest|briefing|news|latest|current|headline|headlines|search|web|shortlist|shortlisted|preferred topics|football|f1|liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|android|android 17|google i/o|google io|gemini|pixel|apple|ios|ai|singapore education|nothing phone|nothing os|nothing products|cmf|carl pei)\b", text) or sports_followup or correction_followup:
+    if re.search(r"\b(digest|briefing|news|latest|current|headline|headlines|search|web|shortlist|shortlisted|preferred topics|football|f1|liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|android|android 17|google i/o|google io|gemini|pixel|apple|ios|ai|singapore education|nothing phone|nothing os|nothing products|cmf|carl pei)\b", effective_text) or sports_followup or correction_followup:
         add(NEWS_TOOL, WEB_RESEARCH_TOOL, SOURCE_NOTE_TOOL)
         if re.search(r"\b(liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|man utd|man united|manchester united)\b", combined):
             add(LIVERPOOL_BRIEF_TOOL)
@@ -9068,31 +9632,31 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
             add(F1_BRIEF_TOOL)
         if ss.search_enabled():
             add(SEARCH_TOOL)
-    if re.search(r"https?://\S+|\b(link|url|website|webpage|article|page)\b", text):
+    if re.search(r"https?://\S+|\b(link|url|website|webpage|article|page)\b", effective_text):
         add(FETCH_URL_TOOL, SOURCE_NOTE_TOOL)
         if ss.search_enabled():
             add(SEARCH_TOOL)
-    if re.search(r"\b(weather|forecast|temperature|temp|hot|cold|rain|raining|rainy|shower|showers|thunder|storm|umbrella|haze|psi|pm2\.5|air quality|nea|mss)\b", text):
+    if re.search(r"\b(weather|forecast|temperature|temp|hot|cold|rain|raining|rainy|shower|showers|thunder|storm|umbrella|haze|psi|pm2\.5|air quality|nea|mss)\b", effective_text):
         add(WEATHER_TOOL)
-    if re.search(r"\b(prayer|prayers|pray|solat|salah|subuh|fajr|syuruk|zohor|zuhur|zuhr|dhuhr|asar|asr|maghrib|isyak|isha|muis|religion|religious|islam|islamic|halal|haram|fatwa|zakat|puasa|fasting|ramadan|qibla|wudhu|wudu|ablution)\b", text):
+    if re.search(r"\b(prayer|prayers|pray|solat|salah|subuh|fajr|syuruk|zohor|zuhur|zuhr|dhuhr|asar|asr|maghrib|isyak|isha|muis|religion|religious|islam|islamic|halal|haram|fatwa|zakat|puasa|fasting|ramadan|qibla|wudhu|wudu|ablution)\b", effective_text):
         add(PRAYER_TIME_TOOL, KHUTBAH_TOOL, CONTEXT_TOOL)
         if ss.search_enabled():
             add(SEARCH_TOOL)
-    if re.search(r"\b(khutbah|sermon|friday sermon|jumu'?ah sermon|jumaah sermon|jumaat sermon)\b", text):
+    if re.search(r"\b(khutbah|sermon|friday sermon|jumu'?ah sermon|jumaah sermon|jumaat sermon)\b", effective_text):
         add(KHUTBAH_TOOL, CONTEXT_TOOL)
-    if re.search(r"\b(location|where|journey|travel|route|directions|commute|drive|driving|mrt|bus|walk|walking|masjid|mosque)\b", text):
+    if re.search(r"\b(location|where|journey|travel|route|directions|commute|drive|driving|mrt|bus|walk|walking|masjid|mosque)\b", effective_text):
         add(CONTEXT_TOOL, WEATHER_TOOL)
         if ss.search_enabled():
             add(SEARCH_TOOL)
-    if re.search(r"\b(document|docx|worksheet|letter|report|lesson plan|handout|memo|proposal|meeting notes)\b", text):
+    if re.search(r"\b(document|docx|worksheet|letter|report|lesson plan|handout|memo|proposal|meeting notes)\b", effective_text):
         add(DOCUMENT_ARTIFACT_TOOL, TEMPLATE_MEMORY_TOOL)
-    if re.search(r"\b(slide|slides|deck|ppt|pptx|powerpoint|presentation|pitch)\b", text):
+    if re.search(r"\b(slide|slides|deck|ppt|pptx|powerpoint|presentation|pitch)\b", effective_text):
         add(SLIDE_ARTIFACT_TOOL, TEMPLATE_MEMORY_TOOL)
-    if re.search(r"\b(new interest|new topic|getting into|got into|picked up|i'?m into|i am into|deep dive|beginner map|track this|follow this|learn this|teach me about)\b", text):
+    if re.search(r"\b(new interest|new topic|getting into|got into|picked up|i'?m into|i am into|deep dive|beginner map|track this|follow this|learn this|teach me about)\b", effective_text):
         add(TOPIC_PROFILE_TOOL, MEMORY_TOOL)
-    if _is_memory_commit_query_text(text) or re.search(r"\b(preference|prefer|template|style|project status|milestone)\b", text):
+    if _is_memory_commit_query_text(text) or re.search(r"\b(preference|prefer|template|style|project status|milestone)\b", effective_text):
         add(MEMORY_TOOL, PROJECT_TOOL, TEMPLATE_MEMORY_TOOL, TOPIC_PROFILE_TOOL)
-    if re.search(r"\b(gameplan|ruh|rūḥ|app|apps|project|projects|product|products|app store|play store|review|approved|rejected|submitted|launched|shipped|released|blocked|progress|status|milestone|client|demo)\b", text):
+    if re.search(r"\b(gameplan|ruh|rūḥ|app|apps|project|projects|product|products|app store|play store|review|approved|rejected|submitted|launched|shipped|released|blocked|progress|status|milestone|client|demo)\b", effective_text):
         add(CONTEXT_TOOL, PROJECT_TOOL, MEMORY_TOOL)
 
     return tools or _core_tools()
@@ -9222,7 +9786,8 @@ def _normalise_memory_tool_input(inp: dict, messages: list[dict]) -> dict:
 
 
 def _llm_provider_status_reply(messages: list[dict]) -> str | None:
-    text = _latest_user_text(messages).lower()
+    raw_text = _latest_user_text(messages)
+    text = re.split(r"\n\s*\[(?:Working memory|Recent turn grounding|Thread state|Intent lens|Source discipline|Device location):", raw_text, maxsplit=1)[0].lower()
     if not text:
         return None
     asks_provider = bool(re.search(r"\b(provider|llm|model|engine|backend|api)\b", text))
@@ -9239,29 +9804,69 @@ def _llm_provider_status_reply(messages: list[dict]) -> str | None:
     )
 
 
-async def _run_agentic_openai(messages, max_tokens=2048, tools=None):
+def _openai_response_id(resp) -> str:
+    return str(getattr(resp, "id", "") or "")
+
+
+def _openai_latest_input(messages: list[dict]) -> list[dict]:
+    if not messages:
+        return []
+    return _openai_input_from_messages([messages[-1]])
+
+
+def _openai_text_delta_from_event(event) -> str:
+    event_type = str(getattr(event, "type", "") or "")
+    if event_type in {"response.output_text.delta", "response.refusal.delta"}:
+        return str(getattr(event, "delta", "") or "")
+    if event_type.endswith(".delta") and hasattr(event, "delta"):
+        delta = getattr(event, "delta", "")
+        if isinstance(delta, str):
+            return delta
+    return ""
+
+
+async def _openai_stream_response(kwargs: dict):
+    async with async_openai_client.responses.stream(**kwargs) as stream:
+        async for event in stream:
+            yield event
+        final_response = await stream.get_final_response()
+    yield SimpleNamespace(type="hira.final_response", response=final_response)
+
+
+async def _run_agentic_openai(messages, max_tokens=2048, tools=None, openai_state_key: str | None = None):
     tools = tools or _core_tools()
     reply_text = ""
     max_iterations = 8
     all_tool_results: list[dict] = []
-    openai_input = _openai_input_from_messages(messages)
+    policy = model_policy_for_messages(messages)
+    model = str(policy.get("model") or _agentic_model_for_messages(messages))
+    previous_response_id = _openai_previous_response_id(openai_state_key)
+    openai_input = _openai_latest_input(messages) if previous_response_id else _openai_input_from_messages(messages)
 
     for _ in range(max_iterations):
         forced_tool = _forced_tool_for_current_turn(messages, tools)
         try:
-            kwargs = {
-                "model": _agentic_model_for_messages(messages),
-                "input": openai_input,
-                "instructions": CACHED_SYSTEM_PROMPT(),
-                "max_output_tokens": max_tokens,
-            }
-            converted_tools = _openai_tools_from_anthropic(tools)
+            kwargs = _openai_request_options(
+                model,
+                max_tokens,
+                messages,
+                policy=policy,
+                state_key=openai_state_key,
+                previous_response_id=previous_response_id,
+            )
+            kwargs["input"] = openai_input
+            kwargs["instructions"] = _openai_instructions_for_policy(policy)
+            converted_tools = _openai_tools_for_request(tools, policy)
             if converted_tools:
                 kwargs["tools"] = converted_tools
             tool_choice = _openai_tool_choice(forced_tool)
             if tool_choice:
                 kwargs["tool_choice"] = tool_choice
-            resp = openai_client.responses.create(**kwargs)
+            resp = await async_openai_client.responses.create(**kwargs)
+            response_id = _openai_response_id(resp)
+            if response_id:
+                _remember_openai_response_id(openai_state_key, response_id)
+                previous_response_id = response_id
         except Exception as exc:
             fallback = _tool_action_fallback_reply(all_tool_results)
             if fallback:
@@ -9294,7 +9899,7 @@ async def _run_agentic_openai(messages, max_tokens=2048, tools=None):
             break
 
         messages.append({"role": "assistant", "content": tool_blocks})
-        openai_input.extend(_openai_response_call_items(resp))
+        call_items = _openai_response_call_items(resp)
 
         async def run_tool(block):
             tool_input = _normalise_memory_tool_input(block.input, messages) if block.name == "remember_user_info" else block.input
@@ -9309,12 +9914,14 @@ async def _run_agentic_openai(messages, max_tokens=2048, tools=None):
         tool_results = await asyncio.gather(*(run_tool(block) for block in tool_blocks))
         all_tool_results.extend(tool_results)
         messages.append({"role": "user", "content": tool_results})
+        tool_output_items = []
         for item in tool_results:
-            openai_input.append({
+            tool_output_items.append({
                 "type": "function_call_output",
                 "call_id": item.get("tool_use_id", ""),
                 "output": str(item.get("content", "")),
             })
+        openai_input = tool_output_items if previous_response_id else call_items + tool_output_items
         guarded = _source_contract_guardrail(messages, tool_results)
         if guarded:
             return guarded
@@ -9325,13 +9932,13 @@ async def _run_agentic_openai(messages, max_tokens=2048, tools=None):
     return _correct_weekday_date_mismatches(guarded_reply)
 
 
-async def _run_agentic_claude(messages, max_tokens=2048, tools=None):
+async def _run_agentic_claude(messages, max_tokens=2048, tools=None, openai_state_key: str | None = None):
     provider_status = _llm_provider_status_reply(messages)
     if provider_status:
         return provider_status
 
     if LLM_PROVIDER == "openai":
-        return await _run_agentic_openai(messages, max_tokens=max_tokens, tools=tools)
+        return await _run_agentic_openai(messages, max_tokens=max_tokens, tools=tools, openai_state_key=openai_state_key)
 
     tools = tools or _core_tools()
     reply_text = ""
@@ -9482,13 +10089,73 @@ def _latest_contextual_offer(recent_context: str = "") -> str:
     context = str(recent_context or "").lower()
     if not context:
         return ""
-    offers = [match.group(0) for match in _CONTEXTUAL_OFFER_RE.finditer(context)]
-    if not offers:
+    matches = list(_CONTEXTUAL_OFFER_RE.finditer(context))
+    if not matches:
         return ""
-    latest = offers[-1]
-    if len(offers) > 1 and re.search(r"\b(?:it|that|this)\b", latest):
-        return f"{offers[-2]} {latest}"
+    latest_match = matches[-1]
+    latest = latest_match.group(0)
+    if re.search(r"\b(?:it|that|this)\b", latest):
+        if len(matches) > 1:
+            return f"{matches[-2].group(0)} {latest}"
+        start = max(0, latest_match.start() - 420)
+        return context[start:latest_match.end()]
     return latest
+
+def _contextual_followup_effective_text(text: str, recent_context: str = "") -> str:
+    if not _is_contextual_followup_reply(text):
+        return str(text or "")
+    offer = _latest_contextual_offer(recent_context)
+    if not offer:
+        return str(text or "")
+    return f"{offer}\n{text or ''}"
+
+def _thread_topic_signals(text: str = "") -> list[str]:
+    lowered = str(text or "").lower()
+    signals: list[str] = []
+    checks = [
+        ("liverpool", r"\b(?:liverpool|lfc|anfield|premier league|epl|champions league|salah|wirtz|isak)\b"),
+        ("f1", r"\b(?:f1|formula 1|grand prix|fia|mercedes|ferrari|mclaren|red bull|verstappen|hamilton)\b"),
+        ("weather", r"\b(?:weather|forecast|rain|temperature|haze|psi|pm2\.5)\b"),
+        ("gmail", r"\b(?:gmail|email|emails|mail|inbox|draft|reply)\b"),
+        ("calendar", r"\b(?:calendar|schedule|agenda|meeting|event|appointment|timetable)\b"),
+        ("teaching", r"\b(?:classlist|class list|students?|marks?|scores?|lesson plan|worksheet|rubric)\b"),
+        ("research", r"\b(?:research|deep dive|investigate|compare|source|sources|official|evidence|docs|documentation)\b"),
+        ("memory", r"\b(?:remember|memory|preference|correction|i told you)\b"),
+    ]
+    for label, pattern in checks:
+        if re.search(pattern, lowered):
+            signals.append(label)
+    return signals
+
+def thread_state_for_turn(
+    text: str,
+    recent_context: str = "",
+    available_tools: set[str] | None = None,
+) -> dict:
+    raw_text = str(text or "")
+    offer = _latest_contextual_offer(recent_context) if _is_contextual_followup_reply(raw_text) else ""
+    effective_text = _contextual_followup_effective_text(raw_text, recent_context)
+    discipline = source_discipline_for_text(effective_text)
+    forced_context_tool = _contextual_followup_tool_from_context(raw_text, recent_context, available_tools)
+    recommended_tools = list(discipline.get("recommended_tools") or [])
+    if forced_context_tool and forced_context_tool not in recommended_tools:
+        recommended_tools.insert(0, forced_context_tool)
+    is_followup = effective_text != raw_text
+    return {
+        "is_followup": bool(is_followup),
+        "effective_text": effective_text[:1200],
+        "context_offer": offer[:800],
+        "topic_signals": _thread_topic_signals(effective_text),
+        "needs_live_check": bool(discipline.get("needs_live_check")),
+        "recommended_tools": recommended_tools,
+        "contextual_tool": forced_context_tool or "",
+        "confidence": "contextual" if is_followup else str(discipline.get("confidence", "unknown") or "unknown"),
+        "reason": (
+            "Short reply inherits the latest actionable assistant offer."
+            if is_followup else
+            str(discipline.get("reason", "Standalone turn") or "Standalone turn")
+        ),
+    }
 
 def _contextual_followup_requires_full(text: str, recent_context: str = "") -> bool:
     if not _is_contextual_followup_reply(text):
@@ -9496,9 +10163,12 @@ def _contextual_followup_requires_full(text: str, recent_context: str = "") -> b
     offer = _latest_contextual_offer(recent_context)
     if not offer:
         return False
+    if source_discipline_for_text(offer).get("needs_live_check"):
+        return True
     return bool(re.search(
         r"\b(?:add|create|schedule|delete|remove|cancel|clean|pull up|show|check|"
-        r"confirm|review|view|draft|write|reply|search|look up|find|mark|complete|push|notify|remind|nudge)\b",
+        r"confirm|review|view|draft|write|reply|search|look up|find|mark|complete|push|notify|remind|nudge|"
+        r"analyse|analyze|summari[sz]e|calculate|estimate|compare|continue|finish|build|make|generate)\b",
         offer,
         re.S,
     ))
@@ -9521,18 +10191,27 @@ def _contextual_followup_tool_from_context(
         return None
 
     checks = [
+        ("get_liverpool_brief", (r"\b(?:liverpool|lfc|epl|premier league|champions league|qualification|qualify|standings?|table|odds|probabilit(?:y|ies)|chance|chances)\b",)),
+        ("get_f1_brief", (r"\b(?:f1|formula 1|grand prix|driver standings|constructor standings|qualifying|race result|mercedes|ferrari|mclaren|red bull)\b",)),
+        ("get_nea_weather", (r"\b(?:weather|forecast|temperature|temp|rain|raining|showers?|haze|psi|pm2\.5|air quality|nea|mss)\b",)),
+        ("get_muis_prayer_times", (r"\b(?:prayer|prayers|pray|solat|salah|subuh|fajr|zohor|zuhur|zuhr|dhuhr|asar|asr|maghrib|isyak|isha|muis)\b",)),
+        ("get_muis_friday_khutbah", (r"\b(?:khutbah|sermon|friday sermon|jumu'?ah|jumaat)\b",)),
+        ("create_gmail_draft", (r"\b(?:draft|write|reply|compose)\b", r"\b(?:gmail|email|mail|inbox|reply)\b")),
+        ("get_gmail_brief", (r"\b(?:read|check|pull up|show|review|latest|recent)\b", r"\b(?:gmail|email|mail|inbox)\b")),
+        ("get_latest_news", (r"\b(?:latest|current|news|headlines?|digest|android|google i/o|google io|gemini|pixel|apple|ios|ai|singapore education|nothing phone|nothing os|cmf|carl pei)\b",)),
+        ("web_research", (r"\b(?:source|sources|research|deep dive|investigate|compare|comparison|find out|look up|evidence|official|policy|documentation|docs|standings?|table|qualification|qualify|odds|probabilit(?:y|ies)|chance|chances)\b",)),
         ("get_assistant_context", (r"\b(?:pull up|show|check|confirm|review|view)\b", r"\b(?:calendar|schedule|agenda|events?|week|day)\b")),
         ("bulk_delete_duplicate_calendar_events", (r"\b(?:duplicate|duplicated|replicated|copies|thrice|clean)\b", r"\b(?:calendar|event|schedule)\b")),
         ("delete_calendar_event_by_text", (r"\b(?:delete|remove|cancel)\b", r"\b(?:calendar|event|meeting|appointment|schedule)\b")),
         ("create_calendar_event", (r"\b(?:add|create|schedule|book|put)\b", r"\b(?:calendar|event|meeting|appointment|schedule)\b")),
-        ("create_gmail_draft", (r"\b(?:draft|write|reply|compose)\b", r"\b(?:gmail|email|mail|inbox|reply)\b")),
-        ("get_gmail_brief", (r"\b(?:read|check|pull up|show|review)\b", r"\b(?:gmail|email|mail|inbox)\b")),
         ("add_reminder", (r"\b(?:add|create|set)\b", r"\b(?:reminder|task|deadline)\b")),
         ("create_proactive_nudge", (r"\b(?:push|notify|notification|nudge|ping|remind)\b",)),
         ("complete_task_by_text", (r"\b(?:mark|complete|done|settle)\b", r"\b(?:task|reminder|item)\b")),
         ("complete_followup_by_text", (r"\b(?:mark|complete|done|settle)\b", r"\bfollow[- ]?up\b")),
-        ("web_research", (r"\b(?:research|deep dive|investigate|compare)\b",)),
-        ("get_latest_news", (r"\b(?:latest|news|headlines?|digest)\b",)),
+        ("get_mtl_classlists", (r"\b(?:classlist|class list|students?|names?|my classes|mtl group|grouping|1 flagship|2g3|3g3|4nt|scores?|marks?|results?|wa1|wa2|fa1|fa2|exam|assessment)\b",)),
+        ("analyze_mtl_scores", (r"\b(?:analyse|analyze|analysis|mean|median|average|pass rate|trend|progress|drop|improved|underperforming|watchlist)\b",)),
+        ("create_document_artifact", (r"\b(?:document|docx|worksheet|letter|report|lesson plan|handout|memo|proposal|meeting notes)\b",)),
+        ("create_slide_deck_artifact", (r"\b(?:slides?|deck|ppt|pptx|powerpoint|presentation|pitch)\b",)),
         ("web_search", (r"\b(?:search|look up|find)\b",)),
     ]
     for name, patterns in checks:
@@ -9629,7 +10308,154 @@ async def stream_quick_pwa_reply(messages: list[dict], message: str):
         logger.error(f"Quick PWA reply failed: {exc}")
         raise
 
-async def stream_agentic_claude(messages, max_tokens=650, tools=None):
+async def stream_agentic_openai(messages, max_tokens=650, tools=None, openai_state_key: str | None = None):
+    tools = tools or _core_tools()
+    reply_text = ""
+    max_iterations = 8
+    all_tool_results: list[dict] = []
+    native_tool_events_seen: set[str] = set()
+    policy = model_policy_for_messages(messages)
+    model = str(policy.get("model") or _agentic_model_for_messages(messages))
+    previous_response_id = _openai_previous_response_id(openai_state_key)
+    openai_input = _openai_latest_input(messages) if previous_response_id else _openai_input_from_messages(messages)
+    yield {"type": "trace", "patch": {"model_policy": policy, "openai_stateful": bool(previous_response_id)}}
+
+    for _ in range(max_iterations):
+        forced_tool = _forced_tool_for_current_turn(messages, tools)
+        kwargs = _openai_request_options(
+            model,
+            max_tokens,
+            messages,
+            policy=policy,
+            state_key=openai_state_key,
+            previous_response_id=previous_response_id,
+        )
+        kwargs["input"] = openai_input
+        kwargs["instructions"] = _openai_instructions_for_policy(policy)
+        converted_tools = _openai_tools_for_request(tools, policy)
+        if converted_tools:
+            kwargs["tools"] = converted_tools
+        tool_choice = _openai_tool_choice(forced_tool)
+        if tool_choice:
+            kwargs["tool_choice"] = tool_choice
+
+        resp = None
+        segment_parts: list[str] = []
+        try:
+            async for event in _openai_stream_response(kwargs):
+                if getattr(event, "type", "") == "hira.final_response":
+                    resp = getattr(event, "response", None)
+                    continue
+                native_tool = _openai_native_event_tool_name(event)
+                if native_tool and native_tool not in native_tool_events_seen:
+                    native_tool_events_seen.add(native_tool)
+                    yield {"type": "tool", "name": native_tool}
+                    yield {"type": "trace", "patch": {"openai_native_tool_events": sorted(native_tool_events_seen)}}
+                delta = _openai_text_delta_from_event(event)
+                if delta:
+                    segment_parts.append(delta)
+                    yield {"type": "text", "text": delta}
+        except Exception as exc:
+            fallback = _tool_action_fallback_reply(all_tool_results)
+            if fallback:
+                logger.warning("OpenAI stream follow-up failed after tool actions; returning tool-result fallback: %s", exc)
+                guarded = _memory_tool_failure_guardrail(fallback, all_tool_results)
+                guarded = _backend_claim_guardrail(guarded, all_tool_results)
+                guarded = _cca_sheet_user_burden_guardrail(guarded, all_tool_results)
+                corrected = _correct_weekday_date_mismatches(guarded)
+                yield {"type": "replace", "text": corrected}
+                yield {"type": "done", "text": corrected}
+                return
+            raise
+
+        if resp is None:
+            segment = "".join(segment_parts)
+            reply_text = f"{reply_text}{segment}"
+            break
+
+        response_id = _openai_response_id(resp)
+        if response_id:
+            _remember_openai_response_id(openai_state_key, response_id)
+            previous_response_id = response_id
+            yield {"type": "trace", "patch": {"openai_response_id": response_id}}
+        native_observations = _openai_native_observations(resp)
+        citations = _openai_response_citations(resp)
+        if native_observations or citations:
+            yield {
+                "type": "trace",
+                "patch": {
+                    "openai_native_observations": native_observations,
+                    "openai_citations": citations,
+                },
+            }
+
+        tool_blocks = _openai_tool_calls(resp)
+        if not tool_blocks:
+            fallback_text = await _run_forced_weather_fallback(forced_tool)
+            if fallback_text:
+                reply_text = f"{reply_text}{fallback_text}"
+                yield {"type": "replace", "text": reply_text}
+            else:
+                segment = "".join(segment_parts) or _openai_text_from_response(resp)
+                reply_text = f"{reply_text}{segment}"
+            if _openai_hit_max_tokens(resp):
+                messages.append({"role": "assistant", "content": segment})
+                messages.append({
+                    "role": "user",
+                    "content": "Continue exactly where you stopped. Finish the response completely without restarting or summarising earlier text.",
+                })
+                openai_input = _openai_input_from_messages([messages[-1]]) if previous_response_id else _openai_input_from_messages(messages[-2:])
+                logger.warning("OpenAI hit max_output_tokens in streaming chat; requesting continuation.")
+                yield {"type": "continuation", "reason": "max_output_tokens"}
+                continue
+            break
+
+        messages.append({"role": "assistant", "content": tool_blocks})
+        for block in tool_blocks:
+            yield {"type": "tool", "name": block.name}
+
+        async def run_tool(block):
+            tool_input = _normalise_memory_tool_input(block.input, messages) if block.name == "remember_user_info" else block.input
+            logger.info("Tool call: %s %s", block.name, _tool_log_input_summary(tool_input))
+            result = await _execute_tool_offloop(block.name, tool_input)
+            return {
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": result,
+            }
+
+        tool_results = await asyncio.gather(*(run_tool(block) for block in tool_blocks))
+        all_tool_results.extend(tool_results)
+        messages.append({"role": "user", "content": tool_results})
+        contracts = _source_contracts_from_tool_results(tool_results)
+        if contracts:
+            yield {"type": "trace", "patch": {"source_contracts_seen": contracts, "confidence_gate": "passed"}}
+        guarded = _source_contract_guardrail(messages, tool_results)
+        if guarded:
+            yield {"type": "replace", "text": guarded}
+            yield {"type": "done", "text": guarded}
+            return
+        call_items = _openai_response_call_items(resp)
+        tool_output_items = [
+            {
+                "type": "function_call_output",
+                "call_id": item.get("tool_use_id", ""),
+                "output": str(item.get("content", "")),
+            }
+            for item in tool_results
+        ]
+        openai_input = tool_output_items if previous_response_id else call_items + tool_output_items
+
+    guarded_reply = _memory_tool_failure_guardrail(reply_text or "Done.", all_tool_results)
+    guarded_reply = _backend_claim_guardrail(guarded_reply, all_tool_results)
+    guarded_reply = _cca_sheet_user_burden_guardrail(guarded_reply, all_tool_results)
+    corrected = _correct_weekday_date_mismatches(guarded_reply)
+    if corrected != reply_text:
+        yield {"type": "replace", "text": corrected}
+    yield {"type": "done", "text": corrected}
+
+
+async def stream_agentic_claude(messages, max_tokens=650, tools=None, openai_state_key: str | None = None):
     provider_status = _llm_provider_status_reply(messages)
     if provider_status:
         yield {"type": "text", "text": provider_status}
@@ -9637,9 +10463,8 @@ async def stream_agentic_claude(messages, max_tokens=650, tools=None):
         return
 
     if LLM_PROVIDER == "openai":
-        reply_text = await _run_agentic_openai(messages, max_tokens=max_tokens, tools=tools)
-        yield {"type": "text", "text": reply_text}
-        yield {"type": "done", "text": reply_text}
+        async for event in stream_agentic_openai(messages, max_tokens=max_tokens, tools=tools, openai_state_key=openai_state_key):
+            yield event
         return
 
     tools = tools or _core_tools()
@@ -10603,6 +11428,70 @@ async def _process_user_text(update, context, text: str):
 def _openai_ok() -> bool:
     return bool(os.environ.get("OPENAI_API_KEY", "").strip())
 
+
+def openai_realtime_status() -> dict:
+    return {
+        "enabled": bool(OPENAI_REALTIME_ENABLED),
+        "configured": bool(OPENAI_REALTIME_ENABLED and _openai_ok()),
+        "model": OPENAI_REALTIME_MODEL,
+        "voice": OPENAI_REALTIME_VOICE,
+    }
+
+
+def build_openai_realtime_session_config(extra_instructions: str = "", voice: str = "") -> dict:
+    realtime_voice = (voice or OPENAI_REALTIME_VOICE or "verse").strip()
+    instructions = (
+        "You are H.I.R.A, Herwanto's live voice assistant. Be warm, concise, and interruptible. "
+        "Use short spoken answers. If a request needs private app tools, calendar edits, web research, "
+        "or durable memory writes, say you will hand it back to the main H.I.R.A chat to execute safely."
+    )
+    if extra_instructions.strip():
+        instructions = f"{instructions}\n\nSession context: {extra_instructions.strip()[:1200]}"
+    return {
+        "model": OPENAI_REALTIME_MODEL,
+        "voice": realtime_voice,
+        "modalities": ["text", "audio"],
+        "instructions": instructions,
+        "input_audio_transcription": {
+            "model": os.environ.get("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe"),
+            "language": "en",
+            "prompt": "Expect Singapore school, family, football, F1, OpenAI, Android, Teenage Engineering and H.I.R.A product terms.",
+        },
+        "input_audio_noise_reduction": {"type": "near_field"},
+        "turn_detection": {
+            "type": "semantic_vad",
+            "eagerness": "medium",
+            "interrupt_response": True,
+            "create_response": True,
+        },
+        "max_response_output_tokens": 900,
+        "tracing": {
+            "workflow_name": "hira-realtime-voice",
+            "group_id": "hira",
+            "metadata": {"app": "hira", "mode": "realtime_voice"},
+        },
+        "client_secret": {"expires_after": {"anchor": "created_at", "seconds": 600}},
+    }
+
+
+async def create_openai_realtime_session(extra_instructions: str = "", voice: str = "") -> dict:
+    if not OPENAI_REALTIME_ENABLED:
+        raise RuntimeError("OpenAI realtime voice is disabled")
+    if not _openai_ok():
+        raise RuntimeError("OPENAI_API_KEY is not configured")
+    config = build_openai_realtime_session_config(extra_instructions=extra_instructions, voice=voice)
+    session = await async_openai_client.beta.realtime.sessions.create(**config)
+    plain = _openai_value_to_plain(session, depth=5)
+    return {
+        "session": plain,
+        "config": {
+            "model": config["model"],
+            "voice": config["voice"],
+            "modalities": config["modalities"],
+            "expires_in_seconds": config["client_secret"]["expires_after"]["seconds"],
+        },
+    }
+
 async def handle_voice(update, context):
     if not _openai_ok():
         await update.message.reply_text("Voice notes need OPENAI_API_KEY configured first.")
@@ -10634,6 +11523,16 @@ async def handle_voice(update, context):
 # ─── SCHEDULED JOBS ──────────────────────────────────────────────────────────
 
 def _queue_app_notification(kind: str, title: str, body: str, source: str = ""):
+    devotional_block = _devotional_notification_block_reason(source, title, body)
+    if devotional_block:
+        logger.info(f"Notification blocked before queue for source={source or kind}: {devotional_block}")
+        _record_notification_outcome(
+            "blocked_devotional",
+            source=source,
+            kind=kind,
+            title=title,
+        )
+        return None
     expired_reason = _notification_expired_action_reason(source, title, body)
     if expired_reason:
         logger.info(f"Notification expired before queue for source={source or kind}: {expired_reason}")
@@ -11680,6 +12579,7 @@ async def daily_checkins_job(context):
         return
     try:
         _log_memory("before daily_checkins")
+        remove_devotional_reminders()
         now = datetime.now(SGT)
         await _dispatch_proactive_candidates(context, build_proactive_v2_queue(now=now, families={"checkin"}), limit=6)
     except Exception as e:
