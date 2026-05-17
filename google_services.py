@@ -90,6 +90,7 @@ _REDIS_WEB_PUSH_SUBSCRIPTIONS_KEY = "hira:web_push_subscriptions:fallback"
 _REDIS_WEB_PUSH_DELIVERY_LOG_KEY = "hira:web_push_delivery_log:fallback"
 _app_notifications_mutation_lock = threading.RLock()
 _nudges_mutation_lock = threading.RLock()
+_reminders_mutation_lock = threading.RLock()
 
 
 class _StorageMutationLock:
@@ -2677,22 +2678,23 @@ def get_reminders(include_done=False):
 
 
 def add_reminder(description: str, due_date: str, category: str = "General") -> int:
-    rows = _raw_reminders()
-    numeric_ids = []
-    for row in rows:
-        try:
-            numeric_ids.append(int(str(row[0]).strip()))
-        except Exception:
-            continue
-    next_id = (max(numeric_ids) + 1) if numeric_ids else 1
-    today = datetime.now(SGT).strftime("%Y-%m-%d")
-    _sheets().spreadsheets().values().append(
-        spreadsheetId=SHEET_ID,
-        range="Reminders!A:F",
-        valueInputOption="USER_ENTERED",
-        body={"values": [[str(next_id), description, due_date, category, "FALSE", today]]},
-    ).execute()
-    return next_id
+    with _storage_mutation_lock("reminders", _reminders_mutation_lock):
+        rows = _raw_reminders()
+        numeric_ids = []
+        for row in rows:
+            try:
+                numeric_ids.append(int(str(row[0]).strip()))
+            except Exception:
+                continue
+        next_id = (max(numeric_ids) + 1) if numeric_ids else 1
+        today = datetime.now(SGT).strftime("%Y-%m-%d")
+        _sheets().spreadsheets().values().append(
+            spreadsheetId=SHEET_ID,
+            range="Reminders!A:F",
+            valueInputOption="USER_ENTERED",
+            body={"values": [[str(next_id), description, due_date, category, "FALSE", today]]},
+        ).execute()
+        return next_id
 
 
 def mark_done(reminder_id: str) -> bool:

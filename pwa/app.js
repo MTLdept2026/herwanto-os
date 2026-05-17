@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260518-clean-chat-56";
-const APP_SCRIPT = "app.js?v=20260518-clean-chat-56";
-const EXPECTED_SW_CACHE = "hira-os-v126";
+const APP_VERSION = "20260518-clean-chat-57";
+const APP_SCRIPT = "app.js?v=20260518-clean-chat-57";
+const EXPECTED_SW_CACHE = "hira-os-v127";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
@@ -2502,7 +2502,7 @@ async function completeTask(taskId, control) {
     setTimeout(async () => {
       await loadHome({ force: true, background: true, useCache: false });
       if ($("#tasksView")?.classList.contains("active") || state.currentView === "tasks") {
-        await loadTasks(Number($("#tasksDays")?.value || 7));
+        await loadTasks(Number($("#tasksDays")?.value || 30));
       }
     }, 500);
   } catch (error) {
@@ -3062,7 +3062,7 @@ async function loadAgenda(days = 7, { force = false, useCache = true } = {}) {
   }
 }
 
-async function loadTasks(days = 7) {
+async function loadTasks(days = 30) {
   $("#tasksOutput").innerHTML = "<div>Loading...</div>";
   try {
     const data = await api(`/api/tasks?days=${days}`, { headers: headers(false) });
@@ -3274,7 +3274,7 @@ function closeQuickDrawer() {
 async function jumpToQuickView(view) {
   closeQuickDrawer();
   setView(view);
-  if (view === "tasks") await loadTasks(Number($("#tasksDays")?.value || 7));
+  if (view === "tasks") await loadTasks(Number($("#tasksDays")?.value || 30));
   if (view === "gmail") $("#gmailQuery")?.focus();
 }
 
@@ -3679,7 +3679,7 @@ document.querySelectorAll(".nav-tab").forEach((tab) => {
       await loadHome({ background: true });
     }
     if (view === "agenda") await loadAgenda(currentAgendaDays());
-    if (view === "tasks") await loadTasks(7);
+    if (view === "tasks") await loadTasks(Number($("#tasksDays")?.value || 30));
   });
 });
 
@@ -3799,8 +3799,8 @@ document.querySelectorAll("[data-home-dismiss]").forEach((button) => {
 });
 $("#refreshAgendaBtn").addEventListener("click", () => loadAgenda(currentAgendaDays(), { force: true, useCache: false }));
 $("#agendaDays").addEventListener("change", () => loadAgenda(currentAgendaDays()));
-$("#refreshTasksBtn").addEventListener("click", () => loadTasks(Number($("#tasksDays").value || 7)));
-$("#tasksDays").addEventListener("change", () => loadTasks(Number($("#tasksDays").value || 7)));
+$("#refreshTasksBtn").addEventListener("click", () => loadTasks(Number($("#tasksDays").value || 30)));
+$("#tasksDays").addEventListener("change", () => loadTasks(Number($("#tasksDays").value || 30)));
 $("#refreshFilesBtn").addEventListener("click", () => setStatus("File upload is ready.", "ok"));
 // Covers task checkboxes wherever task cards are rendered.
 document.addEventListener("change", (event) => {
