@@ -164,7 +164,7 @@ def _model_from_env(key: str, default: str) -> str:
     return raw or default
 
 
-_DEFAULT_AGENTIC_MODEL = "gpt-5.4" if LLM_PROVIDER == "openai" else "claude-sonnet-4-6"
+_DEFAULT_AGENTIC_MODEL = "gpt-5.5" if LLM_PROVIDER == "openai" else "claude-sonnet-4-6"
 _DEFAULT_QUICK_MODEL = "gpt-5.4-mini" if LLM_PROVIDER == "openai" else "claude-haiku-4-5-20251001"
 AGENTIC_MODEL = _model_from_env("HIRA_AGENTIC_MODEL", _DEFAULT_AGENTIC_MODEL)
 DEEP_MODEL = _model_from_env("HIRA_DEEP_MODEL", AGENTIC_MODEL)
