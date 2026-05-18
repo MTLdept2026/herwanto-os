@@ -1,23 +1,23 @@
 {
-  "updated": "2026-05-17",
+  "updated": "2026-05-18",
   "name": "H.I.R.A Growth Log",
   "subtitle": "How Herwanto Intelligent Response Agent grew from an installable assistant into a more reliable, visually coherent personal operating system.",
   "summary": {
     "start": "2026-04-28",
-    "current": "2026-05-17",
-    "commitsTracked": 186,
-    "majorPhases": 32,
-    "currentStage": "OpenAI-native H.I.R.A upgrade with stronger thread memory, source discipline, and realtime voice groundwork"
+    "current": "2026-05-18",
+    "commitsTracked": 187,
+    "majorPhases": 33,
+    "currentStage": "Wordsmith semantic layer with clarification memory, nuance-aware routing, and safer action intent"
   },
   "metrics": [
     {
       "label": "Days of build acceleration",
-      "value": "19",
-      "note": "From first installable PWA commit to a sharper Nothing-style app identity with explicit trust rails, ClassOps intelligence, Postgres-backed operational memory, and OpenAI-first model routing."
+      "value": "20",
+      "note": "From first installable PWA commit to a sharper Nothing-style app identity with explicit trust rails, ClassOps intelligence, Postgres-backed operational memory, OpenAI-first model routing, and wordsmith-grade semantic intent."
     },
     {
       "label": "Tracked upgrade commits",
-      "value": "186",
+      "value": "187",
       "note": "Grouped from git history through the growth-log minisite."
     },
     {
@@ -44,8 +44,8 @@
     },
     {
       "name": "Context",
-      "score": 99,
-      "description": "Timetable, Google Calendar, reminder-worthy events, rough travel buffers, MTL classlists and marks fields, Dropbox lesson folders, checked availability slots, Drive references, file memory, Postgres-backed long-term memory, topic profiles, conversation summaries, relevant-memory retrieval, intent lensing, short-lived working memory, and home intelligence synthesis."
+      "score": 100,
+      "description": "Timetable, Google Calendar, reminder-worthy events, rough travel buffers, MTL classlists and marks fields, Dropbox lesson folders, checked availability slots, Drive references, file memory, Postgres-backed long-term memory, topic profiles, conversation summaries, relevant-memory retrieval, intent lensing, wordsmith semantic profiling, short-lived working memory, and home intelligence synthesis."
     },
     {
       "name": "Live Knowledge",
@@ -54,8 +54,8 @@
     },
     {
       "name": "Self-Improvement",
-      "score": 99,
-      "description": "Postgres-backed memory commits, priority-weighted memory prompt, relevant recall, working memory, conversation-continuation guardrails, OpenAI response-state continuity, action validation/audits, persistent action ledger, source/memory/native-tool trace visibility, ClassOps blind-spot checks, intent lens, proactive workload insights, OS readiness scoring, forecast radar, adaptive planning, 7-day trial loop, notification feedback learning, implicit correction detection, weekly consolidation, and conversation summarisation."
+      "score": 100,
+      "description": "Postgres-backed memory commits, priority-weighted memory prompt, relevant recall, working memory, conversation-continuation guardrails, OpenAI response-state continuity, semantic corpus tests, action validation/audits, persistent action ledger, source/memory/native-tool trace visibility, ClassOps blind-spot checks, intent lens, proactive workload insights, OS readiness scoring, forecast radar, adaptive planning, 7-day trial loop, notification feedback learning, implicit correction detection, weekly consolidation, and conversation summarisation."
     }
   ],
   "chapters": [
@@ -592,6 +592,25 @@
         "Backend endpoints now prepare OpenAI Realtime voice sessions, giving H.I.R.A the plumbing for future live spoken conversation."
       ],
       "impact": "For Herwanto, H.I.R.A should feel less forgetful, less helpless, and more honest: it can keep the thread, check live topics properly, show its work in the trace, stop unwanted devotional reminders, and grow toward proper voice without pretending the voice layer is finished."
+    },
+    {
+      "date": "2026-05-18",
+      "era": "Semantic Fluency",
+      "title": "Hira learns Herwanto's wordsmith layer",
+      "commit": "3c11ffd",
+      "tag": "Semantic Intent",
+      "summary": "After a simple 'mark it pls' request exposed brittle language understanding, H.I.R.A gained a stronger semantic layer for indirect requests, reference-only nuance, low-priority cues, and clarification-first action safety.",
+      "details": [
+        "Soft phrasing such as might be worth, no rush, for the file, park this, put a pin in, keep this on my radar, ring-fence, and learn my phrasing now maps to explicit semantic flags.",
+        "A confidence-scored semantic profile now distinguishes action, reference-only context, low priority, live-source research, memory, calendar, reminders, Gmail, artifacts, and follow-up intent.",
+        "Reference material only and no immediate action now suppress task creation unless Herwanto also gives a clear explicit action.",
+        "Not urgent and no rush now become low-priority action hints rather than being mistaken for no action.",
+        "Blocked calendar/reminder/follow-up actions now include richer Action audit context, and short replies such as all day can continue the pending clarification instead of starting a fresh turn.",
+        "PWA working memory now learns from blocked Action audits and named-thing references like the Perth thing so follow-up messages stay grounded in the current subject.",
+        "All-day and multi-day calendar events are now first-class, so leave, vacation, travel, and blocked whole-day ranges can be saved without inventing a time.",
+        "A wordsmith semantic corpus was added to tests so future routing changes have examples of Herwanto's actual phrasing to preserve."
+      ],
+      "impact": "H.I.R.A should feel less literal and less fragile: it can infer the practical meaning behind Herwanto's language, hold ambiguous actions open, ask for the missing detail, and avoid turning reference-only notes into unwanted tasks."
     }
   ],
   "currentCapabilities": [
@@ -600,6 +619,7 @@
     "Persistent action ledger with review and selected undo support for assistant/PWA writes, plus chat trace visibility for relevant memory sources.",
     "Postgres-backed durable storage for assistant memory, memory logs, app config, push subscriptions, push delivery logs, and notification state, with Sheets demoted to fallback and read-only external sources.",
     "Conversation-continuation guardrails that route short replies like yes pls, do it, go ahead, same, and that one through the newest relevant assistant offer instead of stale shortcuts.",
+    "Wordsmith semantic layer that recognizes indirect requests, low-priority cues, reference-only notes, live-source phrasing, memory cues, artifact requests, and follow-up language from Herwanto's actual wording.",
     "ClassOps teacher dashboard that combines Dropbox lesson folders, Google Drive classlists and marks, submission tracking, priority items, blind-spot checks, student watchlists, student timelines, and feed-forward groups.",
     "Lesson-aware reflection worksheet generation from selected Dropbox PDF/DOCX/PPTX lesson files using read-only extraction.",
     "Command Protocol that turns the current state into concrete Now, Next, and Later steps with confidence and evidence.",
@@ -614,6 +634,7 @@
     "Proactive intelligence scanner for workload pinch points, marking pressure, follow-ups, quiet windows, and upcoming packed days.",
     "Unified Proactive Intelligence v2 queue that ranks nudges, check-ins, follow-ups, prayers, tasks, digest picks, and internal intelligence with suppression and feedback learning.",
     "Short-lived PWA working memory that tracks the current subject, latest correction, pending action, and older competing subjects during follow-up chats.",
+    "Clarification memory that keeps blocked Action audit context alive so short replies like all day can continue the original calendar/reminder action instead of restarting the conversation.",
     "Action validation and audit receipts for state-changing tools so vague calendar/reminder/nudge/follow-up saves are blocked or reviewable.",
     "Restored cockpit-style home surface with local time, tabs, dashboard panels, workload context, marking, file memory, chat, refreshed identity assets, and preserved dotted H.I.R.A display typography.",
     "Recoverable push notification system with Postgres delivery logs, notification state, recovery status, confirmed-push completion checks, and catch-up retry behavior for daily briefings.",
