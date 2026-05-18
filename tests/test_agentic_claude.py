@@ -579,6 +579,20 @@ class AgenticClaudeTests(unittest.TestCase):
                 flags = bot._semantic_intent_flags(case["text"])
                 self.assertTrue(set(case["expected_flags"]).issubset(flags))
 
+    def test_hira_wit_style_is_explicit_and_bounded(self):
+        style = bot.hira_wit_style_brief()
+
+        self.assertIn("dryly witty", style)
+        self.assertIn("self-deprecating humour", style)
+        self.assertIn("never at Herwanto's expense", style)
+        self.assertIn("skip humour", style)
+
+    def test_realtime_voice_config_includes_wit_style(self):
+        config = bot.build_openai_realtime_session_config()
+
+        self.assertIn("dryly witty", config["instructions"])
+        self.assertIn("self-deprecating humour", config["instructions"])
+
     def test_reference_only_language_does_not_create_task_tools(self):
         tools = bot.pwa_tools_for_message("Simplified RAMS - reference material only, no immediate action.")
         names = {tool["name"] for tool in tools}
