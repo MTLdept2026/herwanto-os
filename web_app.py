@@ -1039,7 +1039,8 @@ _VAGUE_SUBJECT_RE = re.compile(
     re.I,
 )
 _ACTION_KEYWORD_RE = re.compile(
-    r"\b(remind|reminder|nudge|ping|notify|calendar|schedule|add|delete|remove|mark|done|follow[- ]?up|briefing)\b",
+    r"\b(remind|reminder|nudge|ping|notify|calendar|schedule|add|delete|remove|mark|done|follow[- ]?up|briefing|"
+    r"keep\s+me\s+honest|on\s+my\s+radar|park\s+this|put\s+a\s+pin\s+in)\b",
     re.I,
 )
 
@@ -1100,6 +1101,8 @@ def _subject_candidates_from_text(text: str) -> list[str]:
         (r"\bi meant(?: reminder)? for\s+(?:the\s+)?([^.\n,;!?]{3,90})", re.I),
         (r"\b(?:it'?s|its|this is|that'?s)\s+for\s+(?:the\s+)?([^.\n,;!?]{3,90})", re.I),
         (r"\b(?:for|about|regarding|re:)\s+(?:the\s+)?([^.\n,;!?]{3,90})", re.I),
+        (r"\b(?:the\s+)?([A-Za-z][A-Za-z0-9&/-]+(?:\s+[A-Za-z0-9&/-]+){0,4})\s+thing\b", re.I),
+        (r"Action audit:[^\n]*\|\s*subject=([^|\n]{3,120})", re.I),
         (r"\b([A-Z][A-Za-z0-9&/-]+(?:\s+[A-Za-z0-9&/-]+){0,5}\s+(?:exercise|briefing|competition|training|duty|meeting|marking))\b", 0),
     ]
     for pattern, flags in patterns:
@@ -1112,8 +1115,21 @@ def _subject_candidates_from_text(text: str) -> list[str]:
 
 def _pending_action_from_text(text: str) -> str:
     clean = _clean_turn_text(text).lower()
+    blocked = bot._latest_blocked_action_from_context(text)
+    if blocked.get("action"):
+        label = str(blocked.get("action", "")).replace("_", " ")
+        subject = str(blocked.get("subject", "") or "").strip()
+        suffix = f" for {subject}" if subject else ""
+        return f"{label} awaiting clarification{suffix}"
     if not _ACTION_KEYWORD_RE.search(clean):
         return ""
+    semantic_flags = bot._semantic_intent_flags(clean)
+    if semantic_flags & {"task", "reminder"}:
+        if "morning briefing" in clean:
+            return "morning briefing reminder"
+        if bot._has_date_or_time_reference(clean):
+            return "time-specific reminder"
+        return "task reminder"
     if re.search(r"\b(remind|reminder|nudge|ping|notify)\b", clean):
         if "morning briefing" in clean:
             return "morning briefing reminder"
@@ -1188,8 +1204,14 @@ def _update_working_memory(history_key: str, history: list, message: str) -> dic
     current_action = _pending_action_from_text(message)
     if current_action:
         pending_action = current_action
-    elif bot._is_contextual_followup_reply(message) or _FOLLOWUP_GROUNDING_RE.search(message or ""):
+    elif bot._is_contextual_followup_reply(message) or bot._is_clarification_detail_reply(message) or _FOLLOWUP_GROUNDING_RE.search(message or ""):
         pending_action = str(memory.get("pending_action", "") or "")
+        if not pending_action:
+            for item in reversed(history[-8:]):
+                if isinstance(item, dict) and isinstance(item.get("content"), str):
+                    pending_action = _pending_action_from_text(item["content"])
+                    if pending_action:
+                        break
     else:
         pending_action = ""
     updated = {

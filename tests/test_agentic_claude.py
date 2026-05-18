@@ -428,6 +428,199 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIsNone(calendar_forced)
         self.assertIsNone(task_forced)
 
+    def test_dated_vacation_mark_it_gets_calendar_tools_not_classlist(self):
+        text = "15-19 june im off to perth for family vacation. Mark it pls. Guess i need to do the overseas leave application"
+
+        tools = bot.pwa_tools_for_message(text)
+        names = {tool["name"] for tool in tools}
+        forced = bot._forced_tool_for_text(text, tools)
+        routed_quick = asyncio.run(bot.should_route_quick_pwa_chat([], text))
+
+        self.assertIn("create_calendar_event", names)
+        self.assertIn("add_reminder", names)
+        self.assertNotIn("get_mtl_classlists", names)
+        self.assertIsNone(forced)
+        self.assertFalse(routed_quick)
+
+    def test_create_calendar_event_supports_all_day_date_range(self):
+        captured = {}
+
+        def fake_create_all_day_event(title, start_date, end_date, location="", description=""):
+            captured.update({
+                "title": title,
+                "start_date": start_date,
+                "end_date": end_date,
+                "location": location,
+                "description": description,
+            })
+            return {"id": "evt-perth", "_calendar_id": "primary"}
+
+        with patch.object(bot.gs, "create_all_day_event", side_effect=fake_create_all_day_event):
+            result = asyncio.run(bot._execute_tool_offloop("create_calendar_event", {
+                "title": "Perth family vacation",
+                "date": "2026-06-15",
+                "end_date": "2026-06-19",
+                "all_day": True,
+                "location": "Perth",
+                "description": "Apply for overseas leave.",
+            }))
+
+        self.assertEqual(captured["start_date"], "2026-06-15")
+        self.assertEqual(captured["end_date"], "2026-06-19")
+        self.assertIn("Created all-day: Perth family vacation on 2026-06-15", result)
+        self.assertIn("Action audit: action=create_calendar_event", result)
+
+    def test_implicit_task_language_gets_reminder_tools(self):
+        text = "I should settle the overseas leave application by Friday"
+
+        tools = bot.pwa_tools_for_message(text)
+        names = {tool["name"] for tool in tools}
+        forced = bot._forced_tool_for_text(text, tools)
+        routed_quick = asyncio.run(bot.should_route_quick_pwa_chat([], text))
+
+        self.assertIn("add_reminder", names)
+        self.assertIn("get_task_brief", names)
+        self.assertIsNone(forced)
+        self.assertFalse(routed_quick)
+
+    def test_implicit_later_task_gets_nudge_tool(self):
+        tools = bot.pwa_tools_for_message("Help me sort the parent reply later tonight")
+        names = {tool["name"] for tool in tools}
+
+        self.assertIn("add_reminder", names)
+        self.assertIn("create_proactive_nudge", names)
+
+    def test_email_followup_handle_language_forces_gmail_first(self):
+        text = "Please handle the latest email follow-up"
+        tools = bot.pwa_tools_for_message(text)
+        forced = bot._forced_tool_for_text(text, tools)
+
+        self.assertEqual(forced, "get_gmail_brief")
+
+    def test_do_so_after_reminder_offer_uses_context(self):
+        messages = [
+            {"role": "assistant", "content": "I can add a reminder for the overseas leave application. Want me to add it?"}
+        ]
+
+        forced = bot._forced_tool_for_current_turn(
+            messages + [{"role": "user", "content": "Do so"}],
+            bot._core_tools(),
+        )
+
+        self.assertEqual(forced, "add_reminder")
+
+    def test_make_it_happen_after_i_will_draft_offer_keeps_draft_intent(self):
+        messages = [
+            {"role": "assistant", "content": "I'll draft a reply to the latest email thread if you want."}
+        ]
+
+        forced = bot._forced_tool_for_current_turn(
+            messages + [{"role": "user", "content": "Make it happen"}],
+            bot._core_tools(),
+        )
+
+        self.assertEqual(forced, "create_gmail_draft")
+
+    def test_soft_email_draft_language_forces_draft_tool(self):
+        text = "Might be worth drafting a reply to the last parent email"
+        tools = bot.pwa_tools_for_message(text)
+        forced = bot._forced_tool_for_text(text, tools)
+        routed_quick = asyncio.run(bot.should_route_quick_pwa_chat([], text))
+
+        self.assertEqual(forced, "create_gmail_draft")
+        self.assertFalse(routed_quick)
+
+    def test_circle_back_language_gets_followup_and_task_tools(self):
+        text = "Let's circle back with Ahmad about the consent form next week"
+        tools = bot.pwa_tools_for_message(text)
+        names = {tool["name"] for tool in tools}
+
+        self.assertIn("create_followup", names)
+        self.assertIn("add_reminder", names)
+
+    def test_carve_out_time_language_gets_calendar_tools(self):
+        text = "Can you carve out next Tuesday afternoon for marking moderation?"
+        tools = bot.pwa_tools_for_message(text)
+        names = {tool["name"] for tool in tools}
+
+        self.assertIn("create_calendar_event", names)
+        self.assertIn("get_assistant_context", names)
+
+    def test_memory_wordsmith_phrase_forces_memory_tool(self):
+        forced = bot._forced_tool_for_text(
+            "This deserves memory: I prefer you clarify instead of guessing.",
+            [{"name": "remember_user_info"}, {"name": "get_assistant_context"}],
+        )
+
+        self.assertEqual(forced, "remember_user_info")
+
+    def test_sanity_check_latest_rollout_uses_live_source_tools(self):
+        text = "Could you sanity-check the latest Nothing OS rollout?"
+        tools = bot.pwa_tools_for_message(text)
+        names = {tool["name"] for tool in tools}
+        forced = bot._forced_tool_for_text(text, tools)
+        discipline = bot.source_discipline_for_text(text)
+
+        self.assertIn("get_latest_news", names)
+        self.assertIn("web_research", names)
+        self.assertEqual(forced, "get_latest_news")
+        self.assertTrue(discipline["needs_live_check"])
+
+    def test_whip_up_deck_language_forces_slide_artifact_tool(self):
+        text = "Whip up a sharp deck for Sec 1 CCE end-semester"
+        tools = bot.pwa_tools_for_message(text)
+        forced = bot._forced_tool_for_text(text, tools)
+
+        self.assertEqual(forced, "create_slide_deck_artifact")
+
+    def test_wordsmith_semantic_corpus_keeps_expected_flags(self):
+        for case in bot.semantic_corpus_cases():
+            with self.subTest(case=case["text"]):
+                flags = bot._semantic_intent_flags(case["text"])
+                self.assertTrue(set(case["expected_flags"]).issubset(flags))
+
+    def test_reference_only_language_does_not_create_task_tools(self):
+        tools = bot.pwa_tools_for_message("Simplified RAMS - reference material only, no immediate action.")
+        names = {tool["name"] for tool in tools}
+        profile = bot.semantic_intent_profile("Simplified RAMS - reference material only, no immediate action.")
+
+        self.assertIn("reference_only", profile["flags"])
+        self.assertNotIn("add_reminder", names)
+        self.assertNotIn("get_task_brief", names)
+
+    def test_low_priority_language_keeps_task_but_marks_low_priority(self):
+        text = "No rush but keep this on my radar for next Friday: overseas leave application"
+
+        tools = bot.pwa_tools_for_message(text)
+        names = {tool["name"] for tool in tools}
+        profile = bot.semantic_intent_profile(text)
+
+        self.assertIn("add_reminder", names)
+        self.assertEqual(profile["priority_hint"], "low")
+        self.assertIn("low_priority", profile["flags"])
+
+    def test_unresolved_pronoun_action_needs_clarification_profile(self):
+        profile = bot.semantic_intent_profile("Sort this by Friday")
+
+        self.assertTrue(profile["needs_clarification"])
+        self.assertIn("this/that/it", profile["clarification_reason"])
+
+    def test_blocked_action_context_turn_forces_original_tool(self):
+        blocked = bot._validated_action_failure(
+            "create_calendar_event",
+            {"title": "Perth family vacation", "date": "2026-06-15"},
+        )
+
+        forced = bot._forced_tool_for_current_turn(
+            [{"role": "assistant", "content": blocked}, {"role": "user", "content": "all day"}],
+            bot._core_tools(),
+        )
+        state = bot.thread_state_for_turn("all day", blocked, {"create_calendar_event"})
+
+        self.assertEqual(forced, "create_calendar_event")
+        self.assertEqual(state["blocked_action"]["action"], "create_calendar_event")
+        self.assertIn("pending blocked action", state["reason"])
+
     def test_availability_planning_forces_checked_slot_tool(self):
         forced = bot._forced_tool_for_text(
             "find the best slots to schedule Sahibba training after school not during my CCA day",
@@ -4391,6 +4584,39 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(memory.get("pending_action", ""), "")
 
+    def test_pwa_working_memory_keeps_blocked_action_clarification(self):
+        history_key = "pwa:test-working-memory-blocked-action"
+        key = web_app._working_memory_storage_key(history_key)
+        web_app._WEB_WORKING_MEMORY.pop(key, None)
+        blocked = bot._validated_action_failure(
+            "create_calendar_event",
+            {"title": "Perth family vacation", "date": "2026-06-15"},
+        )
+
+        memory = web_app._update_working_memory(
+            history_key,
+            [{"role": "assistant", "content": blocked}],
+            "all day",
+        )
+        context = web_app._working_memory_context(memory)
+
+        self.assertIn("create calendar event awaiting clarification", memory.get("pending_action", ""))
+        self.assertEqual(memory.get("current_subject"), "Perth family vacation")
+        self.assertIn("Pending user intent", context)
+
+    def test_pwa_working_memory_understands_named_thing_reference(self):
+        history_key = "pwa:test-working-memory-thing"
+        web_app._WEB_WORKING_MEMORY.pop(web_app._working_memory_storage_key(history_key), None)
+
+        memory = web_app._update_working_memory(
+            history_key,
+            [{"role": "assistant", "content": "I can track the Perth family vacation leave application."}],
+            "Yes, the Perth thing. Keep me honest next week.",
+        )
+
+        self.assertEqual(memory.get("current_subject"), "Perth")
+        self.assertEqual(memory.get("pending_action"), "time-specific reminder")
+
     def test_pwa_whats_up_clears_stale_working_subject(self):
         history_key = "pwa:test-working-memory-whats-up"
         key = web_app._working_memory_storage_key(history_key)
@@ -4428,6 +4654,37 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIsNotNone(blocked)
         self.assertIn("blocked", blocked)
         self.assertIn("unresolved vague references", blocked)
+        self.assertIn("Which exact item do you mean?", blocked)
+
+    def test_missing_reminder_due_date_asks_clarifying_question(self):
+        blocked = bot._validated_action_failure(
+            "add_reminder",
+            {"description": "overseas leave application", "category": "Personal"},
+        )
+
+        self.assertIsNotNone(blocked)
+        self.assertIn("When should I remind you by?", blocked)
+        self.assertIn("status=blocked", blocked)
+
+    def test_missing_calendar_time_asks_clarifying_question(self):
+        blocked = bot._validated_action_failure(
+            "create_calendar_event",
+            {"title": "parent meeting", "date": "2026-05-22"},
+        )
+
+        self.assertIsNotNone(blocked)
+        self.assertIn("What start and end time should I use", blocked)
+        self.assertIn("all-day", blocked)
+
+    def test_tool_action_fallback_returns_clarification_for_blocked_action(self):
+        blocked = bot._validated_action_failure(
+            "add_reminder",
+            {"description": "overseas leave application", "category": "Personal"},
+        )
+
+        reply = bot._tool_action_fallback_reply([{"content": blocked}])
+
+        self.assertEqual(reply, "I can set that reminder for `overseas leave application`, but I need the due date. When should I remind you by?")
 
     def test_state_changing_action_result_includes_audit(self):
         with patch.object(bot.gs, "add_reminder", return_value="42"):

@@ -624,6 +624,282 @@ VERIFICATION_PATTERN = re.compile(
     re.I,
 )
 
+MONTH_REFERENCE_PATTERN = re.compile(
+    r"\b(?:\d{1,2}\s*[-–]\s*\d{1,2}\s*(?:jan|feb|mar|apr|may|jun|june|jul|july|aug|sep|sept|oct|nov|dec)|"
+    r"\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|june|jul|july|aug|sep|sept|oct|nov|dec)|"
+    r"(?:jan|feb|mar|apr|may|jun|june|jul|july|aug|sep|sept|oct|nov|dec)\s+\d{1,2})\b",
+    re.I,
+)
+
+RELATIVE_TIME_REFERENCE_PATTERN = re.compile(
+    r"\b(?:today|tomorrow|tonight|this\s+week|next\s+week|later|soon|"
+    r"morning|afternoon|evening|night|by\s+\w+|before\s+\w+|after\s+\w+|"
+    r"\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{1,2}:\d{2})\b",
+    re.I,
+)
+
+IMPLICIT_ACTION_PATTERN = re.compile(
+    r"\b(?:need(?:ed)?\s+to|have\s+to|gotta|got\s+to|must|should|supposed\s+to|"
+    r"guess\s+i\s+need\s+to|might\s+want\s+to|please\s+help\s+me|help\s+me|"
+    r"settle|sort|handle|take\s+a\s+look|look\s+into|follow\s+up|chase)\b",
+    re.I,
+)
+
+TASK_OBJECT_PATTERN = re.compile(
+    r"\b(?:application|submission|submit|prepare|draft|reply|form|admin|paperwork|"
+    r"slides?|ppt|deck|worksheet|report|proposal|follow[-\s]?up|email|gmail|deadline|"
+    r"leave|overseas|booking|payment|invoice|marking|scripts?)\b",
+    re.I,
+)
+
+SOFT_REQUEST_PATTERN = re.compile(
+    r"\b(?:can\s+you|could\s+you|would\s+you|mind\s+(?:helping|taking)|"
+    r"let'?s|we\s+should|might\s+be\s+worth|probably\s+worth|it(?:'|’)d\s+be\s+good\s+to|"
+    r"maybe\s+(?:we|you|hira)|when\s+you\s+can|if\s+you\s+can|"
+    r"worth\s+(?:a\s+)?(?:look|checking|tracking)|no\s+rush\s+but|whenever\s+you\s+can)\b",
+    re.I,
+)
+
+SEMANTIC_CALENDAR_PATTERN = re.compile(
+    r"\b(?:carve\s+out|block\s+out|hold\s+(?:that|this|the)?\s*time|put\s+(?:it|this|that)\s+(?:in|on)\s+(?:my\s+)?calendar|"
+    r"reserve|book\s+me|slot\s+in|pencil\s+in|mark\s+(?:it|this|that)|put\s+a\s+pin\s+in|"
+    r"ring[-\s]?fence|protect\s+(?:that|this|the)?\s*time)\b",
+    re.I,
+)
+
+SEMANTIC_TASK_PATTERN = re.compile(
+    r"\b(?:put\s+a\s+pin\s+in|keep\s+me\s+honest|don'?t\s+let\s+me\s+forget|"
+    r"make\s+sure\s+i|hold\s+me\s+to|park\s+this|flag\s+this|"
+    r"come\s+back\s+to|circle\s+back|loop\s+back|chase\s+up|follow\s+through|"
+    r"for\s+the\s+stack|on\s+my\s+radar|keep\s+this\s+warm)\b",
+    re.I,
+)
+
+SEMANTIC_GMAIL_PATTERN = re.compile(
+    r"\b(?:draft|compose|write|reply|respond|email\s+back|get\s+back\s+to|"
+    r"latest\s+(?:email|mail|gmail)|last\s+(?:email|mail|gmail)|inbox|thread)\b",
+    re.I,
+)
+
+SEMANTIC_FOLLOWUP_PATTERN = re.compile(
+    r"\b(?:circle\s+back|loop\s+back|follow\s+up|followup|chase\s+up|chase|"
+    r"get\s+back\s+to|check\s+back\s+with|touch\s+base\s+with)\b",
+    re.I,
+)
+
+SEMANTIC_ARTIFACT_PATTERN = re.compile(
+    r"\b(?:make|build|draft|generate|cook\s+up|spin\s+up|whip\s+up|put\s+together|"
+    r"shape|polish|turn\s+this\s+into)\b",
+    re.I,
+)
+
+SEMANTIC_RESEARCH_PATTERN = re.compile(
+    r"\b(?:sanity[-\s]?check|sense[-\s]?check|fact[-\s]?check|verify|validate|"
+    r"look\s+into|dig\s+into|read\s+up\s+on|scan\s+for|keep\s+(?:an\s+)?eye\s+on|track|watch)\b",
+    re.I,
+)
+
+SEMANTIC_MEMORY_PATTERN = re.compile(
+    r"\b(?:this\s+deserves\s+memory|lock\s+this\s+in|bank\s+this|"
+    r"file\s+this\s+away|keep\s+this\s+in\s+mind|for\s+future\s+reference|"
+    r"for\s+the\s+file|remember\s+my\s+wording|learn\s+my\s+phrasing)\b",
+    re.I,
+)
+
+SEMANTIC_LOW_PRIORITY_PATTERN = re.compile(
+    r"\b(?:not\s+urgent|no\s+rush|low\s+priority|when\s+needed|when\s+you\s+can|"
+    r"whenever\s+you\s+can|later\s+is\s+fine|can\s+wait)\b",
+    re.I,
+)
+
+SEMANTIC_REFERENCE_ONLY_PATTERN = re.compile(
+    r"\b(?:reference\s+(?:material\s+)?only|for\s+reference\s+only|fyi|"
+    r"no\s+(?:immediate\s+)?action(?:\s+needed|\s+required)?|do\s+nothing\s+for\s+now|"
+    r"just\s+(?:for\s+)?context|for\s+context\s+only)\b",
+    re.I,
+)
+
+SEMANTIC_AMBIGUITY_PATTERN = re.compile(
+    r"\b(?:if\s+needed|when\s+needed|unless|not\s+sure|maybe|might|"
+    r"this|that|it|them|that\s+day|the\s+day|same\s+day|the\s+(?:first|second|third|last)\s+one)\b",
+    re.I,
+)
+
+WORDSMITH_SEMANTIC_CORPUS = [
+    {
+        "text": "Park this for next week: overseas leave application.",
+        "expected_flags": {"task", "reminder"},
+        "note": "Soft task phrasing with a date reference should expose reminder tools.",
+    },
+    {
+        "text": "For the file: I prefer you clarify before guessing.",
+        "expected_flags": {"memory"},
+        "note": "Personal phrasebook memory cue.",
+    },
+    {
+        "text": "Reference material only, no immediate action.",
+        "expected_flags": {"reference_only"},
+        "note": "Context capture, not task creation.",
+    },
+    {
+        "text": "No rush but keep this on my radar for next Friday.",
+        "expected_flags": {"task", "reminder", "low_priority"},
+        "note": "Low-priority task nuance.",
+    },
+    {
+        "text": "Can you ring-fence Thursday afternoon for marking moderation?",
+        "expected_flags": {"calendar"},
+        "note": "Calendar phrasebook.",
+    },
+    {
+        "text": "Worth checking the latest Nothing OS rollout.",
+        "expected_flags": {"research", "news"},
+        "note": "Soft live-source check.",
+    },
+]
+
+
+def _semantic_intent_flags(text: str) -> set[str]:
+    clean = " ".join(str(text or "").lower().split())
+    flags: set[str] = set()
+    if not clean:
+        return flags
+    soft = bool(SOFT_REQUEST_PATTERN.search(clean))
+    if SEMANTIC_LOW_PRIORITY_PATTERN.search(clean):
+        flags.add("low_priority")
+    if SEMANTIC_REFERENCE_ONLY_PATTERN.search(clean):
+        flags.add("reference_only")
+    if _is_implicit_task_request(clean):
+        flags.add("task")
+    if _is_dated_absence_calendar_intent(clean) or (SEMANTIC_CALENDAR_PATTERN.search(clean) and _has_date_or_time_reference(clean)):
+        flags.add("calendar")
+    if SEMANTIC_TASK_PATTERN.search(clean):
+        flags.add("task")
+        if _has_date_or_time_reference(clean):
+            flags.add("reminder")
+    if SEMANTIC_GMAIL_PATTERN.search(clean):
+        flags.add("gmail")
+        if re.search(r"\b(?:draft|compose|write|reply|respond|email\s+back|get\s+back\s+to)\b", clean):
+            flags.add("gmail_draft")
+    if SEMANTIC_FOLLOWUP_PATTERN.search(clean):
+        flags.add("followup")
+    if SEMANTIC_ARTIFACT_PATTERN.search(clean):
+        if re.search(r"\b(?:slides?|deck|ppt|pptx|presentation)\b", clean):
+            flags.add("slides")
+        if re.search(r"\b(?:doc|docs|document|worksheet|letter|report|memo|proposal|handout|meeting\s+notes)\b", clean):
+            flags.add("document")
+    if SEMANTIC_RESEARCH_PATTERN.search(clean):
+        flags.add("research")
+        if re.search(r"\b(?:latest|current|news|rollout|release|update|rumou?r|watch|track|keep\s+(?:an\s+)?eye\s+on)\b", clean):
+            flags.add("news")
+    if soft and re.search(r"\b(?:latest|current|rollout|release|update|news|rumou?r)\b", clean):
+        flags.add("research")
+        flags.add("news")
+    if SEMANTIC_MEMORY_PATTERN.search(clean):
+        flags.add("memory")
+    if soft and re.search(r"\b(?:what'?s|whats|calendar|schedule|agenda|day|week|load|priority|prioritise|prioritize)\b", clean):
+        flags.add("context")
+    return flags
+
+
+def semantic_corpus_cases() -> list[dict]:
+    return [dict(item) for item in WORDSMITH_SEMANTIC_CORPUS]
+
+
+def semantic_intent_profile(text: str, recent_context: str = "") -> dict:
+    clean = " ".join(str(text or "").lower().split())
+    context = " ".join(str(recent_context or "").lower().split())
+    flags = _semantic_intent_flags(clean)
+    profile = {
+        "flags": sorted(flags),
+        "score": 0,
+        "confidence": "none",
+        "needs_clarification": False,
+        "clarification_reason": "",
+        "priority_hint": "normal",
+        "actionability": "none",
+    }
+    if not clean:
+        return profile
+
+    actionish = bool(flags & {
+        "task", "calendar", "reminder", "gmail_draft", "followup",
+        "document", "slides", "memory", "research", "news",
+    })
+    score = 20 if actionish else 10
+    score += min(45, len(flags) * 10)
+    if SOFT_REQUEST_PATTERN.search(clean) or IMPLICIT_ACTION_PATTERN.search(clean):
+        score += 12
+    if TASK_OBJECT_PATTERN.search(clean):
+        score += 10
+    if _has_date_or_time_reference(clean):
+        score += 10
+    if context:
+        score += 8
+    if "reference_only" in flags:
+        score = max(0, score - 25)
+        profile["actionability"] = "reference_only"
+    elif actionish:
+        profile["actionability"] = "action"
+    if "low_priority" in flags:
+        profile["priority_hint"] = "low"
+
+    ambiguous = bool(SEMANTIC_AMBIGUITY_PATTERN.search(clean))
+    unresolved_reference = bool(
+        re.search(r"\b(?:this|that|it|them|that day|the day|same day|the (?:first|second|third|last) one)\b", clean)
+        and not context
+    )
+    mixed_no_action = "reference_only" in flags and bool(flags & {"task", "calendar", "reminder", "followup"})
+    needs_clarification = bool(actionish and (unresolved_reference or mixed_no_action or (ambiguous and score < 55)))
+    reason = ""
+    if unresolved_reference:
+        reason = "The request points at this/that/it without enough recent context."
+    elif mixed_no_action:
+        reason = "The wording mixes action language with reference-only/no-action language."
+    elif needs_clarification:
+        reason = "The request is action-like but still underspecified."
+
+    score = max(0, min(100, score))
+    profile["score"] = score
+    profile["confidence"] = "high" if score >= 75 else "medium" if score >= 50 else "low" if score >= 25 else "none"
+    profile["needs_clarification"] = needs_clarification
+    profile["clarification_reason"] = reason
+    return profile
+
+
+def _is_reference_only_message(text: str) -> bool:
+    clean = " ".join(str(text or "").lower().split())
+    if not clean or not SEMANTIC_REFERENCE_ONLY_PATTERN.search(clean):
+        return False
+    return not bool(re.search(
+        r"\b(?:add|create|schedule|book|mark\s+(?:it|this|that)|remind|nudge|ping|"
+        r"follow\s+up|chase|calendar|deadline|due\s+(?:on|by)|by\s+\w+|"
+        r"must|should|need(?:ed)?\s+to|have\s+to|gotta)\b",
+        clean,
+    ))
+
+
+def _has_date_or_time_reference(text: str) -> bool:
+    clean = str(text or "")
+    return bool(DAY_REFERENCE_PATTERN.search(clean) or MONTH_REFERENCE_PATTERN.search(clean) or RELATIVE_TIME_REFERENCE_PATTERN.search(clean))
+
+
+def _is_dated_absence_calendar_intent(text: str) -> bool:
+    clean = " ".join(str(text or "").lower().split())
+    return bool(
+        re.search(r"\b(?:off to|away|vacation|holiday|overseas|on leave|leave application|family vacation|travelling|traveling)\b", clean)
+        and _has_date_or_time_reference(clean)
+    )
+
+
+def _is_implicit_task_request(text: str) -> bool:
+    clean = " ".join(str(text or "").lower().split())
+    if not clean:
+        return False
+    if re.search(r"\b(?:what|how|why|when|where|who)\b", clean) and not re.search(r"\b(?:should i|do i need|need to)\b", clean):
+        return False
+    return bool(IMPLICIT_ACTION_PATTERN.search(clean) and (TASK_OBJECT_PATTERN.search(clean) or _has_date_or_time_reference(clean)))
+
 
 def _is_day_planning_query(text: str) -> bool:
     clean = " ".join(str(text or "").lower().split())
@@ -713,6 +989,7 @@ def source_discipline_for_text(text: str) -> dict:
         }
 
     tools: list[str] = []
+    semantic_flags = _semantic_intent_flags(clean)
     if re.search(r"https?://\S+", clean):
         tools.append("fetch_url")
     if _is_timetable_verification_query(clean):
@@ -727,9 +1004,9 @@ def source_discipline_for_text(text: str) -> dict:
         tools.append("get_nea_weather")
     if re.search(r"\b(prayer|solat|salah|subuh|fajr|zohor|asar|maghrib|isyak|khutbah|sermon)\b", lowered):
         tools.extend(["get_muis_prayer_times", "get_muis_friday_khutbah"])
-    if VOLATILE_FACT_PATTERN.search(clean) or re.search(r"\b(ai|apple|android|ios|macos|singapore education|moe)\b", lowered):
+    if VOLATILE_FACT_PATTERN.search(clean) or re.search(r"\b(ai|apple|android|ios|macos|singapore education|moe)\b", lowered) or "news" in semantic_flags:
         tools.append("get_latest_news")
-    if re.search(r"\b(research|deep dive|investigate|compare|comparison|find out|look up|source|sources|official|policy|documentation|docs|evidence)\b", lowered):
+    if re.search(r"\b(research|deep dive|investigate|compare|comparison|find out|look up|source|sources|official|policy|documentation|docs|evidence)\b", lowered) or "research" in semantic_flags:
         tools.append("web_research")
     if re.search(r"\b(search|web|website|article|page|latest|current|news|headline|rumou?r|digest|shortlist|shortlisted|preferred topics)\b", lowered):
         tools.append("web_search")
@@ -897,7 +1174,9 @@ def infer_intent_lens(text: str) -> dict:
     else:
         hat = "personal"
 
-    if re.search(r"\b(what do i do|priority|prioritise|prioritize|overwhelmed|packed|busy|workload|focus)\b", lower):
+    if _is_implicit_task_request(clean):
+        likely = "infer the practical action behind indirect language and expose the right tool path"
+    elif re.search(r"\b(what do i do|priority|prioritise|prioritize|overwhelmed|packed|busy|workload|focus)\b", lower):
         likely = "prioritise the next practical move"
     elif re.search(r"\b(upgrade|improve|better|review|architecture|self)\b", lower):
         likely = "improve H.I.R.A's own behaviour or architecture"
@@ -1064,6 +1343,10 @@ Personality:
 - Protect his attention: summarise, prioritise, and make the next action obvious.
 - Notice patterns across school, CCA, projects, deadlines, and personal preferences.
 - Use the intent lens and relevant memory context to infer what Herwanto likely means, not only the literal words.
+- Treat Herwanto as a wordsmith: soft phrases like "might be worth", "for the file", "park this", "put a pin in", "keep this on my radar", "no rush", "reference only", and "no immediate action" carry operational meaning. Follow those cues.
+- If a state-changing action is low-confidence, reference-only, pronoun-heavy, or missing a concrete date/time/subject, ask one crisp clarification instead of saving a guessed action. If you already asked and the next reply supplies the missing detail, continue the pending action from the Action audit context.
+- Before ambiguous or high-impact calendar/reminder/follow-up/email draft saves, preview the concrete action in one sentence and ask for confirmation. For clear low-risk saves, proceed directly.
+- "Not urgent" and "no rush" mean low priority, not no action. "Reference material only", "for reference only", and "no immediate action" mean do not create a task unless Herwanto also gives a clear explicit action.
 - In follow-up turns, resolve pronouns/vague references ("it", "that", "that day", "again") against the newest relevant user turn first. If Herwanto corrected or clarified the subject, that newer correction overrides older assistant guesses and older named events in the same chat.
 - When he is stressed or overloaded, steady the room first, then give a short practical plan.
 - When he is building something, be direct and product-minded.
@@ -1773,18 +2056,20 @@ SOURCE_NOTE_TOOL = {
 
 CALENDAR_TOOL = {
     "name": "create_calendar_event",
-    "description": "Create a Google Calendar event. Use this automatically when the user mentions attending, scheduling, or having something at a specific date and time — matches, duties, meetings, trainings, appointments.",
+    "description": "Create a Google Calendar event. Use this automatically when the user mentions attending, scheduling, or having something at a specific date and time. For leave, vacation, travel, or blocked whole days, create an all-day event with all_day=true and end_date when a range is given.",
     "input_schema": {
         "type": "object",
         "properties": {
             "title":       {"type": "string", "description": "Event title"},
             "date":        {"type": "string", "description": "YYYY-MM-DD"},
-            "start_time":  {"type": "string", "description": "HH:MM in 24hr"},
-            "end_time":    {"type": "string", "description": "HH:MM in 24hr"},
+            "end_date":    {"type": "string", "description": "YYYY-MM-DD inclusive end date for all-day/multi-day events; omit for single-day events"},
+            "all_day":     {"type": "boolean", "description": "True for leave, vacation, travel, or whole-day blocked time"},
+            "start_time":  {"type": "string", "description": "HH:MM in 24hr for timed events"},
+            "end_time":    {"type": "string", "description": "HH:MM in 24hr for timed events"},
             "location":    {"type": "string", "description": "Location if mentioned, else empty"},
             "description": {"type": "string", "description": "Extra notes if any, else empty"}
         },
-        "required": ["title", "date", "start_time", "end_time"]
+        "required": ["title", "date"]
     }
 }
 
@@ -7640,9 +7925,18 @@ def _validate_state_changing_action(name: str, inp: dict) -> tuple[bool, str]:
     if re.search(r"\b(that day|the day|same day)\b", subject, re.I):
         return False, "The action still contains unresolved vague references; ask for or infer the concrete subject before saving."
     if name == "create_calendar_event":
-        required = ("title", "date", "start_time", "end_time")
-        if any(not str(inp.get(field, "") or "").strip() for field in required):
-            return False, "Calendar event needs title, date, start time, and end time."
+        if not str(inp.get("date", "") or "").strip():
+            return False, "Calendar event needs a concrete YYYY-MM-DD date."
+        if inp.get("all_day"):
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(inp.get("date", "") or "")):
+                return False, "All-day calendar event needs a concrete YYYY-MM-DD date."
+            end_date = str(inp.get("end_date", "") or "").strip()
+            if end_date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", end_date):
+                return False, "All-day calendar event end_date must be YYYY-MM-DD."
+        else:
+            required = ("title", "date", "start_time", "end_time")
+            if any(not str(inp.get(field, "") or "").strip() for field in required):
+                return False, "Timed calendar event needs title, date, start time, and end time."
     elif name == "add_reminder":
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(inp.get("due_date", "") or "")):
             return False, "Reminder needs a concrete YYYY-MM-DD due date."
@@ -7717,26 +8011,141 @@ def _action_audit_text(name: str, inp: dict, result: str, metadata: dict | None 
     return audit
 
 
+def _action_clarification_prompt(name: str, inp: dict, reason: str) -> str:
+    clean_reason = str(reason or "").strip()
+    if not clean_reason:
+        return ""
+    subject = _action_subject_for_audit(name, inp).strip()
+    if "disabled" in clean_reason.lower():
+        return ""
+    if "subject is missing" in clean_reason or "subject is only a vague reference" in clean_reason:
+        label = {
+            "create_calendar_event": "calendar item",
+            "delete_calendar_event_by_text": "calendar item",
+            "add_reminder": "reminder",
+            "create_proactive_nudge": "nudge",
+            "create_followup": "follow-up",
+        }.get(name, "action")
+        return f"I can do that, but I need the exact {label} first. What should I attach it to?"
+    if "unresolved vague references" in clean_reason:
+        target = f" for `{subject}`" if subject else ""
+        return f"I can do that{target}, but I’m not fully sure what the vague reference points to. Which exact item do you mean?"
+    if name == "create_calendar_event":
+        if "start time" in clean_reason.lower() or "end time" in clean_reason.lower() or "timed calendar event" in clean_reason.lower():
+            target = f" for `{subject}`" if subject else ""
+            return f"I can add that calendar event{target}, but I need the time. What start and end time should I use, or should I block it as all-day?"
+        if "date" in clean_reason.lower():
+            return f"I can add that to your calendar, but I need the exact date first. What date should I use?"
+    if name == "add_reminder" and "due date" in clean_reason.lower():
+        target = f" for `{subject}`" if subject else ""
+        return f"I can set that reminder{target}, but I need the due date. When should I remind you by?"
+    if name == "create_proactive_nudge" and "send_at" in clean_reason.lower():
+        target = f" for `{subject}`" if subject else ""
+        return f"I can nudge you{target}, but I need the exact time. When should I send it?"
+    if name in {"create_daily_checkin", "create_break_aware_daily_checkin"} and "question" in clean_reason.lower():
+        target = f" for `{subject}`" if subject else ""
+        return f"I can create that check-in{target}, but I need the prompt. What should I ask you?"
+    if name == "create_followup" and "due date" in clean_reason.lower():
+        target = f" for `{subject}`" if subject else ""
+        return f"I can track that follow-up{target}, but I need the due date. When should it be due?"
+    return f"I can do that, but one detail is missing: {clean_reason}"
+
+
 def _validated_action_failure(name: str, inp: dict) -> str | None:
     ok, reason = _validate_state_changing_action(name, inp)
     if ok:
         return None
-    audit = f"Action audit: action={name} | status=blocked | reason={reason}"
+    pieces = [f"action={name}", "status=blocked", f"reason={reason}"]
+    subject = _clip_memory_text(_action_subject_for_audit(name, inp), 140)
+    date_value = str(inp.get("date") or inp.get("due_date") or inp.get("send_at") or "")
+    if subject:
+        pieces.append(f"subject={subject}")
+    if date_value:
+        pieces.append(f"date={date_value}")
+    audit = "Action audit: " + " | ".join(pieces)
     logger.warning(audit)
     _record_action_ledger_event(
         name,
         "blocked",
-        _clip_memory_text(_action_subject_for_audit(name, inp), 140),
-        str(inp.get("date") or inp.get("due_date") or inp.get("send_at") or ""),
+        subject,
+        date_value,
         reason,
     )
+    clarification = _action_clarification_prompt(name, inp, reason)
+    if clarification:
+        return f"{clarification}\n\n{audit}"
     return f"Action validation blocked this save: {reason} Ask Herwanto for the missing concrete detail instead of guessing.\n\n{audit}"
+
+
+def _parse_action_audit_line(line: str) -> dict:
+    raw = str(line or "")
+    match = re.search(r"Action audit:\s*(.+)", raw, re.I)
+    if not match:
+        return {}
+    parsed: dict[str, str] = {}
+    for piece in match.group(1).split("|"):
+        if "=" not in piece:
+            continue
+        key, value = piece.split("=", 1)
+        parsed[key.strip().lower()] = value.strip()
+    return parsed
+
+
+def _latest_blocked_action_from_context(recent_context: str = "") -> dict:
+    context = str(recent_context or "")
+    if not context:
+        return {}
+    latest: dict = {}
+    for line in re.findall(r"Action audit:[^\n]+", context, re.I):
+        parsed = _parse_action_audit_line(line)
+        if parsed.get("status", "").lower() == "blocked" and parsed.get("action"):
+            latest = parsed
+    return latest
+
+
+_CLARIFICATION_DETAIL_RE = re.compile(
+    r"\b(?:all[-\s]?day|whole\s+day|full\s+day|timed|not\s+all[-\s]?day|"
+    r"today|tomorrow|tonight|next\s+\w+|this\s+\w+|by\s+\w+|on\s+\d{1,2}|"
+    r"\d{4}-\d{2}-\d{2}|\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|june|jul|july|aug|sep|sept|oct|nov|dec)|"
+    r"(?:jan|feb|mar|apr|may|jun|june|jul|july|aug|sep|sept|oct|nov|dec)\s+\d{1,2}|"
+    r"\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{1,2}:\d{2}|"
+    r"first\s+one|second\s+one|third\s+one|last\s+one|that\s+one|this\s+one|same\s+one)\b",
+    re.I,
+)
+
+
+def _is_clarification_detail_reply(text: str) -> bool:
+    clean = _normalise_short_reply(text)
+    if not clean:
+        return False
+    if clean in _CONTEXTUAL_FOLLOWUP_REPLIES:
+        return True
+    return len(clean.split()) <= 8 and bool(_CLARIFICATION_DETAIL_RE.search(text or ""))
+
+
+def _blocked_action_effective_text(text: str, recent_context: str = "") -> str:
+    blocked = _latest_blocked_action_from_context(recent_context)
+    if not blocked or not _is_clarification_detail_reply(text):
+        return str(text or "")
+    parts = [
+        f"Continue pending blocked action: {blocked.get('action', '')}.",
+        f"Missing/blocked reason: {blocked.get('reason', '')}.",
+    ]
+    if blocked.get("subject"):
+        parts.append(f"Subject: {blocked['subject']}.")
+    if blocked.get("date"):
+        parts.append(f"Date/time context: {blocked['date']}.")
+    parts.append(f"User clarification: {text or ''}")
+    return " ".join(part for part in parts if part.strip())
+
 
 def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     available = {tool["name"] for tool in tools}
     clean = " ".join((text or "").lower().split())
     if not clean:
         return None
+    mark_reference_action = bool(re.search(r"\bmark\s+(?:it|this|that)\b", clean))
+    semantic_flags = _semantic_intent_flags(clean)
 
     def has_any(words):
         return any(word in clean for word in words)
@@ -7750,7 +8159,8 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
         "add ", "create ", "schedule ", "book ", "put ", "set up ",
         "remind me", "nudge me", "ping me", "check in", "check-in",
         "draft ", "write ", "compose ", "reply ", "send ",
-    ])
+        "settle ", "sort ", "handle ", "follow up", "chase ",
+    ]) or mark_reference_action or _is_implicit_task_request(clean) or bool(semantic_flags & {"task", "calendar", "followup", "gmail_draft", "document", "slides"})
     completion_intent = has_any([
         "done", "completed", "complete ", "mark as done", "mark done",
         "cancel ", "delete ", "remove ",
@@ -7773,15 +8183,20 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
         and has_any(["delete", "remove", "clean", "clear"])
     ):
         return "bulk_delete_duplicate_calendar_events"
-    if "remember_user_info" in available and _is_memory_commit_query_text(text):
+    if "remember_user_info" in available and (_is_memory_commit_query_text(text) or "memory" in semantic_flags):
         return "remember_user_info"
+
+    if "create_gmail_draft" in available and "gmail_draft" in semantic_flags:
+        return "create_gmail_draft"
 
     if (
         "get_gmail_brief" in available
-        and gmail_intent
-        and has_any(["follow up", "follow-up", "chase", "note", "remember", "remind"])
+        and (gmail_intent or "gmail" in semantic_flags)
+        and has_any(["follow up", "follow-up", "chase", "note", "remember", "remind", "settle", "sort", "handle"])
         and not has_any(["draft", "write", "compose", "reply", "send "])
     ):
+        return "get_gmail_brief"
+    if "get_gmail_brief" in available and "gmail" in semantic_flags and "gmail_draft" not in semantic_flags:
         return "get_gmail_brief"
     if (
         "find_available_training_slots" in available
@@ -7852,6 +8267,15 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     ]):
         return "analyze_mtl_scores"
 
+    if "create_slide_deck_artifact" in available and "slides" in semantic_flags:
+        return "create_slide_deck_artifact"
+    if "create_document_artifact" in available and "document" in semantic_flags:
+        return "create_document_artifact"
+    if "get_latest_news" in available and "news" in semantic_flags:
+        return "get_latest_news"
+    if "web_research" in available and "research" in semantic_flags:
+        return "web_research"
+
     if action_intent or completion_intent:
         return None
 
@@ -7862,10 +8286,10 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     ]):
         return "update_mtl_class_score"
 
-    if "get_mtl_classlists" in available and has_any([
+    if "get_mtl_classlists" in available and not mark_reference_action and has_any([
         "classlist", "class list", "student", "students", "names", "name list",
         "my classes", "mtl group", "grouping", "1 flagship", "2g3", "3g3", "4nt",
-        "score", "scores", "mark", "marks", "results", "result", "wa1", "wa2", "exam", "assessment",
+        "score", "scores", "marks", "results", "result", "wa1", "wa2", "exam", "assessment",
         "fa1", "fa2", "weighted assessment", "formative assessment", "prelim", "eoy"
     ]):
         return "get_mtl_classlists"
@@ -7908,11 +8332,11 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     if "get_cca_schedule" in available and _is_cca_schedule_query_text(text):
         return "get_cca_schedule"
 
-    if "web_research" in available and has_any([
+    if "web_research" in available and (has_any([
         "research", "deep dive", "investigate", "compare", "comparison",
         "find out", "look up", "sources", "official", "policy",
         "documentation", "docs", "evidence", "study", "review"
-    ]):
+    ]) or "research" in semantic_flags):
         return "web_research"
 
     if "get_f1_brief" in available and has_any([
@@ -7934,13 +8358,13 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     ]):
         return "get_liverpool_brief"
 
-    if "get_latest_news" in available and has_any([
+    if "get_latest_news" in available and (has_any([
         "digest", "briefing", "news", "latest", "headlines", "shortlist",
         "shortlisted", "preferred topics", "android", "android 17",
         "google i/o", "google io", "gemini", "pixel", "nothing phone",
         "nothing os", "nothing products", "cmf", "carl pei", "apple",
         "ios", "ai", "singapore education",
-    ]):
+    ]) or "news" in semantic_flags):
         return "get_latest_news"
 
     if (
@@ -8238,6 +8662,7 @@ async def _run_forced_weather_fallback(tool_choice: str | None) -> str | None:
 def _tool_action_fallback_reply(tool_results: list[dict]) -> str:
     created: list[str] = []
     reminders: list[str] = []
+    clarifications: list[str] = []
     failed: list[str] = []
     other: list[str] = []
 
@@ -8250,12 +8675,17 @@ def _tool_action_fallback_reply(tool_results: list[dict]) -> str:
         first_line = content.splitlines()[0].strip()
         if first_line.startswith("Created:"):
             created.append(first_line.removeprefix("Created:").strip())
+        elif "Action audit:" in content and "status=blocked" in content and first_line:
+            clarifications.append(first_line.strip())
         elif first_line.startswith("Added reminder"):
             reminders.append(first_line.strip())
         elif first_line.lower().startswith("failed"):
             failed.append(first_line.strip())
         elif first_line and len(other) < 3:
             other.append(first_line)
+
+    if clarifications and not (created or reminders or failed):
+        return clarifications[0]
 
     if not (created or reminders or failed):
         return ""
@@ -8275,6 +8705,11 @@ def _tool_action_fallback_reply(tool_results: list[dict]) -> str:
         lines.extend(f"- {item}" for item in shown)
         if len(reminders) > len(shown):
             lines.append(f"- ...and {len(reminders) - len(shown)} more reminder(s).")
+    if clarifications:
+        if lines:
+            lines.append("")
+        lines.append("I still need one detail:")
+        lines.extend(f"- {item}" for item in clarifications[:3])
     if failed:
         if lines:
             lines.append("")
@@ -9631,6 +10066,10 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
     context = (recent_context or "").lower()
     effective_text = _contextual_followup_effective_text(text, context).lower()
     combined = f"{context}\n{effective_text}"
+    dated_absence_calendar_intent = _is_dated_absence_calendar_intent(effective_text)
+    implicit_task_request = _is_implicit_task_request(effective_text)
+    semantic_flags = _semantic_intent_flags(effective_text)
+    reference_only_message = _is_reference_only_message(effective_text)
     classlist_followup = (
         re.search(r"\b(?:try again|retry|again|nothing filled|not filled|didn'?t fill|did not fill|still blank|same permission|permissions?)\b", text)
         and re.search(r"\b(?:classlist|class list|2g3|3g3|1g2|wa1|wa2|fa1|fa2|percentage|percent|%)\b", context)
@@ -9642,14 +10081,18 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
             if item not in tools:
                 tools.append(item)
 
-    if re.search(r"\b(gmail|email|emails|mail|inbox|unread|draft|reply)\b", effective_text):
+    if reference_only_message:
+        add(CONTEXT_TOOL, MEMORY_TOOL)
+        return tools
+
+    if re.search(r"\b(gmail|email|emails|mail|inbox|unread|draft|reply)\b", effective_text) or "gmail" in semantic_flags:
         add(GMAIL_BRIEF_TOOL, GMAIL_DRAFT_TOOL)
     if (
         re.search(r"\b(timetable|lesson|lessons|class|classes|period|odd week|even week|school week|plt|professional learning teams?)\b", effective_text)
         or _is_timetable_verification_query(text, context)
     ):
         add(TIMETABLE_TOOL, WEEK_TYPE_TOOL)
-    if classlist_followup or re.search(r"\b(classlist|class list|students?|names?|my classes|mtl group|grouping|1 flagship|2g3|3g3|4nt|4nt bml|scores?|marks?|results?|wa1|wa2|fa1|fa2|prelim|eoy|weighted assessment|formative assessment|exam|assessment|percentage|percent|%|analyse|analyze|analysis|graph|graphs|chart|charts|trend|mean|median|average|pass rate|underperforming|watchlist|most improved|progress|drop|dropped|colour|color|highlight|red|failures?|failed|below 50|less than 50)\b", effective_text):
+    if classlist_followup or re.search(r"\b(classlist|class list|students?|names?|my classes|mtl group|grouping|1 flagship|2g3|3g3|4nt|4nt bml|scores?|marks|results?|wa1|wa2|fa1|fa2|prelim|eoy|weighted assessment|formative assessment|exam|assessment|percentage|percent|%|analyse|analyze|analysis|graph|graphs|chart|charts|trend|mean|median|average|pass rate|underperforming|watchlist|most improved|progress|drop|dropped|colour|color|highlight|red|failures?|failed|below 50|less than 50)\b", effective_text):
         add(CLASSLIST_TOOL, ANALYZE_MTL_SCORES_TOOL, GENERATE_MTL_TREND_REPORT_TOOL, APPLY_MTL_FAILURE_HIGHLIGHTING_TOOL, UPDATE_CLASS_SCORE_TOOL, FILL_PERCENTAGE_SCORES_TOOL, TIMETABLE_TOOL)
     if (
         re.search(r"\b(calendar|schedule|agenda|today|tomorrow|week|meeting|event|appointment|duty|training|match|cca|what'?s on)\b", effective_text)
@@ -9657,14 +10100,25 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         or _contextual_followup_tool_from_context(text, context, {"get_assistant_context"}) == "get_assistant_context"
         or _is_day_planning_query(text)
         or _is_cca_schedule_query_text(text, context)
+        or dated_absence_calendar_intent
+        or "calendar" in semantic_flags
     ):
         add(CONTEXT_TOOL, CALENDAR_TOOL, DELETE_CALENDAR_TOOL, BULK_DELETE_DUPLICATE_CALENDAR_TOOL, AVAILABILITY_SLOT_TOOL, REMINDER_TOOL, TIMETABLE_TOOL)
         if _is_cca_schedule_query_text(text, context):
             add(CCA_SCHEDULE_TOOL)
-    if re.search(r"\b(task|tasks|due|deadline|remind|reminder|prepare|submit|complete|done|priority|prioritise|prioritize|focus)\b", effective_text):
+    if not reference_only_message and (
+        re.search(r"\b(task|tasks|due|deadline|remind|reminder|prepare|submit|complete|done|priority|prioritise|prioritize|focus|settle|sort|handle|application|paperwork|form)\b", effective_text)
+        or implicit_task_request
+        or bool(semantic_flags & {"task", "reminder"})
+    ):
         add(CONTEXT_TOOL, TASK_BRIEF_TOOL, REMINDER_TOOL, COMPLETE_TASK_TOOL)
         if re.search(r"\bremind(?: me)?\b", effective_text) and re.search(
             r"\b(at|by|before|after|during|morning|evening|tonight|tomorrow|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b",
+            effective_text,
+        ):
+            add(NUDGE_TOOL)
+        if implicit_task_request and re.search(
+            r"\b(?:later|tonight|this\s+(?:morning|afternoon|evening)|at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?|\d{1,2}:\d{2})\b",
             effective_text,
         ):
             add(NUDGE_TOOL)
@@ -9672,9 +10126,9 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         add(ADD_MARKING_TOOL, UPDATE_MARKING_TOOL, RESET_MARKING_TOOL, MARKING_BRIEF_TOOL)
     if re.search(r"\b(nudge|ping|notify|notification|notifications|push|check[- ]?in|check in|selawat|salawat|istighfar|zikir|zikr|dhikr)\b", effective_text):
         add(NUDGE_TOOL, DAILY_CHECKIN_TOOL, BREAK_AWARE_CHECKIN_TOOL)
-    if re.search(r"\b(follow[- ]?up|follow up|owe replies|chase)\b", effective_text):
+    if re.search(r"\b(follow[- ]?up|follow up|owe replies|chase)\b", effective_text) or "followup" in semantic_flags:
         add(FOLLOWUP_TOOL, COMPLETE_FOLLOWUP_TOOL, GMAIL_BRIEF_TOOL, TASK_BRIEF_TOOL)
-    if re.search(r"\b(research|deep dive|investigate|compare|comparison|find out|look up|source|sources|official|policy|documentation|docs|evidence|study|review)\b", effective_text):
+    if re.search(r"\b(research|deep dive|investigate|compare|comparison|find out|look up|source|sources|official|policy|documentation|docs|evidence|study|review)\b", effective_text) or "research" in semantic_flags:
         add(WEB_RESEARCH_TOOL, FETCH_URL_TOOL, SOURCE_NOTE_TOOL)
         if ss.search_enabled():
             add(SEARCH_TOOL)
@@ -9686,7 +10140,7 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         r"\b(football|f1|formula 1|liverpool|lfc|man utd|man united|manchester united|premier league|epl|grand prix|mercedes|ferrari|mclaren|red bull)\b",
         combined,
     )
-    if re.search(r"\b(digest|briefing|news|latest|current|headline|headlines|search|web|shortlist|shortlisted|preferred topics|football|f1|liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|android|android 17|google i/o|google io|gemini|pixel|apple|ios|ai|singapore education|nothing phone|nothing os|nothing products|cmf|carl pei)\b", effective_text) or sports_followup or correction_followup:
+    if re.search(r"\b(digest|briefing|news|latest|current|headline|headlines|search|web|shortlist|shortlisted|preferred topics|football|f1|liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|android|android 17|google i/o|google io|gemini|pixel|apple|ios|ai|singapore education|nothing phone|nothing os|nothing products|cmf|carl pei)\b", effective_text) or sports_followup or correction_followup or "news" in semantic_flags:
         add(NEWS_TOOL, WEB_RESEARCH_TOOL, SOURCE_NOTE_TOOL)
         if re.search(r"\b(liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|man utd|man united|manchester united)\b", combined):
             add(LIVERPOOL_BRIEF_TOOL)
@@ -9710,13 +10164,13 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         add(CONTEXT_TOOL, WEATHER_TOOL)
         if ss.search_enabled():
             add(SEARCH_TOOL)
-    if re.search(r"\b(document|docx|worksheet|letter|report|lesson plan|handout|memo|proposal|meeting notes)\b", effective_text):
+    if re.search(r"\b(document|docx|worksheet|letter|report|lesson plan|handout|memo|proposal|meeting notes)\b", effective_text) or "document" in semantic_flags:
         add(DOCUMENT_ARTIFACT_TOOL, TEMPLATE_MEMORY_TOOL)
-    if re.search(r"\b(slide|slides|deck|ppt|pptx|powerpoint|presentation|pitch)\b", effective_text):
+    if re.search(r"\b(slide|slides|deck|ppt|pptx|powerpoint|presentation|pitch)\b", effective_text) or "slides" in semantic_flags:
         add(SLIDE_ARTIFACT_TOOL, TEMPLATE_MEMORY_TOOL)
     if re.search(r"\b(new interest|new topic|getting into|got into|picked up|i'?m into|i am into|deep dive|beginner map|track this|follow this|learn this|teach me about)\b", effective_text):
         add(TOPIC_PROFILE_TOOL, MEMORY_TOOL)
-    if _is_memory_commit_query_text(text) or re.search(r"\b(preference|prefer|template|style|project status|milestone)\b", effective_text):
+    if _is_memory_commit_query_text(text) or re.search(r"\b(preference|prefer|template|style|project status|milestone)\b", effective_text) or "memory" in semantic_flags:
         add(MEMORY_TOOL, PROJECT_TOOL, TEMPLATE_MEMORY_TOOL, TOPIC_PROFILE_TOOL)
     if re.search(r"\b(gameplan|ruh|rūḥ|app|apps|project|projects|product|products|app store|play store|review|approved|rejected|submitted|launched|shipped|released|blocked|progress|status|milestone|client|demo)\b", effective_text):
         add(CONTEXT_TOOL, PROJECT_TOOL, MEMORY_TOOL)
@@ -10108,6 +10562,7 @@ def _looks_tool_heavy(text: str) -> bool:
         r"classlist|class list|students?|my classes|mtl group|grouping|colour|color|highlight|red fill|failures?|below 50|less than 50|"
         r"prayer|prayers|pray|solat|salah|subuh|fajr|syuruk|zohor|zuhur|zuhr|dhuhr|asar|asr|maghrib|isyak|isha|muis|religion|religious|islam|islamic|halal|haram|fatwa|zakat|puasa|fasting|ramadan|qibla|wudhu|wudu|ablution|"
         r"location|where|journey|travel|route|directions|commute|drive|driving|mrt|bus|walk|walking|masjid|mosque|"
+        r"vacation|holiday|overseas|on leave|leave application|off to|away|"
         r"weather|forecast|temperature|temp|hot|cold|rain|raining|rainy|shower|showers|thunder|storm|umbrella|"
         r"haze|psi|pm2\.5|air quality|nea|mss|project|projects|gameplan|ruh|rūḥ|apps?|app store|android|google i/o|google io|gemini|pixel|"
         r"milestone|launched|shipped|released|approved|rejected|submitted|blocked|"
@@ -10119,7 +10574,10 @@ def _looks_tool_heavy(text: str) -> bool:
         r"document|worksheet|slides?|ppt|deck|follow\s*up|done|complete)\b",
         text,
         re.I,
-    ))
+    )) or _is_implicit_task_request(text) or bool(_semantic_intent_flags(text) & {
+        "task", "calendar", "reminder", "followup", "gmail", "gmail_draft",
+        "document", "slides", "research", "news", "memory",
+    })
 
 def _obvious_quick_chat(text: str) -> bool:
     clean = re.sub(r"[^\w\s']", "", text.lower()).strip()
@@ -10146,8 +10604,20 @@ _CONTEXTUAL_FOLLOWUP_REPLIES = {
     "pls",
     "please do",
     "go ahead",
+    "go",
     "do it",
     "do that",
+    "do so",
+    "yes do it",
+    "yes do that",
+    "yeah do it",
+    "pls do it",
+    "please do it",
+    "settle it",
+    "sort it",
+    "handle it",
+    "make it happen",
+    "run it",
     "that one",
     "this one",
     "same",
@@ -10161,7 +10631,7 @@ _CONTEXTUAL_FOLLOWUP_REPLIES = {
 }
 
 _CONTEXTUAL_OFFER_RE = re.compile(
-    r"\b(?:want me to|should i|shall i|i can|do you want me to|want me)\b"
+    r"\b(?:want me to|should i|shall i|i can|i(?:'|’)ll|i will|let me|we can|need me to|do you want me to|want me)\b"
     r".{0,220}?(?:[?.!]|$)",
     re.S,
 )
@@ -10174,7 +10644,7 @@ def _is_contextual_followup_reply(text: str) -> bool:
     if clean in _CONTEXTUAL_FOLLOWUP_REPLIES:
         return True
     words = clean.split()
-    return len(words) <= 5 and bool(re.search(r"\b(?:yes|ok(?:ay)?|sure|please|pls|that|this|same|again|proceed)\b", clean))
+    return len(words) <= 5 and bool(re.search(r"\b(?:yes|ok(?:ay)?|sure|please|pls|that|this|same|again|proceed|settle|sort|handle|run)\b", clean))
 
 def _latest_contextual_offer(recent_context: str = "") -> str:
     context = str(recent_context or "").lower()
@@ -10193,6 +10663,9 @@ def _latest_contextual_offer(recent_context: str = "") -> str:
     return latest
 
 def _contextual_followup_effective_text(text: str, recent_context: str = "") -> str:
+    blocked_effective = _blocked_action_effective_text(text, recent_context)
+    if blocked_effective != str(text or ""):
+        return blocked_effective
     if not _is_contextual_followup_reply(text):
         return str(text or "")
     offer = _latest_contextual_offer(recent_context)
@@ -10227,6 +10700,8 @@ def thread_state_for_turn(
     offer = _latest_contextual_offer(recent_context) if _is_contextual_followup_reply(raw_text) else ""
     effective_text = _contextual_followup_effective_text(raw_text, recent_context)
     discipline = source_discipline_for_text(effective_text)
+    intent_profile = semantic_intent_profile(effective_text, recent_context=recent_context)
+    blocked_action = _latest_blocked_action_from_context(recent_context)
     forced_context_tool = _contextual_followup_tool_from_context(raw_text, recent_context, available_tools)
     recommended_tools = list(discipline.get("recommended_tools") or [])
     if forced_context_tool and forced_context_tool not in recommended_tools:
@@ -10240,15 +10715,23 @@ def thread_state_for_turn(
         "needs_live_check": bool(discipline.get("needs_live_check")),
         "recommended_tools": recommended_tools,
         "contextual_tool": forced_context_tool or "",
+        "intent_profile": intent_profile,
+        "blocked_action": blocked_action,
         "confidence": "contextual" if is_followup else str(discipline.get("confidence", "unknown") or "unknown"),
         "reason": (
+            "Short reply completes the pending blocked action clarification."
+            if blocked_action and effective_text != raw_text else
             "Short reply inherits the latest actionable assistant offer."
             if is_followup else
+            intent_profile.get("clarification_reason")
+            if intent_profile.get("needs_clarification") else
             str(discipline.get("reason", "Standalone turn") or "Standalone turn")
         ),
     }
 
 def _contextual_followup_requires_full(text: str, recent_context: str = "") -> bool:
+    if _latest_blocked_action_from_context(recent_context) and _is_clarification_detail_reply(text):
+        return True
     if not _is_contextual_followup_reply(text):
         return False
     offer = _latest_contextual_offer(recent_context)
@@ -10272,6 +10755,11 @@ def _contextual_followup_tool_from_context(
     if not _contextual_followup_requires_full(text, recent_context):
         return None
     available = available or set()
+    blocked = _latest_blocked_action_from_context(recent_context)
+    if blocked:
+        action = blocked.get("action", "")
+        if action and (not available or action in available):
+            return action
     context = _latest_contextual_offer(recent_context)
 
     def use(name: str, *patterns: str) -> str | None:
@@ -10294,8 +10782,8 @@ def _contextual_followup_tool_from_context(
         ("get_assistant_context", (r"\b(?:pull up|show|check|confirm|review|view)\b", r"\b(?:calendar|schedule|agenda|events?|week|day)\b")),
         ("bulk_delete_duplicate_calendar_events", (r"\b(?:duplicate|duplicated|replicated|copies|thrice|clean)\b", r"\b(?:calendar|event|schedule)\b")),
         ("delete_calendar_event_by_text", (r"\b(?:delete|remove|cancel)\b", r"\b(?:calendar|event|meeting|appointment|schedule)\b")),
-        ("create_calendar_event", (r"\b(?:add|create|schedule|book|put)\b", r"\b(?:calendar|event|meeting|appointment|schedule)\b")),
-        ("add_reminder", (r"\b(?:add|create|set)\b", r"\b(?:reminder|task|deadline)\b")),
+        ("add_reminder", (r"\b(?:add|create|set|remind|settle|sort|handle|need(?:ed)?\s+to|should)\b", r"\b(?:reminder|task|deadline|application|submission|form|paperwork|follow[- ]?up)\b")),
+        ("create_calendar_event", (r"\b(?:add|create|schedule|book|put|block|mark|save)\b", r"\b(?:calendar|event|meeting|appointment|schedule|leave|vacation|holiday|overseas|away)\b")),
         ("create_proactive_nudge", (r"\b(?:push|notify|notification|nudge|ping|remind)\b",)),
         ("complete_task_by_text", (r"\b(?:mark|complete|done|settle)\b", r"\b(?:task|reminder|item)\b")),
         ("complete_followup_by_text", (r"\b(?:mark|complete|done|settle)\b", r"\bfollow[- ]?up\b")),
@@ -11064,12 +11552,24 @@ async def _execute_tool(name: str, inp: dict) -> str:
             blocked = _validated_action_failure(name, inp)
             if blocked:
                 return blocked
-            start_dt = SGT.localize(datetime.strptime(f"{inp['date']} {inp['start_time']}", "%Y-%m-%d %H:%M"))
-            end_dt   = SGT.localize(datetime.strptime(f"{inp['date']} {inp['end_time']}",   "%Y-%m-%d %H:%M"))
-            event = gs.create_event(inp["title"], start_dt, end_dt,
-                                    inp.get("location", ""), inp.get("description", ""))
+            if inp.get("all_day"):
+                end_date = str(inp.get("end_date", "") or inp["date"])
+                event = gs.create_all_day_event(
+                    inp["title"],
+                    inp["date"],
+                    end_date,
+                    inp.get("location", ""),
+                    inp.get("description", ""),
+                )
+                when = inp["date"] if end_date == inp["date"] else f"{inp['date']}–{end_date}"
+                result = f"Created all-day: {inp['title']} on {when}"
+            else:
+                start_dt = SGT.localize(datetime.strptime(f"{inp['date']} {inp['start_time']}", "%Y-%m-%d %H:%M"))
+                end_dt   = SGT.localize(datetime.strptime(f"{inp['date']} {inp['end_time']}",   "%Y-%m-%d %H:%M"))
+                event = gs.create_event(inp["title"], start_dt, end_dt,
+                                        inp.get("location", ""), inp.get("description", ""))
+                result = f"Created: {inp['title']} on {inp['date']} {inp['start_time']}–{inp['end_time']}"
             event_id = str(event.get("id", "") or "").strip()
-            result = f"Created: {inp['title']} on {inp['date']} {inp['start_time']}–{inp['end_time']}"
             return f"{result}\n\n{_action_audit_text(name, inp, result, metadata={'event_id': event_id, 'calendar_id': event.get('_calendar_id', '') or ''})}"
         except Exception as e:
             return f"Failed to create event: {e}"
