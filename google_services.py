@@ -4230,7 +4230,27 @@ def _preferred_web_push_subscriptions(subscriptions: list) -> list:
         item for item in subscriptions
         if str(item.get("display_mode", "")).strip().lower() in {"standalone", "fullscreen"}
     ]
-    return standalone or subscriptions
+    if not standalone:
+        return subscriptions
+    cutoff = datetime.now(SGT) - timedelta(days=7)
+
+    def recently_seen(item: dict) -> bool:
+        raw = str(item.get("last_seen", "") or "").strip()
+        if not raw:
+            return True
+        try:
+            seen = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if seen.tzinfo is None:
+                seen = SGT.localize(seen) if hasattr(SGT, "localize") else seen.replace(tzinfo=SGT)
+            return seen.astimezone(SGT) >= cutoff
+        except Exception:
+            return True
+
+    fresh_standalone = [item for item in standalone if recently_seen(item)]
+    if fresh_standalone:
+        return fresh_standalone
+    fresh_any = [item for item in subscriptions if recently_seen(item)]
+    return fresh_any or subscriptions
 
 
 def get_web_push_delivery_log() -> list:

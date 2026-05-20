@@ -1,9 +1,9 @@
-const CACHE_NAME = "hira-os-v127";
-const HIRA_APP_VERSION = "20260518-clean-chat-57";
+const CACHE_NAME = "hira-os-v128";
+const HIRA_APP_VERSION = "20260520-pwa-sync-58";
 const ASSETS = [
   "/",
-  "/styles.css?v=20260518-clean-chat-57",
-  "/app.js?v=20260518-clean-chat-57",
+  "/styles.css?v=20260520-pwa-sync-58",
+  "/app.js?v=20260520-pwa-sync-58",
   "/static/icon.svg",
   "/static/icon-192.png",
   "/static/icon-512.png",

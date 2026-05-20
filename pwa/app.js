@@ -20,13 +20,15 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260518-clean-chat-57";
-const APP_SCRIPT = "app.js?v=20260518-clean-chat-57";
-const EXPECTED_SW_CACHE = "hira-os-v127";
+const APP_VERSION = "20260520-pwa-sync-58";
+const APP_SCRIPT = "app.js?v=20260520-pwa-sync-58";
+const EXPECTED_SW_CACHE = "hira-os-v128";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
 const AGENDA_CACHE_KEY = "hira_pwa_agenda_snapshot_v1";
+const PUSH_SYNC_MODE_KEY = "hira_pwa_last_push_sync_mode";
+const PUSH_SYNC_ENDPOINT_KEY = "hira_pwa_last_push_sync_endpoint";
 const HOME_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const HOME_REFRESH_THROTTLE_MS = 45 * 1000;
 let legacyWebToken = localStorage.getItem("hira_web_token") || "";
@@ -53,6 +55,8 @@ const state = {
   activeNotificationId: "",
   activeNotificationItem: null,
   lastPushSyncAt: Number(localStorage.getItem("hira_pwa_last_push_sync_at") || "0"),
+  lastPushSyncMode: localStorage.getItem(PUSH_SYNC_MODE_KEY) || "",
+  lastPushSyncEndpoint: localStorage.getItem(PUSH_SYNC_ENDPOINT_KEY) || "",
   lastInputPulseAt: 0,
   homeRefreshInFlight: null,
   homeLastRefreshStartedAt: 0,
@@ -338,6 +342,14 @@ function withAuth(options = {}) {
   return next;
 }
 
+function openTokenSettings(message = "Save the H.I.R.A web token in Settings to sync live data.") {
+  const panel = $("#settingsPanel");
+  if (panel) panel.hidden = false;
+  $("#settingsBtn")?.classList.add("is-open");
+  $("#tokenInput")?.focus();
+  setStatus(message, "warn");
+}
+
 async function createSession(token) {
   const clean = String(token || "").trim();
   if (!clean) throw new Error("Paste the H.I.R.A web token first.");
@@ -357,6 +369,12 @@ async function createSession(token) {
   localStorage.removeItem("hira_web_token");
   state.sessionUnlocked = true;
   localStorage.setItem("hira_session_unlocked", "1");
+  state.lastPushSyncAt = 0;
+  state.lastPushSyncMode = "";
+  state.lastPushSyncEndpoint = "";
+  localStorage.removeItem("hira_pwa_last_push_sync_at");
+  localStorage.removeItem(PUSH_SYNC_MODE_KEY);
+  localStorage.removeItem(PUSH_SYNC_ENDPOINT_KEY);
   const tokenInput = $("#tokenInput");
   if (tokenInput) tokenInput.value = "";
   return response.json().catch(() => ({ ok: true }));
@@ -411,17 +429,16 @@ async function api(path, options = {}, tokenPrompted = false) {
   if (response.status === 401) {
     state.sessionUnlocked = false;
     localStorage.removeItem("hira_session_unlocked");
-    if (tokenPrompted) {
-      $("#settingsPanel").hidden = false;
-      throw new Error("That token was rejected. Paste the H.I.R.A web token in Settings and save it once.");
-    }
-    const token = prompt("Enter H.I.R.A web token");
-    if (token) {
-      await createSession(token);
-      return api(path, options, true);
-    }
-    $("#settingsPanel").hidden = false;
-    throw new Error("H.I.R.A needs the web token before live data can load.");
+    openTokenSettings(
+      tokenPrompted
+        ? "That token was rejected. Paste the H.I.R.A web token in Settings and save it once."
+        : "Session expired. Save the H.I.R.A web token in Settings to sync live data."
+    );
+    throw new Error(
+      tokenPrompted
+        ? "That token was rejected. Paste the H.I.R.A web token in Settings and save it once."
+        : "H.I.R.A needs the web token before live data can load."
+    );
   }
   if (!response.ok) {
     const detail = await response.json().catch(() => ({}));
@@ -435,17 +452,16 @@ async function fetchWithToken(path, options = {}, tokenPrompted = false) {
   if (response.status === 401) {
     state.sessionUnlocked = false;
     localStorage.removeItem("hira_session_unlocked");
-    if (tokenPrompted) {
-      $("#settingsPanel").hidden = false;
-      throw new Error("That token was rejected. Paste the H.I.R.A web token in Settings and save it once.");
-    }
-    const token = prompt("Enter H.I.R.A web token");
-    if (token) {
-      await createSession(token);
-      return fetchWithToken(path, options, true);
-    }
-    $("#settingsPanel").hidden = false;
-    throw new Error("H.I.R.A needs the web token before live data can load.");
+    openTokenSettings(
+      tokenPrompted
+        ? "That token was rejected. Paste the H.I.R.A web token in Settings and save it once."
+        : "Session expired. Save the H.I.R.A web token in Settings to sync live data."
+    );
+    throw new Error(
+      tokenPrompted
+        ? "That token was rejected. Paste the H.I.R.A web token in Settings and save it once."
+        : "H.I.R.A needs the web token before live data can load."
+    );
   }
   if (!response.ok) {
     const detail = await response.json().catch(() => ({}));
@@ -826,19 +842,28 @@ async function syncPushSubscription(subscription, { force = false } = {}) {
   if (!subscription) return false;
   if (!state.sessionUnlocked) return false;
   const now = Date.now();
-  if (!force && now - state.lastPushSyncAt < 1000 * 60 * 30) return true;
+  const displayMode = isStandalonePwa() ? "standalone" : "browser";
+  const endpoint = String(subscription.endpoint || "");
+  const recentlySynced = now - state.lastPushSyncAt < 1000 * 60 * 30;
+  const modeChanged = displayMode !== state.lastPushSyncMode;
+  const endpointChanged = endpoint && endpoint !== state.lastPushSyncEndpoint;
+  if (!force && recentlySynced && !modeChanged && !endpointChanged) return true;
   await api("/api/notifications/subscribe", {
     method: "POST",
     headers: headers(),
     body: JSON.stringify({
       subscription,
-      display_mode: isStandalonePwa() ? "standalone" : "browser",
+      display_mode: displayMode,
       app_version: APP_VERSION,
       user_agent: navigator.userAgent || "",
     }),
   });
   state.lastPushSyncAt = now;
+  state.lastPushSyncMode = displayMode;
+  state.lastPushSyncEndpoint = endpoint;
   localStorage.setItem("hira_pwa_last_push_sync_at", String(now));
+  localStorage.setItem(PUSH_SYNC_MODE_KEY, displayMode);
+  if (endpoint) localStorage.setItem(PUSH_SYNC_ENDPOINT_KEY, endpoint);
   return true;
 }
 
@@ -3649,6 +3674,7 @@ $("#saveTokenBtn").addEventListener("click", async () => {
     $("#settingsPanel").hidden = true;
     setStatus("Session unlocked on this device.", "ok");
     updateNotificationControls();
+    loadHome({ force: true, useCache: false });
     startNotificationPolling();
   } catch (error) {
     $("#settingsPanel").hidden = false;
@@ -3875,6 +3901,10 @@ setInterval(updateLiveClock, 1000);
 
 async function startAuthenticatedApp() {
   await migrateLegacyToken();
+  if (!state.sessionUnlocked) {
+    openTokenSettings("Save the H.I.R.A web token in this installed app once to sync live data.");
+    return;
+  }
   loadHome({ background: true });
   startNotificationPolling();
 }

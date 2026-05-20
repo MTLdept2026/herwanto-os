@@ -947,6 +947,43 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(sent, 1)
         self.assertEqual(endpoints, ["https://push.example/pwa"])
 
+    def test_web_push_uses_fresh_browser_when_standalone_subscription_is_stale(self):
+        endpoints = []
+        fake_pywebpush = ModuleType("pywebpush")
+        fake_pywebpush.WebPushException = Exception
+        fake_pywebpush.webpush = lambda **kwargs: endpoints.append(kwargs["subscription_info"]["endpoint"])
+        stale = datetime(2026, 5, 1, 8, 0, tzinfo=timezone.utc).isoformat()
+        fresh = datetime.now(bot.gs.SGT).isoformat()
+
+        with (
+            patch.dict(os.environ, {"HIRA_WEB_PUSH_PRIVATE_KEY": "test-key"}),
+            patch.dict("sys.modules", {"pywebpush": fake_pywebpush}),
+            patch.object(bot.gs, "get_web_push_subscriptions", return_value=[
+                {
+                    "client_id": "browser",
+                    "last_seen": fresh,
+                    "display_mode": "browser",
+                    "subscription": {"endpoint": "https://push.example/browser"},
+                },
+                {
+                    "client_id": "pwa",
+                    "last_seen": stale,
+                    "display_mode": "standalone",
+                    "subscription": {"endpoint": "https://push.example/pwa"},
+                },
+            ]),
+            patch.object(bot.gs, "get_web_push_delivery_log", return_value=[]),
+            patch.object(bot.gs, "set_web_push_delivery_log"),
+        ):
+            sent = bot.gs.send_web_push_notification(
+                "Morning briefing",
+                "Briefing body",
+                data={"id": "1", "kind": "briefing", "source": "morning_briefing:2026-05-06"},
+            )
+
+        self.assertEqual(sent, 1)
+        self.assertEqual(endpoints, ["https://push.example/browser"])
+
     def test_save_web_push_subscription_records_display_mode(self):
         with (
             patch.object(bot.gs, "get_web_push_subscriptions", return_value=[]),
