@@ -2733,12 +2733,13 @@ TASK_BRIEF_TOOL = {
 
 GMAIL_BRIEF_TOOL = {
     "name": "get_gmail_brief",
-    "description": "Get Gmail messages from natural language email queries. Supports account=personal, account=personal2, and experimental account=work. Use for inbox, latest emails, last N emails, recent mail, unread mail, sender/subject searches, or email summaries.",
+    "description": "Get Gmail messages from natural language email queries. Supports account=personal, account=personal2, and experimental account=work. Use for inbox, latest emails, last N emails, recent mail, unread mail, sender/subject searches, email summaries, or detailed questions about a specific email.",
     "input_schema": {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "Gmail search query. Leave empty for latest inbox messages. Use is:unread only if the user asks for unread mail."},
             "max_items": {"type": "integer", "description": "Maximum messages, default 10"},
+            "body_chars": {"type": "integer", "description": "Maximum body characters per email. For detailed questions about one email, request 20000-50000. For broad inbox scans, omit this."},
             "account": {"type": "string", "description": "personal, personal2, or work. Work/MOE/school Gmail is experimental and may be blocked by Workspace policy."}
         }
     }
@@ -10363,10 +10364,6 @@ def _openai_text_delta_from_event(event) -> str:
     event_type = str(getattr(event, "type", "") or "")
     if event_type in {"response.output_text.delta", "response.refusal.delta"}:
         return str(getattr(event, "delta", "") or "")
-    if event_type.endswith(".delta") and hasattr(event, "delta"):
-        delta = getattr(event, "delta", "")
-        if isinstance(delta, str):
-            return delta
     return ""
 
 
@@ -11859,10 +11856,17 @@ async def _execute_tool(name: str, inp: dict) -> str:
             account = _normalise_gmail_account(inp.get("account", "personal"))
             if not gs.gmail_ok(account):
                 return f"{gs.gmail_label(account).title()} is not connected."
+            max_items = max(1, min(int(inp.get("max_items", 10) or 10), 25))
+            requested_body_chars = inp.get("body_chars")
+            if requested_body_chars is None:
+                body_chars = 20000 if max_items <= 3 else 12000 if max_items <= 5 else 6000
+            else:
+                body_chars = max(1000, min(int(requested_body_chars or 12000), 50000))
             messages = gs.list_gmail_messages(
                 inp.get("query", ""),
-                inp.get("max_items", 10),
+                max_items,
                 account=account,
+                body_limit=body_chars,
             )
             if account == "work":
                 record_work_gmail_success("tool_gmail_brief", messages_scanned=len(messages))
@@ -11872,9 +11876,16 @@ async def _execute_tool(name: str, inp: dict) -> str:
             for msg in messages:
                 body = (msg.get("body") or "").strip()
                 excerpt = body or msg.get("snippet", "")
+                truncated = bool(msg.get("body_truncated"))
+                char_note = ""
+                if msg.get("body_chars"):
+                    char_note = f" | Body chars available: {msg.get('body_chars')}"
+                    if truncated:
+                        char_note += f"; returned first {len(body)} chars"
                 lines.append(
                     f"- {msg['subject']} | From: {msg['from']} | Date: {msg.get('date', '')} | "
-                    f"Snippet: {msg.get('snippet', '')} | Body excerpt: {excerpt[:1200]}"
+                    f"Snippet: {msg.get('snippet', '')}{char_note} | Body: {excerpt}"
+                    f"{' [Body truncated; narrow the query or request higher body_chars for more.]' if truncated else ''}"
                 )
             return "\n".join(lines)
         except Exception as e:

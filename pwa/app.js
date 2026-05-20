@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260520-pwa-sync-58";
-const APP_SCRIPT = "app.js?v=20260520-pwa-sync-58";
-const EXPECTED_SW_CACHE = "hira-os-v128";
+const APP_VERSION = "20260521-briefing-fast-59";
+const APP_SCRIPT = "app.js?v=20260521-briefing-fast-59";
+const EXPECTED_SW_CACHE = "hira-os-v129";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
@@ -1011,6 +1011,17 @@ function renderNotificationReader(item, loading = false) {
   refreshIcons(reader);
 }
 
+function notificationFromPayload(item = {}) {
+  return {
+    id: String(item?.id || ""),
+    kind: String(item?.kind || "notice"),
+    title: String(item?.title || "H.I.R.A"),
+    body: String(item?.body || ""),
+    source: String(item?.source || ""),
+    created: item?.created || new Date().toISOString(),
+  };
+}
+
 function closeNotificationReader() {
   $("#notificationReader").hidden = true;
   state.activeNotificationId = "";
@@ -1024,19 +1035,12 @@ async function fetchNotificationDetail(id) {
 }
 
 async function openNotificationReader(item = {}) {
-  const notification = {
-    id: String(item?.id || ""),
-    kind: String(item?.kind || "notice"),
-    title: String(item?.title || "H.I.R.A"),
-    body: String(item?.body || ""),
-    source: String(item?.source || ""),
-    created: item?.created || new Date().toISOString(),
-  };
+  const notification = notificationFromPayload(item);
   if (!notification.id && !notification.body) return;
   state.activeNotificationId = notification.id;
   state.activeNotificationItem = notification;
   if (notification.body) rememberPushedNotification(notification);
-  renderNotificationReader(notification, Boolean(notification.id));
+  renderNotificationReader(notification, Boolean(notification.id && !notification.body));
   let fullNotification = notification;
   if (notification.id) {
     try {
@@ -1061,13 +1065,13 @@ async function openNotificationReader(item = {}) {
 function rememberNotificationFromUrl() {
   const params = new URLSearchParams(window.location.search);
   if (!params.has("notification_id")) return;
-  const item = {
+  const item = notificationFromPayload({
     id: params.get("notification_id"),
-    kind: "reminder",
-    source: "",
-    title: "H.I.R.A",
-    body: "",
-  };
+    kind: params.get("notification_kind") || "reminder",
+    source: params.get("notification_source") || "",
+    title: params.get("notification_title") || "H.I.R.A",
+    body: params.get("notification_body") || "",
+  });
   const action = params.get("notification_action") || "";
   params.delete("notification_id");
   params.delete("notification_kind");
@@ -2293,8 +2297,13 @@ function objectHasInternalToolShape(value) {
     "tool_call",
     "tool_name",
     "arguments",
+    "max_items",
+    "maxitems",
   ];
   const hasToolSignal = internalSignals.some((signal) => joined.includes(signal));
+  const hasSearchToolBundle =
+    (compactKeys.includes("query") || compactKeys.includes("q")) &&
+    (compactKeys.includes("maxitems") || compactKeys.includes("account") || compactKeys.includes("maxsources"));
   const hasSchedulingBundle =
     keys.includes("days") &&
     (keys.includes("purpose") || keys.includes("duration_minutes") || keys.includes("window_start"));
@@ -2305,11 +2314,11 @@ function objectHasInternalToolShape(value) {
   const hasMarkingBundle =
     compactKeys.includes("title") &&
     (compactKeys.includes("totalscripts") || compactKeys.includes("stackcount") || compactKeys.includes("collecteddate"));
-  return hasToolSignal || hasSchedulingBundle || hasReminderBundle || hasMarkingBundle;
+  return hasToolSignal || hasSearchToolBundle || hasSchedulingBundle || hasReminderBundle || hasMarkingBundle;
 }
 
 function isInternalToolPayload(text) {
-  const clean = normaliseQuotedJson(text);
+  const clean = normaliseQuotedJson(text).replace(/^H:\s*/i, "").trim();
   if (!clean || clean.length > 1400) return false;
   if (!/^[\[{]/.test(clean)) return false;
   try {
@@ -2320,9 +2329,19 @@ function isInternalToolPayload(text) {
     // Some model/tool payloads arrive with smart quotes or partial formatting; use
     // a conservative shape check so those do not leak into the chat transcript.
   }
+  const jsonLines = clean.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+  if (jsonLines.length > 1 && jsonLines.every((line) => line.startsWith("{") && line.endsWith("}"))) {
+    try {
+      const items = jsonLines.map((line) => JSON.parse(line));
+      if (items.every(objectHasInternalToolShape)) return true;
+    } catch (_) {
+      // Fall through to regex checks below.
+    }
+  }
   return (
     /"?(?:duration_minutes|window_start|window_end|avoid_keywords)"?\s*:/.test(clean) ||
     /"?(?:due_date|due date|duedate)"?\s*:/.test(clean) ||
+    (/"?query"?\s*:/.test(clean) && /"?(?:max_items|maxitems|account|max_sources)"?\s*:/.test(clean)) ||
     (/"?days"?\s*:/.test(clean) && /"?(?:purpose|window_start)"?\s*:/.test(clean))
   );
 }

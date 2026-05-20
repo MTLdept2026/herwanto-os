@@ -5617,8 +5617,17 @@ def _gmail_body_text(payload: dict) -> str:
     return text
 
 
-def list_gmail_messages(query: str = "", max_results: int = 10, account: str = "personal") -> list:
+def _gmail_body_limit(value: int | str | None = None) -> int:
+    try:
+        limit = int(value) if value is not None else 12000
+    except Exception:
+        limit = 12000
+    return max(1000, min(limit, 50000))
+
+
+def list_gmail_messages(query: str = "", max_results: int = 10, account: str = "personal", body_limit: int | str | None = None) -> list:
     service = _gmail(account)
+    body_limit = _gmail_body_limit(body_limit)
     kwargs = {
         "userId": "me",
         "maxResults": max(1, min(int(max_results or 10), 25)),
@@ -5638,6 +5647,7 @@ def list_gmail_messages(query: str = "", max_results: int = 10, account: str = "
         ).execute()
         headers = {h["name"].lower(): h["value"] for h in msg.get("payload", {}).get("headers", [])}
         body_text = _gmail_body_text(msg.get("payload", {}))
+        body = body_text[:body_limit]
         messages.append({
             "id": msg.get("id", ""),
             "thread_id": msg.get("threadId", ""),
@@ -5645,7 +5655,9 @@ def list_gmail_messages(query: str = "", max_results: int = 10, account: str = "
             "subject": headers.get("subject", ""),
             "date": headers.get("date", ""),
             "snippet": msg.get("snippet", ""),
-            "body": body_text[:2400],
+            "body": body,
+            "body_chars": len(body_text),
+            "body_truncated": len(body_text) > len(body),
         })
     return messages
 

@@ -1,9 +1,9 @@
-const CACHE_NAME = "hira-os-v128";
-const HIRA_APP_VERSION = "20260520-pwa-sync-58";
+const CACHE_NAME = "hira-os-v129";
+const HIRA_APP_VERSION = "20260521-briefing-fast-59";
 const ASSETS = [
   "/",
-  "/styles.css?v=20260520-pwa-sync-58",
-  "/app.js?v=20260520-pwa-sync-58",
+  "/styles.css?v=20260521-briefing-fast-59",
+  "/app.js?v=20260521-briefing-fast-59",
   "/static/icon.svg",
   "/static/icon-192.png",
   "/static/icon-512.png",
@@ -111,6 +111,10 @@ self.addEventListener("notificationclick", (event) => {
   const action = event.action || "";
   const params = new URLSearchParams();
   if (data.id) params.set("notification_id", data.id);
+  if (data.kind) params.set("notification_kind", data.kind);
+  if (data.source) params.set("notification_source", data.source);
+  if (data.title) params.set("notification_title", data.title);
+  if (data.body) params.set("notification_body", data.body);
   if (action) params.set("notification_action", action);
   const targetUrl = params.toString() ? `/?${params.toString()}` : "/";
   event.notification.close();

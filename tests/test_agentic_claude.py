@@ -1397,9 +1397,24 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("safeHttpUrl", app_js)
         self.assertNotIn('localStorage.setItem("hira_web_token"', app_js)
         self.assertNotIn('localStorage.setItem("hira_web_token"', classops_js)
-        self.assertNotIn("notification_body", service_worker)
-        self.assertNotIn("notification_title", service_worker)
+        self.assertIn("notification_body", service_worker)
+        self.assertIn("notification_title", service_worker)
+        self.assertIn("notificationFromPayload", app_js)
         self.assertEqual(manifest["id"], "/")
+
+    def test_openai_stream_ignores_function_argument_deltas(self):
+        self.assertEqual(
+            bot._openai_text_delta_from_event(
+                SimpleNamespace(type="response.function_call_arguments.delta", delta='{"query":""}')
+            ),
+            "",
+        )
+        self.assertEqual(
+            bot._openai_text_delta_from_event(
+                SimpleNamespace(type="response.output_text.delta", delta="Clean answer")
+            ),
+            "Clean answer",
+        )
 
     def test_app_version_endpoint_reports_commit_and_pwa_versions(self):
         with patch.dict(os.environ, {"RAILWAY_GIT_COMMIT_SHA": "abcdef1234567890"}):
@@ -4188,6 +4203,31 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(web_app._live_briefing_slot("Give me a crisp H.I.R.A briefing for right now."), "morning")
         self.assertEqual(web_app._briefing_replay_slot("Give me a crisp H.I.R.A briefing for right now."), "")
 
+    def test_live_briefing_bypasses_chat_memory_preflight(self):
+        async def run():
+            response = await web_app._chat_stream_response(
+                "Give me a crisp H.I.R.A briefing for right now.",
+                None,
+                "phone",
+            )
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(web_app.bot, "get_history", side_effect=RuntimeError("redis down")),
+            patch.object(web_app.bot, "save_history", side_effect=RuntimeError("redis down")),
+            patch.object(web_app.bot, "build_briefing", return_value="Fresh live briefing") as build_briefing,
+            patch.object(web_app, "_update_working_memory", side_effect=AssertionError("preflight should be bypassed")),
+        ):
+            body = asyncio.run(run())
+
+        self.assertIn("Fresh live briefing", body)
+        self.assertIn('"name": "live_briefing"', body)
+        self.assertNotIn('"final_mode": "backend_error"', body)
+        build_briefing.assert_called_once_with(record_news_digest=False)
+
     def test_brief_me_about_current_subject_does_not_trigger_daily_briefing(self):
         self.assertEqual(web_app._live_briefing_slot("Brief me on this calendar cleanup right now"), "")
 
@@ -6261,6 +6301,10 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertIn("Meeting on Friday at 2pm", bot.gs._gmail_body_text(payload))
 
+    def test_gmail_body_limit_keeps_long_email_details(self):
+        self.assertEqual(bot.gs._gmail_body_limit(200000), 50000)
+        self.assertEqual(bot.gs._gmail_body_limit(400), 1000)
+
     def test_task_brief_hides_internal_metadata(self):
         due = (bot.datetime.now(bot.SGT).date() + bot.timedelta(days=1)).isoformat()
         tasks = [
@@ -7305,6 +7349,34 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(status["status"], "checked")
         self.assertEqual(status["source"], "tool_gmail_brief")
         self.assertEqual(status["messages_scanned"], 1)
+
+    def test_gmail_brief_returns_more_than_old_excerpt_cutoff(self):
+        long_body = "Intro " + ("detail " * 260) + "critical ending after old cutoff"
+        messages = [{
+            "id": "work-long",
+            "from": "Admin <admin@example.com>",
+            "subject": "Long details",
+            "snippet": "Intro detail",
+            "body": long_body,
+            "body_chars": len(long_body),
+            "body_truncated": False,
+            "date": datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000"),
+        }]
+
+        with (
+            patch.object(bot.gs, "gmail_ok", return_value=True),
+            patch.object(bot.gs, "list_gmail_messages", return_value=messages) as list_messages,
+            patch.object(bot, "record_work_gmail_success"),
+        ):
+            result = asyncio.run(bot._execute_tool("get_gmail_brief", {
+                "account": "work",
+                "query": "subject:Long details",
+                "max_items": 1,
+            }))
+
+        self.assertIn("critical ending after old cutoff", result)
+        self.assertGreater(len(result), 1200)
+        self.assertEqual(list_messages.call_args.kwargs["body_limit"], 20000)
 
     def test_prayer_reminder_has_catchup_window(self):
         now = bot.SGT.localize(bot.datetime(2026, 5, 1, 13, 18))

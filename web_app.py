@@ -41,8 +41,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260520-pwa-sync-58"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v128"
+PWA_APP_VERSION = "20260521-briefing-fast-59"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v129"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -918,6 +918,22 @@ _MAX_LOCAL_WORKING_MEMORIES = _env_int("HIRA_WEB_MAX_LOCAL_WORKING_MEMORIES", 10
 def _history_key(client_id: str | None) -> str:
     clean = (client_id or "").strip()
     return f"pwa:{clean}" if clean else "pwa"
+
+
+def _get_history_best_effort(history_key: str) -> list:
+    try:
+        history = bot.get_history(history_key)
+        return history if isinstance(history, list) else []
+    except Exception as exc:
+        bot.logger.warning(f"PWA chat history read failed for {history_key}: {exc}")
+        return []
+
+
+def _save_history_best_effort(history_key: str, history: list) -> None:
+    try:
+        bot.save_history(history_key, history[-bot.MAX_TURNS:])
+    except Exception as exc:
+        bot.logger.warning(f"PWA chat history save failed for {history_key}: {exc}")
 
 
 def _working_memory_storage_key(history_key: str) -> str:
@@ -3060,7 +3076,7 @@ def _finalise_chat_trace(trace: dict, final_mode: str = "answered") -> dict:
 
 def _quick_sse_response(reply: str, history_key: str, history: list, route_name: str = "quick", tool_name: str = ""):
     history.append({"role": "assistant", "content": reply})
-    bot.save_history(history_key, history[-bot.MAX_TURNS:])
+    _save_history_best_effort(history_key, history)
     trace = _new_chat_trace("", route_name=route_name)
     if tool_name:
         _merge_chat_trace(trace, {"tools_called": [tool_name]})
@@ -3406,7 +3422,32 @@ async def chat(
 
 async def _chat_stream_response(message: str, location: DeviceLocation | None, x_hira_client: str | None):
     history_key = _history_key(x_hira_client)
-    history = bot.get_history(history_key)
+    history = _get_history_best_effort(history_key)
+
+    live_briefing_slot = _live_briefing_slot(message)
+    if live_briefing_slot:
+        reply = _live_briefing_text(live_briefing_slot)
+        quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
+        return _quick_sse_response(
+            reply,
+            history_key,
+            quick_history,
+            route_name="live_briefing",
+            tool_name=f"{live_briefing_slot}_briefing",
+        )
+
+    briefing_slot = _briefing_replay_slot(message)
+    if briefing_slot:
+        reply = _briefing_replay_text(briefing_slot)
+        quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
+        return _quick_sse_response(
+            reply,
+            history_key,
+            quick_history,
+            route_name="briefing_replay",
+            tool_name=f"{briefing_slot}_briefing",
+        )
+
     working_memory = _update_working_memory(history_key, history, message)
     working_summary = _working_memory_summary(working_memory)
     _schedule_background_call("taste hint capture", bot.absorb_taste_hint, message)
@@ -3434,16 +3475,6 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
         user_content = f"{user_content}{location_context}"
     history.append({"role": "user", "content": user_content})
     history = history[-bot.MAX_TURNS:]
-
-    live_briefing_slot = _live_briefing_slot(message)
-    if live_briefing_slot:
-        reply = _live_briefing_text(live_briefing_slot)
-        return _quick_sse_response(reply, history_key, history, route_name="live_briefing", tool_name=f"{live_briefing_slot}_briefing")
-
-    briefing_slot = _briefing_replay_slot(message)
-    if briefing_slot:
-        reply = _briefing_replay_text(briefing_slot)
-        return _quick_sse_response(reply, history_key, history, route_name="briefing_replay", tool_name=f"{briefing_slot}_briefing")
 
     recent_context = "\n".join(
         str(item.get("content", ""))[:600]
@@ -3485,7 +3516,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
 
     if quick_checkin_reply:
         history.append({"role": "assistant", "content": quick_checkin_reply})
-        bot.save_history(history_key, history[-bot.MAX_TURNS:])
+        _save_history_best_effort(history_key, history)
 
         async def quick_checkin_events():
             def sse(payload: dict) -> str:
@@ -3516,7 +3547,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
 
     if delayed_digest_reply:
         history.append({"role": "assistant", "content": delayed_digest_reply})
-        bot.save_history(history_key, history[-bot.MAX_TURNS:])
+        _save_history_best_effort(history_key, history)
 
         async def delayed_digest_events():
             def sse(payload: dict) -> str:
@@ -3721,7 +3752,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                     yield sse({"type": "replace", "text": reply_text})
                     yield sse({"type": "done", "text": reply_text})
             history.append({"role": "assistant", "content": reply_text})
-            bot.save_history(history_key, history[-bot.MAX_TURNS:])
+            _save_history_best_effort(history_key, history)
             _schedule_background_call(
                 "chat learning event",
                 bot.record_chat_learning_event,
@@ -3752,7 +3783,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                     "final_mode": "fallback_summary",
                 })
                 history.append({"role": "assistant", "content": fallback_text})
-                bot.save_history(history_key, history[-bot.MAX_TURNS:])
+                _save_history_best_effort(history_key, history)
                 yield sse({"type": "text", "text": fallback_text})
                 yield sse({"type": "done", "text": fallback_text})
                 yield sse({"type": "trace", "trace": trace})
@@ -3976,7 +4007,7 @@ def reset_chat(
 ):
     _require_token(x_hira_token)
     history_key = _history_key(x_hira_client)
-    bot.save_history(history_key, [])
+    _save_history_best_effort(history_key, [])
     bot.clear_openai_response_state(history_key)
     return {"ok": True}
 
