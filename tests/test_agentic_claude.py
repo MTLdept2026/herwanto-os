@@ -364,6 +364,32 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(forced, "get_latest_news")
         self.assertFalse(routed_quick)
 
+    def test_contextual_followup_inherits_i_should_live_search_offer(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": (
+                    "Let me do the proper thing: I should run a targeted live search for:\n\n"
+                    "- Teenage Engineering latest news 2026\n"
+                    "- KO II / EP-133 firmware or community updates\n"
+                    "- OP-XY updates/reviews\n"
+                    "- Singapore availability/pricing if relevant"
+                ),
+            }
+        ]
+        text = "Yes pls"
+        tools = bot.pwa_tools_for_message(text, recent_context=messages[0]["content"])
+        names = {tool["name"] for tool in tools}
+        forced = bot._forced_tool_for_current_turn(
+            messages + [{"role": "user", "content": text}],
+            tools,
+        )
+        routed_quick = asyncio.run(bot.should_route_quick_pwa_chat(messages, text))
+
+        self.assertIn("get_latest_news", names)
+        self.assertEqual(forced, "get_latest_news")
+        self.assertFalse(routed_quick)
+
     def test_contextual_followup_keeps_weather_topic(self):
         messages = [
             {"role": "assistant", "content": "I can check the current NEA rain forecast for Yishun. Want me to check it?"}
@@ -4748,6 +4774,30 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("Android feature drop", body)
         self.assertIn("Nothing OS update", body)
         self.assertNotIn('"final_mode": "backend_error"', body)
+
+    def test_topic_news_affirmation_inherits_previous_teenage_search_offer(self):
+        calls = []
+
+        async def fake_execute_tool(name, inp):
+            calls.append((name, inp))
+            return "*News: Teenage Engineering*\n\n- OP-XY firmware update spotted (Synth Daily · Thu, 21 May 2026)"
+
+        context = (
+            "Let me do the proper thing: I should run a targeted live search for:\n\n"
+            "- Teenage Engineering latest news 2026\n"
+            "- KO II / EP-133 firmware or community updates\n"
+            "- OP-XY updates/reviews\n"
+            "- Singapore availability/pricing if relevant"
+        )
+        with patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool):
+            reply = asyncio.run(web_app._pwa_topic_news_reply("Yes pls", context))
+
+        self.assertEqual(calls, [(
+            "get_latest_news",
+            {"query": "Teenage Engineering OP-XY OP-1 Field Pocket Operator firmware update product news", "max_items": 2},
+        )])
+        self.assertIn("Teenage Engineering", reply)
+        self.assertIn("OP-XY firmware update", reply)
 
     def test_source_contract_guardrail_blocks_unconfirmed_result(self):
         messages = [{"role": "user", "content": "is that the latest result?"}]

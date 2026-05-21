@@ -5180,9 +5180,13 @@ def favourite_news_topic_queries(text: str = "", recent_context: str = "") -> li
         if label not in {item[0] for item in matches}:
             matches.append((label, query))
 
+    contextual_affirmation = inherited_news_context and _is_contextual_followup_reply(clean)
     for rule in FAVOURITE_NEWS_TOPIC_RULES:
         explicit = any(re.search(pattern, clean, re.I) for pattern in rule.get("patterns", ()))
-        if explicit:
+        inherited_explicit = contextual_affirmation and any(
+            re.search(pattern, context, re.I) for pattern in rule.get("patterns", ())
+        )
+        if explicit or inherited_explicit:
             add(str(rule["label"]), str(rule["query"]))
             continue
         bare_pattern = str(rule.get("bare_pattern") or "")
@@ -5199,6 +5203,13 @@ def favourite_news_topic_queries(text: str = "", recent_context: str = "") -> li
                 or re.search(r"\b(?:how about|what about)\s+nothing\b", clean, re.I)
                 or paired_nothing_topic
             )
+        ):
+            add(str(rule["label"]), str(rule["query"]))
+        elif (
+            bare_pattern
+            and contextual_affirmation
+            and re.search(bare_pattern, context, re.I)
+            and NOTHING_TOPIC_CUE_RE.search(context)
         ):
             add(str(rule["label"]), str(rule["query"]))
     if not matches and asks_all_topics:
@@ -10885,8 +10896,8 @@ _CONTEXTUAL_FOLLOWUP_REPLIES = {
 }
 
 _CONTEXTUAL_OFFER_RE = re.compile(
-    r"\b(?:want me to|should i|shall i|i can|i(?:'|’)ll|i will|let me|we can|need me to|do you want me to|want me)\b"
-    r".{0,220}?(?:[?.!]|$)",
+    r"\b(?:want me to|should i|shall i|i can|i(?:'|’)ll|i will|i should|i need to|let me|we can|need me to|do you want me to|want me)\b"
+    r".{0,700}?(?:[?.!]|$)",
     re.S,
 )
 
