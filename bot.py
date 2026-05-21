@@ -1004,7 +1004,12 @@ def source_discipline_for_text(text: str) -> dict:
         tools.append("get_nea_weather")
     if re.search(r"\b(prayer|solat|salah|subuh|fajr|zohor|asar|maghrib|isyak|khutbah|sermon)\b", lowered):
         tools.extend(["get_muis_prayer_times", "get_muis_friday_khutbah"])
-    if VOLATILE_FACT_PATTERN.search(clean) or re.search(r"\b(ai|apple|android|ios|macos|singapore education|moe)\b", lowered) or "news" in semantic_flags:
+    if (
+        VOLATILE_FACT_PATTERN.search(clean)
+        or re.search(r"\b(ai|apple|android|ios|macos|singapore education|moe)\b", lowered)
+        or favourite_news_topic_queries(clean)
+        or "news" in semantic_flags
+    ):
         tools.append("get_latest_news")
     if re.search(r"\b(research|deep dive|investigate|compare|comparison|find out|look up|source|sources|official|policy|documentation|docs|evidence)\b", lowered) or "research" in semantic_flags:
         tools.append("web_research")
@@ -4973,6 +4978,224 @@ DIGEST_TOPIC_RULES = {
         "max_age_hours": 168,
     },
 }
+FAVOURITE_NEWS_TOPIC_RULES = [
+    {
+        "key": "teenage",
+        "label": "Teenage Engineering",
+        "query": "Teenage Engineering OP-XY OP-1 Field Pocket Operator firmware update product news",
+        "patterns": (
+            r"\bteenage engineering\b",
+            r"\bop-1\b",
+            r"\bop-xy\b",
+            r"\bop-z\b",
+            r"\bpocket operator\b",
+            r"\bfield system\b",
+            r"\btp-7\b",
+            r"\btx-6\b",
+            r"\bcm-15\b",
+            r"\bep-133\b",
+            r"\bep-1320\b",
+        ),
+    },
+    {
+        "key": "android",
+        "label": "Android",
+        "query": "Android Pixel Google I/O Gemini Google Play security update beta features",
+        "patterns": (
+            r"\bandroid(?:\s+\d+)?\b",
+            r"\bpixel\b",
+            r"\bgoogle i/o\b",
+            r"\bgoogle io\b",
+            r"\bgemini\b",
+            r"\bgoogle play\b",
+            r"\bplay store\b",
+            r"\bmaterial you\b",
+        ),
+    },
+    {
+        "key": "ai",
+        "label": "AI Tools",
+        "query": "OpenAI Codex Claude Anthropic Kimi Moonshot Gemini AI tools latest model release agent",
+        "patterns": (
+            r"\bai tools?\b",
+            r"\bopenai\b",
+            r"\bchatgpt\b",
+            r"\bcodex\b",
+            r"\bclaude\b",
+            r"\banthropic\b",
+            r"\bkimi\b",
+            r"\bmoonshot\b",
+            r"\bllm\b",
+            r"\bmodel release\b",
+            r"\bcoding agent\b",
+        ),
+    },
+    {
+        "key": "ios",
+        "label": "iOS",
+        "query": "iOS iPhone Apple developer App Store TestFlight policy update beta features",
+        "patterns": (
+            r"\bios\b",
+            r"\biphone\b",
+            r"\bipad\b",
+            r"\bapp store\b",
+            r"\bapple developer\b",
+            r"\btestflight\b",
+            r"\bwwdc\b",
+        ),
+    },
+    {
+        "key": "solo_dev",
+        "label": "Solo Dev",
+        "query": "solo developer iOS Android React Vite Capacitor Railway Netlify GitHub update",
+        "patterns": (
+            r"\bsolo dev(?:eloper)?\b",
+            r"\bapp dev(?:elopment)?\b",
+            r"\breact\b",
+            r"\bvite\b",
+            r"\bcapacitor\b",
+            r"\brailway\b",
+            r"\bnetlify\b",
+            r"\bgithub\b",
+        ),
+    },
+    {
+        "key": "islam",
+        "label": "Islam",
+        "query": "Islam Muslim spirituality Singapore MUIS khutbah Ramadan prayer",
+        "patterns": (
+            r"\bislam\b",
+            r"\bislamic\b",
+            r"\bmuslim\b",
+            r"\bmuis\b",
+            r"\bkhutbah\b",
+            r"\bramadan\b",
+            r"\bprayer\b",
+            r"\bsolat\b",
+        ),
+    },
+    {
+        "key": "education",
+        "label": "SG Education",
+        "query": "Singapore education MOE schools teachers curriculum",
+        "patterns": (
+            r"\bsg education\b",
+            r"\bsingapore education\b",
+            r"\bmoe\b",
+            r"\bschools?\b",
+            r"\bteachers?\b",
+            r"\bcurriculum\b",
+        ),
+    },
+    {
+        "key": "sg_news",
+        "label": "SG News",
+        "query": "Singapore news today",
+        "patterns": (
+            r"\bsg news\b",
+            r"\bsingapore news\b",
+            r"\bsingapore headlines?\b",
+        ),
+    },
+    {
+        "key": "design",
+        "label": "Design / UI/UX",
+        "query": "UI UX design system product design interface interaction design Figma",
+        "patterns": (
+            r"\bui/ux\b",
+            r"\bui\b",
+            r"\bux\b",
+            r"\bdesign systems?\b",
+            r"\bproduct design\b",
+            r"\binterface design\b",
+            r"\bfigma\b",
+        ),
+    },
+    {
+        "key": "macos",
+        "label": "macOS",
+        "query": "macOS Apple MacBook Xcode developer update",
+        "patterns": (
+            r"\bmacos\b",
+            r"\bmacbook\b",
+            r"\bapple silicon\b",
+            r"\bxcode\b",
+            r"\bmac\b",
+        ),
+    },
+    {
+        "key": "nothing",
+        "label": "Nothing",
+        "query": "Nothing Phone Nothing OS Nothing Ear CMF Carl Pei Android update launch product news",
+        "patterns": (
+            r"\bnothing phone\b",
+            r"\bnothing os\b",
+            r"\bnothing ear\b",
+            r"\bnothing products?\b",
+            r"\bcmf\b",
+            r"\bcarl pei\b",
+        ),
+        "bare_pattern": r"\bnothing\b",
+    },
+]
+FAVOURITE_NEWS_PROMPT_CUE_RE = re.compile(
+    r"\b(?:how about|what about|anything|any recent|updates?|latest|news|headlines?|brief|digest|radar|stuff|check|find|look up|topics?|favourites?|favorites?|fav)\b",
+    re.I,
+)
+FAVOURITE_NEWS_CONTEXT_RE = re.compile(
+    r"\b(?:news|brief|briefing|digest|headlines?|live pass|latest|sports teams and topics|favourite topics|favorite topics|preferred topics|shortlist|shortlisted)\b",
+    re.I,
+)
+FAVOURITE_NEWS_ALL_TOPICS_RE = re.compile(
+    r"\b(?:favourite|favorite|preferred|shortlist|shortlisted|all|other|my)\b.{0,60}\b(?:topics?|interests?|radar|news|teams?)\b|"
+    r"\b(?:topics?|interests?|radar|news|teams?)\b.{0,60}\b(?:favourite|favorite|preferred|shortlist|shortlisted|covered|coverage)\b",
+    re.I,
+)
+NOTHING_TOPIC_CUE_RE = re.compile(
+    r"\b(?:phone|os|ear|android|cmf|carl pei|product|products|updates?|latest|news|stuff|topics?|favourites?|favorites?|fav)\b",
+    re.I,
+)
+
+
+def favourite_news_topic_queries(text: str = "", recent_context: str = "") -> list[tuple[str, str]]:
+    clean = " ".join(str(text or "").lower().split())
+    context = " ".join(str(recent_context or "").lower().split())
+    if not clean:
+        return []
+    prompt_cue = bool(FAVOURITE_NEWS_PROMPT_CUE_RE.search(clean))
+    inherited_news_context = bool(FAVOURITE_NEWS_CONTEXT_RE.search(context))
+    asks_all_topics = bool(FAVOURITE_NEWS_ALL_TOPICS_RE.search(clean)) and bool(
+        re.search(r"\b(?:any|anything|recent|latest|updates?|news|brief|digest|radar|covered|coverage|missing|other)\b", clean, re.I)
+    )
+    matches: list[tuple[str, str]] = []
+
+    def add(label: str, query: str) -> None:
+        if label not in {item[0] for item in matches}:
+            matches.append((label, query))
+
+    for rule in FAVOURITE_NEWS_TOPIC_RULES:
+        explicit = any(re.search(pattern, clean, re.I) for pattern in rule.get("patterns", ()))
+        if explicit:
+            add(str(rule["label"]), str(rule["query"]))
+            continue
+        bare_pattern = str(rule.get("bare_pattern") or "")
+        if bare_pattern and re.search(r"\bnothing\s+on\b", clean, re.I):
+            continue
+        if (
+            bare_pattern
+            and re.search(bare_pattern, clean, re.I)
+            and (prompt_cue or inherited_news_context)
+            and (
+                NOTHING_TOPIC_CUE_RE.search(clean)
+                or inherited_news_context
+                or re.search(r"\b(?:how about|what about)\s+nothing\b", clean, re.I)
+            )
+        ):
+            add(str(rule["label"]), str(rule["query"]))
+    if not matches and asks_all_topics:
+        add("Latest from your shortlist", "")
+    return matches
+
 CURATED_DIGEST_DEFAULT_MAX_AGE_HOURS = 14 * 24
 DIGEST_SOCIAL_TOPIC_TERMS = (
     "liverpool",
@@ -8376,7 +8599,7 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
         "google i/o", "google io", "gemini", "pixel", "nothing phone",
         "nothing os", "nothing products", "cmf", "carl pei", "apple",
         "ios", "ai", "singapore education",
-    ]) or "news" in semantic_flags):
+    ]) or favourite_news_topic_queries(clean) or "news" in semantic_flags):
         return "get_latest_news"
 
     if (
@@ -10078,6 +10301,7 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
     context = (recent_context or "").lower()
     effective_text = _contextual_followup_effective_text(text, context).lower()
     combined = f"{context}\n{effective_text}"
+    favourite_topic_matches = favourite_news_topic_queries(effective_text, context)
     dated_absence_calendar_intent = _is_dated_absence_calendar_intent(effective_text)
     implicit_task_request = _is_implicit_task_request(effective_text)
     semantic_flags = _semantic_intent_flags(effective_text)
@@ -10152,7 +10376,13 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         r"\b(football|f1|formula 1|liverpool|lfc|man utd|man united|manchester united|premier league|epl|grand prix|mercedes|ferrari|mclaren|red bull)\b",
         combined,
     )
-    if re.search(r"\b(digest|briefing|news|latest|current|headline|headlines|search|web|shortlist|shortlisted|preferred topics|football|f1|liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|android|android 17|google i/o|google io|gemini|pixel|apple|ios|ai|singapore education|nothing phone|nothing os|nothing products|cmf|carl pei)\b", effective_text) or sports_followup or correction_followup or "news" in semantic_flags:
+    if (
+        re.search(r"\b(digest|briefing|news|latest|current|headline|headlines|search|web|shortlist|shortlisted|preferred topics|football|f1|liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|android|android 17|google i/o|google io|gemini|pixel|apple|ios|ai|singapore education)\b", effective_text)
+        or favourite_topic_matches
+        or sports_followup
+        or correction_followup
+        or "news" in semantic_flags
+    ):
         add(NEWS_TOOL, WEB_RESEARCH_TOOL, SOURCE_NOTE_TOOL)
         if re.search(r"\b(liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|man utd|man united|manchester united)\b", combined):
             add(LIVERPOOL_BRIEF_TOOL)
@@ -10582,7 +10812,7 @@ def _looks_tool_heavy(text: str) -> bool:
         r"document|worksheet|slides?|ppt|deck|follow\s*up|done|complete)\b",
         text,
         re.I,
-    )) or _is_implicit_task_request(text) or bool(_semantic_intent_flags(text) & {
+    )) or bool(favourite_news_topic_queries(text)) or _is_implicit_task_request(text) or bool(_semantic_intent_flags(text) & {
         "task", "calendar", "reminder", "followup", "gmail", "gmail_draft",
         "document", "slides", "research", "news", "memory",
     })
@@ -10785,7 +11015,7 @@ def _contextual_followup_tool_from_context(
         ("get_muis_friday_khutbah", (r"\b(?:khutbah|sermon|friday sermon|jumu'?ah|jumaat)\b",)),
         ("create_gmail_draft", (r"\b(?:draft|write|reply|compose)\b", r"\b(?:gmail|email|mail|inbox|reply)\b")),
         ("get_gmail_brief", (r"\b(?:read|check|pull up|show|review|latest|recent)\b", r"\b(?:gmail|email|mail|inbox)\b")),
-        ("get_latest_news", (r"\b(?:latest|current|news|headlines?|digest|android|google i/o|google io|gemini|pixel|apple|ios|ai|singapore education|nothing phone|nothing os|cmf|carl pei)\b",)),
+        ("get_latest_news", (r"\b(?:latest|current|news|headlines?|digest|android|google i/o|google io|gemini|pixel|apple|ios|ai|singapore education|teenage engineering|op-1|op-xy|nothing phone|nothing os|nothing products|cmf|carl pei)\b",)),
         ("web_research", (r"\b(?:source|sources|research|deep dive|investigate|compare|comparison|find out|look up|evidence|official|policy|documentation|docs|standings?|table|qualification|qualify|odds|probabilit(?:y|ies)|chance|chances)\b",)),
         ("get_assistant_context", (r"\b(?:pull up|show|check|confirm|review|view)\b", r"\b(?:calendar|schedule|agenda|events?|week|day)\b")),
         ("bulk_delete_duplicate_calendar_events", (r"\b(?:duplicate|duplicated|replicated|copies|thrice|clean)\b", r"\b(?:calendar|event|schedule)\b")),

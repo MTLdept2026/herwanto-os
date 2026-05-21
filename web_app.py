@@ -1179,6 +1179,39 @@ def _pwa_casual_status_prompt(message: str) -> bool:
     }
 
 
+def _pwa_topic_news_queries(message: str, recent_context: str = "") -> list[tuple[str, str]]:
+    return bot.favourite_news_topic_queries(message, recent_context)
+
+
+async def _pwa_topic_news_reply(message: str, recent_context: str = "") -> str:
+    topics = _pwa_topic_news_queries(message, recent_context)
+    if not topics:
+        return ""
+
+    async def fetch(label: str, query: str):
+        try:
+            max_items = 6 if not str(query or "").strip() else 2
+            result = await bot._execute_tool_offloop("get_latest_news", {"query": query, "max_items": max_items})
+            return label, result
+        except Exception as exc:
+            bot.logger.warning(f"PWA topic news fetch failed for {label}: {exc}")
+            return label, f"Failed to fetch news: {exc}"
+
+    sections: list[str] = []
+    for label, result in await asyncio.gather(*(fetch(label, query) for label, query in topics)):
+        items = _fallback_news_items(result, limit=6 if label == "Latest from your shortlist" else 2)
+        if items:
+            bullets = "\n".join(f"- {item}" for item in items)
+            sections.append(f"*{label}*\n{bullets}")
+        elif str(result or "").startswith("Failed to fetch"):
+            sections.append(f"*{label}*\n- Live news check failed, so I'm not going to pad this with memory.")
+
+    if not sections:
+        labels = ", ".join(label for label, _query in topics)
+        return f"I ran the live news check for {labels}, but it did not return usable items. I'm not going to guess from memory."
+    return "Quick live check on the non-sports topics:\n\n" + "\n\n".join(sections)
+
+
 def _update_working_memory(history_key: str, history: list, message: str) -> dict:
     memory = _load_working_memory(history_key)
     if _pwa_casual_status_prompt(message):
@@ -3509,6 +3542,16 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
         reply, tool_name = nudge_command
         return _quick_sse_response(reply, history_key, history, route_name="nudge_admin", tool_name=tool_name)
 
+    topic_news_reply = await _pwa_topic_news_reply(message, recent_context_for_followup)
+    if topic_news_reply:
+        return _quick_sse_response(
+            topic_news_reply,
+            history_key,
+            history,
+            route_name="topic_news",
+            tool_name="get_latest_news",
+        )
+
     quick_checkin_reply = ""
     archived_checkin_notification_ids: list[str] = []
     if _should_complete_checkin_from_affirmation(message, history):
@@ -3903,7 +3946,14 @@ async def _source_check_backend_fallback_payload(message: str) -> tuple[str, str
         tool_input = {"query": message, "max_sources": 3, "fetch_pages": 1, "freshness": "latest"}
     else:
         tool_input = {"query": message, "max_items": 3}
-    result = await bot._execute_tool_offloop(tool_name, tool_input)
+    try:
+        result = await bot._execute_tool_offloop(tool_name, tool_input)
+    except Exception as exc:
+        bot.logger.warning(f"PWA source fallback tool {tool_name} failed: {exc}")
+        return (
+            f"I hit the model/backend step, and the live {label} source check also failed, "
+            "so I'm not going to answer from memory. Try again in a moment."
+        ), tool_name, ""
     if not result or result.startswith("Failed to fetch"):
         return (
             "I hit the model/backend step, and the live source check also failed, "

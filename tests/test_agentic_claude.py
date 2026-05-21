@@ -4468,6 +4468,159 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn('"name": "get_assistant_context"', body)
         self.assertNotIn('"final_mode": "backend_error"', body)
 
+    def test_topic_news_followup_detects_non_sports_favourite_topics(self):
+        topics = web_app._pwa_topic_news_queries(
+            "Thanks. How about Nothing, Teenage Engineering and android stuff",
+            "Quick live pass, mainly Liverpool + F1/Mercedes.",
+        )
+
+        self.assertEqual([label for label, _query in topics], ["Teenage Engineering", "Android", "Nothing"])
+        self.assertEqual(
+            web_app._pwa_topic_news_queries("How about Nothing?", "Quick live pass with recent news."),
+            [("Nothing", "Nothing Phone Nothing OS Nothing Ear CMF Carl Pei Android update launch product news")],
+        )
+
+    def test_favourite_topic_news_semantics_ignore_plain_nothing_due(self):
+        self.assertEqual(bot.favourite_news_topic_queries("Nothing much to handle."), [])
+        discipline = bot.source_discipline_for_text("Nothing much to handle.")
+
+        self.assertFalse(discipline["needs_live_check"])
+        self.assertNotIn("get_latest_news", discipline["recommended_tools"])
+
+    def test_favourite_topic_news_semantics_detect_product_shorthand(self):
+        topics = bot.favourite_news_topic_queries("Any CMF, OP-XY or Pixel updates?")
+
+        self.assertEqual([label for label, _query in topics], ["Teenage Engineering", "Android", "Nothing"])
+
+    def test_teenage_engineering_without_news_keyword_still_uses_news_tools(self):
+        text = "How about Teenage Engineering and OP-XY stuff?"
+        tools = bot.pwa_tools_for_message(text)
+        names = {tool["name"] for tool in tools}
+        discipline = bot.source_discipline_for_text(text)
+
+        self.assertIn("get_latest_news", names)
+        self.assertFalse(asyncio.run(bot.should_route_quick_pwa_chat([], text)))
+        self.assertIn("get_latest_news", discipline["recommended_tools"])
+
+    def test_contextual_nothing_followup_forces_news_tool_from_digest_context(self):
+        messages = [
+            {"role": "assistant", "content": "Quick live pass on favourite topics: Liverpool and F1/Mercedes."},
+            {"role": "user", "content": "How about Nothing?"},
+        ]
+        forced = bot._forced_tool_for_current_turn(messages, [{"name": "get_latest_news"}])
+
+        self.assertEqual(forced, "get_latest_news")
+
+    def test_topic_news_reply_keeps_partial_failures_visible(self):
+        async def fake_execute_tool(name, inp):
+            self.assertEqual(name, "get_latest_news")
+            if "Teenage Engineering" in inp["query"]:
+                raise RuntimeError("rss unavailable")
+            return "*News: Android*\n\n- Android security update ships (Android Developers · Thu, 21 May 2026)"
+
+        with patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool):
+            reply = asyncio.run(web_app._pwa_topic_news_reply("Teenage Engineering and Android updates?"))
+
+        self.assertIn("Teenage Engineering", reply)
+        self.assertIn("Live news check failed", reply)
+        self.assertIn("Android security update ships", reply)
+        self.assertNotIn("backend snag", reply.lower())
+
+    def test_source_fallback_exception_returns_specific_live_check_failure(self):
+        with patch.object(bot, "_execute_tool_offloop", side_effect=RuntimeError("network down")):
+            text, tool, result = asyncio.run(web_app._source_check_backend_fallback_payload("Any Android updates?"))
+
+        self.assertEqual(tool, "get_latest_news")
+        self.assertEqual(result, "")
+        self.assertIn("live news source check also failed", text)
+
+    def test_generic_favourite_topics_prompt_uses_shortlist_digest_route(self):
+        topics = bot.favourite_news_topic_queries("Any recent news on my favourite sports teams and topics?")
+
+        self.assertEqual(topics, [("Latest from your shortlist", "")])
+
+    def test_nothing_on_other_preferred_topics_means_shortlist_not_brand(self):
+        topics = bot.favourite_news_topic_queries("Nothing on my other preferred topics?")
+
+        self.assertEqual(topics, [("Latest from your shortlist", "")])
+
+    def test_broader_shortlist_topics_are_first_class_news_semantics(self):
+        cases = {
+            "Any iOS and macOS updates?": ["iOS", "macOS"],
+            "Anything on Codex, Kimi, UI/UX or SG Education?": ["AI Tools", "Design / UI/UX", "SG Education"],
+            "Any Islam, MUIS or Singapore news I should know?": ["Islam", "SG News"],
+            "Solo dev, Railway and GitHub updates?": ["Solo Dev"],
+        }
+
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                topics = bot.favourite_news_topic_queries(text)
+                self.assertEqual(set(label for label, _query in topics), set(expected))
+                self.assertIn("get_latest_news", bot.source_discipline_for_text(text)["recommended_tools"])
+
+    def test_shortlist_topic_digest_uses_empty_news_query_and_six_items(self):
+        calls = []
+
+        async def fake_execute_tool(name, inp):
+            calls.append((name, inp))
+            return "\n".join([
+                "*Latest from your shortlist*",
+                "",
+                "- AI model update (Example)",
+                "- Android feature drop (Example)",
+                "- Nothing OS beta (Example)",
+            ])
+
+        with patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool):
+            reply = asyncio.run(web_app._pwa_topic_news_reply("Any recent news on my favourite topics?"))
+
+        self.assertEqual(calls, [("get_latest_news", {"query": "", "max_items": 6})])
+        self.assertIn("AI model update", reply)
+        self.assertIn("Nothing OS beta", reply)
+
+    def test_topic_news_followup_bypasses_model_route(self):
+        async def fake_execute_tool(name, inp):
+            self.assertEqual(name, "get_latest_news")
+            query = inp["query"]
+            if "Nothing" in query:
+                return "*News: Nothing*\n\n- Nothing OS update reaches Phone users (9to5Google · Thu, 21 May 2026)"
+            if "Teenage Engineering" in query:
+                return "*News: Teenage Engineering*\n\n- OP-XY firmware update spotted (Synth Daily · Thu, 21 May 2026)"
+            if "Android" in query:
+                return "*News: Android*\n\n- Android feature drop starts rolling out (Android Developers · Thu, 21 May 2026)"
+            return "No news found."
+
+        async def run():
+            response = await web_app._chat_stream_response(
+                "Thanks. How about Nothing, Teenage Engineering and android stuff",
+                None,
+                "phone",
+            )
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        history = [
+            {"role": "user", "content": "Hira any recent news on my favourite sports teams and topics?"},
+            {"role": "assistant", "content": "Quick live pass, mainly Liverpool + F1/Mercedes."},
+        ]
+        with (
+            patch.object(bot, "get_history", return_value=history.copy()),
+            patch.object(bot, "save_history"),
+            patch.object(web_app, "_update_working_memory", return_value={}),
+            patch.object(web_app, "_schedule_background_call"),
+            patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool),
+            patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("should not route to model")),
+        ):
+            body = asyncio.run(run())
+
+        self.assertIn('"name": "topic_news"', body)
+        self.assertIn("OP-XY firmware update", body)
+        self.assertIn("Android feature drop", body)
+        self.assertIn("Nothing OS update", body)
+        self.assertNotIn('"final_mode": "backend_error"', body)
+
     def test_source_contract_guardrail_blocks_unconfirmed_result(self):
         messages = [{"role": "user", "content": "is that the latest result?"}]
         tool_results = [{
