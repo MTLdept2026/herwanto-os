@@ -293,6 +293,17 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("get_timetable", names)
         self.assertFalse(routed_quick)
 
+    def test_openai_full_power_keeps_nontrivial_short_turn_agentic(self):
+        with (
+            patch.object(bot, "LLM_PROVIDER", "openai"),
+            patch.object(bot, "OPENAI_FULL_POWER_MODE", True),
+        ):
+            routed_quick = asyncio.run(bot.should_route_quick_pwa_chat([], "What do you think?"))
+            trivial_quick = asyncio.run(bot.should_route_quick_pwa_chat([], "Thanks"))
+
+        self.assertFalse(routed_quick)
+        self.assertTrue(trivial_quick)
+
     def test_pwa_yes_pls_after_calendar_offer_uses_context_tool(self):
         messages = [
             {
@@ -3082,6 +3093,41 @@ class AgenticClaudeTests(unittest.TestCase):
             search_service.news_quality_score(stale, now=now),
         )
 
+    def test_google_news_strict_freshness_filters_old_headlines(self):
+        feed = SimpleNamespace(entries=[
+            SimpleNamespace(
+                title="Android feature drop ships this morning",
+                link="https://example.com/fresh",
+                published="Thu, 21 May 2026 01:00:00 GMT",
+                summary="Fresh item",
+                source=SimpleNamespace(title="Android Developers"),
+            ),
+            SimpleNamespace(
+                title="Android feature round-up from last year",
+                link="https://example.com/stale",
+                published="Tue, 21 May 2024 01:00:00 GMT",
+                summary="Old item",
+                source=SimpleNamespace(title="Old News"),
+            ),
+        ])
+
+        with patch("search_service._parse_google_news_rss", return_value=feed), \
+             patch("search_service.datetime") as fake_datetime:
+            fake_datetime.now.return_value = datetime(2026, 5, 21, 8, 0, tzinfo=timezone.utc)
+            fake_datetime.fromisoformat = datetime.fromisoformat
+            items = search_service.google_news("Android", max_items=5, max_age_hours=24)
+
+        self.assertEqual([item["url"] for item in items], ["https://example.com/fresh"])
+
+    def test_build_news_digest_refuses_stale_news_padding(self):
+        with patch("search_service.google_news", return_value=[]) as google_news:
+            text = bot.build_news_digest("Teenage Engineering", max_items=2, max_age_hours=24)
+
+        google_news.assert_called_once_with("Teenage Engineering", max_items=2, max_age_hours=24)
+        self.assertIn("Freshness gate: last 24h", text)
+        self.assertIn("No fresh usable news for Teenage Engineering in the last 24h", text)
+        self.assertIn("not padding", text)
+
     def test_curated_digest_rejects_generic_epl_for_liverpool_slot(self):
         def fake_google_news(query, max_items=4):
             if query == "lfc":
@@ -4399,6 +4445,23 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(contract["status"], "unsupported_no_access_claim")
         self.assertTrue(contract["unsupported_no_access_claim"])
 
+    def test_response_contract_flags_weak_agentic_answer(self):
+        trace = web_app._new_chat_trace("latest Android news")
+        web_app._merge_chat_trace(trace, {
+            "route": "agentic",
+            "tools_available": ["get_latest_news", "web_search"],
+            "source_discipline": {
+                "needs_live_check": True,
+                "recommended_tools": ["get_latest_news", "web_search"],
+                "confidence": "needs_live_source",
+            },
+        })
+
+        contract = web_app.response_contract_for_reply("Yep", trace)
+
+        self.assertEqual(contract["status"], "weak_answer")
+        self.assertTrue(contract["weak_answer"])
+
     def test_source_fallback_uses_resolved_followup_context(self):
         with patch.object(
             bot,
@@ -4675,7 +4738,7 @@ class AgenticClaudeTests(unittest.TestCase):
             )
 
         self.assertIn("Got it. Narrowing the lens: Teenage Engineering and Nothing.", reply)
-        self.assertIn("[older signal]", reply)
+        self.assertIn("Only stale/low-signal hits came back", reply)
         self.assertIn("CMF by Nothing teases new audio product", reply)
         self.assertNotIn("TomatoSystem", reply)
         self.assertNotIn("Quick live check on the non-sports topics", reply)
@@ -4728,7 +4791,7 @@ class AgenticClaudeTests(unittest.TestCase):
         with patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool):
             reply = asyncio.run(web_app._pwa_topic_news_reply("Any recent news on my favourite topics?"))
 
-        self.assertEqual(calls, [("get_latest_news", {"query": "", "max_items": 6})])
+        self.assertEqual(calls, [("get_latest_news", {"query": "", "max_items": 6, "max_age_hours": bot.NEWS_MAX_AGE_HOURS})])
         self.assertIn("AI model update", reply)
         self.assertIn("Nothing OS beta", reply)
 
@@ -4794,7 +4857,11 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(calls, [(
             "get_latest_news",
-            {"query": "Teenage Engineering OP-XY OP-1 Field Pocket Operator firmware update product news", "max_items": 2},
+            {
+                "query": "Teenage Engineering OP-XY OP-1 Field Pocket Operator firmware update product news",
+                "max_items": 2,
+                "max_age_hours": bot.NEWS_MAX_AGE_HOURS,
+            },
         )])
         self.assertIn("Teenage Engineering", reply)
         self.assertIn("OP-XY firmware update", reply)
@@ -4892,6 +4959,7 @@ class AgenticClaudeTests(unittest.TestCase):
             "safety_identifier": "hira-user:test",
             "parallel_tool_calls": True,
             "truncation": "auto",
+            "include": ["web_search_call.action.sources"],
             "text": {"verbosity": "medium"},
             "tools": [
                 {"type": "function", "name": "get_latest_news", "parameters": {"type": "object"}},
@@ -4906,6 +4974,7 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertNotIn("safety_identifier", degraded)
         self.assertNotIn("parallel_tool_calls", degraded)
         self.assertNotIn("truncation", degraded)
+        self.assertNotIn("include", degraded)
         self.assertNotIn("text", degraded)
         self.assertEqual(degraded["tools"], [{"type": "function", "name": "get_latest_news", "parameters": {"type": "object"}}])
 
@@ -6239,6 +6308,7 @@ class AgenticClaudeTests(unittest.TestCase):
             patch.object(bot, "OPENAI_STORE_RESPONSES", True),
             patch.object(bot, "OPENAI_USE_PREVIOUS_RESPONSE_ID", True),
             patch.object(bot, "OPENAI_REASONING_KWARGS", True),
+            patch.object(bot, "OPENAI_FULL_POWER_MODE", True),
         ):
             policy = bot.model_policy_for_text("research current policy")
             kwargs = bot._openai_request_options(
@@ -6251,7 +6321,7 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertTrue(kwargs["store"])
         self.assertEqual(kwargs["previous_response_id"], "resp-prev")
-        self.assertEqual(kwargs["reasoning"]["effort"], "high")
+        self.assertEqual(kwargs["reasoning"]["effort"], "xhigh")
         self.assertEqual(kwargs["text"]["verbosity"], "medium")
 
     def test_openai_response_state_uses_redis_when_available(self):
@@ -6280,7 +6350,11 @@ class AgenticClaudeTests(unittest.TestCase):
             self.assertEqual(bot._openai_previous_response_id("pwa:phone"), "")
 
     def test_openai_native_web_search_is_added_for_live_questions(self):
-        with patch.object(bot, "OPENAI_NATIVE_WEB_SEARCH", True):
+        with (
+            patch.object(bot, "LLM_PROVIDER", "openai"),
+            patch.object(bot, "OPENAI_NATIVE_WEB_SEARCH", True),
+            patch.object(bot, "OPENAI_FULL_POWER_MODE", True),
+        ):
             policy = bot.model_policy_for_text("Any recent interesting updates on android or teenage engineering")
             tools = bot._openai_tools_for_request([{"name": "get_latest_news"}], policy)
 
@@ -6288,12 +6362,15 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertTrue(any(tool.get("type") == "web_search" for tool in tools))
         web_tool = next(tool for tool in tools if tool.get("type") == "web_search")
         self.assertEqual(web_tool["user_location"]["country"], "SG")
+        self.assertEqual(web_tool["search_context_size"], "high")
 
     def test_openai_request_options_add_cache_safety_and_specialist_metadata(self):
         with (
             patch.object(bot, "OPENAI_STORE_RESPONSES", True),
             patch.object(bot, "OPENAI_PROMPT_CACHE_RETENTION", "24h"),
             patch.object(bot, "OPENAI_TRACE_METADATA", True),
+            patch.object(bot, "LLM_PROVIDER", "openai"),
+            patch.object(bot, "OPENAI_FULL_POWER_MODE", True),
         ):
             policy = bot.model_policy_for_text("research the latest Android update")
             kwargs = bot._openai_request_options(
@@ -6309,6 +6386,38 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertTrue(kwargs["safety_identifier"].startswith("hira-user:"))
         self.assertEqual(kwargs["metadata"]["specialist"], "research")
         self.assertTrue(kwargs["parallel_tool_calls"])
+        self.assertEqual(kwargs["max_tool_calls"], 16)
+        self.assertIn("web_search_call.action.sources", kwargs["include"])
+
+    def test_storage_status_exposes_openai_full_power_mode(self):
+        with (
+            patch.object(bot, "LLM_PROVIDER", "openai"),
+            patch.object(bot, "OPENAI_FULL_POWER_MODE", True),
+            patch.object(bot, "OPENAI_NATIVE_CODE_INTERPRETER", True),
+        ):
+            status = bot.build_runtime_status()
+
+        upgrade = status["openai_upgrade"]
+        self.assertEqual(upgrade["full_power_mode"], "enabled")
+        self.assertEqual(upgrade["reasoning_default"], "high/xhigh")
+        self.assertEqual(upgrade["max_tool_calls"], 16)
+        self.assertEqual(upgrade["news_freshness_gate_hours"], bot.NEWS_MAX_AGE_HOURS)
+
+    def test_openai_native_code_interpreter_uses_documented_auto_container(self):
+        with (
+            patch.object(bot, "OPENAI_NATIVE_CODE_INTERPRETER", True),
+            patch.object(bot, "OPENAI_CODE_INTERPRETER_MEMORY_LIMIT", "4g"),
+            patch.object(bot, "OPENAI_CODE_INTERPRETER_FILE_IDS", []),
+            patch.object(bot, "LLM_PROVIDER", "openai"),
+            patch.object(bot, "OPENAI_FULL_POWER_MODE", True),
+        ):
+            policy = bot.model_policy_for_text("analyse this CSV and make a chart")
+            tools = bot._openai_tools_for_request([], policy)
+
+        self.assertIn("code_interpreter", policy["native_tools"])
+        code_tool = next(tool for tool in tools if tool.get("type") == "code_interpreter")
+        self.assertEqual(code_tool["container"], {"type": "auto", "memory_limit": "4g"})
+        self.assertNotIn("network_policy", code_tool["container"])
 
     def test_openai_streaming_traces_native_tool_observations_and_citations(self):
         annotation = SimpleNamespace(type="url_citation", title="Android Developers", url="https://developer.android.com")

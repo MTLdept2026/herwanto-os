@@ -18,6 +18,7 @@ import uuid
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import date, datetime, timedelta
+from email.utils import parsedate_to_datetime
 import ipaddress
 from pathlib import Path
 from typing import Optional
@@ -1229,11 +1230,21 @@ def _pwa_news_item_matches_topic(label: str, item: str) -> bool:
 def _pwa_news_item_is_stale(item: str, now: datetime | None = None) -> bool:
     text = str(item or "")
     current = now or datetime.now(bot.SGT)
+    full_match = re.search(r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+\d{1,2}\s+[A-Za-z]{3}\s+20\d{2}\s+\d{2}:\d{2}:\d{2}\s+GMT\b", text)
+    if full_match:
+        try:
+            item_dt = parsedate_to_datetime(full_match.group(0)).astimezone(bot.SGT)
+            age_hours = (current.astimezone(bot.SGT) - item_dt).total_seconds() / 3600
+            return age_hours > max(1, int(bot.NEWS_MAX_AGE_HOURS))
+        except Exception:
+            pass
     match = re.search(r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+(\d{1,2}\s+[A-Za-z]{3}\s+20\d{2})\b", text)
     if match:
         try:
             item_date = datetime.strptime(match.group(1), "%d %b %Y")
-            return (current.date() - item_date.date()).days > 180
+            item_dt = bot.SGT.localize(item_date)
+            age_hours = (current.astimezone(bot.SGT) - item_dt).total_seconds() / 3600
+            return age_hours > max(1, int(bot.NEWS_MAX_AGE_HOURS))
         except ValueError:
             pass
     years = [int(year) for year in re.findall(r"\b(20\d{2})\b", text)]
@@ -1260,13 +1271,6 @@ def _pwa_topic_news_items(label: str, result: str, limit: int) -> tuple[list[str
             usable.append(item)
         if len(usable) >= limit:
             break
-    if len(usable) < limit:
-        for item in stale:
-            if item.lower() in {entry.lower() for entry in usable}:
-                continue
-            usable.append(f"{item} [older signal]")
-            if len(usable) >= limit:
-                break
     return usable, stale
 
 
@@ -1287,7 +1291,10 @@ async def _pwa_topic_news_reply(message: str, recent_context: str = "") -> str:
     async def fetch(label: str, query: str):
         try:
             max_items = 6 if not str(query or "").strip() else 2
-            result = await bot._execute_tool_offloop("get_latest_news", {"query": query, "max_items": max_items})
+            result = await bot._execute_tool_offloop(
+                "get_latest_news",
+                {"query": query, "max_items": max_items, "max_age_hours": bot.NEWS_MAX_AGE_HOURS},
+            )
             return label, result
         except Exception as exc:
             bot.logger.warning(f"PWA topic news fetch failed for {label}: {exc}")
@@ -3178,17 +3185,32 @@ def response_contract_for_reply(reply_text: str, trace: dict | None = None) -> d
         and not trace.get("tools_called")
     )
     empty_answer = _empty_chat_reply(text)
+    weak_answer = (
+        str(trace.get("route", "")) != "quick"
+        and (
+            bool(source_discipline.get("needs_live_check"))
+            or bool(trace.get("tools_available"))
+            or bool(trace.get("forced_tool"))
+        )
+        and (
+            bot._normalise_short_reply(text) in {"yep", "yes", "ok", "okay", "sure", "done"}
+            or len(text.split()) <= 3
+        )
+    )
     status = "ok"
     if empty_answer:
         status = "empty_answer"
     elif no_access_claim and live_tool_available:
         status = "unsupported_no_access_claim"
+    elif weak_answer:
+        status = "weak_answer"
     elif missing_source_contract:
         status = "missing_source_contract"
     return {
         "status": status,
         "empty_answer": empty_answer,
         "unsupported_no_access_claim": bool(no_access_claim and live_tool_available),
+        "weak_answer": bool(weak_answer),
         "missing_source_contract": bool(missing_source_contract),
     }
 
@@ -3197,7 +3219,7 @@ def _finalise_chat_trace(trace: dict, final_mode: str = "answered") -> dict:
     if not trace.get("final_mode"):
         trace["final_mode"] = final_mode
     contract = trace.get("response_contract") or {}
-    if contract.get("status") in {"empty_answer", "unsupported_no_access_claim"}:
+    if contract.get("status") in {"empty_answer", "unsupported_no_access_claim", "weak_answer", "missing_source_contract"}:
         trace["confidence_gate"] = "review_needed"
     contracts = trace.get("source_contracts_seen") or []
     if contracts and trace.get("confidence_gate") in {"pending", "passed"}:
@@ -4056,7 +4078,11 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                     )
                 yield sse({"type": "replace", "text": reply_text})
                 yield sse({"type": "done", "text": reply_text})
-            elif response_contract.get("unsupported_no_access_claim"):
+            elif (
+                response_contract.get("unsupported_no_access_claim")
+                or response_contract.get("weak_answer")
+                or response_contract.get("missing_source_contract")
+            ):
                 fallback_text = ""
                 fallback_result = ""
                 fallback_tool = ""
@@ -4074,6 +4100,16 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                         "response_contract": {"status": "fallback_replaced_no_access_claim"},
                     })
                     reply_text = fallback_text
+                    yield sse({"type": "replace", "text": reply_text})
+                    yield sse({"type": "done", "text": reply_text})
+                elif response_contract.get("weak_answer"):
+                    _merge_chat_trace(trace, {
+                        "confidence_gate": "failed",
+                        "final_mode": "weak_answer_blocked",
+                    })
+                    reply_text = (
+                        "That was too thin for what you asked. I’m treating it as a failed pass, not a real answer."
+                    )
                     yield sse({"type": "replace", "text": reply_text})
                     yield sse({"type": "done", "text": reply_text})
             history.append({"role": "assistant", "content": reply_text})

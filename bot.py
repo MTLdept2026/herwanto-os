@@ -172,6 +172,14 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on", "enabled"}
 
 
+def _env_int_setting(name: str, default: int, minimum: int = 1, maximum: int | None = None) -> int:
+    try:
+        value = max(minimum, int(os.environ.get(name, str(default)) or default))
+    except ValueError:
+        value = max(minimum, int(default))
+    return min(value, maximum) if maximum is not None else value
+
+
 _DEFAULT_AGENTIC_MODEL = "gpt-5.5" if LLM_PROVIDER == "openai" else "claude-sonnet-4-6"
 _DEFAULT_QUICK_MODEL = "gpt-5.4-mini" if LLM_PROVIDER == "openai" else "claude-haiku-4-5-20251001"
 AGENTIC_MODEL = _model_from_env("HIRA_AGENTIC_MODEL", _DEFAULT_AGENTIC_MODEL)
@@ -179,19 +187,23 @@ DEEP_MODEL = _model_from_env("HIRA_DEEP_MODEL", AGENTIC_MODEL)
 QUICK_MODEL = _model_from_env("HIRA_QUICK_MODEL", _DEFAULT_QUICK_MODEL)
 ROUTER_MODEL = _model_from_env("HIRA_ROUTER_MODEL", QUICK_MODEL)
 STRUCTURED_MODEL = _model_from_env("HIRA_STRUCTURED_MODEL", QUICK_MODEL)
+OPENAI_FULL_POWER_MODE = _env_flag("HIRA_OPENAI_FULL_POWER_MODE", LLM_PROVIDER == "openai")
 OPENAI_STORE_RESPONSES = _env_flag("HIRA_OPENAI_STORE_RESPONSES", True)
 OPENAI_USE_PREVIOUS_RESPONSE_ID = _env_flag("HIRA_OPENAI_USE_PREVIOUS_RESPONSE_ID", True)
 OPENAI_REASONING_KWARGS = _env_flag("HIRA_OPENAI_REASONING_KWARGS", True)
 OPENAI_TRACE_METADATA = _env_flag("HIRA_OPENAI_TRACE_METADATA", True)
 OPENAI_NATIVE_WEB_SEARCH = _env_flag("HIRA_OPENAI_NATIVE_WEB_SEARCH", True)
-OPENAI_NATIVE_CODE_INTERPRETER = _env_flag("HIRA_OPENAI_NATIVE_CODE_INTERPRETER", False)
+OPENAI_NATIVE_CODE_INTERPRETER = _env_flag("HIRA_OPENAI_NATIVE_CODE_INTERPRETER", OPENAI_FULL_POWER_MODE)
+OPENAI_INCLUDE_NATIVE_TOOL_RESULTS = _env_flag("HIRA_OPENAI_INCLUDE_NATIVE_TOOL_RESULTS", True)
 OPENAI_CODE_INTERPRETER_FILE_IDS = [
     item.strip()
     for item in os.environ.get("HIRA_OPENAI_CODE_INTERPRETER_FILE_IDS", "").split(",")
     if item.strip()
 ]
-OPENAI_CODE_INTERPRETER_MEMORY_LIMIT = os.environ.get("HIRA_OPENAI_CODE_INTERPRETER_MEMORY_LIMIT", "1g").strip() or "1g"
-OPENAI_CODE_INTERPRETER_NETWORK = os.environ.get("HIRA_OPENAI_CODE_INTERPRETER_NETWORK", "disabled").strip().lower() or "disabled"
+OPENAI_CODE_INTERPRETER_MEMORY_LIMIT = os.environ.get(
+    "HIRA_OPENAI_CODE_INTERPRETER_MEMORY_LIMIT",
+    "4g" if OPENAI_FULL_POWER_MODE else "1g",
+).strip() or ("4g" if OPENAI_FULL_POWER_MODE else "1g")
 OPENAI_FILE_SEARCH_VECTOR_STORE_IDS = [
     item.strip()
     for item in os.environ.get("HIRA_OPENAI_FILE_SEARCH_VECTOR_STORE_IDS", "").split(",")
@@ -199,6 +211,7 @@ OPENAI_FILE_SEARCH_VECTOR_STORE_IDS = [
 ]
 OPENAI_PROMPT_CACHE_RETENTION = os.environ.get("HIRA_OPENAI_PROMPT_CACHE_RETENTION", "24h").strip()
 OPENAI_SERVICE_TIER = os.environ.get("HIRA_OPENAI_SERVICE_TIER", "").strip()
+NEWS_MAX_AGE_HOURS = _env_int_setting("HIRA_NEWS_MAX_AGE_HOURS", 24, minimum=1, maximum=336)
 OPENAI_REALTIME_ENABLED = _env_flag("HIRA_OPENAI_REALTIME_ENABLED", LLM_PROVIDER == "openai")
 OPENAI_REALTIME_MODEL = os.environ.get("HIRA_OPENAI_REALTIME_MODEL", "gpt-realtime").strip() or "gpt-realtime"
 OPENAI_REALTIME_VOICE = os.environ.get("HIRA_OPENAI_REALTIME_VOICE", "verse").strip() or "verse"
@@ -304,6 +317,7 @@ def model_policy_for_text(text: str = "") -> dict:
     clean = str(text or "")
     lowered = clean.lower()
     source_policy = source_discipline_for_text(clean)
+    full_power = bool(OPENAI_FULL_POWER_MODE and LLM_PROVIDER == "openai")
     deep_reason = ""
     if re.search(
         r"\b(code|debug|architecture|refactor|proposal|strategy|analyse|analyze|"
@@ -322,15 +336,16 @@ def model_policy_for_text(text: str = "") -> dict:
         deep_reason = "source_sensitive_reasoning"
 
     use_deep = bool(deep_reason) and DEEP_MODEL != AGENTIC_MODEL
-    reasoning_effort = "medium"
+    reasoning_effort = "high" if full_power else "medium"
     verbosity = "medium"
     if deep_reason in {"complex_domain_or_deliberate_work", "long_context_turn"}:
-        reasoning_effort = "high"
+        reasoning_effort = "xhigh" if full_power else "high"
     elif deep_reason == "source_sensitive_reasoning":
-        reasoning_effort = "medium"
-    elif re.search(r"\b(?:quick|brief|short|simple|fast)\b", lowered):
+        reasoning_effort = "high" if full_power else "medium"
+    elif re.search(r"\b(?:quick|brief|short|simple|fast)\b", lowered) and not source_policy.get("needs_live_check"):
         reasoning_effort = "low"
         verbosity = "low"
+    native_tools = openai_native_tool_policy_for_text(clean)
     return {
         "provider": LLM_PROVIDER,
         "tier": "deep" if use_deep else "agentic",
@@ -341,8 +356,9 @@ def model_policy_for_text(text: str = "") -> dict:
         "verbosity": verbosity,
         "store": bool(OPENAI_STORE_RESPONSES),
         "stateful": bool(OPENAI_USE_PREVIOUS_RESPONSE_ID),
-        "max_tool_calls": 8,
-        "native_tools": openai_native_tool_policy_for_text(clean),
+        "max_tool_calls": 16 if full_power else 8,
+        "native_tools": native_tools,
+        "web_search_context_size": "high" if full_power and "web_search" in native_tools else "medium",
         "needs_live_check": bool(source_policy.get("needs_live_check")),
         "recommended_tools": list(source_policy.get("recommended_tools") or []),
     }
@@ -380,7 +396,7 @@ def openai_native_tool_policy_for_text(text: str = "") -> list[str]:
         native.append("web_search")
     if OPENAI_FILE_SEARCH_VECTOR_STORE_IDS and re.search(r"\b(?:file|document|docs|uploaded|pdf|drive|source|memory|find in)\b", clean):
         native.append("file_search")
-    if OPENAI_NATIVE_CODE_INTERPRETER and re.search(r"\b(?:calculate|spreadsheet|csv|xlsx|analyse|analyze|statistics|chart|graph|python|compute)\b", clean):
+    if OPENAI_NATIVE_CODE_INTERPRETER and re.search(r"\b(?:calculate|spreadsheet|csv|xlsx|analyse|analyze|statistics|chart|graph|python|compute|data|math|table)\b", clean):
         native.append("code_interpreter")
     return native
 
@@ -562,6 +578,7 @@ def build_runtime_status() -> dict:
             "structured": STRUCTURED_MODEL,
         },
         "openai_upgrade": {
+            "full_power_mode": "enabled" if OPENAI_FULL_POWER_MODE and LLM_PROVIDER == "openai" else "disabled",
             "thread_state_resolver": "enabled",
             "model_policy_router": "enabled",
             "responses_streaming": "enabled" if LLM_PROVIDER == "openai" else "provider_disabled",
@@ -570,6 +587,9 @@ def build_runtime_status() -> dict:
             "native_web_search": "enabled" if OPENAI_NATIVE_WEB_SEARCH else "disabled",
             "native_file_search": "enabled" if OPENAI_FILE_SEARCH_VECTOR_STORE_IDS else "not_configured",
             "native_code_interpreter": "enabled" if OPENAI_NATIVE_CODE_INTERPRETER else "disabled",
+            "reasoning_default": "high/xhigh" if OPENAI_FULL_POWER_MODE and LLM_PROVIDER == "openai" else "standard",
+            "max_tool_calls": 16 if OPENAI_FULL_POWER_MODE and LLM_PROVIDER == "openai" else 8,
+            "news_freshness_gate_hours": NEWS_MAX_AGE_HOURS,
             "prompt_cache": "enabled" if OPENAI_PROMPT_CACHE_RETENTION else "disabled",
             "source_contract_trace": "enabled",
             "proactive_intelligence": "enabled" if JOB_INTERVALS.get("proactive_intelligence") else "disabled",
@@ -1356,6 +1376,7 @@ You feel like a capable chief-of-staff in his pocket: practical, observant, wick
 Personality:
 - Speak like a trusted colleague who knows his life, not a generic chatbot.
 - Default vibe: concise, grounded, encouraging, lightly informal, and sharp without being cruel.
+- Let H.I.R.A's personality come through in every pass, including tool-backed summaries and fallback messages: direct, useful, a little alive. Never flatten into generic API prose.
 - If he asks your name, answer naturally: "I'm H.I.R.A — Herwanto Interface for Responsive Assistance."
 - Be decisive when the path is clear; ask only when a missing detail blocks action.
 - Have a wicked sense of humour and good wit: dry, clever, quick, and occasionally cheeky. Self-deprecating humour is welcome when you have made a small mistake or when bureaucracy/tool friction is annoying, but keep it short and then fix the problem.
@@ -1445,9 +1466,9 @@ Rules:
 - When the user asks to colour, color, highlight, or red-fill failures below the pass mark in an MTL percentage column — call apply_mtl_failure_highlighting. Default failure threshold is 50 unless Herwanto says another pass mark. If he asks for both failure colouring and sheet-side analysis/graphs, call apply_mtl_failure_highlighting and generate_mtl_score_trend_report in the same turn.
 - When the user asks to calculate and enter a score/mark/result into an MTL classlist sheet, calculate only from the numbers he gives or sheet values retrieved with include_scores=true, then call update_mtl_class_score. Do not guess a student or column; if the tool reports ambiguity, ask for the missing class/student/column detail.
 - When the user asks to fill or create percentage columns in an MTL classlist, call fill_mtl_percentage_scores. The tool can create a missing percentage column immediately after the raw score column, e.g. create/fill WA2 (100%) after WA2 (40). Use class_query and assessment_query if the user provides them; otherwise the tool will ask for specificity when multiple columns match.
-- When the user asks about latest news, current events, headlines, football, Liverpool/LFC, F1, AI, Singapore education, apps, Android/Google I/O/Gemini, Apple, Nothing OS, or his shortlisted topics — call get_latest_news and/or web_search before answering. Prefer get_liverpool_brief for Liverpool/LFC questions and get_f1_brief for Formula 1 questions because they gather structured source slices, but if those are thin, stale, or say "no items found", immediately run web_search with a targeted query.
+- When the user asks about latest news, current events, headlines, football, Liverpool/LFC, F1, AI, Singapore education, apps, Android/Google I/O/Gemini, Apple, Nothing OS, or his shortlisted topics — call get_latest_news and/or web_search before answering. News must be up-to-the-minute/hour where the source path supports it: default to items published within the configured freshness window, include timestamps when available, and if only stale items appear, say no fresh usable item was found instead of padding the answer. Prefer get_liverpool_brief for Liverpool/LFC questions and get_f1_brief for Formula 1 questions because they gather structured source slices, but if those are thin, stale, or say "no items found", immediately run web_search with a targeted query.
 - For Liverpool/F1 result or score questions, answer the result first in the first sentence only when a live/source tool confirms it. Treat SOURCE CONTRACT status=confirmed as usable; treat unconfirmed, stale, or failed as a hard stop. Do not lead with programme notes, previews, line-ups, fan reaction, or where Herwanto can check it himself. If get_liverpool_brief/get_f1_brief does not contain a clear confirmed scoreline, run web_search with an exact "team/opponent/date full-time score" query before answering. Only say the result is unavailable after that targeted lookup fails.
-- For volatile facts, use this source contract discipline: confirmed = answer directly with source/as_of; unconfirmed = say what was checked and what was missing; stale = mention it only as older context; failed = say the live check failed. Never upgrade unconfirmed/stale/failed tool output into a confident fact.
+- For volatile facts, use this source contract discipline: confirmed = answer directly with source/as_of; unconfirmed = say what was checked and what was missing; stale = leave it out of news answers unless Herwanto explicitly asks for older context; failed = say the live check failed. Never upgrade unconfirmed/stale/failed tool output into a confident fact.
 - For sports corrections and follow-ups, preserve the conversation subject. If Herwanto corrects a Liverpool/F1 claim, or then asks "what was the match like?", "the result?", "recap?", "home or away?", or "actual details?", use the relevant structured sports brief before answering even if the follow-up omits the team name.
 - After giving verified Liverpool or F1 scores/match details, add a short supporter-read: infer Herwanto's likely mood from his known loyalties and the result. Keep it humble ("I imagine", "this probably lands as") and concrete, not melodramatic. For Liverpool losses, acknowledge frustration, defensive/selection worries, or rivalry pain before any tactical note. For wins, share the lift and what he will probably enjoy. Do not let mood-reading replace the verified facts.
 - Liverpool FC is a first-class interest. Herwanto supports Liverpool. Track the current squad/line-ups, Premier League standing, progress in every competition Liverpool are still in, injuries/suspensions, fixtures/results, and transfer news/rumours. As of the 2025-26 squad context, Liverpool are managed by Arne Slot and the first-team group includes Alisson, Giorgi Mamardashvili, Freddie Woodman, Virgil van Dijk, Ibrahima Konate, Joe Gomez, Milos Kerkez, Conor Bradley, Andy Robertson, Jeremie Frimpong, Giovanni Leoni, Wataru Endo, Florian Wirtz, Dominik Szoboszlai, Alexis Mac Allister, Curtis Jones, Ryan Gravenberch, Trey Nyoni, Alexander Isak, Mohamed Salah, Federico Chiesa, Cody Gakpo, Hugo Ekitike, and Rio Ngumoha. If Herwanto mentions Wirtz, Isak, or "lfc big match", assume Liverpool context and do not correct him back to old clubs without first checking current sources. For current starting XIs, matchday line-ups, EPL table position, points, goal difference, form, Champions League/FA Cup/Carabao Cup progress, injuries, contract situations, departures, signings, or rumours, always use get_latest_news/web_search/fetch_url and cite the source. Clearly label transfer items as confirmed, reported, or rumour/speculation.
@@ -1577,7 +1598,7 @@ def _openai_native_tools_for_policy(policy: dict | None = None) -> list[dict]:
     if "web_search" in requested:
         native.append({
             "type": "web_search",
-            "search_context_size": "medium",
+            "search_context_size": str(policy.get("web_search_context_size") or "medium"),
             "user_location": {
                 "type": "approximate",
                 "city": "Singapore",
@@ -1598,10 +1619,22 @@ def _openai_native_tools_for_policy(policy: dict | None = None) -> list[dict]:
         }
         if OPENAI_CODE_INTERPRETER_FILE_IDS:
             container["file_ids"] = OPENAI_CODE_INTERPRETER_FILE_IDS
-        if OPENAI_CODE_INTERPRETER_NETWORK == "disabled":
-            container["network_policy"] = {"type": "disabled"}
         native.append({"type": "code_interpreter", "container": container})
     return native
+
+
+def _openai_include_for_policy(policy: dict | None = None) -> list[str]:
+    if not OPENAI_INCLUDE_NATIVE_TOOL_RESULTS:
+        return []
+    requested = set((policy or {}).get("native_tools") or [])
+    include: list[str] = []
+    if "web_search" in requested:
+        include.append("web_search_call.action.sources")
+    if "file_search" in requested:
+        include.append("file_search_call.results")
+    if "code_interpreter" in requested:
+        include.append("code_interpreter_call.outputs")
+    return include
 
 
 def _openai_tools_for_request(tools: list[dict] | None, policy: dict | None = None) -> list[dict] | None:
@@ -1762,6 +1795,9 @@ def _openai_request_options(
             "reason": str(policy.get("reason", ""))[:96],
             "specialist": str(policy.get("specialist", ""))[:64],
         }
+    include = _openai_include_for_policy(policy)
+    if include:
+        kwargs["include"] = include
     if policy.get("max_tool_calls"):
         kwargs["max_tool_calls"] = int(policy.get("max_tool_calls") or 8)
     kwargs["parallel_tool_calls"] = True
@@ -1897,6 +1933,7 @@ def _openai_degraded_request_kwargs(kwargs: dict, exc: Exception | None = None) 
         "parallel_tool_calls",
         "truncation",
         "verbosity",
+        "include",
     )):
         return {}
     degraded = dict(kwargs)
@@ -1907,6 +1944,7 @@ def _openai_degraded_request_kwargs(kwargs: dict, exc: Exception | None = None) 
         "parallel_tool_calls",
         "truncation",
         "service_tier",
+        "include",
     ):
         degraded.pop(key, None)
     if isinstance(degraded.get("text"), dict) and set(degraded["text"].keys()) == {"verbosity"}:
@@ -2488,7 +2526,7 @@ PROJECT_TOOL = {
 
 NEWS_TOOL = {
     "name": "get_latest_news",
-    "description": "Fetch current Google News headlines. Use for latest news, current events, and Herwanto's shortlisted news topics.",
+    "description": "Fetch current Google News headlines with a strict freshness gate. Use for latest news, current events, and Herwanto's shortlisted news topics; do not return stale headlines as news.",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -2499,6 +2537,10 @@ NEWS_TOOL = {
             "max_items": {
                 "type": "integer",
                 "description": "Number of headlines per topic, usually 2 to 5."
+            },
+            "max_age_hours": {
+                "type": "integer",
+                "description": "Freshness window for news results. Defaults to H.I.R.A's strict news freshness setting, usually 24 hours."
             }
         }
     }
@@ -5656,14 +5698,43 @@ def build_curated_digest_snapshot(now: datetime | None = None, limit: int = 4) -
         ],
     }
 
-def build_news_digest(query: str = "", max_items: int = 2) -> str:
-    max_items = max(1, min(int(max_items or 2), 5))
-    if query.strip():
-        items = ss.google_news(query.strip(), max_items=max_items)
-        return f"*News: {query.strip()}*\n\n{ss.format_news_items(items)}"
+def _fresh_news_entries(entries: list[dict], max_age_hours: int | None = None, now: datetime | None = None) -> list[dict]:
+    max_age = max(1, int(max_age_hours or NEWS_MAX_AGE_HOURS))
+    current = now or datetime.now(SGT)
+    fresh: list[dict] = []
+    for entry in entries or []:
+        item = entry.get("item") if isinstance(entry, dict) else {}
+        age_hours = _digest_item_age_hours(item, now=current)
+        if age_hours is None or age_hours > max_age:
+            continue
+        fresh.append(entry)
+    return fresh
 
-    curated = format_curated_digest(build_curated_digest_entries(limit=max_items, fetch_limit=4, record=False))
-    return f"*Latest from your shortlist*\n\n{curated or 'No news found.'}"
+
+def _no_fresh_news_text(topic: str = "", max_age_hours: int | None = None) -> str:
+    window = max(1, int(max_age_hours or NEWS_MAX_AGE_HOURS))
+    subject = f" for {topic.strip()}" if str(topic or "").strip() else ""
+    return (
+        f"No fresh usable news{subject} in the last {window}h. "
+        "I’m not padding this with stale headlines."
+    )
+
+
+def build_news_digest(query: str = "", max_items: int = 2, max_age_hours: int | None = None) -> str:
+    max_items = max(1, min(int(max_items or 2), 5))
+    freshness_window = max(1, int(max_age_hours or NEWS_MAX_AGE_HOURS))
+    if query.strip():
+        clean_query = query.strip()
+        items = ss.google_news(clean_query, max_items=max_items, max_age_hours=freshness_window)
+        body = ss.format_news_items(items) if items else _no_fresh_news_text(clean_query, freshness_window)
+        return f"*Fresh news: {clean_query}*\n_Freshness gate: last {freshness_window}h_\n\n{body}"
+
+    entries = _fresh_news_entries(
+        build_curated_digest_entries(limit=max_items * 2, fetch_limit=4, record=False),
+        max_age_hours=freshness_window,
+    )[:max_items]
+    curated = format_curated_digest(entries)
+    return f"*Fresh news from your shortlist*\n_Freshness gate: last {freshness_window}h_\n\n{curated or _no_fresh_news_text('', freshness_window)}"
 
 
 TASTE_CALIBRATION_QUESTIONS = [
@@ -10856,6 +10927,18 @@ def _obvious_quick_chat(text: str) -> bool:
         return True
     return len(clean.split()) <= 5 and bool(re.search(r"\b(thanks?|ok(?:ay)?|yes|no|hi|hello|hey)\b", clean))
 
+
+def _full_power_allows_quick_reply(text: str) -> bool:
+    clean = _normalise_short_reply(text)
+    if not clean:
+        return False
+    if clean in {
+        "ok", "okay", "k", "kk", "thanks", "thank you", "thx", "ty",
+        "hi", "hello", "hey", "morning", "noted", "got it", "understood",
+    }:
+        return True
+    return len(clean.split()) <= 3 and bool(re.search(r"\b(?:thanks?|hello|hi|hey|ok(?:ay)?)\b", clean))
+
 _CONTEXTUAL_FOLLOWUP_REPLIES = {
     "yes",
     "yes pls",
@@ -11095,6 +11178,8 @@ async def should_route_quick_pwa_chat(messages: list[dict], message: str) -> boo
         re.search(r"\b(match|result|recap|score|home|away|host(?:ed)?|fixture|game|details?)\b", text, re.I)
         and re.search(r"\b(liverpool|lfc|man utd|man united|manchester united|f1|formula 1|grand prix)\b", recent_context)
     ):
+        return False
+    if OPENAI_FULL_POWER_MODE and LLM_PROVIDER == "openai" and not _full_power_allows_quick_reply(text):
         return False
     if _obvious_quick_chat(text):
         return True
@@ -11776,7 +11861,11 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "get_latest_news":
         try:
-            return build_news_digest(inp.get("query", ""), inp.get("max_items", 2))
+            return build_news_digest(
+                inp.get("query", ""),
+                inp.get("max_items", 2),
+                inp.get("max_age_hours") or NEWS_MAX_AGE_HOURS,
+            )
         except Exception as e:
             return f"Failed to fetch news: {e}"
 

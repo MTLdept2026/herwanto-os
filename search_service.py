@@ -918,7 +918,7 @@ def _google_news_headline(query, max_items=1):
         return []
 
 
-def google_news(query, max_items=5):
+def google_news(query, max_items=5, max_age_hours: int | None = None):
     """Fetch latest Google News RSS items for a query."""
     try:
         feed = _parse_google_news_rss(query)
@@ -934,7 +934,14 @@ def google_news(query, max_items=5):
                 "source": getattr(getattr(entry, "source", None), "title", ""),
                 "description": description[:500],
             })
-        return _rank_news_items(items)[:max_items]
+        ranked = _rank_news_items(items)
+        if max_age_hours:
+            max_age = max(1, int(max_age_hours))
+            ranked = [
+                item for item in ranked
+                if (_news_age_hours(item) is not None and _news_age_hours(item) <= max_age)
+            ]
+        return ranked[:max_items]
     except Exception as e:
         logger.warning(f"RSS error for '{query}': {e}")
         return []
