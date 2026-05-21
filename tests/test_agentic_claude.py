@@ -4468,6 +4468,52 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn('"name": "get_assistant_context"', body)
         self.assertNotIn('"final_mode": "backend_error"', body)
 
+    def test_pwa_triage_uses_direct_context_route_before_model(self):
+        task = {
+            "id": "31",
+            "description": "Submit Sec 2 marks",
+            "due": "2026-05-21",
+            "category": "Teaching",
+            "priority": "high",
+            "effort": "medium",
+            "next_action": "Upload the marks before lunch.",
+        }
+        marking = {
+            "title": "Kefahaman 2G3",
+            "total_scripts": 34,
+            "marked_count": 12,
+            "collected_date": "2026-05-19",
+        }
+
+        async def run():
+            response = await web_app._chat_stream_response(
+                "Triage my current load. Pick the top 3 things I should handle next, explain why, and give me a realistic order of attack.",
+                None,
+                "phone",
+            )
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot, "build_context_snapshot", return_value="Assistant context\nFollow-ups:\nNone."),
+            patch.object(bot, "build_task_structured", return_value={"items": [task]}),
+            patch.object(bot.gs, "get_marking_tasks", return_value=[marking]),
+            patch.object(bot, "stream_agentic_claude", side_effect=AssertionError("triage should not use model")),
+            patch.object(web_app, "_update_working_memory", side_effect=AssertionError("triage should bypass model preflight")),
+        ):
+            body = asyncio.run(run())
+
+        self.assertIn('"name": "triage"', body)
+        self.assertIn("Direct triage from your current H.I.R.A data", body)
+        self.assertIn("Submit Sec 2 marks", body)
+        self.assertIn("Kefahaman 2G3", body)
+        self.assertNotIn("backend snag", body.lower())
+
     def test_topic_news_followup_detects_non_sports_favourite_topics(self):
         topics = web_app._pwa_topic_news_queries(
             "Thanks. How about Nothing, Teenage Engineering and android stuff",

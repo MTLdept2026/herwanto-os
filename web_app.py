@@ -3429,6 +3429,176 @@ def _pwa_nudge_command_reply(message: str) -> tuple[str, str] | None:
     return "\n".join(lines) if lines else "No matching nudges found.", "cancel_nudge"
 
 
+def _is_pwa_triage_prompt(message: str) -> bool:
+    clean = " ".join(str(message or "").lower().split())
+    if not clean or "triage" not in clean:
+        return False
+    return bool(re.search(r"\b(?:current load|load|top 3|handle next|order of attack|prioritise|prioritize|priority|tasks?)\b", clean))
+
+
+def _pwa_due_reason(task: dict, today: date) -> str:
+    due = str(task.get("due", "") or "").strip()
+    priority = str(task.get("priority", "") or "").strip()
+    effort = str(task.get("effort", "") or "").strip()
+    pieces: list[str] = []
+    if due:
+        try:
+            due_date = date.fromisoformat(due)
+            delta = (due_date - today).days
+            if delta < 0:
+                pieces.append(f"overdue by {abs(delta)} day{'s' if abs(delta) != 1 else ''}")
+            elif delta == 0:
+                pieces.append("due today")
+            elif delta == 1:
+                pieces.append("due tomorrow")
+            else:
+                pieces.append(f"due in {delta} days")
+        except Exception:
+            pieces.append(f"due {due}")
+    if priority:
+        pieces.append(f"{priority} priority")
+    if effort:
+        pieces.append(f"{effort} effort")
+    return ", ".join(pieces) or "it is already near the top of your task queue"
+
+
+def _pwa_task_candidate(task: dict, today: date) -> dict:
+    description = str(task.get("description", "") or "Untitled task").strip()
+    next_action = str(task.get("next_action", "") or "").strip()
+    if not next_action:
+        next_action = "Do the smallest visible step, then mark or update the task so the queue stays honest."
+    return {
+        "title": description,
+        "why": _pwa_due_reason(task, today),
+        "next": next_action,
+    }
+
+
+def _pwa_marking_candidate(task: dict) -> dict:
+    title = str(task.get("title", "") or task.get("name", "") or "Outstanding marking").strip()
+    total = int(task.get("total_scripts") or 0)
+    marked = int(task.get("marked_count") or 0)
+    outstanding = max(0, total - marked) if total else 0
+    collected = str(task.get("collected_date", "") or "").strip()
+    if total:
+        why = f"{outstanding} of {total} scripts still outstanding"
+        next_action = "Mark the first 5 scripts, then update the marking count."
+    else:
+        stack_count = int(task.get("stack_count") or 1)
+        why = f"{marked} scripts marked so far across {stack_count} stack{'s' if stack_count != 1 else ''}; total not set"
+        next_action = "Set the total scripts or clear one small stack first."
+    if collected:
+        why = f"{why}; collected {collected}"
+    return {
+        "title": title,
+        "why": why,
+        "next": next_action,
+    }
+
+
+def _pwa_followup_candidates_from_context(context_text: str, limit: int = 3) -> list[dict]:
+    candidates: list[dict] = []
+    in_followups = False
+    for raw in str(context_text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        lower = line.lower()
+        if lower.startswith("follow-ups"):
+            in_followups = True
+            continue
+        if in_followups and re.match(r"^[a-z][a-z\s-]+:", lower):
+            break
+        if not in_followups or not line.startswith("-"):
+            continue
+        clean = re.sub(r"^\-\s*", "", line).strip()
+        if clean.lower() == "none.":
+            continue
+        candidates.append({
+            "title": clean,
+            "why": "open follow-up in the current context snapshot",
+            "next": "Send the shortest useful reply or park it with a concrete next action.",
+        })
+        if len(candidates) >= limit:
+            break
+    return candidates
+
+
+def _pwa_context_fallback_candidate(context_text: str) -> dict:
+    interesting = []
+    for raw in str(context_text or "").splitlines():
+        line = raw.strip()
+        if not line or line.lower().startswith(("assistant context", "stored memory")):
+            continue
+        if line.startswith("-") or re.search(r"\b(?:today|calendar|lesson|reminders|marking|follow-ups)\b", line, re.I):
+            interesting.append(line.replace("*", ""))
+        if len(interesting) >= 3:
+            break
+    detail = "; ".join(interesting) if interesting else "no urgent task or marking item surfaced"
+    return {
+        "title": "Protect the next clean block",
+        "why": detail,
+        "next": "Do one focused pass before opening new work or messages.",
+    }
+
+
+def _format_pwa_triage_reply(context_text: str, tasks_data: dict, marking_tasks: list[dict], errors: list[str]) -> str:
+    today = datetime.now(bot.SGT).date()
+    candidates: list[dict] = []
+    for task in (tasks_data.get("items") if isinstance(tasks_data, dict) else []) or []:
+        if len(candidates) >= 3:
+            break
+        candidates.append(_pwa_task_candidate(task, today))
+    for task in marking_tasks or []:
+        if len(candidates) >= 3:
+            break
+        candidates.append(_pwa_marking_candidate(task))
+    for item in _pwa_followup_candidates_from_context(context_text, limit=3):
+        if len(candidates) >= 3:
+            break
+        candidates.append(item)
+    if not candidates:
+        candidates.append(_pwa_context_fallback_candidate(context_text))
+
+    lines = ["Direct triage from your current H.I.R.A data:", ""]
+    for index, item in enumerate(candidates[:3], start=1):
+        lines.append(f"{index}. {item['title']}")
+        lines.append(f"   Why: {item['why']}.")
+        lines.append(f"   Next: {item['next']}")
+    order = " -> ".join(item["title"] for item in candidates[:3])
+    lines.append("")
+    lines.append(f"Order of attack: {order}.")
+    if errors:
+        lines.append("")
+        lines.append("Source notes: " + "; ".join(errors[:3]))
+    return "\n".join(lines).strip()
+
+
+async def _pwa_triage_reply(message: str) -> str:
+    if not _is_pwa_triage_prompt(message):
+        return ""
+    errors: list[str] = []
+
+    async def run(label: str, fn):
+        try:
+            return await asyncio.to_thread(fn)
+        except Exception as exc:
+            errors.append(f"{label} unavailable: {exc}")
+            return None
+
+    context_text, tasks_data, marking_tasks = await asyncio.gather(
+        run("context", lambda: bot.build_context_snapshot(3)),
+        run("tasks", lambda: bot.build_task_structured(7)),
+        run("marking", lambda: bot.gs.get_marking_tasks() if bot.google_ok() else []),
+    )
+    return _format_pwa_triage_reply(
+        str(context_text or ""),
+        tasks_data if isinstance(tasks_data, dict) else {},
+        marking_tasks if isinstance(marking_tasks, list) else [],
+        errors,
+    )
+
+
 @app.post("/api/chat")
 async def chat(
     request: Request,
@@ -3479,6 +3649,17 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             quick_history,
             route_name="briefing_replay",
             tool_name=f"{briefing_slot}_briefing",
+        )
+
+    triage_reply = await _pwa_triage_reply(message)
+    if triage_reply:
+        quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
+        return _quick_sse_response(
+            triage_reply,
+            history_key,
+            quick_history,
+            route_name="triage",
+            tool_name="get_assistant_context",
         )
 
     working_memory = _update_working_memory(history_key, history, message)
