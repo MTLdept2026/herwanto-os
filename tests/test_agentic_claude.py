@@ -4525,6 +4525,10 @@ class AgenticClaudeTests(unittest.TestCase):
             web_app._pwa_topic_news_queries("How about Nothing?", "Quick live pass with recent news."),
             [("Nothing", "Nothing Phone Nothing OS Nothing Ear CMF Carl Pei Android update launch product news")],
         )
+        self.assertEqual(
+            [label for label, _query in web_app._pwa_topic_news_queries("I asked only about Teenage Engineering and Nothing")],
+            ["Teenage Engineering", "Nothing"],
+        )
 
     def test_favourite_topic_news_semantics_ignore_plain_nothing_due(self):
         self.assertEqual(bot.favourite_news_topic_queries("Nothing much to handle."), [])
@@ -4613,8 +4617,42 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertIn("Teenage Engineering", reply)
         self.assertIn("Live news check failed", reply)
+        self.assertNotIn("Quick live check on the non-sports topics", reply)
         self.assertIn("Android security update ships", reply)
         self.assertNotIn("backend snag", reply.lower())
+
+    def test_topic_news_reply_keeps_hira_voice_and_filters_junk(self):
+        async def fake_execute_tool(name, inp):
+            self.assertEqual(name, "get_latest_news")
+            query = inp["query"]
+            if "Teenage Engineering" in query:
+                return "\n".join([
+                    "*News: Teenage Engineering*",
+                    "",
+                    "- Teenage Engineering celebrates 10 years of the Pocket Operator (MusicRadar · Fri, 21 Feb 2025 08:00:00 GMT)",
+                    "- TomatoSystem Registers AI-Based UI/UX Development Solution with Public Procurement Service... Targets Public DX Market (Asia Economy · Wed, 20 May 2026 23:46:02 GMT)",
+                ])
+            if "Nothing" in query:
+                return "\n".join([
+                    "*News: Nothing*",
+                    "",
+                    "- CMF by Nothing teases new audio product (Nothing Community · Thu, 21 May 2026 09:00:00 GMT)",
+                ])
+            return "No news found."
+
+        with patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool):
+            reply = asyncio.run(
+                web_app._pwa_topic_news_reply(
+                    "I asked only about Teenage Engineering and Nothing",
+                    "Recent chat was a favourite topics digest.",
+                )
+            )
+
+        self.assertIn("Got it. Narrowing the lens: Teenage Engineering and Nothing.", reply)
+        self.assertIn("[older signal]", reply)
+        self.assertIn("CMF by Nothing teases new audio product", reply)
+        self.assertNotIn("TomatoSystem", reply)
+        self.assertNotIn("Quick live check on the non-sports topics", reply)
 
     def test_source_fallback_exception_returns_specific_live_check_failure(self):
         with patch.object(bot, "_execute_tool_offloop", side_effect=RuntimeError("network down")):

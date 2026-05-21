@@ -1183,6 +1183,102 @@ def _pwa_topic_news_queries(message: str, recent_context: str = "") -> list[tupl
     return bot.favourite_news_topic_queries(message, recent_context)
 
 
+_PWA_TOPIC_MATCH_TERMS = {
+    "Teenage Engineering": (
+        "teenage engineering",
+        "op-xy",
+        "op-1",
+        "op-z",
+        "pocket operator",
+        "field system",
+        "tp-7",
+        "tx-6",
+        "cm-15",
+        "ep-133",
+        "ep-1320",
+    ),
+    "Android": ("android", "pixel", "google i/o", "google io", "google play", "play store", "material you"),
+    "Nothing": ("nothing", "nothing os", "nothing phone", "nothing ear", "cmf", "carl pei"),
+    "AI Tools": ("openai", "chatgpt", "codex", "claude", "anthropic", "kimi", "moonshot", "gemini", "llm"),
+    "iOS": ("ios", "iphone", "ipad", "app store", "testflight", "wwdc"),
+    "macOS": ("macos", "macbook", "apple silicon", "xcode"),
+    "Solo Dev": ("react", "vite", "capacitor", "railway", "netlify", "github", "solo developer"),
+    "Islam": ("islam", "islamic", "muslim", "muis", "khutbah", "ramadan", "solat"),
+    "SG Education": ("singapore education", "moe", "school", "teacher", "curriculum"),
+    "SG News": ("singapore", "sg news"),
+    "Design / UI/UX": ("ui/ux", "ux", "design system", "product design", "interface design", "figma"),
+}
+
+
+_PWA_LOW_SIGNAL_NEWS_RE = re.compile(
+    r"\b(?:tomatosystem|public procurement service|public dx market|registers ai-based ui/ux development solution)\b",
+    re.I,
+)
+
+
+def _pwa_news_item_matches_topic(label: str, item: str) -> bool:
+    if label == "Latest from your shortlist":
+        return True
+    terms = _PWA_TOPIC_MATCH_TERMS.get(label)
+    if not terms:
+        return True
+    lowered = str(item or "").lower()
+    return any(term in lowered for term in terms)
+
+
+def _pwa_news_item_is_stale(item: str, now: datetime | None = None) -> bool:
+    text = str(item or "")
+    current = now or datetime.now(bot.SGT)
+    match = re.search(r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+(\d{1,2}\s+[A-Za-z]{3}\s+20\d{2})\b", text)
+    if match:
+        try:
+            item_date = datetime.strptime(match.group(1), "%d %b %Y")
+            return (current.date() - item_date.date()).days > 180
+        except ValueError:
+            pass
+    years = [int(year) for year in re.findall(r"\b(20\d{2})\b", text)]
+    return bool(years) and max(years) < current.year
+
+
+def _pwa_topic_news_items(label: str, result: str, limit: int) -> tuple[list[str], list[str]]:
+    raw_items = _fallback_news_items(result, limit=max(limit * 3, 6))
+    usable: list[str] = []
+    stale: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        if _PWA_LOW_SIGNAL_NEWS_RE.search(item):
+            continue
+        if not _pwa_news_item_matches_topic(label, item):
+            continue
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if _pwa_news_item_is_stale(item):
+            stale.append(item)
+        else:
+            usable.append(item)
+        if len(usable) >= limit:
+            break
+    if len(usable) < limit:
+        for item in stale:
+            if item.lower() in {entry.lower() for entry in usable}:
+                continue
+            usable.append(f"{item} [older signal]")
+            if len(usable) >= limit:
+                break
+    return usable, stale
+
+
+def _pwa_topic_news_intro(topics: list[tuple[str, str]]) -> str:
+    labels = [label for label, _query in topics]
+    if labels == ["Latest from your shortlist"]:
+        return "I widened the radar across your shortlist. Useful bits only; confetti stays outside."
+    if len(labels) == 1:
+        return f"Got it. Narrowing the lens: {labels[0]}. No random buffet plate."
+    return f"Got it. Narrowing the lens: {', '.join(labels[:-1])} and {labels[-1]}. No random buffet plate."
+
+
 async def _pwa_topic_news_reply(message: str, recent_context: str = "") -> str:
     topics = _pwa_topic_news_queries(message, recent_context)
     if not topics:
@@ -1199,17 +1295,22 @@ async def _pwa_topic_news_reply(message: str, recent_context: str = "") -> str:
 
     sections: list[str] = []
     for label, result in await asyncio.gather(*(fetch(label, query) for label, query in topics)):
-        items = _fallback_news_items(result, limit=6 if label == "Latest from your shortlist" else 2)
+        limit = 4 if label == "Latest from your shortlist" else 2
+        items, stale_items = _pwa_topic_news_items(label, result, limit=limit)
         if items:
             bullets = "\n".join(f"- {item}" for item in items)
             sections.append(f"*{label}*\n{bullets}")
         elif str(result or "").startswith("Failed to fetch"):
-            sections.append(f"*{label}*\n- Live news check failed, so I'm not going to pad this with memory.")
+            sections.append(f"*{label}*\n- Live news check failed here, so I’m not dressing memory up as news.")
+        elif stale_items:
+            sections.append(f"*{label}*\n- Only stale/low-signal hits came back. I’m leaving them off the main plate.")
+        else:
+            sections.append(f"*{label}*\n- No fresh usable item. The feed handed me lint; I’m leaving it there.")
 
     if not sections:
         labels = ", ".join(label for label, _query in topics)
-        return f"I ran the live news check for {labels}, but it did not return usable items. I'm not going to guess from memory."
-    return "Quick live check on the non-sports topics:\n\n" + "\n\n".join(sections)
+        return f"I ran the live news check for {labels}, but it did not return usable items. I’m not going to guess from memory."
+    return _pwa_topic_news_intro(topics) + "\n\n" + "\n\n".join(sections)
 
 
 def _update_working_memory(history_key: str, history: list, message: str) -> dict:

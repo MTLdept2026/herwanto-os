@@ -5188,14 +5188,16 @@ def favourite_news_topic_queries(text: str = "", recent_context: str = "") -> li
         bare_pattern = str(rule.get("bare_pattern") or "")
         if bare_pattern and re.search(r"\bnothing\s+on\b", clean, re.I):
             continue
+        paired_nothing_topic = bool(matches and re.search(r"\b(?:about|on|for)\b.{0,80}\bnothing\b", clean, re.I))
         if (
             bare_pattern
             and re.search(bare_pattern, clean, re.I)
-            and (prompt_cue or inherited_news_context)
+            and (prompt_cue or inherited_news_context or paired_nothing_topic)
             and (
                 NOTHING_TOPIC_CUE_RE.search(clean)
                 or inherited_news_context
                 or re.search(r"\b(?:how about|what about)\s+nothing\b", clean, re.I)
+                or paired_nothing_topic
             )
         ):
             add(str(rule["label"]), str(rule["query"]))
