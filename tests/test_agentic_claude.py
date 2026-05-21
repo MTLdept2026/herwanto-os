@@ -4487,6 +4487,50 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertFalse(discipline["needs_live_check"])
         self.assertNotIn("get_latest_news", discipline["recommended_tools"])
 
+    def test_triage_current_load_is_not_misrouted_to_live_news(self):
+        text = (
+            "Triage my current load. Pick the top 3 things I should handle next, "
+            "explain why, and give me a realistic order of attack."
+        )
+
+        discipline = bot.source_discipline_for_text(text)
+        tools = bot.pwa_tools_for_message(text)
+        names = {tool["name"] for tool in tools}
+
+        self.assertFalse(discipline["needs_live_check"])
+        self.assertNotIn("get_latest_news", discipline["recommended_tools"])
+        self.assertNotIn("web_search", discipline["recommended_tools"])
+        self.assertIn("get_assistant_context", names)
+        self.assertIn("get_task_brief", names)
+        self.assertNotIn("get_latest_news", names)
+        self.assertNotIn("web_search", names)
+
+    def test_model_policy_ignores_injected_pwa_context_for_triage(self):
+        message = (
+            "Triage my current load. Pick the top 3 things I should handle next.\n\n"
+            "[Working memory for this PWA chat: Current subject: Liverpool standings. "
+            "Older competing subjects in this chat: Android news.]"
+            "\n\n[Intent lens: looks like a task request.]"
+        )
+
+        policy = bot.model_policy_for_messages([{"role": "user", "content": message}])
+
+        self.assertFalse(policy["needs_live_check"])
+        self.assertEqual(policy["specialist"], "general")
+        self.assertNotIn("get_latest_news", policy["recommended_tools"])
+
+    def test_current_news_still_requires_live_sources(self):
+        text = "Give me current news headlines on Android."
+
+        discipline = bot.source_discipline_for_text(text)
+        tools = bot.pwa_tools_for_message(text)
+        names = {tool["name"] for tool in tools}
+
+        self.assertTrue(discipline["needs_live_check"])
+        self.assertIn("get_latest_news", discipline["recommended_tools"])
+        self.assertIn("web_search", discipline["recommended_tools"])
+        self.assertIn("get_latest_news", names)
+
     def test_favourite_topic_news_semantics_detect_product_shorthand(self):
         topics = bot.favourite_news_topic_queries("Any CMF, OP-XY or Pixel updates?")
 

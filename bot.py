@@ -290,13 +290,13 @@ def _message_text_for_routing(messages: list[dict]) -> str:
         return ""
     content = messages[-1].get("content", "") if isinstance(messages[-1], dict) else ""
     if isinstance(content, str):
-        return content
+        return _strip_injected_chat_context(content)
     if isinstance(content, list):
         parts = []
         for item in content:
             if isinstance(item, dict) and item.get("type") == "text":
-                parts.append(str(item.get("text", "")))
-        return " ".join(parts)
+                parts.append(_strip_injected_chat_context(str(item.get("text", ""))))
+        return " ".join(part for part in parts if part)
     return ""
 
 
@@ -362,7 +362,7 @@ def specialist_policy_for_text(text: str = "") -> dict:
         ("calendar_actions", r"\b(?:calendar|schedule|appointment|meeting|reminder|nudge|task|deadline|done|delete|cancel|book)\b"),
         ("teaching", r"\b(?:classlist|class list|students?|marks?|scores?|lesson plan|worksheet|rubric|marking|mtl|oral|exam)\b"),
         ("sports_live", r"\b(?:liverpool|lfc|f1|formula 1|grand prix|premier league|epl|champions league|standings?|score|result)\b"),
-        ("research", r"\b(?:research|deep dive|investigate|compare|sources?|official|evidence|docs|documentation|policy|latest|current|news)\b"),
+        ("research", r"\b(?:research|deep dive|investigate|compare|sources?|official|evidence|docs|documentation|policy|latest|news)\b"),
         ("email", r"\b(?:gmail|email|inbox|draft|reply|mail)\b"),
         ("artifacts", r"\b(?:document|docx|slides?|deck|ppt|pptx|presentation|artifact|worksheet|report)\b"),
         ("memory", r"\b(?:remember|memory|preference|correction|forget|i told you)\b"),
@@ -597,7 +597,7 @@ def build_runtime_status() -> dict:
 
 VOLATILE_FACT_PATTERN = re.compile(
     r"\b("
-    r"latest|current|today|tomorrow|now|live|result|results|score|scores|standings|table|"
+    r"latest|today|tomorrow|now|live|result|results|score|scores|standings|table|"
     r"lineup|line-up|starting xi|fixture|fixtures|schedule|injury|injuries|transfer|rumou?r|"
     r"price|prices|cost|weather|forecast|prayer|khutbah|news|headline|headlines|digest|briefing|"
     r"shortlist|shortlisted|preferred topics|f1|formula 1|liverpool|lfc|epl|premier league|"
@@ -1004,8 +1004,15 @@ def source_discipline_for_text(text: str) -> dict:
         tools.append("get_nea_weather")
     if re.search(r"\b(prayer|solat|salah|subuh|fajr|zohor|asar|maghrib|isyak|khutbah|sermon)\b", lowered):
         tools.extend(["get_muis_prayer_times", "get_muis_friday_khutbah"])
+    current_source_sensitive = bool(re.search(
+        r"\bcurrent\s+(?:events?|news|headlines?|affairs|standings?|table|score|scores|result|results|"
+        r"fixture|fixtures|lineup|line-up|weather|forecast|price|prices|cost|rollout|release|"
+        r"android|ios|macos|apple|ai|f1|formula 1|liverpool|lfc|epl|premier league)\b",
+        lowered,
+    ))
     if (
         VOLATILE_FACT_PATTERN.search(clean)
+        or current_source_sensitive
         or re.search(r"\b(ai|apple|android|ios|macos|singapore education|moe)\b", lowered)
         or favourite_news_topic_queries(clean)
         or "news" in semantic_flags
@@ -1013,11 +1020,11 @@ def source_discipline_for_text(text: str) -> dict:
         tools.append("get_latest_news")
     if re.search(r"\b(research|deep dive|investigate|compare|comparison|find out|look up|source|sources|official|policy|documentation|docs|evidence)\b", lowered) or "research" in semantic_flags:
         tools.append("web_research")
-    if re.search(r"\b(search|web|website|article|page|latest|current|news|headline|rumou?r|digest|shortlist|shortlisted|preferred topics)\b", lowered):
+    if re.search(r"\b(search|web|website|article|page|latest|news|headline|rumou?r|digest|shortlist|shortlisted|preferred topics)\b", lowered) or current_source_sensitive:
         tools.append("web_search")
 
     deduped_tools = list(dict.fromkeys(tools))
-    needs_live = bool(deduped_tools) or bool(VOLATILE_FACT_PATTERN.search(clean))
+    needs_live = bool(deduped_tools) or bool(VOLATILE_FACT_PATTERN.search(clean)) or current_source_sensitive
     confidence = "needs_live_source" if needs_live else "memory_ok"
     reason = (
         "Question appears time-sensitive, source-sensitive, or about a volatile fact."
@@ -10302,6 +10309,12 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
     effective_text = _contextual_followup_effective_text(text, context).lower()
     combined = f"{context}\n{effective_text}"
     favourite_topic_matches = favourite_news_topic_queries(effective_text, context)
+    current_source_sensitive = bool(re.search(
+        r"\bcurrent\s+(?:events?|news|headlines?|affairs|standings?|table|score|scores|result|results|"
+        r"fixture|fixtures|lineup|line-up|weather|forecast|price|prices|cost|rollout|release|"
+        r"android|ios|macos|apple|ai|f1|formula 1|liverpool|lfc|epl|premier league)\b",
+        effective_text,
+    ))
     dated_absence_calendar_intent = _is_dated_absence_calendar_intent(effective_text)
     implicit_task_request = _is_implicit_task_request(effective_text)
     semantic_flags = _semantic_intent_flags(effective_text)
@@ -10377,7 +10390,8 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         combined,
     )
     if (
-        re.search(r"\b(digest|briefing|news|latest|current|headline|headlines|search|web|shortlist|shortlisted|preferred topics|football|f1|liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|android|android 17|google i/o|google io|gemini|pixel|apple|ios|ai|singapore education)\b", effective_text)
+        re.search(r"\b(digest|briefing|news|latest|headline|headlines|search|web|shortlist|shortlisted|preferred topics|football|f1|liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|android|android 17|google i/o|google io|gemini|pixel|apple|ios|ai|singapore education)\b", effective_text)
+        or current_source_sensitive
         or favourite_topic_matches
         or sports_followup
         or correction_followup
