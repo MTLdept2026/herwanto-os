@@ -4490,6 +4490,21 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(contract["status"], "weak_answer")
         self.assertTrue(contract["weak_answer"])
 
+    def test_openai_native_evidence_satisfies_source_gate(self):
+        trace = web_app._new_chat_trace("latest Android news")
+        web_app._merge_chat_trace(trace, {
+            "route": "agentic",
+            "openai_citations": [{"title": "Android Developers", "url": "https://developer.android.com"}],
+            "openai_native_observations": [{"type": "web_search_call", "status": "completed"}],
+        })
+
+        contract = web_app.response_contract_for_reply("Android has a source-backed update.", trace)
+        web_app._finalise_chat_trace(trace)
+
+        self.assertEqual(contract["status"], "ok")
+        self.assertFalse(contract["missing_source_contract"])
+        self.assertEqual(trace["confidence_gate"], "passed")
+
     def test_source_fallback_uses_resolved_followup_context(self):
         with patch.object(
             bot,
@@ -4908,6 +4923,42 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("Android feature drop", body)
         self.assertIn("Nothing OS update", body)
         self.assertNotIn('"final_mode": "backend_error"', body)
+
+    def test_provider_status_bypasses_topic_news_shortcut(self):
+        async def run():
+            response = await web_app._chat_stream_response(
+                "What backend/model are u using and is openAI vector memory enabled?",
+                None,
+                "phone",
+            )
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(web_app, "_update_working_memory", return_value={}),
+            patch.object(web_app, "_schedule_background_call"),
+            patch.object(web_app, "_pwa_topic_news_reply", side_effect=AssertionError("topic news should not run")),
+            patch.object(bot, "LLM_PROVIDER", "openai"),
+            patch.object(bot, "AGENTIC_MODEL", "gpt-test"),
+            patch.object(bot, "DEEP_MODEL", "gpt-test"),
+            patch.object(bot, "OPENAI_API_KEY", "test-key"),
+            patch.object(bot, "OPENAI_MEMORY_VECTOR_STORE_ID", "vs_memory"),
+            patch.object(bot, "OPENAI_VECTOR_SYNC_ENABLED", True),
+            patch.object(bot, "OPENAI_VECTOR_SYNC_MEMORY", True),
+            patch.object(bot, "OPENAI_VECTOR_SYNC_UPLOADS", True),
+            patch.object(bot, "OPENAI_ACTION_PLANNER_ENABLED", True),
+            patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("model route should not run")),
+        ):
+            body = asyncio.run(run())
+
+        self.assertIn('"name": "provider_status"', body)
+        self.assertIn("HIRA_LLM_PROVIDER=openai", body)
+        self.assertIn("OpenAI vector memory: enabled", body)
+        self.assertIn("Action planner: enabled", body)
 
     def test_topic_news_affirmation_inherits_previous_teenage_search_offer(self):
         calls = []
@@ -6472,6 +6523,18 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(web_tool["user_location"]["country"], "SG")
         self.assertEqual(web_tool["search_context_size"], "high")
 
+    def test_openai_memory_vector_store_participates_in_file_search(self):
+        with (
+            patch.object(bot, "OPENAI_FILE_SEARCH_VECTOR_STORE_IDS", []),
+            patch.object(bot, "OPENAI_MEMORY_VECTOR_STORE_ID", "vs_memory"),
+        ):
+            policy = bot.model_policy_for_text("find this in memory or uploaded docs")
+            tools = bot._openai_tools_for_request([], policy)
+
+        self.assertIn("file_search", policy["native_tools"])
+        file_tool = next(tool for tool in tools if tool.get("type") == "file_search")
+        self.assertEqual(file_tool["vector_store_ids"], ["vs_memory"])
+
     def test_openai_request_options_add_cache_safety_and_specialist_metadata(self):
         with (
             patch.object(bot, "OPENAI_STORE_RESPONSES", True),
@@ -6528,6 +6591,74 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(code_tool["container"], {"type": "auto", "memory_limit": "4g"})
         self.assertNotIn("network_policy", code_tool["container"])
 
+    def test_openai_vector_memory_sync_uploads_snapshot(self):
+        class FakeVectorFiles:
+            def __init__(self):
+                self.uploads = []
+
+            def upload_and_poll(self, **kwargs):
+                self.uploads.append(kwargs)
+                return SimpleNamespace(id="vsfile-1", file_id="file-1", status="completed")
+
+            def delete(self, **kwargs):
+                return SimpleNamespace(deleted=True)
+
+        fake_vector_files = FakeVectorFiles()
+        fake_client = SimpleNamespace(
+            vector_stores=SimpleNamespace(files=fake_vector_files),
+            files=SimpleNamespace(delete=lambda *_args, **_kwargs: SimpleNamespace(deleted=True)),
+        )
+        captured_config = {}
+
+        with (
+            patch.object(bot, "LLM_PROVIDER", "openai"),
+            patch.object(bot, "OPENAI_API_KEY", "test-key"),
+            patch.object(bot, "OPENAI_VECTOR_SYNC_ENABLED", True),
+            patch.object(bot, "OPENAI_VECTOR_SYNC_MEMORY", True),
+            patch.object(bot, "OPENAI_MEMORY_VECTOR_STORE_ID", "vs_123"),
+            patch.object(bot, "openai_client", fake_client),
+            patch.object(bot, "_openai_vector_config_get", return_value=""),
+            patch.object(bot, "_openai_vector_config_set", side_effect=lambda key, value: captured_config.update({key: value})),
+        ):
+            result = bot.sync_openai_vector_memory({"profile": ["Prefers concise answers."]}, reason="test")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(fake_vector_files.uploads[0]["vector_store_id"], "vs_123")
+        self.assertEqual(fake_vector_files.uploads[0]["attributes"]["kind"], "assistant_memory_snapshot")
+        self.assertEqual(captured_config["memory_file_id"], "file-1")
+
+    def test_openai_action_preflight_blocks_missing_details(self):
+        async def fake_create(kwargs):
+            self.assertEqual(kwargs["text"]["format"]["name"], "hira_action_intent")
+            self.assertFalse(kwargs["store"])
+            return SimpleNamespace(
+                output_text=json.dumps({
+                    "is_side_effect": True,
+                    "action_tool": "create_calendar_event",
+                    "confidence": "high",
+                    "requires_clarification": True,
+                    "missing_fields": ["date", "start time"],
+                    "clarifying_question": "I can add it, but what date and start time should I use?",
+                    "reason": "Calendar write lacks a concrete time.",
+                }),
+                output=[],
+            )
+
+        with (
+            patch.object(bot, "LLM_PROVIDER", "openai"),
+            patch.object(bot, "OPENAI_API_KEY", "test-key"),
+            patch.object(bot, "OPENAI_ACTION_PLANNER_ENABLED", True),
+            patch.object(bot, "_openai_create_with_retry_async", side_effect=fake_create),
+        ):
+            preflight = asyncio.run(bot._openai_action_preflight(
+                [{"role": "user", "content": "schedule it for me"}],
+                [{"name": "create_calendar_event"}],
+            ))
+
+        self.assertTrue(preflight["requires_clarification"])
+        self.assertIn("date", preflight["missing_fields"])
+        self.assertIn("date and start time", bot._openai_action_preflight_clarification(preflight))
+
     def test_openai_streaming_traces_native_tool_observations_and_citations(self):
         annotation = SimpleNamespace(type="url_citation", title="Android Developers", url="https://developer.android.com")
         message = SimpleNamespace(type="message", content=[SimpleNamespace(annotations=[annotation])])
@@ -6561,6 +6692,7 @@ class AgenticClaudeTests(unittest.TestCase):
         trace_patches = [event.get("patch") for event in events if event.get("type") == "trace"]
         self.assertTrue(any((patch or {}).get("openai_native_observations") for patch in trace_patches))
         self.assertTrue(any((patch or {}).get("openai_citations") for patch in trace_patches))
+        self.assertTrue(any((patch or {}).get("source_contracts_seen") for patch in trace_patches))
 
     def test_openai_realtime_session_config_is_voice_ready(self):
         config = bot.build_openai_realtime_session_config("Continue the current HIRA chat.", voice="sage")
@@ -6645,6 +6777,7 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("OpenAI", reply)
         self.assertIn("HIRA_LLM_PROVIDER=openai", reply)
         self.assertIn("gpt-test", reply)
+        self.assertIn("OpenAI vector memory:", reply)
 
     def test_provider_status_ignores_injected_grounding_context(self):
         message = (

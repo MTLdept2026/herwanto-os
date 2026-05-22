@@ -107,24 +107,36 @@ def _invalidate_system_prompt_cache() -> None:
 def _add_memory(category: str, text: str) -> dict:
     memory = gs.add_memory(category, text)
     _invalidate_system_prompt_cache()
+    sync = globals().get("_sync_openai_memory_after_write")
+    if callable(sync):
+        sync(memory, reason=f"memory:{category}")
     return memory
 
 
 def _clear_memory() -> dict:
     memory = gs.clear_memory()
     _invalidate_system_prompt_cache()
+    sync = globals().get("_sync_openai_memory_after_write")
+    if callable(sync):
+        sync(memory, reason="memory:clear")
     return memory
 
 
 def _add_source_note(entry: dict) -> dict:
     note = gs.add_source_note(entry)
     _invalidate_system_prompt_cache()
+    sync = globals().get("_sync_openai_memory_after_write")
+    if callable(sync):
+        sync(reason="memory:source_note")
     return note
 
 
 def _add_topic_profile(entry: dict) -> dict:
     profile = gs.add_topic_profile(entry)
     _invalidate_system_prompt_cache()
+    sync = globals().get("_sync_openai_memory_after_write")
+    if callable(sync):
+        sync(reason="memory:topic_profile")
     return profile
 
 # ─── TELEGRAM USER AUTHORIZATION ─────────────────────────────────────────────
@@ -210,15 +222,28 @@ OPENAI_FILE_SEARCH_VECTOR_STORE_IDS = [
     for item in os.environ.get("HIRA_OPENAI_FILE_SEARCH_VECTOR_STORE_IDS", "").split(",")
     if item.strip()
 ]
+OPENAI_MEMORY_VECTOR_STORE_ID = os.environ.get("HIRA_OPENAI_MEMORY_VECTOR_STORE_ID", "").strip()
+OPENAI_VECTOR_SYNC_ENABLED = _env_flag("HIRA_OPENAI_VECTOR_SYNC_ENABLED", LLM_PROVIDER == "openai")
+OPENAI_VECTOR_SYNC_MEMORY = _env_flag("HIRA_OPENAI_VECTOR_SYNC_MEMORY", True)
+OPENAI_VECTOR_SYNC_UPLOADS = _env_flag("HIRA_OPENAI_VECTOR_SYNC_UPLOADS", True)
+OPENAI_ACTION_PLANNER_ENABLED = _env_flag("HIRA_OPENAI_ACTION_PLANNER", LLM_PROVIDER == "openai")
 OPENAI_PROMPT_CACHE_RETENTION = os.environ.get("HIRA_OPENAI_PROMPT_CACHE_RETENTION", "24h").strip()
 OPENAI_SERVICE_TIER = os.environ.get("HIRA_OPENAI_SERVICE_TIER", "").strip()
 QUICK_ROUTE_MAX_CHARS = _env_int_setting("HIRA_QUICK_ROUTE_MAX_CHARS", 220, minimum=40, maximum=800)
 QUICK_REPLY_MAX_TOKENS = _env_int_setting("HIRA_QUICK_REPLY_MAX_TOKENS", 160, minimum=60, maximum=400)
 NEWS_MAX_AGE_HOURS = _env_int_setting("HIRA_NEWS_MAX_AGE_HOURS", 24, minimum=1, maximum=336)
 OPENAI_REALTIME_ENABLED = _env_flag("HIRA_OPENAI_REALTIME_ENABLED", LLM_PROVIDER == "openai")
-OPENAI_REALTIME_MODEL = os.environ.get("HIRA_OPENAI_REALTIME_MODEL", "gpt-realtime").strip() or "gpt-realtime"
+OPENAI_REALTIME_MODEL = os.environ.get("HIRA_OPENAI_REALTIME_MODEL", "gpt-realtime-2").strip() or "gpt-realtime-2"
 OPENAI_REALTIME_VOICE = os.environ.get("HIRA_OPENAI_REALTIME_VOICE", "verse").strip() or "verse"
 SUPPRESS_DEVOTIONAL_CHECKIN_NOTIFICATIONS = _env_flag("HIRA_SUPPRESS_DEVOTIONAL_CHECKIN_NOTIFICATIONS", True)
+
+
+def _openai_file_search_vector_store_ids() -> list[str]:
+    ids = list(OPENAI_FILE_SEARCH_VECTOR_STORE_IDS)
+    if OPENAI_MEMORY_VECTOR_STORE_ID and OPENAI_MEMORY_VECTOR_STORE_ID not in ids:
+        ids.append(OPENAI_MEMORY_VECTOR_STORE_ID)
+    return ids
+
 
 WORK_DRIVE_REFERENCES = [
     (
@@ -400,7 +425,7 @@ def openai_native_tool_policy_for_text(text: str = "") -> list[str]:
     native: list[str] = []
     if OPENAI_NATIVE_WEB_SEARCH and source_discipline_for_text(clean).get("needs_live_check"):
         native.append("web_search")
-    if OPENAI_FILE_SEARCH_VECTOR_STORE_IDS and re.search(r"\b(?:file|document|docs|uploaded|pdf|drive|source|memory|find in)\b", clean):
+    if _openai_file_search_vector_store_ids() and re.search(r"\b(?:file|document|docs|uploaded|pdf|drive|source|memory|find in)\b", clean):
         native.append("file_search")
     if OPENAI_NATIVE_CODE_INTERPRETER and re.search(r"\b(?:calculate|spreadsheet|csv|xlsx|analyse|analyze|statistics|chart|graph|python|compute|data|math|table)\b", clean):
         native.append("code_interpreter")
@@ -591,9 +616,12 @@ def build_runtime_status() -> dict:
             "responses_state": "enabled" if OPENAI_STORE_RESPONSES and OPENAI_USE_PREVIOUS_RESPONSE_ID else "disabled",
             "strict_structured_outputs": "enabled" if LLM_PROVIDER == "openai" else "provider_disabled",
             "native_web_search": "enabled" if OPENAI_NATIVE_WEB_SEARCH else "disabled",
-            "native_file_search": "enabled" if OPENAI_FILE_SEARCH_VECTOR_STORE_IDS else "not_configured",
+            "native_file_search": "enabled" if _openai_file_search_vector_store_ids() else "not_configured",
+            "vector_memory_sync": "enabled" if _openai_vector_sync_ready("memory") else "not_configured",
+            "vector_upload_sync": "enabled" if _openai_vector_sync_ready("upload") else "not_configured",
             "native_code_interpreter": "enabled" if OPENAI_NATIVE_CODE_INTERPRETER else "disabled",
             "fast_chat_mode": "enabled" if FAST_CHAT_MODE else "disabled",
+            "structured_action_planner": "enabled" if OPENAI_ACTION_PLANNER_ENABLED and LLM_PROVIDER == "openai" else "disabled",
             "reasoning_default": "medium, escalates for deep work" if FAST_CHAT_MODE and OPENAI_FULL_POWER_MODE and LLM_PROVIDER == "openai" else "high/xhigh" if OPENAI_FULL_POWER_MODE and LLM_PROVIDER == "openai" else "standard",
             "max_tool_calls": 16 if OPENAI_FULL_POWER_MODE and LLM_PROVIDER == "openai" else 8,
             "news_freshness_gate_hours": NEWS_MAX_AGE_HOURS,
@@ -1619,10 +1647,10 @@ def _openai_native_tools_for_policy(policy: dict | None = None) -> list[dict]:
                 "timezone": "Asia/Singapore",
             },
         })
-    if "file_search" in requested and OPENAI_FILE_SEARCH_VECTOR_STORE_IDS:
+    if "file_search" in requested and _openai_file_search_vector_store_ids():
         native.append({
             "type": "file_search",
-            "vector_store_ids": OPENAI_FILE_SEARCH_VECTOR_STORE_IDS,
+            "vector_store_ids": _openai_file_search_vector_store_ids(),
             "max_num_results": 6,
         })
     if "code_interpreter" in requested and OPENAI_NATIVE_CODE_INTERPRETER:
@@ -1917,6 +1945,53 @@ def _openai_response_citations(resp) -> list[dict]:
                             "type": str(plain.get("type", "") or ""),
                         })
     return citations[:8]
+
+
+def _openai_native_source_contracts(resp) -> list[dict]:
+    observations = _openai_native_observations(resp)
+    citations = _openai_response_citations(resp)
+    if not observations and not citations:
+        return []
+
+    as_of = datetime.now(SGT).strftime("%Y-%m-%d %H:%M SGT")
+    contracts: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def add(status: str, source: str, reason: str) -> None:
+        clean_source = str(source or "").strip()[:180]
+        clean_reason = str(reason or "").strip()[:220]
+        if not clean_source:
+            clean_source = "OpenAI native tool"
+        key = (status, clean_source, clean_reason)
+        if key in seen:
+            return
+        seen.add(key)
+        contracts.append({
+            "status": status,
+            "as_of": as_of,
+            "source": clean_source,
+            "reason": clean_reason,
+        })
+
+    completed_types = {
+        str(item.get("type", "") or "")
+        for item in observations
+        if str(item.get("status", "") or "").lower() in {"completed", "succeeded", "success"}
+    }
+    if citations:
+        first = citations[0]
+        label = first.get("title") or first.get("url") or "cited web result"
+        add("confirmed", f"OpenAI web_search: {label}", "Native web search returned cited sources.")
+    if any("file_search" in item_type for item_type in completed_types):
+        add("confirmed", "OpenAI file_search", "Native file search returned matching vector-store context.")
+    if any("code_interpreter" in item_type for item_type in completed_types):
+        add("confirmed", "OpenAI code_interpreter", "Native code interpreter completed the calculation or data operation.")
+
+    if not contracts and observations:
+        statuses = {str(item.get("status", "") or "").lower() for item in observations}
+        status = "confirmed" if statuses <= {"completed", "succeeded", "success"} else "unconfirmed"
+        add(status, "OpenAI native tool", f"Native tool observations seen with statuses: {', '.join(sorted(statuses)) or 'unknown'}.")
+    return contracts[:8]
 
 
 def _openai_native_event_tool_name(event) -> str:
@@ -3098,6 +3173,216 @@ def _clip_memory_text(value: str, limit: int = 1200) -> str:
         return clean
     return clean[:limit - 3].rstrip() + "..."
 
+
+def _openai_vector_sync_store_id() -> str:
+    return OPENAI_MEMORY_VECTOR_STORE_ID or (OPENAI_FILE_SEARCH_VECTOR_STORE_IDS[0] if OPENAI_FILE_SEARCH_VECTOR_STORE_IDS else "")
+
+
+def _openai_vector_sync_ready(kind: str = "memory") -> bool:
+    if not (LLM_PROVIDER == "openai" and OPENAI_API_KEY and OPENAI_VECTOR_SYNC_ENABLED):
+        return False
+    if kind == "memory" and not OPENAI_VECTOR_SYNC_MEMORY:
+        return False
+    if kind == "upload" and not OPENAI_VECTOR_SYNC_UPLOADS:
+        return False
+    return bool(_openai_vector_sync_store_id())
+
+
+def _openai_vector_config_key(key: str) -> str:
+    return f"openai_vector:{key}"
+
+
+def _openai_vector_config_get(key: str) -> str:
+    config_key = _openai_vector_config_key(key)
+    try:
+        if google_ok():
+            return gs.get_config(config_key) or ""
+    except Exception as exc:
+        logger.debug("OpenAI vector config read via Google failed: %s", exc)
+    redis = _get_redis()
+    if redis:
+        try:
+            return redis.get(f"hira:{config_key}") or ""
+        except Exception as exc:
+            logger.debug("OpenAI vector config read via Redis failed: %s", exc)
+    return ""
+
+
+def _openai_vector_config_set(key: str, value: str) -> None:
+    config_key = _openai_vector_config_key(key)
+    try:
+        if google_ok():
+            gs.set_config(config_key, value)
+            return
+    except Exception as exc:
+        logger.debug("OpenAI vector config write via Google failed: %s", exc)
+    redis = _get_redis()
+    if redis:
+        try:
+            redis.setex(f"hira:{config_key}", 86400 * 90, value)
+        except Exception as exc:
+            logger.debug("OpenAI vector config write via Redis failed: %s", exc)
+
+
+def _openai_vector_attributes(**values) -> dict:
+    attrs = {}
+    for key, value in values.items():
+        if value in (None, "", [], {}):
+            continue
+        clean_key = re.sub(r"[^A-Za-z0-9_-]+", "_", str(key))[:64]
+        if isinstance(value, bool):
+            attrs[clean_key] = value
+        elif isinstance(value, (int, float)):
+            attrs[clean_key] = float(value)
+        else:
+            attrs[clean_key] = str(value)[:512]
+    return attrs
+
+
+def _openai_upload_text_to_vector_store(filename: str, text: str, attributes: dict | None = None) -> dict:
+    store_id = _openai_vector_sync_store_id()
+    clean_text = str(text or "").strip()
+    if not store_id:
+        return {"ok": False, "skipped": True, "reason": "no_vector_store_id"}
+    if not clean_text:
+        return {"ok": False, "skipped": True, "reason": "empty_text"}
+    payload = io.BytesIO(clean_text.encode("utf-8"))
+    uploaded = openai_client.vector_stores.files.upload_and_poll(
+        vector_store_id=store_id,
+        file=(filename, payload, "text/plain"),
+        attributes=attributes or {},
+    )
+    return {
+        "ok": True,
+        "vector_store_id": store_id,
+        "vector_store_file_id": str(getattr(uploaded, "id", "") or ""),
+        "file_id": str(getattr(uploaded, "file_id", "") or getattr(uploaded, "id", "") or ""),
+        "status": str(getattr(uploaded, "status", "") or ""),
+    }
+
+
+def _openai_delete_vector_file_best_effort(store_id: str, vector_file_id: str = "", file_id: str = "") -> None:
+    for candidate in dict.fromkeys([vector_file_id, file_id]):
+        if not candidate:
+            continue
+        try:
+            openai_client.vector_stores.files.delete(vector_store_id=store_id, file_id=candidate)
+        except Exception as exc:
+            logger.debug("OpenAI vector-store file delete skipped for %s: %s", candidate, exc)
+    if file_id:
+        try:
+            openai_client.files.delete(file_id)
+        except Exception as exc:
+            logger.debug("OpenAI file delete skipped for %s: %s", file_id, exc)
+
+
+def _openai_memory_vector_payload(memory: dict) -> str:
+    now = datetime.now(SGT).strftime("%Y-%m-%d %H:%M SGT")
+    lines = [
+        "H.I.R.A assistant memory snapshot",
+        f"Generated: {now}",
+        "Use this as semantic recall context. Live-check volatile facts, source notes marked live_check, standings, schedules, prices, and rumours before answering.",
+        "",
+        _format_memory(memory),
+    ]
+    return "\n".join(part for part in lines if str(part).strip())
+
+
+def sync_openai_vector_memory(memory: dict | None = None, reason: str = "manual") -> dict:
+    if not _openai_vector_sync_ready("memory"):
+        return {"ok": False, "skipped": True, "reason": "not_configured"}
+    try:
+        memory = memory or gs.get_memory()
+        payload = _openai_memory_vector_payload(memory)
+        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        previous_hash = _openai_vector_config_get("memory_hash")
+        if previous_hash == digest:
+            return {"ok": True, "skipped": True, "reason": "unchanged", "hash": digest}
+
+        store_id = _openai_vector_sync_store_id()
+        previous_vector_file_id = _openai_vector_config_get("memory_vector_file_id")
+        previous_file_id = _openai_vector_config_get("memory_file_id")
+        if previous_vector_file_id or previous_file_id:
+            _openai_delete_vector_file_best_effort(store_id, previous_vector_file_id, previous_file_id)
+
+        filename = f"hira-memory-snapshot-{datetime.now(SGT).strftime('%Y%m%d-%H%M%S')}-{digest[:10]}.txt"
+        result = _openai_upload_text_to_vector_store(
+            filename,
+            payload,
+            _openai_vector_attributes(
+                app="hira",
+                kind="assistant_memory_snapshot",
+                reason=reason,
+                hash=digest,
+                generated_at=datetime.now(SGT).isoformat(),
+            ),
+        )
+        if result.get("ok"):
+            _openai_vector_config_set("memory_hash", digest)
+            _openai_vector_config_set("memory_vector_file_id", result.get("vector_store_file_id", ""))
+            _openai_vector_config_set("memory_file_id", result.get("file_id", ""))
+            logger.info("OpenAI vector memory synced: %s", result.get("vector_store_file_id") or result.get("file_id"))
+        return {**result, "hash": digest}
+    except Exception as exc:
+        logger.warning("OpenAI vector memory sync failed: %s", exc)
+        return {"ok": False, "error": str(exc)}
+
+
+def _sync_openai_memory_after_write(memory: dict | None = None, reason: str = "memory_write") -> None:
+    if not _openai_vector_sync_ready("memory"):
+        return
+    sync_openai_vector_memory(memory=memory, reason=reason)
+
+
+def sync_openai_uploaded_file_vector(
+    kind: str,
+    label: str,
+    caption: str = "",
+    extracted_summary: str = "",
+    mime_type: str = "",
+    source_id: str = "",
+) -> dict:
+    if not _openai_vector_sync_ready("upload"):
+        return {"ok": False, "skipped": True, "reason": "not_configured"}
+    try:
+        digest = hashlib.sha256(
+            f"{kind}\n{label}\n{caption}\n{extracted_summary}\n{source_id}".encode("utf-8")
+        ).hexdigest()
+        body = "\n".join([
+            "H.I.R.A uploaded file memory",
+            f"Received: {datetime.now(SGT).strftime('%Y-%m-%d %H:%M SGT')}",
+            f"Kind: {kind}",
+            f"Label: {label}",
+            f"MIME type: {mime_type or kind}",
+            f"Source id: {source_id}",
+            "",
+            f"Caption: {_clip_memory_text(caption, 1600)}" if caption else "",
+            "",
+            f"Extracted summary:\n{_clip_memory_text(extracted_summary, 12000)}" if extracted_summary else "",
+        ])
+        safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "-", label or kind).strip("-")[:80] or "upload"
+        filename = f"hira-upload-{datetime.now(SGT).strftime('%Y%m%d-%H%M%S')}-{safe_label}-{digest[:8]}.txt"
+        result = _openai_upload_text_to_vector_store(
+            filename,
+            body,
+            _openai_vector_attributes(
+                app="hira",
+                kind="uploaded_file",
+                file_kind=kind,
+                label=label,
+                mime_type=mime_type or kind,
+                source_id=source_id,
+                hash=digest,
+            ),
+        )
+        if result.get("ok"):
+            logger.info("OpenAI vector upload indexed: %s", result.get("vector_store_file_id") or result.get("file_id"))
+        return {**result, "hash": digest}
+    except Exception as exc:
+        logger.warning("OpenAI vector upload sync failed for %s: %s", label or kind, exc)
+        return {"ok": False, "error": str(exc)}
+
+
 def _looks_like_correction(text: str) -> bool:
     clean = " ".join((text or "").lower().split())
     if not clean:
@@ -3290,6 +3575,14 @@ def _remember_uploaded_file(kind: str, file_id: str, caption: str, extracted_sum
     if extracted_summary:
         parts.append(f"extracted={_clip_memory_text(extracted_summary, 900)}")
     _add_memory("files", " | ".join(parts))
+    sync_openai_uploaded_file_vector(
+        kind,
+        label,
+        caption=caption,
+        extracted_summary=extracted_summary,
+        mime_type=mime_type or kind,
+        source_id=file_id,
+    )
 
 def build_context_snapshot(days: int = 7) -> str:
     days = max(1, min(int(days or 7), 14))
@@ -10659,6 +10952,132 @@ def _normalise_memory_tool_input(inp: dict, messages: list[dict]) -> dict:
     return clean
 
 
+_OPENAI_ACTION_INTENT_SCHEMA = {
+    "type": "json_schema",
+    "name": "hira_action_intent",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "is_side_effect": {"type": "boolean"},
+            "action_tool": {"type": "string"},
+            "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+            "requires_clarification": {"type": "boolean"},
+            "missing_fields": {"type": "array", "items": {"type": "string"}},
+            "clarifying_question": {"type": "string"},
+            "reason": {"type": "string"},
+        },
+        "required": [
+            "is_side_effect",
+            "action_tool",
+            "confidence",
+            "requires_clarification",
+            "missing_fields",
+            "clarifying_question",
+            "reason",
+        ],
+    },
+}
+
+
+def _openai_action_tool_names(tools: list[dict] | None = None) -> set[str]:
+    return {
+        str(tool.get("name", "") or "")
+        for tool in tools or []
+        if isinstance(tool, dict) and _tool_has_side_effect(str(tool.get("name", "") or ""))
+    }
+
+
+def _should_run_openai_action_planner(messages: list[dict], tools: list[dict] | None = None) -> bool:
+    if not (OPENAI_ACTION_PLANNER_ENABLED and LLM_PROVIDER == "openai" and OPENAI_API_KEY):
+        return False
+    side_effect_tools = _openai_action_tool_names(tools)
+    if not side_effect_tools:
+        return False
+    forced = _forced_tool_for_current_turn(messages, tools or [])
+    if forced and forced in side_effect_tools:
+        return True
+    text = _latest_user_text(messages)
+    clean = _strip_injected_chat_context(text)
+    semantic_flags = _semantic_intent_flags(clean)
+    return bool(
+        _is_memory_commit_query_text(clean)
+        or _is_implicit_task_request(clean)
+        or semantic_flags & {"task", "reminder", "calendar", "gmail_draft", "followup", "document", "slides", "memory"}
+        or re.search(
+            r"\b(?:add|create|schedule|book|delete|remove|cancel|draft|send|reply|remember|save|store|"
+            r"mark|complete|done|fill|update|highlight|notify|nudge|ping|follow[- ]?up)\b",
+            clean,
+            re.I,
+        )
+    )
+
+
+async def _openai_action_preflight(messages: list[dict], tools: list[dict] | None = None) -> dict:
+    if not _should_run_openai_action_planner(messages, tools):
+        return {}
+    text = _strip_injected_chat_context(_latest_user_text(messages))
+    tool_names = sorted(_openai_action_tool_names(tools))
+    prompt = (
+        "Classify whether this H.I.R.A user turn should perform a side-effecting app action. "
+        "Use only the provided tool names. Require clarification only when executing the action would need a missing date, time, recipient, target item, class/student/column, or other safety-critical detail. "
+        "If details are sufficient, choose the best action_tool and set requires_clarification=false.\n\n"
+        f"Available side-effect tools: {', '.join(tool_names)}\n\n"
+        f"User turn:\n{text[:3000]}"
+    )
+    try:
+        policy = model_policy_for_text("structured action planning")
+        kwargs = _openai_request_options(
+            STRUCTURED_MODEL,
+            260,
+            [{"role": "user", "content": prompt}],
+            policy=policy,
+            text_format=_OPENAI_ACTION_INTENT_SCHEMA,
+        )
+        kwargs["store"] = False
+        kwargs["input"] = _openai_input_from_messages([{"role": "user", "content": prompt}])
+        kwargs["instructions"] = (
+            "You are H.I.R.A's action preflight planner. Return valid JSON only. "
+            "Be conservative with destructive or externally visible actions, but do not block when the user gave enough details."
+        )
+        resp = await _openai_create_with_retry_async(kwargs)
+        raw = (_openai_text_from_response(resp) or "").strip()
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            return {}
+        if parsed.get("action_tool") not in tool_names:
+            parsed["action_tool"] = ""
+        parsed["missing_fields"] = [str(item).strip() for item in parsed.get("missing_fields", []) if str(item).strip()][:6]
+        parsed["clarifying_question"] = str(parsed.get("clarifying_question", "") or "").strip()[:400]
+        parsed["reason"] = str(parsed.get("reason", "") or "").strip()[:400]
+        return parsed
+    except Exception as exc:
+        logger.debug("OpenAI action preflight skipped: %s", exc)
+        return {}
+
+
+def _openai_action_preflight_clarification(preflight: dict) -> str:
+    if not preflight or not preflight.get("requires_clarification"):
+        return ""
+    question = str(preflight.get("clarifying_question", "") or "").strip()
+    if question:
+        return question
+    missing = [str(item).strip() for item in preflight.get("missing_fields", []) if str(item).strip()]
+    if missing:
+        return f"I can do that, but I need {', '.join(missing[:3])} first."
+    return "I can do that, but I need one missing detail before I change anything."
+
+
+def _openai_action_preflight_tool(preflight: dict, tools: list[dict] | None = None) -> str:
+    if not preflight or preflight.get("requires_clarification"):
+        return ""
+    if not preflight.get("is_side_effect") or preflight.get("confidence") != "high":
+        return ""
+    action_tool = str(preflight.get("action_tool", "") or "")
+    return action_tool if action_tool in _openai_action_tool_names(tools) else ""
+
+
 _INJECTED_CHAT_CONTEXT_RE = re.compile(
     r"\n\s*\[(?:"
     r"Email account hint|"
@@ -10690,9 +11109,16 @@ def _llm_provider_status_reply(messages: list[dict]) -> str | None:
 
     provider_label = "OpenAI" if LLM_PROVIDER == "openai" else "Anthropic"
     model = _agentic_model_for_messages(messages)
+    vector_ids = _openai_file_search_vector_store_ids()
+    native_file_search = "enabled" if vector_ids and LLM_PROVIDER == "openai" else "not configured"
+    vector_memory = "enabled" if _openai_vector_sync_ready("memory") else "not configured"
+    vector_uploads = "enabled" if _openai_vector_sync_ready("upload") else "not configured"
+    action_planner = "enabled" if OPENAI_ACTION_PLANNER_ENABLED and LLM_PROVIDER == "openai" else "disabled"
     return (
         f"I'm currently routed through {provider_label} "
-        f"(`HIRA_LLM_PROVIDER={LLM_PROVIDER}`), using `{model}` for this turn."
+        f"(`HIRA_LLM_PROVIDER={LLM_PROVIDER}`), using `{model}` for this turn.\n\n"
+        f"OpenAI vector memory: {vector_memory}. Native file search: {native_file_search}. "
+        f"Uploaded-file vector sync: {vector_uploads}. Action planner: {action_planner}."
     )
 
 
@@ -10741,9 +11167,20 @@ async def _run_agentic_openai(messages, max_tokens=2048, tools=None, openai_stat
     model = str(policy.get("model") or _agentic_model_for_messages(messages))
     previous_response_id = _openai_previous_response_id(openai_state_key)
     openai_input = _openai_latest_input(messages) if previous_response_id else _openai_input_from_messages(messages)
+    action_preflight = await _openai_action_preflight(messages, tools)
+    clarification = _openai_action_preflight_clarification(action_preflight)
+    if clarification:
+        return clarification
+    preflight_tool = _openai_action_preflight_tool(action_preflight, tools)
+    preflight_tool_used = False
 
     for _ in range(max_iterations):
         forced_tool = _forced_tool_for_current_turn(messages, tools)
+        if forced_tool:
+            preflight_tool_used = True
+        elif preflight_tool and not preflight_tool_used:
+            forced_tool = preflight_tool
+            preflight_tool_used = True
         try:
             kwargs = _openai_request_options(
                 model,
@@ -11285,9 +11722,24 @@ async def stream_agentic_openai(messages, max_tokens=650, tools=None, openai_sta
     previous_response_id = _openai_previous_response_id(openai_state_key)
     openai_input = _openai_latest_input(messages) if previous_response_id else _openai_input_from_messages(messages)
     yield {"type": "trace", "patch": {"model_policy": policy, "openai_stateful": bool(previous_response_id)}}
+    action_preflight = await _openai_action_preflight(messages, tools)
+    if action_preflight:
+        yield {"type": "trace", "patch": {"action_preflight": action_preflight}}
+    clarification = _openai_action_preflight_clarification(action_preflight)
+    if clarification:
+        yield {"type": "replace", "text": clarification}
+        yield {"type": "done", "text": clarification}
+        return
+    preflight_tool = _openai_action_preflight_tool(action_preflight, tools)
+    preflight_tool_used = False
 
     for _ in range(max_iterations):
         forced_tool = _forced_tool_for_current_turn(messages, tools)
+        if forced_tool:
+            preflight_tool_used = True
+        elif preflight_tool and not preflight_tool_used:
+            forced_tool = preflight_tool
+            preflight_tool_used = True
         kwargs = _openai_request_options(
             model,
             max_tokens,
@@ -11346,12 +11798,14 @@ async def stream_agentic_openai(messages, max_tokens=650, tools=None, openai_sta
             yield {"type": "trace", "patch": {"openai_response_id": response_id}}
         native_observations = _openai_native_observations(resp)
         citations = _openai_response_citations(resp)
-        if native_observations or citations:
+        native_contracts = _openai_native_source_contracts(resp)
+        if native_observations or citations or native_contracts:
             yield {
                 "type": "trace",
                 "patch": {
                     "openai_native_observations": native_observations,
                     "openai_citations": citations,
+                    "source_contracts_seen": native_contracts,
                 },
             }
 
@@ -13764,6 +14218,7 @@ async def _pwa_worker_repeating_loop(name: str, interval: int, first: int, job):
 async def run_pwa_notification_worker():
     logger.info("H.I.R.A PWA notification worker running.")
     _log_memory("pwa_worker startup", force=True)
+    await asyncio.to_thread(sync_openai_vector_memory, reason="pwa_worker_startup")
     morning_hour, morning_minute = MORNING_BRIEFING_TIME
     evening_hour, evening_minute = EVENING_BRIEFING_TIME
     tasks = [
@@ -13979,6 +14434,7 @@ def main():
     )
     logger.info("Herwanto OS running — all systems active.")
     _log_memory("startup", force=True)
+    sync_openai_vector_memory(reason="telegram_startup")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":

@@ -769,6 +769,7 @@ async def start_web_scheduler():
     if not bot.require_redis_for_service("H.I.R.A PWA web service"):
         raise RuntimeError("Redis required but unavailable")
     bot._log_memory("web startup", force=True)
+    _schedule_background_call("OpenAI vector memory startup sync", bot.sync_openai_vector_memory, reason="web_startup")
     if _WEB_MEMORY_WATCHDOG_TASK is None:
         _WEB_MEMORY_WATCHDOG_TASK = asyncio.create_task(_web_memory_watchdog())
     if _UPLOAD_QUEUE is None:
@@ -3210,9 +3211,18 @@ def response_contract_for_reply(reply_text: str, trace: dict | None = None) -> d
         r"\b(?:don'?t|do not|can'?t|cannot)\s+(?:have|access|check|browse|see|get)\b.{0,80}\b(?:live|current|latest|standings?|web|internet|source|sources|data)\b",
         lowered,
     ))
+    native_evidence = bool(
+        trace.get("openai_citations")
+        or trace.get("source_contracts_seen")
+        or any(
+            str(item.get("status", "")).lower() in {"completed", "succeeded", "success"}
+            for item in trace.get("openai_native_observations", []) or []
+            if isinstance(item, dict)
+        )
+    )
     missing_source_contract = (
         bool(source_discipline.get("needs_live_check"))
-        and not trace.get("source_contracts_seen")
+        and not native_evidence
         and not trace.get("tools_called")
     )
     empty_answer = _empty_chat_reply(text)
@@ -3256,6 +3266,11 @@ def _finalise_chat_trace(trace: dict, final_mode: str = "answered") -> dict:
     if contracts and trace.get("confidence_gate") in {"pending", "passed"}:
         statuses = {str(item.get("status", "")).lower() for item in contracts if isinstance(item, dict)}
         trace["confidence_gate"] = "passed" if statuses and statuses <= {"confirmed"} else "review_needed"
+    elif (
+        trace.get("confidence_gate") == "pending"
+        and (trace.get("openai_citations") or trace.get("openai_native_observations"))
+    ):
+        trace["confidence_gate"] = "passed"
     elif trace.get("confidence_gate") == "pending":
         trace["confidence_gate"] = "no_contract" if trace.get("source_discipline", {}).get("needs_live_check") else "not_required"
     return trace
@@ -3930,6 +3945,10 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
         if not status_reply:
             status_reply = "I could not pull the current status brief right now. Try again in a moment."
         return _quick_sse_response(status_reply, history_key, history, route_name="natural_intent", tool_name="get_assistant_context")
+
+    provider_status_reply = bot._llm_provider_status_reply([{"role": "user", "content": message}])
+    if provider_status_reply:
+        return _quick_sse_response(provider_status_reply, history_key, history, route_name="provider_status")
 
     checkin_command = _pwa_checkin_command_reply(message)
     if checkin_command:
