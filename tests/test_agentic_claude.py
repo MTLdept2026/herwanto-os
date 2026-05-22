@@ -4585,6 +4585,49 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn('"name": "get_assistant_context"', body)
         self.assertNotIn('"final_mode": "backend_error"', body)
 
+    def test_pwa_tool_route_streams_presence_preface_into_same_answer(self):
+        async def fake_agentic_stream(*_args, **_kwargs):
+            yield {"type": "tool", "name": "get_gmail_brief"}
+            yield {"type": "text", "text": "Found one seminar link in the latest work thread."}
+            yield {"type": "done", "text": "Found one seminar link in the latest work thread."}
+
+        async def run():
+            response = await web_app._chat_stream_response(
+                "Any links in my work email for my seminar briefing today?",
+                None,
+                "phone",
+            )
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history") as save_history,
+            patch.object(web_app, "_update_working_memory", return_value={}),
+            patch.object(web_app, "_schedule_background_call"),
+            patch.object(bot, "should_route_quick_pwa_chat", return_value=False),
+            patch.object(bot, "stream_agentic_claude", side_effect=fake_agentic_stream),
+        ):
+            body = asyncio.run(run())
+
+        events = []
+        for raw in body.split("\n\n"):
+            line = next((item for item in raw.split("\n") if item.startswith("data: ")), "")
+            if line:
+                events.append(json.loads(line[6:]))
+
+        text_events = [event.get("text", "") for event in events if event.get("type") == "text"]
+        done_events = [event.get("text", "") for event in events if event.get("type") == "done"]
+        self.assertTrue(text_events[0].startswith("I'll check Work Gmail for the links now."))
+        self.assertIn("Found one seminar link", "".join(text_events))
+        self.assertTrue(done_events[-1].startswith("I'll check Work Gmail for the links now."))
+        self.assertIn("Found one seminar link", done_events[-1])
+        saved_history = save_history.call_args.args[1]
+        self.assertTrue(saved_history[-1]["content"].startswith("I'll check Work Gmail for the links now."))
+        self.assertIn("Found one seminar link", saved_history[-1]["content"])
+
     def test_pwa_triage_uses_direct_context_route_before_model(self):
         task = {
             "id": "31",
@@ -5270,6 +5313,12 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("adapt quietly", prompt)
         self.assertIn("Do not over-read every short reply", prompt)
         self.assertIn("emotional inference as a hypothesis", prompt)
+
+    def test_system_prompt_requires_brief_first_tool_answers(self):
+        prompt = bot.SYSTEM_PROMPT()
+
+        self.assertIn("For tool-backed answers, lead with the brief answer first", prompt)
+        self.assertIn("Do not make Herwanto wait through method notes", prompt)
 
     def test_lfc_player_chat_is_not_quick_routed(self):
         text = "Still anxious about this weekend lfc big match. Hope wirtz and isak have a banger."
