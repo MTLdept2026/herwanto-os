@@ -1,23 +1,23 @@
 {
-  "updated": "2026-05-18",
+  "updated": "2026-05-22",
   "name": "H.I.R.A Growth Log",
   "subtitle": "How Herwanto Intelligent Response Agent grew from an installable assistant into a more reliable, visually coherent personal operating system.",
   "summary": {
     "start": "2026-04-28",
-    "current": "2026-05-18",
-    "commitsTracked": 187,
-    "majorPhases": 33,
-    "currentStage": "Wordsmith semantic layer with clarification memory, nuance-aware routing, and safer action intent"
+    "current": "2026-05-22",
+    "commitsTracked": 331,
+    "majorPhases": 34,
+    "currentStage": "OpenAI full-power mode with vector memory, native tool evidence, and safer action preflight"
   },
   "metrics": [
     {
       "label": "Days of build acceleration",
-      "value": "20",
-      "note": "From first installable PWA commit to a sharper Nothing-style app identity with explicit trust rails, ClassOps intelligence, Postgres-backed operational memory, OpenAI-first model routing, and wordsmith-grade semantic intent."
+      "value": "24",
+      "note": "From first installable PWA commit to a sharper Nothing-style app identity with explicit trust rails, ClassOps intelligence, Postgres-backed operational memory, OpenAI full-power routing, vector memory, and wordsmith-grade semantic intent."
     },
     {
       "label": "Tracked upgrade commits",
-      "value": "187",
+      "value": "331",
       "note": "Grouped from git history through the growth-log minisite."
     },
     {
@@ -45,17 +45,17 @@
     {
       "name": "Context",
       "score": 100,
-      "description": "Timetable, Google Calendar, reminder-worthy events, rough travel buffers, MTL classlists and marks fields, Dropbox lesson folders, checked availability slots, Drive references, file memory, Postgres-backed long-term memory, topic profiles, conversation summaries, relevant-memory retrieval, intent lensing, wordsmith semantic profiling, short-lived working memory, and home intelligence synthesis."
+      "description": "Timetable, Google Calendar, reminder-worthy events, rough travel buffers, MTL classlists and marks fields, Dropbox lesson folders, checked availability slots, Drive references, file memory, Postgres-backed long-term memory, OpenAI vector memory, uploaded-file semantic recall, topic profiles, conversation summaries, relevant-memory retrieval, intent lensing, wordsmith semantic profiling, short-lived working memory, and home intelligence synthesis."
     },
     {
       "name": "Live Knowledge",
-      "score": 94,
-      "description": "Weather, MUIS, dual personal Gmail inbox support, experimental Work Gmail OAuth, Work Gmail action monitoring with runtime health, Google News, Tavily/search fallbacks, bounded X/Twitter-style social leads for digest topics, OpenAI-native web search hooks, fetch URL, source notes, live-check hints, structured Liverpool and F1 briefers."
+      "score": 96,
+      "description": "Weather, MUIS, dual personal Gmail inbox support, experimental Work Gmail OAuth, Work Gmail action monitoring with runtime health, Google News, Tavily/search fallbacks, bounded X/Twitter-style social leads for digest topics, OpenAI-native web/file/code evidence hooks, fetch URL, source notes, live-check hints, structured Liverpool and F1 briefers."
     },
     {
       "name": "Self-Improvement",
       "score": 100,
-      "description": "Postgres-backed memory commits, priority-weighted memory prompt, relevant recall, working memory, conversation-continuation guardrails, OpenAI response-state continuity, semantic corpus tests, action validation/audits, persistent action ledger, source/memory/native-tool trace visibility, ClassOps blind-spot checks, intent lens, proactive workload insights, OS readiness scoring, forecast radar, adaptive planning, 7-day trial loop, notification feedback learning, implicit correction detection, weekly consolidation, and conversation summarisation."
+      "description": "Postgres-backed memory commits, priority-weighted memory prompt, relevant recall, working memory, conversation-continuation guardrails, OpenAI response-state continuity, vector-store sync, structured action preflight, semantic corpus tests, action validation/audits, persistent action ledger, source/memory/native-tool trace visibility, ClassOps blind-spot checks, intent lens, proactive workload insights, OS readiness scoring, forecast radar, adaptive planning, 7-day trial loop, notification feedback learning, implicit correction detection, weekly consolidation, and conversation summarisation."
     }
   ],
   "chapters": [
@@ -611,6 +611,25 @@
         "A wordsmith semantic corpus was added to tests so future routing changes have examples of Herwanto's actual phrasing to preserve."
       ],
       "impact": "H.I.R.A should feel less literal and less fragile: it can infer the practical meaning behind Herwanto's language, hold ambiguous actions open, ask for the missing detail, and avoid turning reference-only notes into unwanted tasks."
+    },
+    {
+      "date": "2026-05-22",
+      "era": "OpenAI Full-Power Mode",
+      "title": "Hira unlocks OpenAI full-power mode",
+      "commit": "abfccbc + 7c023ed",
+      "tag": "OpenAI + Vector Memory",
+      "summary": "H.I.R.A's OpenAI path became the production-grade intelligence layer: native Responses API state, vector memory, file-search recall, source evidence, structured action preflight, and Railway deployment controls now work together.",
+      "details": [
+        "OpenAI mode now uses stateful Responses API behavior, reasoning controls, prompt caching, native web search, native file search, optional code interpreter, and richer trace metadata when configured.",
+        "A dedicated OpenAI vector store can now hold H.I.R.A memory snapshots and uploaded-file summaries, giving the assistant semantic recall beyond exact wording.",
+        "Native OpenAI citations, file-search results, and code-interpreter observations now satisfy the same source-confidence contract as local tools, reducing false missing-source warnings.",
+        "State-changing turns now run through a strict structured action planner before reminders, calendar writes, Gmail drafts, memory saves, classlist edits, artifacts, nudges, or follow-ups proceed.",
+        "Runtime status now exposes whether full-power mode, native tools, vector memory sync, upload sync, realtime voice, and the action planner are enabled.",
+        "A bootstrap script creates the OpenAI vector store and prints the Railway variables needed to wire memory and file search into both Hira services.",
+        "PWA chat now answers backend/model/vector-memory status questions before topic-news shortcuts can hijack them, and tool presence streams earlier so long tool work feels less frozen.",
+        "Email-link queries, favourite-topic news follow-ups, deterministic triage, and H.I.R.A's compact answer voice were tightened around the new model backend."
+      ],
+      "impact": "For Herwanto, H.I.R.A should now feel smarter in the places that matter: better recall of memory and uploaded files, safer tool actions, more honest live-source handling, clearer runtime self-reporting, and less random route-jumping in the PWA."
     }
   ],
   "currentCapabilities": [
@@ -629,7 +648,7 @@
     "Telegram-compatible tool brain with calendar, reminders, marking, MTL classlists, dual personal Gmail brief/draft support, experimental Work Gmail brief/draft support, work-email action monitoring, artifacts, weather, MUIS prayer/khutbah, live selected-topic news, social-search digest leads, web search, and URL reading.",
     "Structured sports intelligence for Liverpool and F1.",
     "Railway Hobby runtime profile with upload queue, memory guardrails, worker split, Redis production option, admin status, /memcheck, /storagecheck, and /digestcheck.",
-    "Postgres-backed long-term memory buckets, topic profiles for new interests, correction ledger, self-reflection notes, source-backed research notes, and conversation summaries.",
+    "Postgres-backed long-term memory buckets, OpenAI vector-store memory snapshots, uploaded-file semantic sync, topic profiles for new interests, correction ledger, self-reflection notes, source-backed research notes, and conversation summaries.",
     "Intent lens with relevant-memory retrieval before answers, including quick PWA replies.",
     "Proactive intelligence scanner for workload pinch points, marking pressure, follow-ups, quiet windows, and upcoming packed days.",
     "Unified Proactive Intelligence v2 queue that ranks nudges, check-ins, follow-ups, prayers, tasks, digest picks, and internal intelligence with suppression and feedback learning.",
@@ -646,7 +665,8 @@
     "Closed learning loop: implicit + explicit correction capture → weekly consolidation job → promoted to preferences/constraints.",
     "Security: Telegram fail-closed allowlist, web API fail-closed auth, invalid-token throttling, safer notification rendering, /forget confirmation gate, and file upload size guards.",
     "OpenAI-first model routing via the Responses API for quick replies, structured parsing, agentic work, and deep work, with Anthropic retained only as an optional fallback.",
-    "OpenAI response-state continuity, prompt caching, specialist instruction modes, native tool tracing, strict structured outputs, and realtime voice session groundwork.",
+    "OpenAI full-power mode with response-state continuity, prompt caching, reasoning controls, specialist instruction modes, native web/file/code evidence, strict structured outputs, vector memory sync, and realtime voice session groundwork.",
+    "Structured OpenAI action planner that asks for missing safety-critical details before state-changing calendar, reminder, Gmail, memory, nudge, classlist, and artifact actions.",
     "Istighfar and selawat reminder suppression that removes matching check-ins, archives queued notifications where storage allows, and blocks future creation/delivery."
   ],
   "updateProtocol": [
