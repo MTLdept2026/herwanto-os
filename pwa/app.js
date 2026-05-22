@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260521-briefing-fast-59";
-const APP_SCRIPT = "app.js?v=20260521-briefing-fast-59";
-const EXPECTED_SW_CACHE = "hira-os-v129";
+const APP_VERSION = "20260522-chat-fast-security-60";
+const APP_SCRIPT = "app.js?v=20260522-chat-fast-security-60";
+const EXPECTED_SW_CACHE = "hira-os-v130";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";

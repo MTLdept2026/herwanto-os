@@ -188,6 +188,7 @@ QUICK_MODEL = _model_from_env("HIRA_QUICK_MODEL", _DEFAULT_QUICK_MODEL)
 ROUTER_MODEL = _model_from_env("HIRA_ROUTER_MODEL", QUICK_MODEL)
 STRUCTURED_MODEL = _model_from_env("HIRA_STRUCTURED_MODEL", QUICK_MODEL)
 OPENAI_FULL_POWER_MODE = _env_flag("HIRA_OPENAI_FULL_POWER_MODE", LLM_PROVIDER == "openai")
+FAST_CHAT_MODE = _env_flag("HIRA_FAST_CHAT_MODE", True)
 OPENAI_STORE_RESPONSES = _env_flag("HIRA_OPENAI_STORE_RESPONSES", True)
 OPENAI_USE_PREVIOUS_RESPONSE_ID = _env_flag("HIRA_OPENAI_USE_PREVIOUS_RESPONSE_ID", True)
 OPENAI_REASONING_KWARGS = _env_flag("HIRA_OPENAI_REASONING_KWARGS", True)
@@ -211,6 +212,8 @@ OPENAI_FILE_SEARCH_VECTOR_STORE_IDS = [
 ]
 OPENAI_PROMPT_CACHE_RETENTION = os.environ.get("HIRA_OPENAI_PROMPT_CACHE_RETENTION", "24h").strip()
 OPENAI_SERVICE_TIER = os.environ.get("HIRA_OPENAI_SERVICE_TIER", "").strip()
+QUICK_ROUTE_MAX_CHARS = _env_int_setting("HIRA_QUICK_ROUTE_MAX_CHARS", 220, minimum=40, maximum=800)
+QUICK_REPLY_MAX_TOKENS = _env_int_setting("HIRA_QUICK_REPLY_MAX_TOKENS", 160, minimum=60, maximum=400)
 NEWS_MAX_AGE_HOURS = _env_int_setting("HIRA_NEWS_MAX_AGE_HOURS", 24, minimum=1, maximum=336)
 OPENAI_REALTIME_ENABLED = _env_flag("HIRA_OPENAI_REALTIME_ENABLED", LLM_PROVIDER == "openai")
 OPENAI_REALTIME_MODEL = os.environ.get("HIRA_OPENAI_REALTIME_MODEL", "gpt-realtime").strip() or "gpt-realtime"
@@ -336,12 +339,15 @@ def model_policy_for_text(text: str = "") -> dict:
         deep_reason = "source_sensitive_reasoning"
 
     use_deep = bool(deep_reason) and DEEP_MODEL != AGENTIC_MODEL
-    reasoning_effort = "high" if full_power else "medium"
+    reasoning_effort = "medium"
     verbosity = "medium"
     if deep_reason in {"complex_domain_or_deliberate_work", "long_context_turn"}:
         reasoning_effort = "xhigh" if full_power else "high"
     elif deep_reason == "source_sensitive_reasoning":
         reasoning_effort = "high" if full_power else "medium"
+    elif FAST_CHAT_MODE and full_power:
+        reasoning_effort = "medium"
+        verbosity = "medium"
     elif re.search(r"\b(?:quick|brief|short|simple|fast)\b", lowered) and not source_policy.get("needs_live_check"):
         reasoning_effort = "low"
         verbosity = "low"
@@ -587,7 +593,8 @@ def build_runtime_status() -> dict:
             "native_web_search": "enabled" if OPENAI_NATIVE_WEB_SEARCH else "disabled",
             "native_file_search": "enabled" if OPENAI_FILE_SEARCH_VECTOR_STORE_IDS else "not_configured",
             "native_code_interpreter": "enabled" if OPENAI_NATIVE_CODE_INTERPRETER else "disabled",
-            "reasoning_default": "high/xhigh" if OPENAI_FULL_POWER_MODE and LLM_PROVIDER == "openai" else "standard",
+            "fast_chat_mode": "enabled" if FAST_CHAT_MODE else "disabled",
+            "reasoning_default": "medium, escalates for deep work" if FAST_CHAT_MODE and OPENAI_FULL_POWER_MODE and LLM_PROVIDER == "openai" else "high/xhigh" if OPENAI_FULL_POWER_MODE and LLM_PROVIDER == "openai" else "standard",
             "max_tool_calls": 16 if OPENAI_FULL_POWER_MODE and LLM_PROVIDER == "openai" else 8,
             "news_freshness_gate_hours": NEWS_MAX_AGE_HOURS,
             "prompt_cache": "enabled" if OPENAI_PROMPT_CACHE_RETENTION else "disabled",
@@ -1387,6 +1394,11 @@ Personality:
 - Protect his attention: summarise, prioritise, and make the next action obvious.
 - Notice patterns across school, CCA, projects, deadlines, and personal preferences.
 - Use the intent lens and relevant memory context to infer what Herwanto likely means, not only the literal words.
+- Stay intellectually present and engaged. Do not reduce ordinary chat to task routing, bland agreement, or low-presence acknowledgements. Think with Herwanto: sharpen framing, surface tradeoffs, challenge weak assumptions, and offer better questions when it helps him reach the best outcome.
+- Challenge constructively, not combatively. Be candid without being cruel; push toward the strongest version of the idea, plan, draft, code, or decision.
+- Read tone and context as useful signal: curt replies, hesitation, repetition, intensity, humour, or abruptness may reflect Herwanto's current mood/headspace. Infer softly and contextually, not as diagnosis.
+- Sometimes name the read explicitly ("You sound clipped; I'll keep this tight."), and other times adapt quietly by changing pacing, warmth, directness, or depth. If unsure, ask one humane clarifying question.
+- Do not over-read every short reply. Treat emotional inference as a hypothesis, keep Herwanto's stated intent primary, and update quickly when he corrects the read.
 - Treat Herwanto as a wordsmith: soft phrases like "might be worth", "for the file", "park this", "put a pin in", "keep this on my radar", "no rush", "reference only", and "no immediate action" carry operational meaning. Follow those cues.
 - If a state-changing action is low-confidence, reference-only, pronoun-heavy, or missing a concrete date/time/subject, ask one crisp clarification instead of saving a guessed action. If you already asked and the next reply supplies the missing detail, continue the pending action from the Action audit context.
 - Before ambiguous or high-impact calendar/reminder/follow-up/email draft saves, preview the concrete action in one sentence and ask for confirmation. For clear low-risk saves, proceed directly.
@@ -10928,16 +10940,19 @@ def _obvious_quick_chat(text: str) -> bool:
     return len(clean.split()) <= 5 and bool(re.search(r"\b(thanks?|ok(?:ay)?|yes|no|hi|hello|hey)\b", clean))
 
 
-def _full_power_allows_quick_reply(text: str) -> bool:
+def _safe_short_quick_chat(text: str, recent_context: str = "") -> bool:
     clean = _normalise_short_reply(text)
     if not clean:
         return False
-    if clean in {
-        "ok", "okay", "k", "kk", "thanks", "thank you", "thx", "ty",
-        "hi", "hello", "hey", "morning", "noted", "got it", "understood",
-    }:
-        return True
-    return len(clean.split()) <= 3 and bool(re.search(r"\b(?:thanks?|hello|hi|hey|ok(?:ay)?)\b", clean))
+    if len(str(text or "").strip()) > QUICK_ROUTE_MAX_CHARS:
+        return False
+    if _looks_tool_heavy(text) or source_discipline_for_text(text).get("needs_live_check"):
+        return False
+    if _semantic_intent_flags(text):
+        return False
+    if re.search(r"https?://|www\.|\b(?:source|cite|citation|latest|today|tomorrow|now|current|live|check|search|look up|calendar|gmail|email|file|upload|remember|remind|draft|create|delete|update|mark done)\b", clean):
+        return False
+    return _obvious_quick_chat(text)
 
 _CONTEXTUAL_FOLLOWUP_REPLIES = {
     "yes",
@@ -11172,17 +11187,17 @@ async def should_route_quick_pwa_chat(messages: list[dict], message: str) -> boo
         or _is_memory_commit_query_text(text)
     ):
         return False
-    if not text or len(text) > 120 or _looks_tool_heavy(text):
+    if not text or len(text) > QUICK_ROUTE_MAX_CHARS or _looks_tool_heavy(text):
         return False
     if (
         re.search(r"\b(match|result|recap|score|home|away|host(?:ed)?|fixture|game|details?)\b", text, re.I)
         and re.search(r"\b(liverpool|lfc|man utd|man united|manchester united|f1|formula 1|grand prix)\b", recent_context)
     ):
         return False
-    if OPENAI_FULL_POWER_MODE and LLM_PROVIDER == "openai" and not _full_power_allows_quick_reply(text):
-        return False
-    if _obvious_quick_chat(text):
+    if _safe_short_quick_chat(text, recent_context):
         return True
+    if FAST_CHAT_MODE:
+        return False
     try:
         prompt = (
             "Classify whether this chat message can be answered as lightweight small talk "
@@ -11204,32 +11219,46 @@ async def stream_quick_pwa_reply(messages: list[dict], message: str):
     context = messages[-6:]
     prompt_messages = context + [{"role": "user", "content": message}]
     lens = intent_lens_hint(message)
+    system = (
+        "You are H.I.R.A, Herwanto's concise personal assistant. "
+        "Answer lightweight chat naturally in one or two short sentences. "
+        "Stay attentive to tone without over-reading it. "
+        "Do not use tools or pretend to have checked live data. "
+        f"{hira_wit_style_brief()}"
+        f"{lens}"
+    )
     try:
         if LLM_PROVIDER == "openai":
-            text = await _llm_text_async(
-                model=QUICK_MODEL,
-                max_tokens=220,
-                system=(
-                    "You are H.I.R.A, Herwanto's concise personal assistant. "
-                    "Answer lightweight chat naturally in one or two short sentences. "
-                    "Do not use tools or pretend to have checked live data. "
-                    f"{hira_wit_style_brief()}"
-                    f"{lens}"
-                ),
-                messages=prompt_messages,
+            policy = model_policy_for_messages(prompt_messages)
+            kwargs = _openai_request_options(
+                QUICK_MODEL,
+                QUICK_REPLY_MAX_TOKENS,
+                prompt_messages,
+                policy=policy,
             )
-            yield {"type": "text", "text": text}
+            kwargs["input"] = _openai_input_from_messages(prompt_messages)
+            kwargs["instructions"] = system
+            text_parts: list[str] = []
+            async for event in _openai_stream_response(kwargs):
+                if getattr(event, "type", "") == "hira.final_response":
+                    continue
+                delta = _openai_text_delta_from_event(event)
+                if delta:
+                    text_parts.append(delta)
+                    yield {"type": "text", "text": delta}
+            if not text_parts:
+                text = await _llm_text_async(
+                    model=QUICK_MODEL,
+                    max_tokens=QUICK_REPLY_MAX_TOKENS,
+                    system=system,
+                    messages=prompt_messages,
+                )
+                yield {"type": "text", "text": text}
             return
         async with async_claude.messages.stream(
             model=QUICK_MODEL,
-            max_tokens=220,
-            system=(
-                "You are H.I.R.A, Herwanto's concise personal assistant. "
-                "Answer lightweight chat naturally in one or two short sentences. "
-                "Do not use tools or pretend to have checked live data. "
-                f"{hira_wit_style_brief()}"
-                f"{lens}"
-            ),
+            max_tokens=QUICK_REPLY_MAX_TOKENS,
+            system=system,
             messages=prompt_messages,
         ) as stream:
             async for event in stream:

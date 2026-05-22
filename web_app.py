@@ -42,8 +42,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260521-briefing-fast-59"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v129"
+PWA_APP_VERSION = "20260522-chat-fast-security-60"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v130"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -121,6 +121,31 @@ _SESSION_COOKIE_NAME = "hira_session"
 _SESSION_MAX_AGE_SECONDS = _env_int("HIRA_WEB_SESSION_MAX_AGE_SECONDS", 60 * 60 * 24 * 30)
 
 
+def _apply_security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault(
+        "Permissions-Policy",
+        "camera=(), microphone=(), geolocation=(self), payment=(), usb=()",
+    )
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; "
+        "script-src 'self' https://unpkg.com; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data: blob:; "
+        "connect-src 'self'; "
+        "manifest-src 'self'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "object-src 'none'; "
+        "frame-ancestors 'none'",
+    )
+    return response
+
+
 def _memory_usage_ratio() -> float | None:
     limit = bot._memory_limit_mb()
     if not limit:
@@ -192,37 +217,37 @@ async def add_static_cache_headers(request: Request, call_next):
     try:
         content_length = request.headers.get("content-length")
         if content_length and content_length.isdigit() and int(content_length) > _MAX_REQUEST_BYTES:
-            return JSONResponse(
+            return _apply_security_headers(JSONResponse(
                 {"detail": f"Request is too large. Limit is {_MAX_REQUEST_BYTES // (1024 * 1024)} MB."},
                 status_code=413,
-            )
+            ))
         if request.url.path.startswith("/api/") and request.url.path not in {"/api/auth/session"}:
             expected = _expected_web_token()
             if not expected:
-                return JSONResponse(
+                return _apply_security_headers(JSONResponse(
                     {"detail": "HIRA_WEB_TOKEN is not configured. Set it in Railway environment variables."},
                     status_code=503,
-                )
+                ))
             header_ok = _token_matches(request.headers.get("x-hira-token"), expected)
             session_ok = _request_session_valid(request, expected)
             if session_ok and not header_ok and not _csrf_request_allowed(request):
-                return JSONResponse({"detail": "Cross-site request blocked"}, status_code=403)
+                return _apply_security_headers(JSONResponse({"detail": "Cross-site request blocked"}, status_code=403))
             if not header_ok and not session_ok:
                 if not await _AUTH_RATE_LIMITER.is_allowed(_auth_rate_key(request, request.headers.get("x-hira-token"))):
-                    return JSONResponse(
+                    return _apply_security_headers(JSONResponse(
                         {"detail": "Too many invalid token attempts. Try again in a minute."},
                         status_code=429,
                         headers={"Retry-After": "60"},
-                    )
-                return JSONResponse({"detail": "Invalid H.I.R.A web token"}, status_code=401)
+                    ))
+                return _apply_security_headers(JSONResponse({"detail": "Invalid H.I.R.A web token"}, status_code=401))
         is_static_path = request.url.path in _STATIC_PATHS or request.url.path.startswith("/static/")
         if _memory_pressure_high() and not is_static_path:
             gc.collect()
-            return JSONResponse(
+            return _apply_security_headers(JSONResponse(
                 {"detail": "H.I.R.A is under memory pressure. Try again in a moment."},
                 status_code=503,
                 headers={"Retry-After": "20"},
-            )
+            ))
         response = await call_next(request)
         if request.url.path in {
             "/",
@@ -248,7 +273,7 @@ async def add_static_cache_headers(request: Request, call_next):
             response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
-        return response
+        return _apply_security_headers(response)
     finally:
         _REQUEST_CONTEXT.reset(context_token)
 
@@ -916,9 +941,16 @@ _WEB_WORKING_MEMORY: OrderedDict[str, dict] = OrderedDict()
 _MAX_LOCAL_WORKING_MEMORIES = _env_int("HIRA_WEB_MAX_LOCAL_WORKING_MEMORIES", 100)
 
 
+def _normalise_client_key(client_id: str | None, default: str = "pwa") -> str:
+    clean = re.sub(r"[^a-zA-Z0-9_.:-]", "_", str(client_id or "").strip())[:80].strip("._:-")
+    return clean or default
+
+
 def _history_key(client_id: str | None) -> str:
-    clean = (client_id or "").strip()
-    return f"pwa:{clean}" if clean else "pwa"
+    raw = str(client_id or "").strip()
+    if not raw:
+        return "pwa"
+    return f"pwa:{_normalise_client_key(raw)}"
 
 
 def _get_history_best_effort(history_key: str) -> list:
@@ -2604,8 +2636,7 @@ def _auth_rate_key(request: Request, candidate: str | None = None) -> str:
 
 
 def _client_key(client_id: str | None) -> str:
-    clean = (client_id or "").strip()
-    return clean or "pwa"
+    return _normalise_client_key(client_id)
 
 
 def _upload_job_key(job_id: str) -> str:
@@ -2613,7 +2644,7 @@ def _upload_job_key(job_id: str) -> str:
 
 
 def _upload_request_key(client_key: str, request_id: str) -> str:
-    safe_client = re.sub(r"[^a-zA-Z0-9_.:-]", "_", str(client_key or "pwa").strip() or "pwa")[:80]
+    safe_client = _normalise_client_key(client_key)
     safe_request = re.sub(r"[^a-zA-Z0-9_.:-]", "_", str(request_id or "").strip())[:120]
     return f"hira:upload_request:{safe_client}:{safe_request}"
 
@@ -3050,10 +3081,10 @@ def _live_briefing_text(slot: str) -> str:
         return "I could not build a fresh briefing right now. Try again in a moment."
 
 
-def _new_chat_trace(message: str, route_name: str = "") -> dict:
+def _new_chat_trace(message: str, route_name: str = "", include_memory: bool = True) -> dict:
     discipline = bot.source_discipline_for_text(message)
     memory_sources = []
-    if message:
+    if message and include_memory:
         try:
             memory_sources = [
                 {
@@ -3918,7 +3949,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
         final_text = ""
         started = time.perf_counter()
         phase_started = started
-        trace = _new_chat_trace(message)
+        trace = _new_chat_trace(message, include_memory=False)
         _merge_chat_trace(trace, {
             "thread_state": initial_thread_state,
             "model_policy": bot.model_policy_for_messages(list(history)),

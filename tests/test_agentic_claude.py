@@ -293,10 +293,11 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("get_timetable", names)
         self.assertFalse(routed_quick)
 
-    def test_openai_full_power_keeps_nontrivial_short_turn_agentic(self):
+    def test_fast_chat_mode_keeps_nontrivial_short_turn_agentic(self):
         with (
             patch.object(bot, "LLM_PROVIDER", "openai"),
             patch.object(bot, "OPENAI_FULL_POWER_MODE", True),
+            patch.object(bot, "FAST_CHAT_MODE", True),
         ):
             routed_quick = asyncio.run(bot.should_route_quick_pwa_chat([], "What do you think?"))
             trivial_quick = asyncio.run(bot.should_route_quick_pwa_chat([], "Thanks"))
@@ -1511,6 +1512,21 @@ class AgenticClaudeTests(unittest.TestCase):
             url=SimpleNamespace(scheme="http", netloc="testserver"),
         )
         self.assertTrue(web_app._csrf_request_allowed(same_origin_custom_header))
+
+    def test_pwa_client_keys_are_bounded_for_state_storage(self):
+        raw = " phone/../../" + ("x" * 200)
+
+        self.assertLessEqual(len(web_app._client_key(raw)), 80)
+        self.assertNotIn("/", web_app._client_key(raw))
+        self.assertTrue(web_app._history_key(raw).startswith("pwa:phone_.._.."))
+
+    def test_web_security_headers_include_csp_and_frame_blocking(self):
+        response = web_app._apply_security_headers(web_app.JSONResponse({"ok": True}))
+
+        self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
+        self.assertEqual(response.headers["X-Frame-Options"], "DENY")
+        self.assertIn("frame-ancestors 'none'", response.headers["Content-Security-Policy"])
+        self.assertIn("geolocation=(self)", response.headers["Permissions-Policy"])
 
     def test_fetch_url_blocks_private_and_local_targets(self):
         blocked = [
@@ -3098,7 +3114,7 @@ class AgenticClaudeTests(unittest.TestCase):
             SimpleNamespace(
                 title="Android feature drop ships this morning",
                 link="https://example.com/fresh",
-                published="Thu, 21 May 2026 01:00:00 GMT",
+                published="Fri, 22 May 2026 01:00:00 GMT",
                 summary="Fresh item",
                 source=SimpleNamespace(title="Android Developers"),
             ),
@@ -4699,7 +4715,7 @@ class AgenticClaudeTests(unittest.TestCase):
             self.assertEqual(name, "get_latest_news")
             if "Teenage Engineering" in inp["query"]:
                 raise RuntimeError("rss unavailable")
-            return "*News: Android*\n\n- Android security update ships (Android Developers · Thu, 21 May 2026)"
+            return "*News: Android*\n\n- Android security update ships (Android Developers · Fri, 22 May 2026)"
 
         with patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool):
             reply = asyncio.run(web_app._pwa_topic_news_reply("Teenage Engineering and Android updates?"))
@@ -4725,7 +4741,7 @@ class AgenticClaudeTests(unittest.TestCase):
                 return "\n".join([
                     "*News: Nothing*",
                     "",
-                    "- CMF by Nothing teases new audio product (Nothing Community · Thu, 21 May 2026 09:00:00 GMT)",
+                    "- CMF by Nothing teases new audio product (Nothing Community · Fri, 22 May 2026 09:00:00 GMT)",
                 ])
             return "No news found."
 
@@ -4800,11 +4816,11 @@ class AgenticClaudeTests(unittest.TestCase):
             self.assertEqual(name, "get_latest_news")
             query = inp["query"]
             if "Nothing" in query:
-                return "*News: Nothing*\n\n- Nothing OS update reaches Phone users (9to5Google · Thu, 21 May 2026)"
+                return "*News: Nothing*\n\n- Nothing OS update reaches Phone users (9to5Google · Fri, 22 May 2026)"
             if "Teenage Engineering" in query:
-                return "*News: Teenage Engineering*\n\n- OP-XY firmware update spotted (Synth Daily · Thu, 21 May 2026)"
+                return "*News: Teenage Engineering*\n\n- OP-XY firmware update spotted (Synth Daily · Fri, 22 May 2026)"
             if "Android" in query:
-                return "*News: Android*\n\n- Android feature drop starts rolling out (Android Developers · Thu, 21 May 2026)"
+                return "*News: Android*\n\n- Android feature drop starts rolling out (Android Developers · Fri, 22 May 2026)"
             return "No news found."
 
         async def run():
@@ -4843,7 +4859,7 @@ class AgenticClaudeTests(unittest.TestCase):
 
         async def fake_execute_tool(name, inp):
             calls.append((name, inp))
-            return "*News: Teenage Engineering*\n\n- OP-XY firmware update spotted (Synth Daily · Thu, 21 May 2026)"
+            return "*News: Teenage Engineering*\n\n- OP-XY firmware update spotted (Synth Daily · Fri, 22 May 2026)"
 
         context = (
             "Let me do the proper thing: I should run a targeted live search for:\n\n"
@@ -5223,6 +5239,26 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("supporter-read", prompt)
         self.assertIn("Do not let mood-reading replace the verified facts", prompt)
 
+    def test_system_prompt_requires_intellectual_presence_and_constructive_challenge(self):
+        prompt = bot.SYSTEM_PROMPT()
+
+        self.assertIn("Stay intellectually present and engaged", prompt)
+        self.assertIn("challenge weak assumptions", prompt)
+        self.assertIn("Challenge constructively", prompt)
+        self.assertIn("best outcome", prompt)
+        self.assertIn("strongest version of the idea", prompt)
+
+    def test_system_prompt_treats_tone_as_context_not_diagnosis(self):
+        prompt = bot.SYSTEM_PROMPT()
+
+        self.assertIn("curt replies", prompt)
+        self.assertIn("mood/headspace", prompt)
+        self.assertIn("not as diagnosis", prompt)
+        self.assertIn("Sometimes name the read explicitly", prompt)
+        self.assertIn("adapt quietly", prompt)
+        self.assertIn("Do not over-read every short reply", prompt)
+        self.assertIn("emotional inference as a hypothesis", prompt)
+
     def test_lfc_player_chat_is_not_quick_routed(self):
         text = "Still anxious about this weekend lfc big match. Hope wirtz and isak have a banger."
 
@@ -5362,6 +5398,17 @@ class AgenticClaudeTests(unittest.TestCase):
             ])
 
         self.assertEqual(selected, "agentic-model")
+
+    def test_fast_chat_policy_keeps_medium_reasoning_for_ordinary_chat(self):
+        with (
+            patch.object(bot, "LLM_PROVIDER", "openai"),
+            patch.object(bot, "OPENAI_FULL_POWER_MODE", True),
+            patch.object(bot, "FAST_CHAT_MODE", True),
+        ):
+            policy = bot.model_policy_for_text("what do you think?")
+
+        self.assertEqual(policy["reasoning_effort"], "medium")
+        self.assertEqual(policy["verbosity"], "medium")
 
     def test_memory_categories_include_new_buckets_and_aliases(self):
         self.assertIn("teaching", bot.gs.DEFAULT_MEMORY)
@@ -6399,7 +6446,8 @@ class AgenticClaudeTests(unittest.TestCase):
 
         upgrade = status["openai_upgrade"]
         self.assertEqual(upgrade["full_power_mode"], "enabled")
-        self.assertEqual(upgrade["reasoning_default"], "high/xhigh")
+        self.assertEqual(upgrade["fast_chat_mode"], "enabled")
+        self.assertEqual(upgrade["reasoning_default"], "medium, escalates for deep work")
         self.assertEqual(upgrade["max_tool_calls"], 16)
         self.assertEqual(upgrade["news_freshness_gate_hours"], bot.NEWS_MAX_AGE_HOURS)
 
