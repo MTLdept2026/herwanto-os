@@ -6521,10 +6521,15 @@ def is_source_citation_preference(text: str) -> bool:
     clean = " ".join(str(text or "").strip().split()).lower()
     if len(clean) < 12:
         return False
+    if re.search(r"\b(?:gmail|email|emails|mail|inbox|thread|work\s+email|work\s+mail|moe\s+email|school\s+email)\b", clean):
+        return False
     wants_future_rule = re.search(r"\b(always|future|from now|next time|whenever|please|pls|should|must)\b", clean)
     wants_sources = re.search(r"\b(source|sources|cite|citation|citations|link|links|url|publisher|publication)\b", clean)
-    target_news = re.search(r"\b(news|headline|headlines|digest|briefing|article|articles|items?|surfacing)\b", clean)
-    not_question = not re.search(r"\b(what|who|when|where|why|how|find|search|research|look up|latest|current)\b", clean)
+    target_news = (
+        re.search(r"\b(news|headline|headlines|digest|article|articles|items?|surfacing)\b", clean)
+        or re.search(r"\b(?:daily|morning|evening|news|headlines?|current)\s+briefing\b", clean)
+    )
+    not_question = not re.search(r"\b(any|what|who|when|where|why|how|find|search|research|look up|latest|current|check|show|pull up)\b", clean)
     return bool(wants_sources and target_news and (wants_future_rule or not_question))
 
 

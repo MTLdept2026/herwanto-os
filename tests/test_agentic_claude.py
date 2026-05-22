@@ -1838,6 +1838,18 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertFalse(discipline["needs_live_check"])
         self.assertEqual(discipline["recommended_tools"], [])
 
+    def test_source_citation_preference_ignores_work_email_link_queries(self):
+        text = "Any links in my work email for my seminar briefing today?"
+
+        self.assertFalse(bot.is_source_citation_preference(text))
+        self.assertEqual(bot.source_citation_preference_response(text), "")
+
+        forced = bot._forced_tool_for_text(
+            text,
+            [{"name": "get_gmail_brief"}, {"name": "remember_user_info"}],
+        )
+        self.assertEqual(forced, "get_gmail_brief")
+
     def test_f1_calendar_sync_request_adds_remaining_events_and_memory(self):
         now = bot.SGT.localize(bot.datetime(2026, 5, 12, 12, 36))
         with (
