@@ -1550,7 +1550,7 @@ def CACHED_SYSTEM_PROMPT():
 def _openai_text_from_response(resp) -> str:
     text = getattr(resp, "output_text", None)
     if text:
-        return str(text)
+        return strip_ai_citation_markers(str(text))
     parts: list[str] = []
     for item in getattr(resp, "output", []) or []:
         if getattr(item, "type", None) != "message":
@@ -1559,7 +1559,19 @@ def _openai_text_from_response(resp) -> str:
             block_type = getattr(block, "type", "")
             if block_type in {"output_text", "text"}:
                 parts.append(str(getattr(block, "text", "") or ""))
-    return "".join(parts)
+    return strip_ai_citation_markers("".join(parts))
+
+
+def strip_ai_citation_markers(text: str = "") -> str:
+    clean = str(text or "")
+    clean = re.sub(r"\uFFFDcite\uFFFD[\w.-]*\uFFFD?", "", clean)
+    clean = re.sub(r"\uFFFDcite(?:\uFFFD?[\w.-]*)?$", "", clean)
+    clean = re.sub(r"【\s*\d+(?::\d+)?\s*†[^】]*】", "", clean)
+    clean = re.sub(r"【\s*source\s*】", "", clean, flags=re.I)
+    clean = re.sub(r"[ \t]{2,}", " ", clean)
+    clean = re.sub(r"[ \t]+([.,;:!?])", r"\1", clean)
+    clean = re.sub(r"\n[ \t]+", "\n", clean)
+    return clean.strip()
 
 
 def _openai_incomplete_reason(resp) -> str:
@@ -11210,7 +11222,7 @@ async def _run_agentic_openai(messages, max_tokens=2048, tools=None, openai_stat
                 guarded = _memory_tool_failure_guardrail(fallback, all_tool_results)
                 guarded = _backend_claim_guardrail(guarded, all_tool_results)
                 guarded = _cca_sheet_user_burden_guardrail(guarded, all_tool_results)
-                return _correct_weekday_date_mismatches(guarded)
+                return strip_ai_citation_markers(_correct_weekday_date_mismatches(guarded))
             raise
 
         tool_blocks = _openai_tool_calls(resp)
@@ -11218,7 +11230,7 @@ async def _run_agentic_openai(messages, max_tokens=2048, tools=None, openai_stat
             segment = await _run_forced_weather_fallback(forced_tool)
             if not segment:
                 segment = _openai_text_from_response(resp)
-            reply_text = f"{reply_text}{segment}"
+            reply_text = strip_ai_citation_markers(f"{reply_text}{segment}")
             if _openai_hit_max_tokens(resp):
                 messages.append({"role": "assistant", "content": segment})
                 messages.append({
@@ -11260,12 +11272,12 @@ async def _run_agentic_openai(messages, max_tokens=2048, tools=None, openai_stat
         openai_input = tool_output_items if previous_response_id else call_items + tool_output_items
         guarded = _source_contract_guardrail(messages, tool_results)
         if guarded:
-            return guarded
+            return strip_ai_citation_markers(guarded)
 
     guarded_reply = _memory_tool_failure_guardrail(reply_text or "Done.", all_tool_results)
     guarded_reply = _backend_claim_guardrail(guarded_reply, all_tool_results)
     guarded_reply = _cca_sheet_user_burden_guardrail(guarded_reply, all_tool_results)
-    return _correct_weekday_date_mismatches(guarded_reply)
+    return strip_ai_citation_markers(_correct_weekday_date_mismatches(guarded_reply))
 
 
 async def _run_agentic_claude(messages, max_tokens=2048, tools=None, openai_state_key: str | None = None):
@@ -11787,8 +11799,8 @@ async def stream_agentic_openai(messages, max_tokens=650, tools=None, openai_sta
             raise
 
         if resp is None:
-            segment = "".join(segment_parts)
-            reply_text = f"{reply_text}{segment}"
+            segment = strip_ai_citation_markers("".join(segment_parts))
+            reply_text = strip_ai_citation_markers(f"{reply_text}{segment}")
             break
 
         response_id = _openai_response_id(resp)
@@ -11813,11 +11825,11 @@ async def stream_agentic_openai(messages, max_tokens=650, tools=None, openai_sta
         if not tool_blocks:
             fallback_text = await _run_forced_weather_fallback(forced_tool)
             if fallback_text:
-                reply_text = f"{reply_text}{fallback_text}"
+                reply_text = strip_ai_citation_markers(f"{reply_text}{fallback_text}")
                 yield {"type": "replace", "text": reply_text}
             else:
-                segment = "".join(segment_parts) or _openai_text_from_response(resp)
-                reply_text = f"{reply_text}{segment}"
+                segment = strip_ai_citation_markers("".join(segment_parts) or _openai_text_from_response(resp))
+                reply_text = strip_ai_citation_markers(f"{reply_text}{segment}")
             if _openai_hit_max_tokens(resp):
                 messages.append({"role": "assistant", "content": segment})
                 messages.append({
@@ -11852,8 +11864,9 @@ async def stream_agentic_openai(messages, max_tokens=650, tools=None, openai_sta
             yield {"type": "trace", "patch": {"source_contracts_seen": contracts, "confidence_gate": "passed"}}
         guarded = _source_contract_guardrail(messages, tool_results)
         if guarded:
-            yield {"type": "replace", "text": guarded}
-            yield {"type": "done", "text": guarded}
+            clean_guarded = strip_ai_citation_markers(guarded)
+            yield {"type": "replace", "text": clean_guarded}
+            yield {"type": "done", "text": clean_guarded}
             return
         call_items = _openai_response_call_items(resp)
         tool_output_items = [
@@ -11869,7 +11882,7 @@ async def stream_agentic_openai(messages, max_tokens=650, tools=None, openai_sta
     guarded_reply = _memory_tool_failure_guardrail(reply_text or "Done.", all_tool_results)
     guarded_reply = _backend_claim_guardrail(guarded_reply, all_tool_results)
     guarded_reply = _cca_sheet_user_burden_guardrail(guarded_reply, all_tool_results)
-    corrected = _correct_weekday_date_mismatches(guarded_reply)
+    corrected = strip_ai_citation_markers(_correct_weekday_date_mismatches(guarded_reply))
     if corrected != reply_text:
         yield {"type": "replace", "text": corrected}
     yield {"type": "done", "text": corrected}

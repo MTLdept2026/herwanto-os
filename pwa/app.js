@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260522-chat-fast-security-60";
-const APP_SCRIPT = "app.js?v=20260522-chat-fast-security-60";
-const EXPECTED_SW_CACHE = "hira-os-v130";
+const APP_VERSION = "20260523-citation-cleanup-61";
+const APP_SCRIPT = "app.js?v=20260523-citation-cleanup-61";
+const EXPECTED_SW_CACHE = "hira-os-v131";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
@@ -2235,6 +2235,18 @@ function markdownish(text) {
     .replace(/\*/g, "");
 }
 
+function stripCitationMarkers(text) {
+  return String(text || "")
+    .replace(/\uFFFDcite\uFFFD[\w.-]*\uFFFD?/g, "")
+    .replace(/\uFFFDcite(?:\uFFFD?[\w.-]*)?$/g, "")
+    .replace(/【\s*\d+(?::\d+)?\s*†[^】]*】/g, "")
+    .replace(/【\s*source\s*】/gi, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/[ \t]+([.,;:!?])/g, "$1")
+    .replace(/\n[ \t]+/g, "\n")
+    .trim();
+}
+
 function renderTextBlock(text) {
   return (text || "")
     .split("\n")
@@ -2350,7 +2362,7 @@ function visibleChatText(text, { final = false } = {}) {
   const clean = String(text || "").trim();
   if (!clean) return "";
   if (isInternalToolPayload(clean)) return final ? INTERNAL_TOOL_FALLBACK : "";
-  return text;
+  return stripCitationMarkers(text);
 }
 
 function cleanStoredChatHistory(items = []) {
