@@ -6540,6 +6540,13 @@ def _notification_expired_action_reason(
     return ""
 
 
+def _low_value_notification_block_reason(source: str = "", title: str = "", body: str = "") -> str:
+    clean = " ".join(f"{source} {title} {body}".lower().split())
+    if "no tracked assignments yet" in clean and "start tracking from a contents item" in clean:
+        return "classops_empty_assignment_state"
+    return ""
+
+
 DEVOTIONAL_REMINDER_RE = re.compile(r"\b(?:istigh?far|selawat|salawat)\b", re.I)
 
 
@@ -12988,6 +12995,16 @@ async def handle_voice(update, context):
 # ─── SCHEDULED JOBS ──────────────────────────────────────────────────────────
 
 def _queue_app_notification(kind: str, title: str, body: str, source: str = ""):
+    low_value_block = _low_value_notification_block_reason(source, title, body)
+    if low_value_block:
+        logger.info(f"Notification blocked before queue for source={source or kind}: {low_value_block}")
+        _record_notification_outcome(
+            f"blocked_{low_value_block}",
+            source=source,
+            kind=kind,
+            title=title,
+        )
+        return None
     devotional_block = _devotional_notification_block_reason(source, title, body)
     if devotional_block:
         logger.info(f"Notification blocked before queue for source={source or kind}: {devotional_block}")

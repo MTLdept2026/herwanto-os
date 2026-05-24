@@ -1463,20 +1463,6 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(data["git_commit"], "abcdef123456")
         self.assertIn("server_time", data)
 
-    def test_fast_source_jobs_cover_opening_sports_chat(self):
-        jobs = web_app._pwa_fast_source_jobs(
-            "Great news for mercedes yesterday and tonight will be emotional for Liverpool fans"
-        )
-
-        self.assertEqual([job["label"] for job in jobs], ["F1 / Mercedes", "Liverpool"])
-        self.assertTrue(all(job["tool"] == "get_latest_news" for job in jobs))
-        self.assertIn("Mercedes", jobs[0]["input"]["query"])
-        self.assertIn("Liverpool FC", jobs[1]["input"]["query"])
-
-    def test_fast_source_budget_stays_immediate(self):
-        self.assertLessEqual(web_app._FAST_SOURCE_TIMEOUT_SECONDS, 4.0)
-        self.assertLessEqual(web_app._FAST_SOURCE_SYNTHESIS_TIMEOUT_SECONDS, 2.0)
-
     def test_session_cookie_validates_and_csrf_blocks_cross_site(self):
         cookie = web_app._new_session_cookie("secret-token")
         same_origin = SimpleNamespace(
@@ -4053,6 +4039,37 @@ class AgenticClaudeTests(unittest.TestCase):
         gap = [insight for insight in report["insights"] if insight["kind"] == "assignment_gap"][0]
         self.assertIsNone(gap["days"])
         self.assertIn("no tracked assignments", gap["title"])
+
+    def test_classops_empty_assignment_gap_does_not_push(self):
+        summary = {
+            "connected": True,
+            "classes": [{
+                "class_name": "3G3",
+                "pending_count": 0,
+                "open_submission_count": 0,
+                "concern_count": 0,
+                "due_today_count": 0,
+                "overdue_count": 0,
+                "top_insight": {
+                    "kind": "assignment_gap",
+                    "severity": "watch",
+                    "title": "3G3 has no tracked assignments yet",
+                    "detail": "Start tracking from a contents item when you next collect work.",
+                    "days": None,
+                },
+            }],
+        }
+
+        self.assertEqual(classops_ai.top_home_signal(summary), {})
+        self.assertEqual(classops_ai.proactive_insights(summary), [])
+        self.assertEqual(
+            bot._low_value_notification_block_reason(
+                "proactive_intelligence:2026-05-24:classops:3G3",
+                "3G3 has no tracked assignments yet",
+                "Start tracking from a contents item when you next collect work.",
+            ),
+            "classops_empty_assignment_state",
+        )
 
     def test_classops_empty_non_submission_list_does_not_mark_everyone_missing(self):
         ledger = {

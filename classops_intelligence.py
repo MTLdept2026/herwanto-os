@@ -749,11 +749,12 @@ def top_home_signal(summary: dict) -> dict:
     scored = []
     for item in classes:
         insight = item.get("top_insight") if isinstance(item.get("top_insight"), dict) else {}
+        actionable_insight = insight if _classops_insight_is_actionable_push_signal(insight) else {}
         overdue = int(item.get("overdue_count", 0) or 0)
         due_today = int(item.get("due_today_count", 0) or 0)
         concerns = int(item.get("concern_count", 0) or 0)
         pending = int(item.get("pending_count", 0) or 0)
-        severity = str(insight.get("severity") or "").lower()
+        severity = str(actionable_insight.get("severity") or "").lower()
         score = overdue * 35 + due_today * 28 + concerns * 6 + pending * 4
         if severity == "critical":
             score += 30
@@ -761,7 +762,7 @@ def top_home_signal(summary: dict) -> dict:
             score += 12
         if score <= 0:
             continue
-        scored.append((score, item, insight))
+        scored.append((score, item, actionable_insight))
     if not scored:
         return {}
     score, item, insight = sorted(scored, key=lambda part: part[0], reverse=True)[0]
@@ -808,7 +809,7 @@ def brief_lines(summary: dict, limit: int = 3) -> list[str]:
             if int(item.get("overdue_count", 0) or 0)
             or int(item.get("due_today_count", 0) or 0)
             or int(item.get("concern_count", 0) or 0)
-            or item.get("top_insight")
+            or _classops_insight_is_actionable_push_signal(item.get("top_insight") if isinstance(item.get("top_insight"), dict) else {})
         ],
         key=lambda item: (
             int(item.get("overdue_count", 0) or 0),
@@ -829,6 +830,8 @@ def brief_lines(summary: dict, limit: int = 3) -> list[str]:
         if item.get("concern_count"):
             parts.append(f"{item.get('concern_count')} student follow-up")
         insight = item.get("top_insight") if isinstance(item.get("top_insight"), dict) else {}
+        if not _classops_insight_is_actionable_push_signal(insight):
+            insight = {}
         detail = insight.get("title") or ", ".join(parts) or "ClassOps attention needed"
         students = [student.get("name", "") for student in item.get("top_students", []) if student.get("name")]
         suffix = f" Start with {', '.join(students[:2])}." if students else ""
@@ -862,3 +865,11 @@ def proactive_insights(summary: dict, now: datetime | None = None) -> list[dict]
             "control_centre_url": signal.get("control_centre_url", "/classops"),
         },
     }]
+
+
+def _classops_insight_is_actionable_push_signal(insight: dict) -> bool:
+    if not isinstance(insight, dict) or not insight:
+        return False
+    if str(insight.get("kind", "")).strip() == "assignment_gap" and insight.get("days") is None:
+        return False
+    return True

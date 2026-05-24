@@ -89,8 +89,6 @@ _MEMORY_GC_RATIO = _env_float("HIRA_WEB_MEMORY_GC_RATIO", 0.80)
 _MEMORY_REJECT_RATIO = _env_float("HIRA_WEB_MEMORY_REJECT_RATIO", 0.92)
 _MEMORY_WATCHDOG_SECONDS = _env_int("HIRA_WEB_MEMORY_WATCHDOG_SECONDS", 45, minimum=10)
 _CHAT_MAX_TOKENS = _env_int("HIRA_WEB_CHAT_MAX_TOKENS", 3200, minimum=650)
-_FAST_SOURCE_TIMEOUT_SECONDS = max(2.0, min(8.0, _env_float("HIRA_WEB_FAST_SOURCE_TIMEOUT_SECONDS", 4.0)))
-_FAST_SOURCE_SYNTHESIS_TIMEOUT_SECONDS = max(1.0, min(4.0, _env_float("HIRA_WEB_FAST_SOURCE_SYNTHESIS_TIMEOUT_SECONDS", 2.0)))
 _AUTH_RATE_LIMIT = _env_int("HIRA_WEB_AUTH_RATE_LIMIT", 8)
 _WEB_INLINE_SCHEDULER = _env_bool("HIRA_WEB_INLINE_SCHEDULER", False)
 _WEB_PUSH_RECOVERY_ENABLED = _env_bool("HIRA_WEB_PUSH_RECOVERY_ENABLED", True)
@@ -431,9 +429,42 @@ def _mark_recovered_nudge(source: str):
         bot.logger.warning(f"Could not mark recovered nudge delivered: {exc}")
 
 
+def _archive_low_value_notifications() -> int:
+    try:
+        queued = bot.gs.get_app_notifications(include_archived=False)
+    except Exception as exc:
+        bot.logger.warning(f"Could not scan low-value notifications: {exc}")
+        return 0
+    ids = [
+        str(item.get("id", "") or "").strip()
+        for item in queued
+        if bot._low_value_notification_block_reason(
+            str(item.get("source", "") or ""),
+            str(item.get("title", "") or ""),
+            str(item.get("body", "") or ""),
+        )
+    ]
+    ids = [item_id for item_id in ids if item_id]
+    if not ids:
+        return 0
+    try:
+        archived = bot.gs.archive_app_notifications(ids)
+    except Exception as exc:
+        bot.logger.warning(f"Could not archive low-value notifications: {exc}")
+        return 0
+    for item_id in ids:
+        bot._record_notification_outcome(
+            "blocked_classops_empty_assignment_state",
+            notification_id=item_id,
+            kind="update",
+        )
+    return archived
+
+
 def recover_missed_push_notifications(limit: int | None = None) -> dict:
     current = datetime.now(bot.SGT)
     max_age = current - bot.timedelta(hours=_WEB_PUSH_RECOVERY_MAX_AGE_HOURS)
+    _archive_low_value_notifications()
     try:
         queued = bot.gs.get_app_notifications(include_archived=False)
         delivery_log = bot.gs.get_web_push_delivery_log()
@@ -465,6 +496,22 @@ def recover_missed_push_notifications(limit: int | None = None) -> dict:
             skipped += 1
             continue
         item_id = str(item.get("id", "") or "").strip()
+        low_value_block = bot._low_value_notification_block_reason(source, title, body)
+        if low_value_block:
+            skipped += 1
+            if item_id:
+                try:
+                    bot.gs.archive_app_notifications([item_id])
+                except Exception as exc:
+                    bot.logger.warning(f"Could not archive low-value recovered notification {item_id}: {exc}")
+            bot._record_notification_outcome(
+                f"blocked_{low_value_block}",
+                notification_id=item_id,
+                source=source,
+                kind=kind,
+                title=title,
+            )
+            continue
         devotional_block = bot._devotional_notification_block_reason(source, title, body)
         if devotional_block:
             skipped += 1
@@ -3358,188 +3405,6 @@ def _streaming_presence_preface(message: str, tool_name: str) -> str:
     return ""
 
 
-def _pwa_fast_source_jobs(message: str) -> list[dict]:
-    clean = " ".join(str(message or "").split())
-    lowered = clean.lower()
-    if not clean:
-        return []
-    jobs: list[dict] = []
-    if re.search(r"\b(?:f1|formula 1|grand prix|mercedes|russell|antonelli|hamilton|qualifying|pole)\b", lowered):
-        jobs.append({
-            "label": "F1 / Mercedes",
-            "tool": "get_latest_news",
-            "input": {
-                "query": f"Formula 1 Mercedes Russell Antonelli latest {clean}",
-                "max_items": 3,
-                "max_age_hours": bot.NEWS_MAX_AGE_HOURS,
-            },
-        })
-    if re.search(r"\b(?:liverpool|lfc|anfield|salah|robertson|robbo|brentford|premier league|epl|ynwa)\b", lowered):
-        jobs.append({
-            "label": "Liverpool",
-            "tool": "get_latest_news",
-            "input": {
-                "query": f"Liverpool FC latest {clean}",
-                "max_items": 3,
-                "max_age_hours": bot.NEWS_MAX_AGE_HOURS,
-            },
-        })
-    return jobs[:2]
-
-
-async def _run_fast_source_job(job: dict) -> dict:
-    label = str(job.get("label", "") or "Source").strip()
-    tool_name = str(job.get("tool", "") or "get_latest_news").strip()
-    tool_input = job.get("input") if isinstance(job.get("input"), dict) else {}
-    started = time.perf_counter()
-    try:
-        result = await bot._execute_tool_offloop(tool_name, tool_input)
-        return {
-            **job,
-            "ok": bool(result and not str(result).startswith("Failed to")),
-            "result": str(result or ""),
-            "elapsed_ms": round((time.perf_counter() - started) * 1000),
-        }
-    except Exception as exc:
-        bot.logger.warning(f"PWA fast source job failed for {label}: {exc}")
-        return {
-            **job,
-            "ok": False,
-            "result": f"Failed to fetch {label}: {exc}",
-            "elapsed_ms": round((time.perf_counter() - started) * 1000),
-        }
-
-
-def _fast_source_pack(results: list[dict]) -> str:
-    sections: list[str] = []
-    for item in results:
-        label = str(item.get("label", "") or "Source").strip()
-        result = str(item.get("result", "") or "").strip()
-        bullets = _fallback_news_items(result, limit=3)
-        if bullets:
-            body = "\n".join(f"- {bullet}" for bullet in bullets)
-        else:
-            body = _summarise_source_fallback(result, limit=700)
-        sections.append(f"{label}\n{body}")
-    return "\n\n".join(section for section in sections if section.strip())
-
-
-def _deterministic_fast_source_reply(message: str, results: list[dict], timed_out: bool = False) -> str:
-    usable = [item for item in results if item.get("ok")]
-    if not usable:
-        timeout_note = " within the fast-response window" if timed_out else ""
-        return (
-            f"I could not get a reliable live source result{timeout_note}, so I’m not going to pad this with memory. "
-            "Try again and I’ll take the deeper source route."
-        )
-    sections = []
-    for item in usable:
-        label = str(item.get("label", "") or "Source").strip()
-        bullets = _fallback_news_items(str(item.get("result", "")), limit=3)
-        if bullets:
-            sections.append(f"*{label}*\n" + "\n".join(f"- {bullet}" for bullet in bullets))
-        else:
-            sections.append(f"*{label}*\n{_summarise_source_fallback(str(item.get('result', '')), limit=650)}")
-    suffix = "\n\nSome slower checks were still running, so this is the fast live pass rather than the deep-dive version." if timed_out else ""
-    joined_sections = "\n\n".join(sections)
-    return (
-        "Fast live pass, source-backed and kept tight:\n\n"
-        f"{joined_sections}"
-        f"{suffix}"
-    )
-
-
-async def _synthesise_fast_source_reply(message: str, results: list[dict], timed_out: bool = False) -> str:
-    pack = _fast_source_pack([item for item in results if item.get("ok")])
-    if not pack:
-        return _deterministic_fast_source_reply(message, results, timed_out=timed_out)
-    system = (
-        "You are H.I.R.A, Herwanto's personal assistant. Produce a fast but high-quality live-source answer. "
-        "Do not dumb it down: include the useful nuance, separate confirmed facts from reads/reactions, and avoid filler. "
-        "Use only the source pack. If a detail is not supported there, say it is not confirmed in the fast pass. "
-        "Keep it compact: 4 to 8 short bullets or paragraphs. No raw citation tokens."
-    )
-    prompt = (
-        f"User asked:\n{message}\n\n"
-        f"Source pack:\n{pack}\n\n"
-        "Answer in H.I.R.A's natural voice. Lead with what matters most, then the fan/supporter read if relevant."
-    )
-    try:
-        reply = await asyncio.wait_for(
-            bot._llm_text_async(
-                model=bot.QUICK_MODEL,
-                max_tokens=650,
-                messages=[{"role": "user", "content": prompt}],
-                system=system,
-            ),
-            timeout=_FAST_SOURCE_SYNTHESIS_TIMEOUT_SECONDS,
-        )
-        clean = bot.strip_ai_citation_markers(reply)
-        if clean:
-            return clean
-    except Exception as exc:
-        bot.logger.warning(f"PWA fast source synthesis fell back: {exc}")
-    return _deterministic_fast_source_reply(message, results, timed_out=timed_out)
-
-
-def _fast_source_sse_response(message: str, history_key: str, history: list, jobs: list[dict]):
-    quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
-
-    async def events():
-        started = time.perf_counter()
-
-        def sse(payload: dict) -> str:
-            return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-
-        trace = _new_chat_trace(message, route_name="fast_source")
-        _merge_chat_trace(trace, {
-            "tools_available": [job.get("tool", "get_latest_news") for job in jobs],
-            "tools_called": [job.get("tool", "get_latest_news") for job in jobs],
-            "final_mode": "fast_source_direct",
-        })
-        try:
-            yield sse({"type": "route", "name": "fast_source"})
-            yield sse({"type": "tools", "count": len(jobs), "names": [job.get("tool", "get_latest_news") for job in jobs]})
-            yield sse({"type": "trace", "trace": trace})
-            yield sse({"type": "text", "text": "Fast live check first. I’ll keep the answer tight, but not thin.\n\n"})
-            for job in jobs:
-                yield sse({"type": "tool", "name": job.get("tool", "get_latest_news")})
-
-            tasks = [asyncio.create_task(_run_fast_source_job(job)) for job in jobs]
-            done, pending = await asyncio.wait(tasks, timeout=_FAST_SOURCE_TIMEOUT_SECONDS)
-            results = [task.result() for task in done if not task.cancelled()]
-            timed_out = bool(pending)
-            for task in pending:
-                task.cancel()
-            results.sort(key=lambda item: str(item.get("label", "")))
-            reply = await _synthesise_fast_source_reply(message, results, timed_out=timed_out)
-            elapsed_ms = round((time.perf_counter() - started) * 1000)
-            _merge_chat_trace(trace, {
-                "fast_source_elapsed_ms": elapsed_ms,
-                "fast_source_timed_out": timed_out,
-                "response_contract": {
-                    "status": "fast_source_answered" if any(item.get("ok") for item in results) else "fast_source_no_result"
-                },
-            })
-            quick_history.append({"role": "assistant", "content": reply})
-            _save_history_best_effort(history_key, quick_history)
-            yield sse({"type": "replace", "text": reply})
-            yield sse({"type": "done", "text": reply})
-            yield sse({"type": "trace", "trace": _finalise_chat_trace(trace, "answered")})
-            yield sse({"type": "saved"})
-        except Exception as exc:
-            bot.logger.exception(f"PWA fast source route failed: {exc}")
-            reply = "The fast live route tripped before it could produce a reliable answer. Try again and I’ll take the normal route."
-            yield sse({"type": "replace", "text": reply})
-            yield sse({"type": "done", "text": reply})
-        finally:
-            _CHAT_SEMAPHORE.release()
-            gc.collect()
-            bot._log_memory("after pwa fast source")
-
-    return StreamingResponse(events(), media_type="text/event-stream")
-
-
 def _with_presence_preface(text: str, presence: str) -> str:
     clean_text = str(text or "").strip()
     clean_presence = str(presence or "").strip()
@@ -4067,10 +3932,6 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             route_name="briefing_replay",
             tool_name=f"{briefing_slot}_briefing",
         )
-
-    fast_source_jobs = _pwa_fast_source_jobs(message)
-    if fast_source_jobs:
-        return _fast_source_sse_response(message, history_key, history, fast_source_jobs)
 
     triage_reply = await _pwa_triage_reply(message)
     if triage_reply:
@@ -4792,6 +4653,7 @@ def notifications(
 ):
     _require_token(x_hira_token)
     try:
+        _archive_low_value_notifications()
         items = bot.gs.unseen_app_notifications(_client_key(x_hira_client), limit=limit)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Notifications unavailable: {exc}") from exc
