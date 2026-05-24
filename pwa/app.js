@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260523-citation-cleanup-61";
-const APP_SCRIPT = "app.js?v=20260523-citation-cleanup-61";
-const EXPECTED_SW_CACHE = "hira-os-v131";
+const APP_VERSION = "20260524-chat-progress-citation-62";
+const APP_SCRIPT = "app.js?v=20260524-chat-progress-citation-62";
+const EXPECTED_SW_CACHE = "hira-os-v132";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
@@ -2237,8 +2237,9 @@ function markdownish(text) {
 
 function stripCitationMarkers(text) {
   return String(text || "")
-    .replace(/\uFFFDcite\uFFFD[\w.-]*\uFFFD?/g, "")
-    .replace(/\uFFFDcite(?:\uFFFD?[\w.-]*)?$/g, "")
+    .replace(/[\uE000-\uF8FF\uFFFD]cite(?:[\uE000-\uF8FF\uFFFD][\w.-]+)+[\uE000-\uF8FF\uFFFD]?/g, "")
+    .replace(/[\uE000-\uF8FF\uFFFD]cite(?:[\uE000-\uF8FF\uFFFD]?[\w.-]*)?$/g, "")
+    .replace(/(?:^|[ \t])(?:turn\d+(?:search|news|view|open|fetch)\d+[\uE000-\uF8FF\uFFFD]?)(?=[ \t\n.,;:!?]|$)/g, " ")
     .replace(/【\s*\d+(?::\d+)?\s*†[^】]*】/g, "")
     .replace(/【\s*source\s*】/gi, "")
     .replace(/[ \t]{2,}/g, " ")
@@ -2716,6 +2717,52 @@ function setHiraSpeaking(el, speaking) {
 function updateMessage(el, text) {
   el.querySelector(".message-body").innerHTML = renderChatText(visibleChatText(text || "") || "");
   scrollMessagesToBottom();
+}
+
+function progressTextForTool(name = "") {
+  const clean = String(name || "").trim();
+  if (["get_latest_news", "get_liverpool_brief", "get_f1_brief", "web_search", "web_research", "fetch_url"].includes(clean)) {
+    return [
+      "Still checking live sources...",
+      "Reading and cross-checking the useful bits...",
+      "This is taking longer than it should. I’m still on it.",
+    ];
+  }
+  if (["get_gmail_brief", "create_gmail_draft"].includes(clean)) {
+    return [
+      "Still checking Gmail...",
+      "Reading the matching messages...",
+      "This is taking longer than it should. I’m still on it.",
+    ];
+  }
+  if (["get_timetable", "get_assistant_context", "get_task_brief", "get_cca_schedule"].includes(clean)) {
+    return [
+      "Still checking your current context...",
+      "Putting the relevant details together...",
+      "This is taking longer than it should. I’m still on it.",
+    ];
+  }
+  return [
+    "Still working...",
+    "Putting the answer together...",
+    "This is taking longer than it should. I’m still on it.",
+  ];
+}
+
+function startChatProgress(pending, getBaseText, getToolName) {
+  const timers = [];
+  const delays = [4500, 12000, 24000];
+  delays.forEach((delay, index) => {
+    timers.push(window.setTimeout(() => {
+      if (!state.chatBusy || !pending?.isConnected) return;
+      const baseText = visibleChatText(getBaseText?.() || "");
+      const notes = progressTextForTool(getToolName?.() || "");
+      const note = notes[Math.min(index, notes.length - 1)];
+      if (!note) return;
+      updateMessage(pending, [baseText, note].filter(Boolean).join("\n\n"));
+    }, delay));
+  });
+  return () => timers.forEach((timer) => window.clearTimeout(timer));
 }
 
 function appendToolStatus(el, name) {
@@ -3482,8 +3529,10 @@ async function sendChat(message) {
   pending.classList.add("pending");
   setHiraSpeaking(pending, true);
   let latestText = "";
+  let activeToolName = "";
   let understanding = null;
   let trace = null;
+  const stopProgress = startChatProgress(pending, () => latestText, () => activeToolName);
   try {
     const reply = await streamChatResponse(message, (event, streamedText = latestText) => {
       if (event.type === "route") {
@@ -3510,7 +3559,10 @@ async function sendChat(message) {
       if (event.type === "continuation") {
         setStatus("Continuing response to avoid cutoff...", "muted");
       }
-      if (event.type === "tool") appendToolStatus(pending, event.name);
+      if (event.type === "tool") {
+        activeToolName = event.name || activeToolName;
+        appendToolStatus(pending, event.name);
+      }
       if (event.type === "notifications_archived" && Array.isArray(event.ids)) {
         const archivedIds = new Set(event.ids.map(String));
         state.dismissedNotificationIds.push(...archivedIds);
@@ -3552,6 +3604,7 @@ async function sendChat(message) {
     console.error(error);
     setStatus(friendly, "error");
   } finally {
+    stopProgress();
     state.chatBusy = false;
     updateComposerState();
     refreshAgendaSurfacesSoon();

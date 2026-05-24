@@ -1564,8 +1564,9 @@ def _openai_text_from_response(resp) -> str:
 
 def strip_ai_citation_markers(text: str = "") -> str:
     clean = str(text or "")
-    clean = re.sub(r"\uFFFDcite\uFFFD[\w.-]*\uFFFD?", "", clean)
-    clean = re.sub(r"\uFFFDcite(?:\uFFFD?[\w.-]*)?$", "", clean)
+    clean = re.sub(r"[\uE000-\uF8FF\uFFFD]cite(?:[\uE000-\uF8FF\uFFFD][\w.-]+)+[\uE000-\uF8FF\uFFFD]?", "", clean)
+    clean = re.sub(r"[\uE000-\uF8FF\uFFFD]cite(?:[\uE000-\uF8FF\uFFFD]?[\w.-]*)?$", "", clean)
+    clean = re.sub(r"(?:^|[ \t])(?:turn\d+(?:search|news|view|open|fetch)\d+[\uE000-\uF8FF\uFFFD]?)(?=[ \t\n.,;:!?]|$)", " ", clean)
     clean = re.sub(r"【\s*\d+(?::\d+)?\s*†[^】]*】", "", clean)
     clean = re.sub(r"【\s*source\s*】", "", clean, flags=re.I)
     clean = re.sub(r"[ \t]{2,}", " ", clean)

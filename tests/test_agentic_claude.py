@@ -1463,6 +1463,20 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(data["git_commit"], "abcdef123456")
         self.assertIn("server_time", data)
 
+    def test_fast_source_jobs_cover_opening_sports_chat(self):
+        jobs = web_app._pwa_fast_source_jobs(
+            "Great news for mercedes yesterday and tonight will be emotional for Liverpool fans"
+        )
+
+        self.assertEqual([job["label"] for job in jobs], ["F1 / Mercedes", "Liverpool"])
+        self.assertTrue(all(job["tool"] == "get_latest_news" for job in jobs))
+        self.assertIn("Mercedes", jobs[0]["input"]["query"])
+        self.assertIn("Liverpool FC", jobs[1]["input"]["query"])
+
+    def test_fast_source_budget_stays_immediate(self):
+        self.assertLessEqual(web_app._FAST_SOURCE_TIMEOUT_SECONDS, 4.0)
+        self.assertLessEqual(web_app._FAST_SOURCE_SYNTHESIS_TIMEOUT_SECONDS, 2.0)
+
     def test_session_cookie_validates_and_csrf_blocks_cross_site(self):
         cookie = web_app._new_session_cookie("secret-token")
         same_origin = SimpleNamespace(

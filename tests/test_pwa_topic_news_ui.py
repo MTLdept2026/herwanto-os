@@ -107,7 +107,7 @@ class PwaTopicNewsUiTests(unittest.TestCase):
             raise unittest.SkipTest(f"Playwright is not installed: {exc}")
         cls._sync_playwright = staticmethod(sync_playwright)
 
-    def _run_page(self, chat_body, prompt="How about Nothing, Teenage Engineering and Android stuff?"):
+    def _run_page(self, chat_body, prompt="How about Nothing, Teenage Engineering and Android stuff?", wait_for_text="Nothing OS update reaches Phone users"):
         with self._sync_playwright() as p:
             executable = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
             launch_kwargs = {"headless": True}
@@ -157,7 +157,7 @@ class PwaTopicNewsUiTests(unittest.TestCase):
                 page.goto(f"{self.base_url}/pwa/index.html", wait_until="domcontentloaded")
                 page.locator("#messageInput").fill(prompt)
                 page.locator("#chatForm").evaluate("form => form.requestSubmit()")
-                page.locator("#messages").get_by_text("Nothing OS update reaches Phone users").wait_for(timeout=6000)
+                page.locator("#messages").get_by_text(wait_for_text).wait_for(timeout=6000)
                 return page.locator("#messages").inner_text()
             finally:
                 browser.close()
@@ -375,3 +375,30 @@ class PwaTopicNewsUiTests(unittest.TestCase):
         self.assertIn("AI model update", messages)
         self.assertIn("Nothing OS update", messages)
         self.assertNotIn("backend snag", messages.lower())
+
+    def test_openai_citation_markers_are_hidden_in_chat(self):
+        with _static_server() as base_url:
+            self.base_url = base_url
+            reply = (
+                "\ue200cite\ue202turn0search0\ue202turn0search9\ue201\n"
+                "- Then Russell went and took **Canadian GP pole**, with Antonelli P2.\n"
+                "\n\ufffdcite\ufffdturn1search0\ufffdturn1search4\ufffd\n"
+                "Tonight is going to hurt a bit for Liverpool fans."
+            )
+            body = _sse(
+                {"type": "route", "name": "agentic"},
+                {"type": "text", "text": reply},
+                {"type": "done", "text": reply},
+                {"type": "saved"},
+            )
+            messages = self._run_page(
+                body,
+                prompt="Great news for mercedes yesterday and liverpool tonight?",
+                wait_for_text="Canadian GP pole",
+            )
+
+        self.assertIn("Canadian GP pole", messages)
+        self.assertIn("Liverpool fans", messages)
+        self.assertNotIn("cite", messages)
+        self.assertNotIn("turn0search", messages)
+        self.assertNotIn("turn1search", messages)
