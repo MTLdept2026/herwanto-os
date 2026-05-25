@@ -191,13 +191,22 @@ async def _is_authorized(update) -> bool:
     except Exception:
         pass
     return False
+_DEEPSEEK_SUPPORTED_MODELS = {"deepseek-v4-flash", "deepseek-v4-pro"}
+
+
 def _model_from_env(key: str, default: str) -> str:
     raw = os.environ.get(key, "").strip()
     if LLM_PROVIDER == "openai" and raw.lower().startswith("claude"):
         logger.warning("%s=%r is an Anthropic model while HIRA_LLM_PROVIDER=openai; using %s", key, raw, default)
         return default
-    if LLM_PROVIDER == "deepseek" and raw and not raw.lower().startswith("deepseek-"):
-        logger.warning("%s=%r is not a DeepSeek model while HIRA_LLM_PROVIDER=deepseek; using %s", key, raw, default)
+    if LLM_PROVIDER == "deepseek" and raw and raw not in _DEEPSEEK_SUPPORTED_MODELS:
+        logger.warning(
+            "%s=%r is not a supported DeepSeek API model while HIRA_LLM_PROVIDER=deepseek; using %s. "
+            "DeepSeek's Anthropic API may silently map unsupported names to deepseek-v4-flash.",
+            key,
+            raw,
+            default,
+        )
         return default
     return raw or default
 
@@ -227,9 +236,14 @@ DEEP_MODEL = _model_from_env("HIRA_DEEP_MODEL", _DEFAULT_DEEP_MODEL)
 QUICK_MODEL = _model_from_env("HIRA_QUICK_MODEL", _DEFAULT_QUICK_MODEL)
 ROUTER_MODEL = _model_from_env("HIRA_ROUTER_MODEL", _DEFAULT_ROUTER_MODEL)
 STRUCTURED_MODEL = _model_from_env("HIRA_STRUCTURED_MODEL", _DEFAULT_STRUCTURED_MODEL)
-DEEPSEEK_OPENAI_FALLBACK = _env_flag("HIRA_DEEPSEEK_OPENAI_FALLBACK", True)
+DEEPSEEK_OPENAI_FALLBACK = _env_flag("HIRA_DEEPSEEK_OPENAI_FALLBACK", False)
+DEEPSEEK_THINKING_MODE = os.environ.get("HIRA_DEEPSEEK_THINKING_MODE", "auto").strip().lower() or "auto"
+if DEEPSEEK_THINKING_MODE not in {"auto", "enabled", "disabled"}:
+    logger.warning("Invalid HIRA_DEEPSEEK_THINKING_MODE=%r; using auto", DEEPSEEK_THINKING_MODE)
+    DEEPSEEK_THINKING_MODE = "auto"
 OPENAI_FALLBACK_QUICK_MODEL = os.environ.get("HIRA_OPENAI_FALLBACK_QUICK_MODEL", "gpt-5.4-mini").strip() or "gpt-5.4-mini"
 OPENAI_FALLBACK_AGENTIC_MODEL = os.environ.get("HIRA_OPENAI_FALLBACK_AGENTIC_MODEL", "gpt-5.4").strip() or "gpt-5.4"
+OPENAI_VISION_MODEL = os.environ.get("HIRA_OPENAI_VISION_MODEL", OPENAI_FALLBACK_AGENTIC_MODEL).strip() or OPENAI_FALLBACK_AGENTIC_MODEL
 OPENAI_FULL_POWER_MODE = _env_flag("HIRA_OPENAI_FULL_POWER_MODE", LLM_PROVIDER == "openai")
 FAST_CHAT_MODE = _env_flag("HIRA_FAST_CHAT_MODE", True)
 OPENAI_STORE_RESPONSES = _env_flag("HIRA_OPENAI_STORE_RESPONSES", True)
@@ -2631,6 +2645,148 @@ def _deepseek_openai_fallback_enabled() -> bool:
     return bool(LLM_PROVIDER == "deepseek" and DEEPSEEK_OPENAI_FALLBACK and OPENAI_API_KEY)
 
 
+def _anthropic_compatible_provider_label() -> str:
+    return "DeepSeek" if LLM_PROVIDER == "deepseek" else "Claude"
+
+
+def _deepseek_uses_thinking(tier: str = "", policy: dict | None = None) -> bool:
+    if LLM_PROVIDER != "deepseek":
+        return False
+    if DEEPSEEK_THINKING_MODE == "enabled":
+        return True
+    if DEEPSEEK_THINKING_MODE == "disabled":
+        return False
+    effective_tier = str(tier or (policy or {}).get("tier") or "").lower()
+    return effective_tier not in {"quick", "router", "structured", "text"}
+
+
+def _deepseek_effort_for_policy(policy: dict | None = None) -> str:
+    policy = policy or {}
+    effort = str(policy.get("reasoning_effort") or "").lower()
+    if str(policy.get("tier") or "").lower() == "deep" or effort in {"xhigh", "max"}:
+        return "max"
+    return "high"
+
+
+def _deepseek_anthropic_request_options(policy: dict | None = None, tier: str = "") -> dict:
+    if LLM_PROVIDER != "deepseek":
+        return {}
+    if not _deepseek_uses_thinking(tier=tier, policy=policy):
+        return {"thinking": {"type": "disabled"}}
+    return {
+        "thinking": {"type": "enabled"},
+        "output_config": {"effort": _deepseek_effort_for_policy(policy)},
+    }
+
+
+def _anthropic_text_from_message(resp) -> str:
+    for block in getattr(resp, "content", []) or []:
+        if getattr(block, "type", None) == "text":
+            return str(getattr(block, "text", "") or "")
+    first = next(iter(getattr(resp, "content", []) or []), None)
+    return str(getattr(first, "text", "") or "")
+
+
+_DEEPSEEK_UNSUPPORTED_MESSAGE_BLOCKS = {
+    "image",
+    "document",
+    "search_result",
+    "redacted_thinking",
+    "server_tool_use",
+    "web_search_tool_result",
+    "code_execution_tool_result",
+    "mcp_tool_use",
+    "mcp_tool_result",
+    "container_upload",
+}
+
+
+def _deepseek_unsupported_message_blocks(messages: list[dict]) -> list[str]:
+    if LLM_PROVIDER != "deepseek":
+        return []
+    seen: list[str] = []
+    for message in messages or []:
+        content = message.get("content", "") if isinstance(message, dict) else ""
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            block_type = getattr(block, "type", None) if not isinstance(block, dict) else block.get("type")
+            if block_type in _DEEPSEEK_UNSUPPORTED_MESSAGE_BLOCKS and block_type not in seen:
+                seen.append(str(block_type))
+    return seen
+
+
+def _deepseek_unsupported_message_reply(blocks: list[str]) -> str:
+    label = ", ".join(blocks[:3]) or "non-text"
+    return (
+        f"DeepSeek is active, but its Anthropic-compatible API path in H.I.R.A does not support {label} message blocks. "
+        "Send the extracted text/OCR, or switch this upload/vision turn to a vision-capable provider. I'm not going to make DeepSeek look broken by feeding it an input it cannot accept."
+    )
+
+
+async def _openai_extract_image_message_for_deepseek(content: list[dict]) -> str:
+    text_parts = [
+        str(block.get("text", "") or "").strip()
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "text" and str(block.get("text", "") or "").strip()
+    ]
+    prompt = (
+        "Extract the useful information from this uploaded image for H.I.R.A. "
+        "Prioritise visible text/OCR, tables, dates, times, names, locations, deadlines, action items, and schedule entries. "
+        "Do not guess hidden or unreadable details; mark uncertainty clearly."
+    )
+    if text_parts:
+        prompt = f"{prompt}\n\nUser note and surrounding instructions:\n" + "\n\n".join(text_parts)
+    image_blocks = [
+        block
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "image"
+    ]
+    resp = await _openai_fallback_text_async(
+        model=OPENAI_VISION_MODEL,
+        max_tokens=1800,
+        system="You are a precise vision/OCR extraction pass. Return concise, structured observations only.",
+        messages=[{"role": "user", "content": image_blocks + [{"type": "text", "text": prompt}]}],
+    )
+    return resp.strip()
+
+
+async def _deepseek_messages_with_openai_vision(messages: list[dict]) -> list[dict]:
+    if LLM_PROVIDER != "deepseek" or not OPENAI_API_KEY:
+        return messages
+    transformed: list[dict] = []
+    changed = False
+    for message in messages or []:
+        if not isinstance(message, dict):
+            transformed.append(message)
+            continue
+        content = message.get("content", "")
+        if not (
+            isinstance(content, list)
+            and any(isinstance(block, dict) and block.get("type") == "image" for block in content)
+        ):
+            transformed.append(message)
+            continue
+        vision_text = await _openai_extract_image_message_for_deepseek(content)
+        text_parts = [
+            str(block.get("text", "") or "").strip()
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text" and str(block.get("text", "") or "").strip()
+        ]
+        original_text = "\n".join(text_parts) if text_parts else "(none)"
+        replacement = (
+            "Image upload was extracted by the configured OpenAI vision handoff because DeepSeek's "
+            "Anthropic-compatible API does not accept raw image blocks in H.I.R.A.\n\n"
+            f"Original user text:\n{original_text}\n\n"
+            f"Vision/OCR extraction:\n{vision_text or '(no readable content extracted)'}"
+        )
+        updated = dict(message)
+        updated["content"] = replacement
+        transformed.append(updated)
+        changed = True
+    return transformed if changed else messages
+
+
 async def _openai_fallback_text_async(
     model: str,
     max_tokens: int,
@@ -2650,6 +2806,7 @@ def _llm_text(model: str, max_tokens: int, messages: list[dict], system: str | N
     if LLM_PROVIDER == "openai":
         resp = _openai_create_response(model=model, max_tokens=max_tokens, messages=messages, system=system)
         return _openai_text_from_response(resp)
+    policy = model_policy_for_messages(messages)
     kwargs = dict(
         model=model,
         max_tokens=max_tokens,
@@ -2657,15 +2814,17 @@ def _llm_text(model: str, max_tokens: int, messages: list[dict], system: str | N
     )
     if system:
         kwargs["system"] = system
+    kwargs.update(_deepseek_anthropic_request_options(policy, tier="text"))
     resp = claude.messages.create(**kwargs)
     _record_deepseek_usage(resp, model=model, tier="text", stream=False)
-    return resp.content[0].text
+    return _anthropic_text_from_message(resp)
 
 
 async def _llm_text_async(model: str, max_tokens: int, messages: list[dict], system: str | None = None) -> str:
     if LLM_PROVIDER == "openai":
         resp = await _openai_create_response_async(model=model, max_tokens=max_tokens, messages=messages, system=system)
         return _openai_text_from_response(resp)
+    policy = model_policy_for_messages(messages)
     kwargs = dict(
         model=model,
         max_tokens=max_tokens,
@@ -2673,9 +2832,10 @@ async def _llm_text_async(model: str, max_tokens: int, messages: list[dict], sys
     )
     if system:
         kwargs["system"] = system
+    kwargs.update(_deepseek_anthropic_request_options(policy, tier="text"))
     resp = await async_claude.messages.create(**kwargs)
     _record_deepseek_usage(resp, model=model, tier="text", stream=False)
-    return resp.content[0].text
+    return _anthropic_text_from_message(resp)
 
 # Claude tool definition for web search
 SEARCH_TOOL = {
@@ -11100,10 +11260,10 @@ async def memory_cmd(update, context):
 
 
 async def memcheck_cmd(update, context):
-    """Diagnostic: shows what's stored vs. what Claude actually sees in the prompt.
+    """Diagnostic: shows what's stored vs. what the active chat model sees in the prompt.
 
     Added 2026-05-12 after diagnosing that older memories were silently dropped from
-    Claude's view (truncation limits + retrieval thresholds) even though they were
+    the model's view (truncation limits + retrieval thresholds) even though they were
     persisted in the Sheet. Run this when the bot "seems to forget" something to verify
     where the gap is: storage, prompt-window, or retrieval.
     """
@@ -11133,7 +11293,7 @@ async def memcheck_cmd(update, context):
         f"Source of truth: {source_label}.",
         f"Total items stored: {total_stored}",
         "",
-        "Per-category: stored / shown to Claude / limit",
+        "Per-category: stored / shown to active model / limit",
     ]
     hidden_categories: list[str] = []
     for category in MEMORY_DISPLAY_CATEGORIES:
@@ -11152,7 +11312,7 @@ async def memcheck_cmd(update, context):
         lines.append(f"- {category}: {stored} / {shown} / {limit_label}{marker}")
 
     lines.append("")
-    lines.append(f"Total shown to Claude per chat: {total_in_prompt} of {total_stored}.")
+    lines.append(f"Total shown to active model per chat: {total_in_prompt} of {total_stored}.")
     if hidden_categories:
         lines.append(
             "\nSome categories have items the prompt does not include. They are still "
@@ -11160,7 +11320,7 @@ async def memcheck_cmd(update, context):
             f"keywords. Hidden: {', '.join(hidden_categories)}."
         )
     else:
-        lines.append("\nEvery stored memory currently fits in Claude's prompt window.")
+        lines.append("\nEvery stored memory currently fits in the active model's prompt window.")
 
     lines.append(
         "\nTo verify a fresh /remember landed: run /remember <a fact>, then /memcheck. "
@@ -11843,11 +12003,19 @@ def _llm_provider_status_reply(messages: list[dict]) -> str | None:
     vector_memory = "enabled" if _openai_vector_sync_ready("memory") else "not configured"
     vector_uploads = "enabled" if _openai_vector_sync_ready("upload") else "not configured"
     action_planner = "enabled" if OPENAI_ACTION_PLANNER_ENABLED and LLM_PROVIDER == "openai" else "disabled"
+    deepseek_runtime = ""
+    if LLM_PROVIDER == "deepseek":
+        thinking = "auto" if DEEPSEEK_THINKING_MODE == "auto" else DEEPSEEK_THINKING_MODE
+        fallback = "enabled" if _deepseek_openai_fallback_enabled() else "disabled"
+        deepseek_runtime = (
+            f" DeepSeek endpoint: `{DEEPSEEK_BASE_URL}`. "
+            f"Thinking mode: {thinking}. OpenAI fallback: {fallback}."
+        )
     return (
         f"I'm currently routed through {provider_label} "
         f"(`HIRA_LLM_PROVIDER={LLM_PROVIDER}`), using `{model}` for this turn.\n\n"
         f"OpenAI vector memory: {vector_memory}. Native file search: {native_file_search}. "
-        f"Uploaded-file vector sync: {vector_uploads}. Action planner: {action_planner}."
+        f"Uploaded-file vector sync: {vector_uploads}. Action planner: {action_planner}.{deepseek_runtime}"
     )
 
 
@@ -12026,18 +12194,30 @@ async def _run_agentic_claude_impl(messages, max_tokens=2048, tools=None, openai
     if LLM_PROVIDER == "openai":
         return await _run_agentic_openai(messages, max_tokens=max_tokens, tools=tools, openai_state_key=openai_state_key)
 
+    unsupported_blocks = _deepseek_unsupported_message_blocks(messages)
+    if "image" in unsupported_blocks and OPENAI_API_KEY:
+        try:
+            messages = await _deepseek_messages_with_openai_vision(messages)
+            unsupported_blocks = _deepseek_unsupported_message_blocks(messages)
+        except Exception as exc:
+            logger.warning("OpenAI vision handoff for DeepSeek failed: %s", exc)
+    if unsupported_blocks:
+        return _deepseek_unsupported_message_reply(unsupported_blocks)
+
     tools = tools or _core_tools()
     reply_text = ""
     max_iterations = 8
     all_tool_results: list[dict] = []
 
     for _ in range(max_iterations):
+        policy = model_policy_for_messages(messages)
         forced_tool = _forced_tool_for_current_turn(messages, tools)
         tool_choice = {"type": "tool", "name": forced_tool} if forced_tool else None
         kwargs = {}
         if tool_choice:
             kwargs["tool_choice"] = tool_choice
-        model = _agentic_model_for_messages(messages)
+        kwargs.update(_deepseek_anthropic_request_options(policy, tier=str(policy.get("tier") or "agentic")))
+        model = str(policy.get("model") or _agentic_model_for_messages(messages))
         try:
             resp = claude.messages.create(
                 model=model,
@@ -12047,11 +12227,11 @@ async def _run_agentic_claude_impl(messages, max_tokens=2048, tools=None, openai
                 messages=messages,
                 **kwargs,
             )
-            _record_deepseek_usage(resp, model=model, tier=model_policy_for_messages(messages).get("tier", "agentic"), stream=False)
+            _record_deepseek_usage(resp, model=model, tier=policy.get("tier", "agentic"), stream=False)
         except Exception as exc:
             fallback = _tool_action_fallback_reply(all_tool_results)
             if fallback:
-                logger.warning("Claude follow-up failed after tool actions; returning tool-result fallback: %s", exc)
+                logger.warning("%s follow-up failed after tool actions; returning tool-result fallback: %s", _anthropic_compatible_provider_label(), exc)
                 guarded = _memory_tool_failure_guardrail(fallback, all_tool_results)
                 guarded = _backend_claim_guardrail(guarded, all_tool_results)
                 guarded = _cca_sheet_user_burden_guardrail(guarded, all_tool_results)
@@ -12069,7 +12249,7 @@ async def _run_agentic_claude_impl(messages, max_tokens=2048, tools=None, openai
                     "role": "user",
                     "content": "Continue exactly where you stopped. Finish the response completely without restarting or summarising earlier text.",
                 })
-                logger.warning("Claude hit max_tokens in non-streaming chat; requesting continuation.")
+                logger.warning("%s hit max_tokens in non-streaming chat; requesting continuation.", _anthropic_compatible_provider_label())
                 continue
             break
 
@@ -12130,6 +12310,9 @@ def _obvious_quick_chat(text: str) -> bool:
         "ok", "okay", "k", "kk", "yes", "yep", "yeah", "no", "nope", "nah",
         "thanks", "thank you", "thx", "ty", "cool", "great", "nice", "noted",
         "got it", "understood", "sure", "alright", "morning", "hi", "hello", "hey",
+        "whats up", "what's up", "sup", "wassup", "what up", "what is up",
+        "whats good", "what's good", "what is good", "hows it going", "how's it going",
+        "how are things",
     }:
         return True
     return len(clean.split()) <= 5 and bool(re.search(r"\b(thanks?|ok(?:ay)?|yes|no|hi|hello|hey)\b", clean))
@@ -12450,11 +12633,16 @@ async def stream_quick_pwa_reply(messages: list[dict], message: str):
                 )
                 yield {"type": "text", "text": text}
             return
+        kwargs = _deepseek_anthropic_request_options(
+            model_policy_for_messages(prompt_messages),
+            tier="quick",
+        )
         async with async_claude.messages.stream(
             model=QUICK_MODEL,
             max_tokens=QUICK_REPLY_MAX_TOKENS,
             system=system,
             messages=prompt_messages,
+            **kwargs,
         ) as stream:
             async for event in stream:
                 if event.type == "content_block_delta" and getattr(event.delta, "type", None) == "text_delta":
@@ -12694,18 +12882,35 @@ async def stream_agentic_claude_impl(messages, max_tokens=650, tools=None, opena
             yield event
         return
 
+    unsupported_blocks = _deepseek_unsupported_message_blocks(messages)
+    if "image" in unsupported_blocks and OPENAI_API_KEY:
+        try:
+            messages = await _deepseek_messages_with_openai_vision(messages)
+            unsupported_blocks = _deepseek_unsupported_message_blocks(messages)
+            if "image" not in unsupported_blocks:
+                yield {"type": "trace", "patch": {"vision_handoff": "openai"}}
+        except Exception as exc:
+            logger.warning("OpenAI vision handoff for DeepSeek stream failed: %s", exc)
+    if unsupported_blocks:
+        reply = _deepseek_unsupported_message_reply(unsupported_blocks)
+        yield {"type": "replace", "text": reply}
+        yield {"type": "done", "text": reply}
+        return
+
     tools = tools or _core_tools()
     reply_text = ""
     max_iterations = 8
     all_tool_results: list[dict] = []
 
     for _ in range(max_iterations):
+        policy = model_policy_for_messages(messages)
         forced_tool = _forced_tool_for_current_turn(messages, tools)
         tool_choice = {"type": "tool", "name": forced_tool} if forced_tool else None
         kwargs = {}
         if tool_choice:
             kwargs["tool_choice"] = tool_choice
-        model = _agentic_model_for_messages(messages)
+        kwargs.update(_deepseek_anthropic_request_options(policy, tier=str(policy.get("tier") or "agentic")))
+        model = str(policy.get("model") or _agentic_model_for_messages(messages))
         resp = None
         text_parts = []
         try:
@@ -12723,7 +12928,7 @@ async def stream_agentic_claude_impl(messages, max_tokens=650, tools=None, opena
                         text_parts.append(text)
                         yield {"type": "text", "text": text}
                 resp = await stream.get_final_message()
-            _record_deepseek_usage(resp, model=model, tier=model_policy_for_messages(messages).get("tier", "agentic"), stream=True)
+            _record_deepseek_usage(resp, model=model, tier=policy.get("tier", "agentic"), stream=True)
         except Exception as exc:
             if LLM_PROVIDER == "deepseek" and not all_tool_results:
                 logger.warning("DeepSeek agentic stream failed; retrying with non-streaming request: %s", exc)
@@ -12756,7 +12961,7 @@ async def stream_agentic_claude_impl(messages, max_tokens=650, tools=None, opena
                     raise retry_exc
             fallback = _tool_action_fallback_reply(all_tool_results)
             if fallback:
-                logger.warning("Claude stream follow-up failed after tool actions; returning tool-result fallback: %s", exc)
+                logger.warning("%s stream follow-up failed after tool actions; returning tool-result fallback: %s", _anthropic_compatible_provider_label(), exc)
                 guarded = _memory_tool_failure_guardrail(fallback, all_tool_results)
                 guarded = _backend_claim_guardrail(guarded, all_tool_results)
                 guarded = _cca_sheet_user_burden_guardrail(guarded, all_tool_results)
@@ -12780,7 +12985,7 @@ async def stream_agentic_claude_impl(messages, max_tokens=650, tools=None, opena
                     "role": "user",
                     "content": "Continue exactly where you stopped. Finish the response completely without restarting or summarising earlier text.",
                 })
-                logger.warning("Claude hit max_tokens in streaming chat; requesting continuation.")
+                logger.warning("%s hit max_tokens in streaming chat; requesting continuation.", _anthropic_compatible_provider_label())
                 yield {"type": "continuation", "reason": "max_tokens"}
                 continue
             break
@@ -12823,7 +13028,7 @@ async def stream_agentic_claude_impl(messages, max_tokens=650, tools=None, opena
     yield {"type": "done", "text": corrected}
 
 async def handle_photo(update, context):
-    """Extract schedule data from photos/screenshots and send to Claude vision."""
+    """Extract schedule data from photos/screenshots and send to the active vision-capable chat provider."""
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     try:
         photo = update.message.photo[-1]
@@ -12908,7 +13113,7 @@ async def _process_office_document(update, doc, file_bytes: bytes, caption: str)
             direct_user_text=caption if update.message.caption else "",
         )
     except Exception as e:
-        logger.error(f"Document Claude analysis error: {e}")
+        logger.error(f"Document AI analysis error: {e}")
         reply_text = (
             f"I extracted the document text, but the AI analysis step failed: {e}\n\n"
             f"{index_note}\nTry asking me a narrower question like: “find Herwanto in this timetable”."
@@ -13767,7 +13972,7 @@ async def _process_user_text(update, context, text: str):
         await reply(update, reply_text)
 
     except Exception as e:
-        logger.error(f"Claude error: {e}")
+        logger.error(f"{_anthropic_compatible_provider_label()} chat error: {e}")
         await update.message.reply_text("Error. Try again.")
 
 def _openai_ok() -> bool:
@@ -14981,7 +15186,7 @@ async def followups_job(context):
 
 
 async def memory_consolidation_job(context=None):
-    """Weekly job: ask Claude to review corrections + reflections, promote durable
+    """Weekly job: ask the active chat model to review corrections + reflections, promote durable
     learnings into preferences/constraints, and prune stale entries.
     Runs Friday night at 22:30 SGT. Safe to call manually for a forced pass."""
     if not google_ok():

@@ -1250,11 +1250,8 @@ def _pwa_clean_addressed_message(message: str) -> str:
     return re.sub(r"\s+", " ", clean).strip()
 
 
-def _pwa_casual_status_prompt(message: str) -> bool:
-    clean = _pwa_clean_addressed_message(message)
-    if re.search(r"\b(?:about|with)\b", clean) and not re.search(r"\b(?:me|my|today|day)\b", clean):
-        return False
-    return clean in {
+def _pwa_casual_greeting_prompt(message: str) -> bool:
+    return _pwa_clean_addressed_message(message) in {
         "whats up",
         "what's up",
         "sup",
@@ -1270,12 +1267,21 @@ def _pwa_casual_status_prompt(message: str) -> bool:
         "what's good",
         "whats good",
         "what is good",
+    }
+
+
+def _pwa_casual_status_prompt(message: str) -> bool:
+    clean = _pwa_clean_addressed_message(message)
+    if re.search(r"\b(?:about|with)\b", clean) and not re.search(r"\b(?:me|my|today|day)\b", clean):
+        return False
+    return clean in {
         "brief me",
         "status brief",
         "daily brief",
     } or bool(re.search(
         r"\b(?:catch me up|bring me up to speed|give me (?:the )?(?:read|rundown|status|brief)|"
-        r"what should i know|anything i should know|what needs attention|where are we|state of play|lay of the land)\b",
+        r"what should i know (?:today|about my day)|anything i should know (?:today|about my day)|"
+        r"what needs attention|where are we|state of play|lay of the land)\b",
         clean,
     ))
 
@@ -1511,7 +1517,7 @@ async def _pwa_topic_news_reply(message: str, recent_context: str = "") -> str:
 
 def _update_working_memory(history_key: str, history: list, message: str) -> dict:
     memory = _load_working_memory(history_key)
-    if _pwa_casual_status_prompt(message):
+    if _pwa_casual_status_prompt(message) or _pwa_casual_greeting_prompt(message):
         updated = {
             **memory,
             "current_subject": "",
