@@ -7637,6 +7637,18 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("gpt-test", reply)
         self.assertIn("OpenAI vector memory:", reply)
 
+    def test_provider_status_handles_casual_current_provider_model_wording(self):
+        with (
+            patch.object(bot, "LLM_PROVIDER", "openai"),
+            patch.object(bot, "AGENTIC_MODEL", "gpt-test"),
+            patch.object(bot, "DEEP_MODEL", "gpt-test"),
+        ):
+            reply = bot._llm_provider_status_reply([{"role": "user", "content": "Whats ur current provider/model"}])
+
+        self.assertIsNotNone(reply)
+        self.assertIn("HIRA_LLM_PROVIDER=openai", reply)
+        self.assertIn("gpt-test", reply)
+
     def test_deepseek_provider_status_uses_deepseek_label(self):
         with (
             patch.object(bot, "LLM_PROVIDER", "deepseek"),

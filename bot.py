@@ -12030,9 +12030,10 @@ def _llm_provider_status_reply(messages: list[dict]) -> str | None:
     asks_feeling = bool(re.search(r"\b(?:how\s+(?:are|r)\s+(?:you|u)|how'?s\s+it\s+feeling|feel(?:ing)?|vibe)\b", text))
     asks_provider = bool(re.search(r"\b(provider|llm|model|engine|backend|api)\b", text))
     asks_openai_anthropic = bool(re.search(r"\b(openai|anthropic|claude|gpt|deepseek)\b", text))
-    asks_identity = bool(re.search(r"\b(is|are|what|which|who|using|running|powered|backing|underneath|behind)\b", text))
+    asks_identity = bool(re.search(r"\b(is|are|what|what'?s|whats|which|who|using|running|powered|backing|underneath|behind|current)\b", text))
     explicit_status_question = bool(
-        re.search(r"\b(?:what|which)\s+(?:provider|llm|model|engine|backend|api)\b", text)
+        re.search(r"\b(?:what|what'?s|whats|which)\s+(?:u|you|ur|your|is|are|current|the|this|h\.?i\.?r\.?a\.?)?\s*(?:current\s+)?(?:provider|llm|model|engine|backend|api)(?:\s*/\s*(?:provider|llm|model|engine|backend|api))?\b", text)
+        or re.search(r"\b(?:current|active)\s+(?:provider|llm|model|engine|backend|api)(?:\s*/\s*(?:provider|llm|model|engine|backend|api))?\b", text)
         or re.search(r"\b(?:provider|llm|model|engine|backend|api)\s+(?:are|r|is)\s+(?:you|u|it|h\.?i\.?r\.?a\.?)\s+(?:using|running|on|routed|backed)", text)
         or re.search(r"\b(?:are|r|is)\s+(?:you|u|it|h\.?i\.?r\.?a\.?)\s+(?:using|running|on|routed|backed).*?\b(?:openai|anthropic|claude|gpt|deepseek)\b", text)
         or re.search(r"\bis\s+it\s+(?:openai|anthropic|claude|gpt|deepseek)\b", text)
