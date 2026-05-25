@@ -4681,6 +4681,46 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn('"name": "natural_intent"', body)
         self.assertNotIn("backend snag", body.lower())
 
+    def test_status_phrase_matrix_uses_local_status_before_model_route(self):
+        phrases = [
+            "Whats up hira",
+            "hey HIRA what's good",
+            "catch me up",
+            "give me the lay of the land",
+            "what should I know",
+        ]
+
+        async def fake_execute_tool(name, inp):
+            self.assertEqual(name, "get_assistant_context")
+            self.assertEqual(inp, {"days": 3})
+            return "Quick read: the day is under control."
+
+        async def run(phrase):
+            response = await web_app._chat_stream_response(phrase, None, "phone")
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(web_app, "_update_working_memory", side_effect=AssertionError("status should bypass model preflight")),
+            patch.object(web_app, "_schedule_background_call"),
+            patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool),
+            patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("should not route to model")),
+        ):
+            for phrase in phrases:
+                with self.subTest(phrase=phrase):
+                    body = asyncio.run(run(phrase))
+                    self.assertIn('"name": "natural_intent"', body)
+                    self.assertIn("day is under control", body)
+                    self.assertNotIn("backend snag", body.lower())
+
+    def test_status_phrase_guard_does_not_steal_topic_questions(self):
+        self.assertFalse(web_app._pwa_casual_status_prompt("what's up with lfc"))
+        self.assertFalse(web_app._pwa_casual_status_prompt("what should I know about DeepSeek"))
+
     def test_backend_change_feeling_uses_local_checkin_before_model_route(self):
         async def run():
             response = await web_app._chat_stream_response(
@@ -4758,6 +4798,38 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("admin block", body)
         self.assertNotIn("news check", body.lower())
 
+    def test_agenda_phrase_matrix_uses_local_agenda_before_model_route(self):
+        phrases = [
+            "how's today looking",
+            "what am I walking into today",
+            "run me through my day",
+            "am I clear today",
+            "what have I got today",
+        ]
+
+        async def run(phrase):
+            response = await web_app._chat_stream_response(phrase, None, "phone")
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(bot, "build_agenda", return_value="Agenda: local day shape."),
+            patch.object(web_app, "_update_working_memory", side_effect=AssertionError("agenda should bypass model preflight")),
+            patch.object(web_app, "_schedule_background_call"),
+            patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("should not route to model")),
+            patch.object(bot, "stream_agentic_claude", side_effect=AssertionError("should not stream model")),
+        ):
+            for phrase in phrases:
+                with self.subTest(phrase=phrase):
+                    body = asyncio.run(run(phrase))
+                    self.assertIn('"name": "local_agenda"', body)
+                    self.assertIn("local day shape", body)
+                    self.assertNotIn("news check", body.lower())
+
     def test_tasks_check_uses_local_task_brief_before_model_route(self):
         async def run():
             response = await web_app._chat_stream_response("Can you check my tasks", None, "phone")
@@ -4782,6 +4854,105 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn('"name": "get_task_brief"', body)
         self.assertIn("clear finance form", body)
         self.assertNotIn("backend snag", body.lower())
+
+    def test_task_phrase_matrix_uses_local_task_brief_before_model_route(self):
+        phrases = [
+            "what's on my plate",
+            "what needs doing",
+            "anything urgent pending",
+            "what should I tackle",
+            "what do I need to clear",
+        ]
+
+        async def run(phrase):
+            response = await web_app._chat_stream_response(phrase, None, "phone")
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(bot, "build_task_brief", return_value="Task brief: local task stack."),
+            patch.object(web_app, "_update_working_memory", side_effect=AssertionError("tasks should bypass model preflight")),
+            patch.object(web_app, "_schedule_background_call"),
+            patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("should not route to model")),
+            patch.object(bot, "stream_agentic_claude", side_effect=AssertionError("should not stream model")),
+        ):
+            for phrase in phrases:
+                with self.subTest(phrase=phrase):
+                    body = asyncio.run(run(phrase))
+                    self.assertIn('"name": "local_tasks"', body)
+                    self.assertIn("local task stack", body)
+                    self.assertNotIn("backend snag", body.lower())
+
+    def test_chat_model_failure_returns_conversational_failure_not_backend_snag(self):
+        async def broken_stream(*_args, **_kwargs):
+            raise RuntimeError("model down")
+            yield {"type": "text", "text": ""}
+
+        async def run():
+            response = await web_app._chat_stream_response("Talk to me like normal", None, "phone")
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(web_app, "_update_working_memory", return_value={}),
+            patch.object(web_app, "_schedule_background_call"),
+            patch.object(bot, "should_route_quick_pwa_chat", return_value=False),
+            patch.object(bot, "stream_agentic_claude", side_effect=broken_stream),
+            patch.object(web_app, "_source_check_backend_fallback_payload", return_value=("", "", "")),
+        ):
+            body = asyncio.run(run())
+
+        self.assertIn('"final_mode": "model_failure"', body)
+        self.assertIn("chat handoff failed", body)
+        self.assertNotIn('"type": "error"', body)
+        self.assertNotIn("backend snag", body.lower())
+
+    def test_deepseek_quick_failure_falls_back_to_openai(self):
+        async def run():
+            return await _collect_async(bot.stream_quick_pwa_reply([], "You there?"))
+
+        with (
+            patch.object(bot, "LLM_PROVIDER", "deepseek"),
+            patch.object(bot, "_deepseek_openai_fallback_enabled", return_value=True),
+            patch.object(bot.async_claude.messages, "stream", side_effect=RuntimeError("stream down")),
+            patch.object(bot, "_llm_text_async", side_effect=RuntimeError("retry down")),
+            patch.object(bot, "_openai_fallback_text_async", return_value="OpenAI fallback reply."),
+        ):
+            events = asyncio.run(run())
+
+        self.assertTrue(any(event.get("patch", {}).get("provider_fallback") == "openai" for event in events))
+        self.assertTrue(any(event.get("text") == "OpenAI fallback reply." for event in events))
+
+    def test_deepseek_agentic_failure_falls_back_to_openai(self):
+        async def fake_openai_stream(*_args, **_kwargs):
+            yield {"type": "text", "text": "OpenAI agentic fallback reply."}
+            yield {"type": "done", "text": "OpenAI agentic fallback reply."}
+
+        async def run():
+            return await _collect_async(bot.stream_agentic_claude_impl(
+                [{"role": "user", "content": "Draft this naturally"}],
+                tools=[{"name": "noop", "description": "noop", "input_schema": {"type": "object", "properties": {}}}],
+            ))
+
+        with (
+            patch.object(bot, "LLM_PROVIDER", "deepseek"),
+            patch.object(bot, "_deepseek_openai_fallback_enabled", return_value=True),
+            patch.object(bot.async_claude.messages, "stream", side_effect=RuntimeError("stream down")),
+            patch.object(bot, "_run_agentic_claude_impl", side_effect=RuntimeError("retry down")),
+            patch.object(bot, "stream_agentic_openai", side_effect=fake_openai_stream),
+        ):
+            events = asyncio.run(run())
+
+        self.assertTrue(any(event.get("patch", {}).get("provider_fallback") == "openai" for event in events))
+        self.assertTrue(any(event.get("text") == "OpenAI agentic fallback reply." for event in events))
 
     def test_pwa_tool_route_streams_presence_preface_into_same_answer(self):
         async def fake_agentic_stream(*_args, **_kwargs):

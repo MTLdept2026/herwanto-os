@@ -227,6 +227,9 @@ DEEP_MODEL = _model_from_env("HIRA_DEEP_MODEL", _DEFAULT_DEEP_MODEL)
 QUICK_MODEL = _model_from_env("HIRA_QUICK_MODEL", _DEFAULT_QUICK_MODEL)
 ROUTER_MODEL = _model_from_env("HIRA_ROUTER_MODEL", _DEFAULT_ROUTER_MODEL)
 STRUCTURED_MODEL = _model_from_env("HIRA_STRUCTURED_MODEL", _DEFAULT_STRUCTURED_MODEL)
+DEEPSEEK_OPENAI_FALLBACK = _env_flag("HIRA_DEEPSEEK_OPENAI_FALLBACK", True)
+OPENAI_FALLBACK_QUICK_MODEL = os.environ.get("HIRA_OPENAI_FALLBACK_QUICK_MODEL", "gpt-5.4-mini").strip() or "gpt-5.4-mini"
+OPENAI_FALLBACK_AGENTIC_MODEL = os.environ.get("HIRA_OPENAI_FALLBACK_AGENTIC_MODEL", "gpt-5.4").strip() or "gpt-5.4"
 OPENAI_FULL_POWER_MODE = _env_flag("HIRA_OPENAI_FULL_POWER_MODE", LLM_PROVIDER == "openai")
 FAST_CHAT_MODE = _env_flag("HIRA_FAST_CHAT_MODE", True)
 OPENAI_STORE_RESPONSES = _env_flag("HIRA_OPENAI_STORE_RESPONSES", True)
@@ -2622,6 +2625,25 @@ async def _openai_create_response_async(
     if tool_choice:
         kwargs["tool_choice"] = tool_choice
     return await _openai_create_with_retry_async(kwargs)
+
+
+def _deepseek_openai_fallback_enabled() -> bool:
+    return bool(LLM_PROVIDER == "deepseek" and DEEPSEEK_OPENAI_FALLBACK and OPENAI_API_KEY)
+
+
+async def _openai_fallback_text_async(
+    model: str,
+    max_tokens: int,
+    messages: list[dict],
+    system: str | None = None,
+) -> str:
+    resp = await _openai_create_response_async(
+        model=model,
+        max_tokens=max_tokens,
+        messages=messages,
+        system=system,
+    )
+    return _openai_text_from_response(resp)
 
 
 def _llm_text(model: str, max_tokens: int, messages: list[dict], system: str | None = None) -> str:
@@ -12442,25 +12464,47 @@ async def stream_quick_pwa_reply(messages: list[dict], message: str):
     except Exception as exc:
         if LLM_PROVIDER == "deepseek":
             logger.warning("DeepSeek quick stream failed; retrying with non-streaming request: %s", exc)
-            text = await _llm_text_async(
-                model=QUICK_MODEL,
-                max_tokens=QUICK_REPLY_MAX_TOKENS,
-                system=system,
-                messages=prompt_messages,
-            )
-            yield {"type": "text", "text": text}
-            return
+            try:
+                text = await _llm_text_async(
+                    model=QUICK_MODEL,
+                    max_tokens=QUICK_REPLY_MAX_TOKENS,
+                    system=system,
+                    messages=prompt_messages,
+                )
+                yield {"type": "text", "text": text}
+                return
+            except Exception as retry_exc:
+                if _deepseek_openai_fallback_enabled():
+                    logger.warning("DeepSeek quick retry failed; falling back to OpenAI: %s", retry_exc)
+                    yield {"type": "trace", "patch": {"provider_fallback": "openai", "provider_fallback_reason": "deepseek_quick_failed"}}
+                    text = await _openai_fallback_text_async(
+                        model=OPENAI_FALLBACK_QUICK_MODEL,
+                        max_tokens=QUICK_REPLY_MAX_TOKENS,
+                        system=system,
+                        messages=prompt_messages,
+                    )
+                    yield {"type": "text", "text": text}
+                    return
+                raise retry_exc
         logger.error(f"Quick PWA reply failed: {exc}")
         raise
 
-async def stream_agentic_openai(messages, max_tokens=650, tools=None, openai_state_key: str | None = None):
+async def stream_agentic_openai(
+    messages,
+    max_tokens=650,
+    tools=None,
+    openai_state_key: str | None = None,
+    model_override: str | None = None,
+):
     tools = tools or _core_tools()
     reply_text = ""
     max_iterations = 8
     all_tool_results: list[dict] = []
     native_tool_events_seen: set[str] = set()
     policy = model_policy_for_messages(messages)
-    model = str(policy.get("model") or _agentic_model_for_messages(messages))
+    model = str(model_override or policy.get("model") or _agentic_model_for_messages(messages))
+    if model_override:
+        policy = {**policy, "provider": "openai_fallback", "model": model, "reason": "deepseek_failed_openai_fallback"}
     previous_response_id = _openai_previous_response_id(openai_state_key)
     openai_input = _openai_latest_input(messages) if previous_response_id else _openai_input_from_messages(messages)
     yield {"type": "trace", "patch": {"model_policy": policy, "openai_stateful": bool(previous_response_id)}}
@@ -12683,15 +12727,33 @@ async def stream_agentic_claude_impl(messages, max_tokens=650, tools=None, opena
         except Exception as exc:
             if LLM_PROVIDER == "deepseek" and not all_tool_results:
                 logger.warning("DeepSeek agentic stream failed; retrying with non-streaming request: %s", exc)
-                reply = await _run_agentic_claude_impl(
-                    list(messages),
-                    max_tokens=max_tokens,
-                    tools=tools,
-                    openai_state_key=openai_state_key,
-                )
-                yield {"type": "replace", "text": reply}
-                yield {"type": "done", "text": reply}
-                return
+                try:
+                    reply = await _run_agentic_claude_impl(
+                        list(messages),
+                        max_tokens=max_tokens,
+                        tools=tools,
+                        openai_state_key=openai_state_key,
+                    )
+                    yield {"type": "replace", "text": reply}
+                    yield {"type": "done", "text": reply}
+                    return
+                except Exception as retry_exc:
+                    if _deepseek_openai_fallback_enabled():
+                        logger.warning("DeepSeek agentic retry failed; falling back to OpenAI: %s", retry_exc)
+                        yield {"type": "trace", "patch": {
+                            "provider_fallback": "openai",
+                            "provider_fallback_reason": "deepseek_agentic_failed",
+                        }}
+                        async for event in stream_agentic_openai(
+                            list(messages),
+                            max_tokens=max_tokens,
+                            tools=tools,
+                            openai_state_key=openai_state_key,
+                            model_override=OPENAI_FALLBACK_AGENTIC_MODEL,
+                        ):
+                            yield event
+                        return
+                    raise retry_exc
             fallback = _tool_action_fallback_reply(all_tool_results)
             if fallback:
                 logger.warning("Claude stream follow-up failed after tool actions; returning tool-result fallback: %s", exc)

@@ -1244,10 +1244,16 @@ def _pending_action_from_text(text: str) -> str:
     return ""
 
 
-def _pwa_casual_status_prompt(message: str) -> bool:
+def _pwa_clean_addressed_message(message: str) -> str:
     clean = bot._normalise_short_reply(message)
     clean = re.sub(r"\b(?:hey|hi|hello|yo|hira)\b", " ", clean)
-    clean = re.sub(r"\s+", " ", clean).strip()
+    return re.sub(r"\s+", " ", clean).strip()
+
+
+def _pwa_casual_status_prompt(message: str) -> bool:
+    clean = _pwa_clean_addressed_message(message)
+    if re.search(r"\b(?:about|with)\b", clean) and not re.search(r"\b(?:me|my|today|day)\b", clean):
+        return False
     return clean in {
         "whats up",
         "what's up",
@@ -1261,7 +1267,17 @@ def _pwa_casual_status_prompt(message: str) -> bool:
         "whats happening",
         "what's happening",
         "what is happening",
-    }
+        "what's good",
+        "whats good",
+        "what is good",
+        "brief me",
+        "status brief",
+        "daily brief",
+    } or bool(re.search(
+        r"\b(?:catch me up|bring me up to speed|give me (?:the )?(?:read|rundown|status|brief)|"
+        r"what should i know|anything i should know|what needs attention|where are we|state of play|lay of the land)\b",
+        clean,
+    ))
 
 
 def _pwa_assistant_feeling_reply(message: str) -> str:
@@ -1293,13 +1309,28 @@ def _pwa_assistant_feeling_reply(message: str) -> str:
 
 
 def _pwa_direct_agenda_days(message: str) -> int:
-    clean = bot._normalise_short_reply(message)
+    clean = _pwa_clean_addressed_message(message)
     if not clean:
         return 0
-    if re.search(r"\b(?:add|create|book|move|reschedule|delete|remove|cancel|clear)\b", clean):
+    if re.search(r"\b(?:add|create|book|move|reschedule|delete|remove|cancel)\b", clean):
         return 0
-    has_agenda_word = bool(re.search(r"\b(?:agenda|calendar|schedule|timetable|day)\b", clean))
-    has_read_word = bool(re.search(r"\b(?:what'?s|whats|what is|how'?s|hows|how is|show|check|view|list|review|pull up|look at|looking|tell me)\b", clean))
+    if re.search(
+        r"\b(?:"
+        r"(?:how'?s|hows|how is)\s+(?:my\s+)?(?:day|today)\s+(?:looking|shaping|shaping up)|"
+        r"(?:what'?s|whats|what is)\s+(?:my\s+)?(?:day|today)\s+(?:like|looking like)|"
+        r"what\s+(?:am i|have i)\s+(?:got|walking into)\s+today|"
+        r"(?:run|walk)\s+me\s+through\s+(?:my\s+)?(?:day|today)|"
+        r"(?:day ahead|today ahead|shape of today|today looking|busy today|clear today|free today)"
+        r")\b",
+        clean,
+    ):
+        return 1
+    has_agenda_word = bool(re.search(r"\b(?:agenda|calendar|schedule|timetable|day|today|tomorrow)\b", clean))
+    has_read_word = bool(re.search(
+        r"\b(?:what'?s|whats|what is|how'?s|hows|how is|show|check|view|list|review|pull up|look at|"
+        r"looking|tell me|got|walking into|run me through|walk me through|shape|busy|free|clear)\b",
+        clean,
+    ))
     if not has_agenda_word or not has_read_word:
         return 0
     if re.search(r"\b(?:today|my day|on today)\b", clean):
@@ -1312,15 +1343,23 @@ def _pwa_direct_agenda_days(message: str) -> int:
 
 
 def _pwa_direct_task_days(message: str) -> int:
-    clean = bot._normalise_short_reply(message)
+    clean = _pwa_clean_addressed_message(message)
     if not clean:
         return 0
     if re.search(r"\b(?:add|create|remind me|delete|remove|cancel|complete|done|finish|mark)\b", clean):
         return 0
     if clean in {"tasks", "my tasks", "task brief", "todo", "todos", "to do", "to dos"}:
         return 7
-    has_task_word = bool(re.search(r"\b(?:tasks?|todos?|to dos?|reminders?)\b", clean))
-    has_read_word = bool(re.search(r"\b(?:check|show|view|list|review|pull up|what'?s|whats|what is|what are|any|due|outstanding|active|open)\b", clean))
+    if re.search(r"\b(?:what'?s|whats|what is)\s+on\s+my\s+plate\b", clean):
+        return 7
+    if re.search(r"\bwhat\s+(?:do|should)\s+i\s+(?:need\s+to\s+)?(?:do|tackle|clear|handle)\b", clean) and "about" not in clean:
+        return 7
+    if re.search(r"\b(?:anything|what'?s|whats|what is).{0,30}\b(?:due|pending|outstanding|urgent)\b", clean):
+        return 7
+    if re.search(r"\b(?:priorities|priority list|next actions?|action list|what needs doing)\b", clean):
+        return 7
+    has_task_word = bool(re.search(r"\b(?:tasks?|todos?|to dos?|reminders?|due|pending|outstanding|priorities)\b", clean))
+    has_read_word = bool(re.search(r"\b(?:check|show|view|list|review|pull up|what'?s|whats|what is|what are|any|due|outstanding|active|open|need|tackle|clear|handle)\b", clean))
     if not has_task_word or not has_read_word:
         return 0
     if re.search(r"\b(?:today|now)\b", clean):
@@ -4023,6 +4062,27 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             route_name="casual_checkin",
         )
 
+    if _pwa_casual_status_prompt(message):
+        try:
+            status_reply = await bot._execute_tool_offloop("get_assistant_context", {"days": 3})
+        except Exception as exc:
+            bot.logger.warning(f"PWA casual status brief failed: {exc}")
+            status_reply = await asyncio.to_thread(
+                _safe_text,
+                lambda: bot.build_agenda(1),
+                "I could not pull the full status brief right now, but I am still here.",
+            )
+        if not status_reply:
+            status_reply = "I could not pull the current status brief right now, but I am still here."
+        quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
+        return _quick_sse_response(
+            status_reply,
+            history_key,
+            quick_history,
+            route_name="natural_intent",
+            tool_name="get_assistant_context",
+        )
+
     agenda_days = _pwa_direct_agenda_days(message)
     if agenda_days:
         agenda_reply = await asyncio.to_thread(
@@ -4099,20 +4159,6 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
     f1_sync_reply = bot.f1_calendar_sync_response(message)
     if f1_sync_reply:
         return _quick_sse_response(f1_sync_reply, history_key, history, route_name="f1_calendar_sync", tool_name="sync_f1_calendar")
-
-    if _pwa_casual_status_prompt(message):
-        try:
-            status_reply = await bot._execute_tool_offloop("get_assistant_context", {"days": 3})
-        except Exception as exc:
-            bot.logger.warning(f"PWA casual status brief failed: {exc}")
-            status_reply = await asyncio.to_thread(
-                _safe_text,
-                lambda: bot.build_agenda(1),
-                "I could not pull the full status brief right now, but I am still here.",
-            )
-        if not status_reply:
-            status_reply = "I could not pull the current status brief right now. Try again in a moment."
-        return _quick_sse_response(status_reply, history_key, history, route_name="natural_intent", tool_name="get_assistant_context")
 
     provider_status_reply = bot._llm_provider_status_reply([{"role": "user", "content": message}])
     if provider_status_reply:
@@ -4451,12 +4497,14 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                 yield sse({"type": "trace", "trace": trace})
                 yield sse({"type": "saved"})
             else:
-                _merge_chat_trace(trace, {"confidence_gate": "failed", "final_mode": "backend_error"})
+                reply_text = _pwa_model_failure_reply(message)
+                history.append({"role": "assistant", "content": reply_text})
+                _save_history_best_effort(history_key, history)
+                _merge_chat_trace(trace, {"confidence_gate": "failed", "final_mode": "model_failure"})
                 yield sse({"type": "trace", "trace": trace})
-                yield sse({
-                    "type": "error",
-                    "message": "H.I.R.A hit a backend snag. Try again in a moment.",
-                })
+                yield sse({"type": "replace", "text": reply_text})
+                yield sse({"type": "done", "text": reply_text})
+                yield sse({"type": "saved"})
         finally:
             _CHAT_SEMAPHORE.release()
             gc.collect()
@@ -4524,6 +4572,18 @@ async def _recover_leaked_action_payload(text: str) -> str:
 def _empty_chat_reply(text: str) -> bool:
     clean = " ".join(str(text or "").strip().split()).lower()
     return clean in {"", "done", "done."}
+
+
+def _pwa_model_failure_reply(message: str) -> str:
+    provider = {
+        "openai": "OpenAI",
+        "deepseek": "DeepSeek",
+        "anthropic": "Anthropic",
+    }.get(bot.LLM_PROVIDER, bot.LLM_PROVIDER.upper())
+    return (
+        f"I’m still here, but the {provider} chat handoff failed before it returned a real answer. "
+        "I’m treating that as a failed pass, not pretending it worked. Send it again once, and I’ll reroute cleanly."
+    )
 
 
 async def _source_check_backend_fallback_payload(message: str) -> tuple[str, str, str]:
