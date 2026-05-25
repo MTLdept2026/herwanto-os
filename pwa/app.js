@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260525-source-cleanup-65";
-const APP_SCRIPT = "app.js?v=20260525-source-cleanup-65";
-const EXPECTED_SW_CACHE = "hira-os-v135";
+const APP_VERSION = "20260526-startup-fix-66";
+const APP_SCRIPT = "app.js?v=20260526-startup-fix-66";
+const EXPECTED_SW_CACHE = "hira-os-v136";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
@@ -31,6 +31,7 @@ const PUSH_SYNC_MODE_KEY = "hira_pwa_last_push_sync_mode";
 const PUSH_SYNC_ENDPOINT_KEY = "hira_pwa_last_push_sync_endpoint";
 const HOME_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const HOME_REFRESH_THROTTLE_MS = 45 * 1000;
+const SOURCE_PLUMBING_URL_PATTERN = /https?:\/\/(?:news\.google\.com\/rss\/articles|site\.api\.espn\.com\/apis\/|duckduckgo\.com\/l\/\?)\S+/gi;
 let legacyWebToken = localStorage.getItem("hira_web_token") || "";
 if (legacyWebToken) localStorage.removeItem("hira_web_token");
 
@@ -2393,8 +2394,6 @@ function stripCitationMarkers(text) {
     .replace(/\n[ \t]+/g, "\n")
     .trim();
 }
-
-const SOURCE_PLUMBING_URL_PATTERN = /https?:\/\/(?:news\.google\.com\/rss\/articles|site\.api\.espn\.com\/apis\/|duckduckgo\.com\/l\/\?)\S+/gi;
 
 function stripSourcePlumbingUrls(text) {
   const rawLines = String(text || "").split("\n");
