@@ -1297,7 +1297,7 @@ def _pwa_direct_agenda_days(message: str) -> int:
     if re.search(r"\b(?:add|create|book|move|reschedule|delete|remove|cancel|clear)\b", clean):
         return 0
     has_agenda_word = bool(re.search(r"\b(?:agenda|calendar|schedule|timetable|day)\b", clean))
-    has_read_word = bool(re.search(r"\b(?:what'?s|whats|what is|show|check|view|list|review|pull up|look at|tell me)\b", clean))
+    has_read_word = bool(re.search(r"\b(?:what'?s|whats|what is|how'?s|hows|how is|show|check|view|list|review|pull up|look at|looking|tell me)\b", clean))
     if not has_agenda_word or not has_read_word:
         return 0
     if re.search(r"\b(?:today|my day|on today)\b", clean):

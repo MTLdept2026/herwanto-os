@@ -4684,6 +4684,30 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("school admin", body)
         self.assertNotIn("backend snag", body.lower())
 
+    def test_day_looking_today_uses_local_agenda_before_model_route(self):
+        async def run():
+            response = await web_app._chat_stream_response("Hows my day looking today", None, "phone")
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(bot, "build_agenda", return_value="Agenda: light morning, one admin block after lunch") as agenda_mock,
+            patch.object(web_app, "_update_working_memory", side_effect=AssertionError("day check should bypass model preflight")),
+            patch.object(web_app, "_schedule_background_call"),
+            patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("should not route to model")),
+            patch.object(bot, "stream_agentic_claude", side_effect=AssertionError("should not stream model")),
+        ):
+            body = asyncio.run(run())
+
+        agenda_mock.assert_called_once_with(1)
+        self.assertIn('"name": "local_agenda"', body)
+        self.assertIn("admin block", body)
+        self.assertNotIn("news check", body.lower())
+
     def test_tasks_check_uses_local_task_brief_before_model_route(self):
         async def run():
             response = await web_app._chat_stream_response("Can you check my tasks", None, "phone")
