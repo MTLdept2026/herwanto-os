@@ -4659,6 +4659,56 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("DeepSeek", body)
         self.assertNotIn("backend snag", body.lower())
 
+    def test_agenda_today_uses_local_agenda_before_model_route(self):
+        async def run():
+            response = await web_app._chat_stream_response("Ok whats on my agenda today", None, "phone")
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(bot, "build_agenda", return_value="Agenda: 10:00 school admin, 14:00 project review") as agenda_mock,
+            patch.object(web_app, "_update_working_memory", side_effect=AssertionError("agenda should bypass model preflight")),
+            patch.object(web_app, "_schedule_background_call"),
+            patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("should not route to model")),
+            patch.object(bot, "stream_agentic_claude", side_effect=AssertionError("should not stream model")),
+        ):
+            body = asyncio.run(run())
+
+        agenda_mock.assert_called_once_with(1)
+        self.assertIn('"name": "local_agenda"', body)
+        self.assertIn('"name": "get_assistant_context"', body)
+        self.assertIn("school admin", body)
+        self.assertNotIn("backend snag", body.lower())
+
+    def test_tasks_check_uses_local_task_brief_before_model_route(self):
+        async def run():
+            response = await web_app._chat_stream_response("Can you check my tasks", None, "phone")
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(bot, "build_task_brief", return_value="Task brief: submit agenda notes; clear finance form") as task_mock,
+            patch.object(web_app, "_update_working_memory", side_effect=AssertionError("tasks should bypass model preflight")),
+            patch.object(web_app, "_schedule_background_call"),
+            patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("should not route to model")),
+            patch.object(bot, "stream_agentic_claude", side_effect=AssertionError("should not stream model")),
+        ):
+            body = asyncio.run(run())
+
+        task_mock.assert_called_once_with(7)
+        self.assertIn('"name": "local_tasks"', body)
+        self.assertIn('"name": "get_task_brief"', body)
+        self.assertIn("clear finance form", body)
+        self.assertNotIn("backend snag", body.lower())
+
     def test_pwa_tool_route_streams_presence_preface_into_same_answer(self):
         async def fake_agentic_stream(*_args, **_kwargs):
             yield {"type": "tool", "name": "get_gmail_brief"}

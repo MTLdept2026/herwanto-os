@@ -1290,6 +1290,44 @@ def _pwa_assistant_feeling_reply(message: str) -> str:
     )
 
 
+def _pwa_direct_agenda_days(message: str) -> int:
+    clean = bot._normalise_short_reply(message)
+    if not clean:
+        return 0
+    if re.search(r"\b(?:add|create|book|move|reschedule|delete|remove|cancel|clear)\b", clean):
+        return 0
+    has_agenda_word = bool(re.search(r"\b(?:agenda|calendar|schedule|timetable|day)\b", clean))
+    has_read_word = bool(re.search(r"\b(?:what'?s|whats|what is|show|check|view|list|review|pull up|look at|tell me)\b", clean))
+    if not has_agenda_word or not has_read_word:
+        return 0
+    if re.search(r"\b(?:today|my day|on today)\b", clean):
+        return 1
+    if "tomorrow" in clean:
+        return 2
+    if re.search(r"\b(?:week|weekly)\b", clean):
+        return 7
+    return 3
+
+
+def _pwa_direct_task_days(message: str) -> int:
+    clean = bot._normalise_short_reply(message)
+    if not clean:
+        return 0
+    if re.search(r"\b(?:add|create|remind me|delete|remove|cancel|complete|done|finish|mark)\b", clean):
+        return 0
+    if clean in {"tasks", "my tasks", "task brief", "todo", "todos", "to do", "to dos"}:
+        return 7
+    has_task_word = bool(re.search(r"\b(?:tasks?|todos?|to dos?|reminders?)\b", clean))
+    has_read_word = bool(re.search(r"\b(?:check|show|view|list|review|pull up|what'?s|whats|what is|what are|any|due|outstanding|active|open)\b", clean))
+    if not has_task_word or not has_read_word:
+        return 0
+    if re.search(r"\b(?:today|now)\b", clean):
+        return 1
+    if "tomorrow" in clean:
+        return 2
+    return 7
+
+
 def _pwa_topic_news_queries(message: str, recent_context: str = "") -> list[tuple[str, str]]:
     return bot.favourite_news_topic_queries(message, recent_context)
 
@@ -3981,6 +4019,38 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             history_key,
             quick_history,
             route_name="casual_checkin",
+        )
+
+    agenda_days = _pwa_direct_agenda_days(message)
+    if agenda_days:
+        agenda_reply = await asyncio.to_thread(
+            _safe_text,
+            lambda: bot.build_agenda(agenda_days),
+            "Agenda unavailable right now.",
+        )
+        quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
+        return _quick_sse_response(
+            agenda_reply,
+            history_key,
+            quick_history,
+            route_name="local_agenda",
+            tool_name="get_assistant_context",
+        )
+
+    task_days = _pwa_direct_task_days(message)
+    if task_days:
+        task_reply = await asyncio.to_thread(
+            _safe_text,
+            lambda: bot.build_task_brief(task_days),
+            "Task brief unavailable right now.",
+        )
+        quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
+        return _quick_sse_response(
+            task_reply,
+            history_key,
+            quick_history,
+            route_name="local_tasks",
+            tool_name="get_task_brief",
         )
 
     working_memory = _update_working_memory(history_key, history, message)
