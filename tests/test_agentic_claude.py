@@ -6546,7 +6546,7 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertTrue(kwargs["store"])
         self.assertEqual(kwargs["previous_response_id"], "resp-prev")
-        self.assertEqual(kwargs["reasoning"]["effort"], "xhigh")
+        self.assertEqual(kwargs["reasoning"]["effort"], "high")
         self.assertEqual(kwargs["text"]["verbosity"], "medium")
 
     def test_openai_response_state_uses_redis_when_available(self):
@@ -6573,6 +6573,67 @@ class AgenticClaudeTests(unittest.TestCase):
             self.assertEqual(bot._openai_previous_response_id("pwa:phone"), "resp-1")
             bot.clear_openai_response_state("pwa:phone")
             self.assertEqual(bot._openai_previous_response_id("pwa:phone"), "")
+
+    def test_openai_usage_extracts_cached_tokens_and_estimates_cost(self):
+        resp = SimpleNamespace(
+            model="gpt-5.4",
+            usage=SimpleNamespace(
+                input_tokens=1000,
+                output_tokens=200,
+                total_tokens=1200,
+                input_tokens_details=SimpleNamespace(cached_tokens=400),
+                output_tokens_details=SimpleNamespace(reasoning_tokens=50),
+            ),
+            output=[SimpleNamespace(type="web_search_call", id="ws-1")],
+        )
+
+        usage = bot._openai_usage_from_response(resp)
+        native_counts = bot._openai_native_usage_counts(resp)
+        estimate = bot._openai_estimated_cost_usd("gpt-5.4", usage, native_counts)
+
+        self.assertEqual(usage["input_tokens"], 1000)
+        self.assertEqual(usage["cached_input_tokens"], 400)
+        self.assertEqual(usage["output_tokens"], 200)
+        self.assertEqual(usage["reasoning_tokens"], 50)
+        self.assertEqual(native_counts["web_search"], 1)
+        self.assertAlmostEqual(estimate, 0.0146, places=6)
+        self.assertAlmostEqual(bot._openai_usd_to_sgd(estimate), 0.01971, places=6)
+
+    def test_openai_usage_record_updates_privacy_light_summary(self):
+        resp = SimpleNamespace(
+            model="gpt-5.4-mini",
+            usage={
+                "input_tokens": 2000,
+                "output_tokens": 300,
+                "input_tokens_details": {"cached_tokens": 1000},
+            },
+            output=[],
+        )
+        with (
+            patch.object(bot, "OPENAI_USAGE_TRACKING", True),
+            patch.object(bot, "OPENAI_USAGE_PERSIST", False),
+            patch.object(bot, "OPENAI_USAGE_SGD_PER_USD", 1.35),
+            patch.object(bot, "_OPENAI_USAGE_SUMMARY", {"version": 1, "days": {}}),
+            patch.object(bot, "_OPENAI_USAGE_SUMMARY_LOADED", True),
+        ):
+            record = bot._record_openai_usage(
+                resp,
+                {"model": "gpt-5.4-mini", "metadata": {"tier": "agentic"}},
+            )
+            status = bot.openai_usage_status()
+
+        self.assertEqual(record["model"], "gpt-5.4-mini")
+        self.assertEqual(record["sgd_per_usd"], 1.35)
+        self.assertIn("estimated_sgd", record)
+        self.assertNotIn("prompt", record)
+        self.assertEqual(status["currency"], "SGD")
+        self.assertEqual(status["sgd_per_usd"], 1.35)
+        self.assertEqual(status["today"]["requests"], 1)
+        self.assertIn("estimated_sgd", status["today"])
+        self.assertEqual(status["today"]["input_tokens"], 2000)
+        self.assertEqual(status["today"]["cached_input_tokens"], 1000)
+        self.assertIn("gpt-5.4-mini", status["models_today"])
+        self.assertIn("agentic", status["tiers_today"])
 
     def test_openai_native_web_search_is_added_for_live_questions(self):
         with (
@@ -6608,6 +6669,7 @@ class AgenticClaudeTests(unittest.TestCase):
             patch.object(bot, "OPENAI_TRACE_METADATA", True),
             patch.object(bot, "LLM_PROVIDER", "openai"),
             patch.object(bot, "OPENAI_FULL_POWER_MODE", True),
+            patch.object(bot, "OPENAI_NATIVE_WEB_SEARCH", True),
         ):
             policy = bot.model_policy_for_text("research the latest Android update")
             kwargs = bot._openai_request_options(

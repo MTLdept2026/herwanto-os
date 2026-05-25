@@ -344,7 +344,8 @@ h3 {
 }
 
 .health-output,
-.version-output {
+.version-output,
+.api-spend-output {
   display: grid;
   gap: 8px;
   padding: 10px;
@@ -353,10 +354,112 @@ h3 {
 }
 
 .version-panel,
+.api-spend-panel,
 .action-ledger-panel {
   display: grid;
   gap: 8px;
   padding-top: 6px;
+}
+
+.api-spend-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.api-spend-total {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border-visible);
+  background: var(--surface);
+}
+
+.api-spend-total span,
+.api-spend-total small,
+.api-spend-bucket span,
+.api-spend-bucket small,
+.api-spend-breakdown h4 {
+  font-family: var(--font-ui);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.api-spend-total span,
+.api-spend-total small,
+.api-spend-bucket small {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.api-spend-total strong {
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.api-spend-rows {
+  display: grid;
+  gap: 0;
+}
+
+.api-spend-breakdown {
+  display: grid;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.api-spend-breakdown h4 {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.api-spend-buckets {
+  display: grid;
+  gap: 6px;
+}
+
+.api-spend-bucket {
+  display: grid;
+  gap: 3px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.api-spend-bucket div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.api-spend-bucket span {
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.api-spend-bucket strong {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+@media (max-width: 560px) {
+  .api-spend-summary {
+    grid-template-columns: 1fr;
+  }
 }
 
 .action-ledger-list {
@@ -3533,6 +3636,10 @@ html[data-theme="dark"] .load-badge.load-green {
 .quick-action-fab svg {
   width: 24px;
   height: 24px;
+}
+
+body:has(#settingsPanel:not([hidden])) .quick-action-fab {
+  display: none;
 }
 
 .quick-action-drawer {

@@ -12,6 +12,7 @@ import logging
 import re
 import resource
 import tempfile
+import threading
 from collections import OrderedDict, defaultdict
 from datetime import datetime, timedelta, time as dt_time, date
 from difflib import SequenceMatcher
@@ -197,21 +198,24 @@ def _env_int_setting(name: str, default: int, minimum: int = 1, maximum: int | N
     return min(value, maximum) if maximum is not None else value
 
 
-_DEFAULT_AGENTIC_MODEL = "gpt-5.5" if LLM_PROVIDER == "openai" else "claude-sonnet-4-6"
+_DEFAULT_AGENTIC_MODEL = "gpt-5.4" if LLM_PROVIDER == "openai" else "claude-sonnet-4-6"
+_DEFAULT_DEEP_MODEL = "gpt-5.5" if LLM_PROVIDER == "openai" else _DEFAULT_AGENTIC_MODEL
 _DEFAULT_QUICK_MODEL = "gpt-5.4-mini" if LLM_PROVIDER == "openai" else "claude-haiku-4-5-20251001"
+_DEFAULT_ROUTER_MODEL = "gpt-5.4-nano" if LLM_PROVIDER == "openai" else _DEFAULT_QUICK_MODEL
+_DEFAULT_STRUCTURED_MODEL = "gpt-5.4-mini" if LLM_PROVIDER == "openai" else _DEFAULT_QUICK_MODEL
 AGENTIC_MODEL = _model_from_env("HIRA_AGENTIC_MODEL", _DEFAULT_AGENTIC_MODEL)
-DEEP_MODEL = _model_from_env("HIRA_DEEP_MODEL", AGENTIC_MODEL)
+DEEP_MODEL = _model_from_env("HIRA_DEEP_MODEL", _DEFAULT_DEEP_MODEL)
 QUICK_MODEL = _model_from_env("HIRA_QUICK_MODEL", _DEFAULT_QUICK_MODEL)
-ROUTER_MODEL = _model_from_env("HIRA_ROUTER_MODEL", QUICK_MODEL)
-STRUCTURED_MODEL = _model_from_env("HIRA_STRUCTURED_MODEL", QUICK_MODEL)
+ROUTER_MODEL = _model_from_env("HIRA_ROUTER_MODEL", _DEFAULT_ROUTER_MODEL)
+STRUCTURED_MODEL = _model_from_env("HIRA_STRUCTURED_MODEL", _DEFAULT_STRUCTURED_MODEL)
 OPENAI_FULL_POWER_MODE = _env_flag("HIRA_OPENAI_FULL_POWER_MODE", LLM_PROVIDER == "openai")
 FAST_CHAT_MODE = _env_flag("HIRA_FAST_CHAT_MODE", True)
 OPENAI_STORE_RESPONSES = _env_flag("HIRA_OPENAI_STORE_RESPONSES", True)
 OPENAI_USE_PREVIOUS_RESPONSE_ID = _env_flag("HIRA_OPENAI_USE_PREVIOUS_RESPONSE_ID", True)
 OPENAI_REASONING_KWARGS = _env_flag("HIRA_OPENAI_REASONING_KWARGS", True)
 OPENAI_TRACE_METADATA = _env_flag("HIRA_OPENAI_TRACE_METADATA", True)
-OPENAI_NATIVE_WEB_SEARCH = _env_flag("HIRA_OPENAI_NATIVE_WEB_SEARCH", True)
-OPENAI_NATIVE_CODE_INTERPRETER = _env_flag("HIRA_OPENAI_NATIVE_CODE_INTERPRETER", OPENAI_FULL_POWER_MODE)
+OPENAI_NATIVE_WEB_SEARCH = _env_flag("HIRA_OPENAI_NATIVE_WEB_SEARCH", False)
+OPENAI_NATIVE_CODE_INTERPRETER = _env_flag("HIRA_OPENAI_NATIVE_CODE_INTERPRETER", False)
 OPENAI_INCLUDE_NATIVE_TOOL_RESULTS = _env_flag("HIRA_OPENAI_INCLUDE_NATIVE_TOOL_RESULTS", True)
 OPENAI_CODE_INTERPRETER_FILE_IDS = [
     item.strip()
@@ -220,24 +224,31 @@ OPENAI_CODE_INTERPRETER_FILE_IDS = [
 ]
 OPENAI_CODE_INTERPRETER_MEMORY_LIMIT = os.environ.get(
     "HIRA_OPENAI_CODE_INTERPRETER_MEMORY_LIMIT",
-    "4g" if OPENAI_FULL_POWER_MODE else "1g",
-).strip() or ("4g" if OPENAI_FULL_POWER_MODE else "1g")
+    "1g",
+).strip() or "1g"
 OPENAI_FILE_SEARCH_VECTOR_STORE_IDS = [
     item.strip()
     for item in os.environ.get("HIRA_OPENAI_FILE_SEARCH_VECTOR_STORE_IDS", "").split(",")
     if item.strip()
 ]
 OPENAI_MEMORY_VECTOR_STORE_ID = os.environ.get("HIRA_OPENAI_MEMORY_VECTOR_STORE_ID", "").strip()
-OPENAI_VECTOR_SYNC_ENABLED = _env_flag("HIRA_OPENAI_VECTOR_SYNC_ENABLED", LLM_PROVIDER == "openai")
+OPENAI_VECTOR_SYNC_ENABLED = _env_flag("HIRA_OPENAI_VECTOR_SYNC_ENABLED", False)
 OPENAI_VECTOR_SYNC_MEMORY = _env_flag("HIRA_OPENAI_VECTOR_SYNC_MEMORY", True)
 OPENAI_VECTOR_SYNC_UPLOADS = _env_flag("HIRA_OPENAI_VECTOR_SYNC_UPLOADS", True)
 OPENAI_ACTION_PLANNER_ENABLED = _env_flag("HIRA_OPENAI_ACTION_PLANNER", LLM_PROVIDER == "openai")
 OPENAI_PROMPT_CACHE_RETENTION = os.environ.get("HIRA_OPENAI_PROMPT_CACHE_RETENTION", "24h").strip()
 OPENAI_SERVICE_TIER = os.environ.get("HIRA_OPENAI_SERVICE_TIER", "").strip()
+OPENAI_USAGE_TRACKING = _env_flag("HIRA_OPENAI_USAGE_TRACKING", LLM_PROVIDER == "openai")
+OPENAI_USAGE_PERSIST = _env_flag("HIRA_OPENAI_USAGE_PERSIST", True)
+OPENAI_USAGE_PERSIST_INTERVAL_SECONDS = _env_int_setting("HIRA_OPENAI_USAGE_PERSIST_INTERVAL_SECONDS", 60, minimum=0, maximum=3600)
+try:
+    OPENAI_USAGE_SGD_PER_USD = max(0.01, float(os.environ.get("HIRA_OPENAI_USAGE_SGD_PER_USD", "1.35") or 1.35))
+except ValueError:
+    OPENAI_USAGE_SGD_PER_USD = 1.35
 QUICK_ROUTE_MAX_CHARS = _env_int_setting("HIRA_QUICK_ROUTE_MAX_CHARS", 220, minimum=40, maximum=800)
 QUICK_REPLY_MAX_TOKENS = _env_int_setting("HIRA_QUICK_REPLY_MAX_TOKENS", 160, minimum=60, maximum=400)
 NEWS_MAX_AGE_HOURS = _env_int_setting("HIRA_NEWS_MAX_AGE_HOURS", 24, minimum=1, maximum=336)
-OPENAI_REALTIME_ENABLED = _env_flag("HIRA_OPENAI_REALTIME_ENABLED", LLM_PROVIDER == "openai")
+OPENAI_REALTIME_ENABLED = _env_flag("HIRA_OPENAI_REALTIME_ENABLED", False)
 OPENAI_REALTIME_MODEL = os.environ.get("HIRA_OPENAI_REALTIME_MODEL", "gpt-realtime-2").strip() or "gpt-realtime-2"
 OPENAI_REALTIME_VOICE = os.environ.get("HIRA_OPENAI_REALTIME_VOICE", "verse").strip() or "verse"
 SUPPRESS_DEVOTIONAL_CHECKIN_NOTIFICATIONS = _env_flag("HIRA_SUPPRESS_DEVOTIONAL_CHECKIN_NOTIFICATIONS", True)
@@ -372,9 +383,9 @@ def model_policy_for_text(text: str = "") -> dict:
     reasoning_effort = "medium"
     verbosity = "medium"
     if deep_reason in {"complex_domain_or_deliberate_work", "long_context_turn"}:
-        reasoning_effort = "xhigh" if full_power else "high"
+        reasoning_effort = "high"
     elif deep_reason == "source_sensitive_reasoning":
-        reasoning_effort = "high" if full_power else "medium"
+        reasoning_effort = "medium"
     elif FAST_CHAT_MODE and full_power:
         reasoning_effort = "medium"
         verbosity = "medium"
@@ -637,6 +648,7 @@ def build_runtime_status() -> dict:
             "specialist_policy": "enabled",
             "specialist_agents": "enabled_via_policy",
         },
+        "openai_usage": openai_usage_status(),
         "memory_buckets": memory_counts,
         "memory_error": memory_error,
         "projects": {"count": project_count},
@@ -1925,6 +1937,293 @@ def _openai_value_to_plain(value, depth: int = 3):
     return str(value)[:240]
 
 
+OPENAI_USAGE_CONFIG_KEY = "openai_usage_summary_v1"
+_OPENAI_USAGE_SUMMARY = {"version": 1, "days": {}}
+_OPENAI_USAGE_SUMMARY_LOADED = False
+_OPENAI_USAGE_LAST_PERSISTED_AT = 0.0
+_OPENAI_USAGE_LOCK = threading.Lock()
+
+_OPENAI_TEXT_PRICE_PER_MILLION = [
+    ("gpt-5.5", {"input": 5.00, "cached_input": 0.50, "output": 30.00}),
+    ("gpt-5.4-mini", {"input": 0.75, "cached_input": 0.075, "output": 4.50}),
+    ("gpt-5.4-nano", {"input": 0.20, "cached_input": 0.02, "output": 1.25}),
+    ("gpt-5.4", {"input": 2.50, "cached_input": 0.25, "output": 15.00}),
+]
+_OPENAI_NATIVE_TOOL_ESTIMATES = {
+    "web_search": 0.0100,
+    "file_search": 0.0025,
+    "code_interpreter": 0.0300,
+}
+
+
+def _openai_price_for_model(model: str = "") -> dict:
+    clean = str(model or "").lower()
+    for prefix, price in _OPENAI_TEXT_PRICE_PER_MILLION:
+        if clean.startswith(prefix):
+            return price
+    return {"input": 0.0, "cached_input": 0.0, "output": 0.0}
+
+
+def _openai_usage_path(data: dict, *path: str) -> int:
+    current = data
+    for part in path:
+        if not isinstance(current, dict):
+            return 0
+        current = current.get(part)
+    try:
+        return max(0, int(current or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _openai_usage_from_response(resp) -> dict:
+    usage = getattr(resp, "usage", None)
+    plain = _openai_value_to_plain(usage, depth=4)
+    if not isinstance(plain, dict):
+        return {}
+    input_tokens = _openai_usage_path(plain, "input_tokens") or _openai_usage_path(plain, "prompt_tokens")
+    output_tokens = _openai_usage_path(plain, "output_tokens") or _openai_usage_path(plain, "completion_tokens")
+    total_tokens = _openai_usage_path(plain, "total_tokens")
+    if not output_tokens and total_tokens and input_tokens:
+        output_tokens = max(0, total_tokens - input_tokens)
+    cached_input_tokens = (
+        _openai_usage_path(plain, "input_tokens_details", "cached_tokens")
+        or _openai_usage_path(plain, "prompt_tokens_details", "cached_tokens")
+        or _openai_usage_path(plain, "cached_tokens")
+    )
+    reasoning_tokens = (
+        _openai_usage_path(plain, "output_tokens_details", "reasoning_tokens")
+        or _openai_usage_path(plain, "completion_tokens_details", "reasoning_tokens")
+        or _openai_usage_path(plain, "reasoning_tokens")
+    )
+    return {
+        "input_tokens": input_tokens,
+        "cached_input_tokens": min(cached_input_tokens, input_tokens),
+        "output_tokens": output_tokens,
+        "reasoning_tokens": reasoning_tokens,
+        "total_tokens": total_tokens or input_tokens + output_tokens,
+    }
+
+
+def _openai_native_usage_counts(resp) -> dict:
+    counts = {"web_search": 0, "file_search": 0, "code_interpreter": 0}
+    seen: set[tuple[str, str]] = set()
+    for item in getattr(resp, "output", []) or []:
+        item_type = str(getattr(item, "type", "") or "")
+        tool = ""
+        if "web_search" in item_type:
+            tool = "web_search"
+        elif "file_search" in item_type:
+            tool = "file_search"
+        elif "code_interpreter" in item_type:
+            tool = "code_interpreter"
+        if not tool:
+            continue
+        tool_id = str(getattr(item, "id", "") or getattr(item, "call_id", "") or item_type)
+        key = (tool, tool_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        counts[tool] += 1
+    return counts
+
+
+def _openai_estimated_cost_usd(model: str, usage: dict, native_counts: dict | None = None) -> float:
+    price = _openai_price_for_model(model)
+    cached = int(usage.get("cached_input_tokens", 0) or 0)
+    input_tokens = int(usage.get("input_tokens", 0) or 0)
+    billable_input = max(0, input_tokens - cached)
+    output_tokens = int(usage.get("output_tokens", 0) or 0)
+    estimate = (
+        billable_input * price["input"]
+        + cached * price["cached_input"]
+        + output_tokens * price["output"]
+    ) / 1_000_000
+    for tool, count in (native_counts or {}).items():
+        estimate += max(0, int(count or 0)) * float(_OPENAI_NATIVE_TOOL_ESTIMATES.get(tool, 0.0))
+    return round(estimate, 8)
+
+
+def _openai_usd_to_sgd(amount: float) -> float:
+    return round(float(amount or 0.0) * OPENAI_USAGE_SGD_PER_USD, 8)
+
+
+def _openai_usage_empty_bucket() -> dict:
+    return {
+        "requests": 0,
+        "estimated_sgd": 0.0,
+        "input_tokens": 0,
+        "cached_input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "total_tokens": 0,
+        "native_tools": {},
+        "models": {},
+        "tiers": {},
+    }
+
+
+def _openai_usage_add_metrics(bucket: dict, usage: dict, estimated_sgd: float, native_counts: dict | None = None) -> None:
+    bucket["requests"] = int(bucket.get("requests", 0) or 0) + 1
+    bucket["estimated_sgd"] = round(float(bucket.get("estimated_sgd", bucket.get("estimated_usd", 0.0)) or 0.0) + float(estimated_sgd or 0.0), 8)
+    for key in ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_tokens", "total_tokens"):
+        bucket[key] = int(bucket.get(key, 0) or 0) + int(usage.get(key, 0) or 0)
+    tools = bucket.setdefault("native_tools", {})
+    for tool, count in (native_counts or {}).items():
+        if count:
+            tools[tool] = int(tools.get(tool, 0) or 0) + int(count or 0)
+
+
+def _openai_usage_merge_bucket(target: dict, source: dict | None) -> None:
+    source = source or {}
+    target["requests"] = int(target.get("requests", 0) or 0) + int(source.get("requests", 0) or 0)
+    source_cost = source.get("estimated_sgd", source.get("estimated_usd", 0.0))
+    target["estimated_sgd"] = round(float(target.get("estimated_sgd", target.get("estimated_usd", 0.0)) or 0.0) + float(source_cost or 0.0), 8)
+    for key in ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_tokens", "total_tokens"):
+        target[key] = int(target.get(key, 0) or 0) + int(source.get(key, 0) or 0)
+    tools = target.setdefault("native_tools", {})
+    for tool, count in (source.get("native_tools") or {}).items():
+        if count:
+            tools[tool] = int(tools.get(tool, 0) or 0) + int(count or 0)
+
+
+def _openai_load_usage_summary_locked() -> None:
+    global _OPENAI_USAGE_SUMMARY, _OPENAI_USAGE_SUMMARY_LOADED
+    if _OPENAI_USAGE_SUMMARY_LOADED:
+        return
+    _OPENAI_USAGE_SUMMARY_LOADED = True
+    try:
+        raw = gs.get_config(OPENAI_USAGE_CONFIG_KEY) or ""
+        parsed = json.loads(raw) if raw else {}
+        if isinstance(parsed, dict) and isinstance(parsed.get("days"), dict):
+            _OPENAI_USAGE_SUMMARY = {"version": 1, "days": parsed.get("days") or {}}
+    except Exception as exc:
+        logger.debug("OpenAI usage summary load skipped: %s", exc)
+
+
+def _openai_persist_usage_summary_locked(now_ts: float) -> None:
+    global _OPENAI_USAGE_LAST_PERSISTED_AT
+    if not (OPENAI_USAGE_PERSIST and google_ok()):
+        return
+    if OPENAI_USAGE_PERSIST_INTERVAL_SECONDS and now_ts - _OPENAI_USAGE_LAST_PERSISTED_AT < OPENAI_USAGE_PERSIST_INTERVAL_SECONDS:
+        return
+    try:
+        gs.set_config(OPENAI_USAGE_CONFIG_KEY, json.dumps(_OPENAI_USAGE_SUMMARY, ensure_ascii=False))
+        _OPENAI_USAGE_LAST_PERSISTED_AT = now_ts
+    except Exception as exc:
+        logger.debug("OpenAI usage summary persist skipped: %s", exc)
+
+
+def _record_openai_usage(resp, kwargs: dict, stream: bool = False) -> dict:
+    if not OPENAI_USAGE_TRACKING:
+        return {}
+    usage = _openai_usage_from_response(resp)
+    if not any(usage.get(key, 0) for key in ("input_tokens", "output_tokens", "total_tokens")):
+        return {}
+    model = str(kwargs.get("model") or getattr(resp, "model", "") or "unknown")
+    metadata = kwargs.get("metadata") if isinstance(kwargs.get("metadata"), dict) else {}
+    tier = str(metadata.get("tier") or "unknown")
+    native_counts = _openai_native_usage_counts(resp)
+    estimated_usd = _openai_estimated_cost_usd(model, usage, native_counts)
+    estimated_sgd = _openai_usd_to_sgd(estimated_usd)
+    now = datetime.now(SGT)
+    day_key = now.strftime("%Y-%m-%d")
+    record = {
+        "at": now.isoformat(),
+        "model": model,
+        "tier": tier,
+        "stream": bool(stream),
+        "estimated_sgd": estimated_sgd,
+        "sgd_per_usd": OPENAI_USAGE_SGD_PER_USD,
+        "usage": usage,
+        "native_tools": {k: v for k, v in native_counts.items() if v},
+    }
+    with _OPENAI_USAGE_LOCK:
+        _openai_load_usage_summary_locked()
+        days = _OPENAI_USAGE_SUMMARY.setdefault("days", {})
+        day = days.setdefault(day_key, _openai_usage_empty_bucket())
+        _openai_usage_add_metrics(day, usage, estimated_sgd, native_counts)
+        models = day.setdefault("models", {})
+        model_bucket = models.setdefault(model, _openai_usage_empty_bucket())
+        _openai_usage_add_metrics(model_bucket, usage, estimated_sgd, native_counts)
+        tiers = day.setdefault("tiers", {})
+        tier_bucket = tiers.setdefault(tier, _openai_usage_empty_bucket())
+        _openai_usage_add_metrics(tier_bucket, usage, estimated_sgd, native_counts)
+
+        keep_after = (now - timedelta(days=45)).strftime("%Y-%m-%d")
+        for key in list(days.keys()):
+            if str(key) < keep_after:
+                days.pop(key, None)
+        _OPENAI_USAGE_SUMMARY["updated_at"] = record["at"]
+        _OPENAI_USAGE_SUMMARY["last_request"] = record
+        _openai_persist_usage_summary_locked(now.timestamp())
+    logger.info(
+        "OpenAI usage tracked: model=%s tier=%s input=%s cached=%s output=%s est=S$%.5f",
+        model,
+        tier,
+        usage.get("input_tokens", 0),
+        usage.get("cached_input_tokens", 0),
+        usage.get("output_tokens", 0),
+        estimated_sgd,
+    )
+    return record
+
+
+def _openai_bucket_public(bucket: dict | None) -> dict:
+    bucket = bucket or {}
+    public = {
+        "requests": int(bucket.get("requests", 0) or 0),
+        "estimated_sgd": round(float(bucket.get("estimated_sgd", bucket.get("estimated_usd", 0.0)) or 0.0), 4),
+        "input_tokens": int(bucket.get("input_tokens", 0) or 0),
+        "cached_input_tokens": int(bucket.get("cached_input_tokens", 0) or 0),
+        "output_tokens": int(bucket.get("output_tokens", 0) or 0),
+        "reasoning_tokens": int(bucket.get("reasoning_tokens", 0) or 0),
+        "total_tokens": int(bucket.get("total_tokens", 0) or 0),
+        "native_tools": dict(bucket.get("native_tools") or {}),
+    }
+    if public["input_tokens"]:
+        public["cache_hit_ratio"] = round(public["cached_input_tokens"] / public["input_tokens"], 3)
+    else:
+        public["cache_hit_ratio"] = 0.0
+    return public
+
+
+def _openai_top_buckets(items: dict | None, limit: int = 8) -> dict:
+    pairs = sorted(
+        (items or {}).items(),
+        key=lambda pair: float((pair[1] or {}).get("estimated_sgd", (pair[1] or {}).get("estimated_usd", 0.0)) or 0.0),
+        reverse=True,
+    )
+    return {str(key): _openai_bucket_public(value) for key, value in pairs[:limit]}
+
+
+def openai_usage_status(days: int = 7) -> dict:
+    current = datetime.now(SGT)
+    with _OPENAI_USAGE_LOCK:
+        _openai_load_usage_summary_locked()
+        all_days = dict(_OPENAI_USAGE_SUMMARY.get("days") or {})
+        last_request = dict(_OPENAI_USAGE_SUMMARY.get("last_request") or {})
+    today_key = current.strftime("%Y-%m-%d")
+    aggregate = _openai_usage_empty_bucket()
+    for offset in range(max(1, int(days or 7))):
+        day = (current - timedelta(days=offset)).strftime("%Y-%m-%d")
+        bucket = all_days.get(day) or {}
+        _openai_usage_merge_bucket(aggregate, bucket)
+    return {
+        "tracking": "enabled" if OPENAI_USAGE_TRACKING else "disabled",
+        "persist": "enabled" if OPENAI_USAGE_PERSIST else "disabled",
+        "currency": "SGD",
+        "sgd_per_usd": OPENAI_USAGE_SGD_PER_USD,
+        "window_days": max(1, int(days or 7)),
+        "today": _openai_bucket_public(all_days.get(today_key)),
+        "last_7d": _openai_bucket_public(aggregate),
+        "models_today": _openai_top_buckets((all_days.get(today_key) or {}).get("models") or {}),
+        "tiers_today": _openai_top_buckets((all_days.get(today_key) or {}).get("tiers") or {}),
+        "last_request": last_request,
+        "note": "Estimated in SGD from Responses API usage fields, configured public USD pricing, and HIRA_OPENAI_USAGE_SGD_PER_USD; check OpenAI billing for the USD source of truth.",
+    }
+
+
 def _openai_native_observations(resp) -> list[dict]:
     observations: list[dict] = []
     for item in getattr(resp, "output", []) or []:
@@ -2067,24 +2366,32 @@ def _openai_degraded_request_kwargs(kwargs: dict, exc: Exception | None = None) 
 
 def _openai_create_with_retry(kwargs: dict):
     try:
-        return openai_client.responses.create(**kwargs)
+        resp = openai_client.responses.create(**kwargs)
+        _record_openai_usage(resp, kwargs, stream=False)
+        return resp
     except Exception as exc:
         degraded = _openai_degraded_request_kwargs(kwargs, exc)
         if not degraded:
             raise
         logger.warning("OpenAI Responses request failed; retrying with conservative options: %s", exc)
-        return openai_client.responses.create(**degraded)
+        resp = openai_client.responses.create(**degraded)
+        _record_openai_usage(resp, degraded, stream=False)
+        return resp
 
 
 async def _openai_create_with_retry_async(kwargs: dict):
     try:
-        return await async_openai_client.responses.create(**kwargs)
+        resp = await async_openai_client.responses.create(**kwargs)
+        _record_openai_usage(resp, kwargs, stream=False)
+        return resp
     except Exception as exc:
         degraded = _openai_degraded_request_kwargs(kwargs, exc)
         if not degraded:
             raise
         logger.warning("OpenAI Responses async request failed; retrying with conservative options: %s", exc)
-        return await async_openai_client.responses.create(**degraded)
+        resp = await async_openai_client.responses.create(**degraded)
+        _record_openai_usage(resp, degraded, stream=False)
+        return resp
 
 
 def _openai_create_response(
@@ -11348,6 +11655,7 @@ async def _openai_stream_response(kwargs: dict):
             async for event in stream:
                 yield event
             final_response = await stream.get_final_response()
+        _record_openai_usage(final_response, kwargs, stream=True)
         yield SimpleNamespace(type="hira.final_response", response=final_response)
     except Exception as exc:
         degraded = _openai_degraded_request_kwargs(kwargs, exc)
@@ -11358,6 +11666,7 @@ async def _openai_stream_response(kwargs: dict):
             async for event in stream:
                 yield event
             final_response = await stream.get_final_response()
+        _record_openai_usage(final_response, degraded, stream=True)
         yield SimpleNamespace(type="hira.final_response", response=final_response)
 
 

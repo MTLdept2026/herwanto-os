@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260524-chat-progress-citation-62";
-const APP_SCRIPT = "app.js?v=20260524-chat-progress-citation-62";
-const EXPECTED_SW_CACHE = "hira-os-v132";
+const APP_VERSION = "20260525-api-spend-63";
+const APP_SCRIPT = "app.js?v=20260525-api-spend-63";
+const EXPECTED_SW_CACHE = "hira-os-v133";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
@@ -1300,6 +1300,144 @@ function renderHealth(data) {
     <p class="subtle">${markdownish(outcomeRows || "No notification feedback captured yet.")}</p>
     <p class="subtle">${markdownish(prayerRows || "Prayer status unavailable.")}</p>
   `;
+}
+
+const sgdFormatter = new Intl.NumberFormat("en-SG", {
+  style: "decimal",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+function formatSgd(value) {
+  const amount = Number(value || 0);
+  if (!Number.isFinite(amount)) return "S$0.00";
+  if (amount > 0 && amount < 0.01) return "<S$0.01";
+  return `S$${sgdFormatter.format(amount)}`;
+}
+
+function formatTokenCount(value) {
+  const amount = Number(value || 0);
+  if (!Number.isFinite(amount) || amount <= 0) return "0";
+  if (amount >= 1_000_000) return `${(amount / 1_000_000).toFixed(amount >= 10_000_000 ? 1 : 2)}M`;
+  if (amount >= 1_000) return `${(amount / 1_000).toFixed(amount >= 10_000 ? 0 : 1)}k`;
+  return String(Math.round(amount));
+}
+
+function apiSpendRow(label, value, tone = "") {
+  const cleanTone = tone ? ` class="${tone}"` : "";
+  return `<div class="status-row"><span>${escapeHtml(label)}</span><strong${cleanTone}>${escapeHtml(String(value || "--"))}</strong></div>`;
+}
+
+function apiSpendBucket(label, bucket = {}) {
+  const requests = Number(bucket.requests || 0);
+  const cacheRatio = Math.round(Number(bucket.cache_hit_ratio || 0) * 100);
+  return `
+    <div class="api-spend-bucket">
+      <div>
+        <span>${escapeHtml(label)}</span>
+        <strong>${formatSgd(bucket.estimated_sgd)}</strong>
+      </div>
+      <small>${requests} request${requests === 1 ? "" : "s"} · ${formatTokenCount(bucket.total_tokens)} tokens · ${cacheRatio}% cache</small>
+    </div>
+  `;
+}
+
+function apiSpendBreakdown(title, items = {}) {
+  const rows = Object.entries(items || {});
+  if (!rows.length) {
+    return `
+      <section class="api-spend-breakdown">
+        <h4>${escapeHtml(title)}</h4>
+        <p class="subtle">No tracked calls yet.</p>
+      </section>
+    `;
+  }
+  return `
+    <section class="api-spend-breakdown">
+      <h4>${escapeHtml(title)}</h4>
+      <div class="api-spend-buckets">
+        ${rows.map(([label, bucket]) => apiSpendBucket(label, bucket)).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderApiSpend(data) {
+  const el = $("#apiSpendOutput");
+  if (!el) return;
+  const usage = data?.runtime?.openai_usage || data?.openai_usage || {};
+  const today = usage.today || {};
+  const week = usage.last_7d || {};
+  const lastRequest = usage.last_request || {};
+  const nativeTools = Object.entries(today.native_tools || {})
+    .filter(([, count]) => Number(count || 0) > 0)
+    .map(([tool, count]) => `${tool.replaceAll("_", " ")} ${count}`)
+    .join(" · ");
+  const lastSeen = lastRequest.at ? new Date(lastRequest.at).toLocaleString("en-SG", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  }) : "No call yet";
+  el.hidden = false;
+  el.innerHTML = `
+    <div class="api-spend-summary">
+      <div class="api-spend-total">
+        <span>Today</span>
+        <strong>${formatSgd(today.estimated_sgd)}</strong>
+        <small>${today.requests || 0} request${Number(today.requests || 0) === 1 ? "" : "s"}</small>
+      </div>
+      <div class="api-spend-total">
+        <span>Last 7 days</span>
+        <strong>${formatSgd(week.estimated_sgd)}</strong>
+        <small>${formatTokenCount(week.total_tokens)} tokens</small>
+      </div>
+    </div>
+    <div class="api-spend-rows">
+      ${apiSpendRow("Tracking", usage.tracking || "unknown", usage.tracking === "enabled" ? "status-ok" : "status-warn")}
+      ${apiSpendRow("Cache hit", `${Math.round(Number(today.cache_hit_ratio || 0) * 100)}%`)}
+      ${apiSpendRow("Input", `${formatTokenCount(today.input_tokens)} tokens`)}
+      ${apiSpendRow("Output", `${formatTokenCount(today.output_tokens)} tokens`)}
+      ${apiSpendRow("Reasoning", `${formatTokenCount(today.reasoning_tokens)} tokens`)}
+      ${apiSpendRow("Native tools", nativeTools || "none")}
+      ${apiSpendRow("FX", `1 USD = S$${Number(usage.sgd_per_usd || 0).toFixed(2)}`)}
+      ${apiSpendRow("Last call", lastSeen)}
+    </div>
+    ${apiSpendBreakdown("By model today", usage.models_today)}
+    ${apiSpendBreakdown("By route today", usage.tiers_today)}
+    <p class="subtle">${escapeHtml(usage.note || "Estimated from tracked OpenAI calls. Billing dashboard remains the source of truth.")}</p>
+  `;
+}
+
+async function loadApiSpend({ quiet = false } = {}) {
+  const button = $("#checkApiSpendBtn");
+  const output = $("#apiSpendOutput");
+  const previousLabel = button?.textContent || "Refresh";
+  try {
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Checking";
+    }
+    if (output && !quiet) {
+      output.innerHTML = "<div class=\"empty-state compact\">Checking the bill diary...</div>";
+    }
+    const data = await api("/api/admin/status", { headers: headers(false) });
+    renderApiSpend(data);
+    if (!quiet) setStatus("API spend refreshed.", "ok");
+  } catch (error) {
+    if (output) {
+      output.innerHTML = `<div class="empty-state compact">API spend unavailable: ${escapeHtml(error.message)}</div>`;
+    }
+    if (!quiet) setStatus(`API spend check failed: ${error.message}`, "error");
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.innerHTML = `<span data-lucide="receipt-text" aria-hidden="true"></span>Refresh`;
+      refreshIcons(button);
+    } else if (previousLabel) {
+      refreshIcons();
+    }
+  }
 }
 
 function briefingDeliveryTone(status) {
@@ -3647,6 +3785,7 @@ $("#settingsBtn").addEventListener("click", () => {
   updateNotificationControls();
   if (!panel.hidden) {
     renderAppVersion();
+    loadApiSpend({ quiet: true });
     loadActionLedger({ quiet: true });
   }
 });
@@ -3716,6 +3855,7 @@ $("#enableNotificationsBtn").addEventListener("click", enableNotifications);
 $("#settingsEnableNotificationsBtn").addEventListener("click", enableNotifications);
 $("#testNotificationsBtn").addEventListener("click", sendTestNotification);
 $("#checkHealthBtn").addEventListener("click", checkNotificationHealth);
+$("#checkApiSpendBtn").addEventListener("click", () => loadApiSpend());
 $("#refreshActionLedgerBtn").addEventListener("click", () => loadActionLedger());
 $("#actionLedgerList").addEventListener("click", (event) => {
   const review = event.target.closest("[data-ledger-review]");

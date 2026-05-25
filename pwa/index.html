@@ -14,7 +14,7 @@
     <link rel="manifest" href="/manifest.webmanifest?v=20260513-work-gmail-health-44" />
     <link rel="icon" href="/static/icon.svg?v=20260510-trace-39" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=20260510-trace-39" />
-    <link rel="stylesheet" href="./styles.css?v=20260524-chat-progress-citation-62" />
+    <link rel="stylesheet" href="./styles.css?v=20260525-api-spend-63" />
   </head>
   <body>
     <main class="shell">
@@ -105,6 +105,18 @@
         </div>
         <p id="notificationStateText" class="subtle notification-state">Checking notifications...</p>
         <div id="healthOutput" class="health-output" hidden></div>
+        <div class="api-spend-panel">
+          <div class="section-head compact">
+            <h3>API Spend</h3>
+            <button id="checkApiSpendBtn" type="button" class="ghost-btn icon-label-btn">
+              <span data-lucide="receipt-text" aria-hidden="true"></span>
+              Refresh
+            </button>
+          </div>
+          <div id="apiSpendOutput" class="api-spend-output">
+            <div class="empty-state compact">Open Settings to load the OpenAI bill diary.</div>
+          </div>
+        </div>
         <div class="version-panel">
           <div class="section-head compact">
             <h3>App Version</h3>
@@ -822,6 +834,6 @@
       </div>
     </section>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-    <script src="./app.js?v=20260524-chat-progress-citation-62" type="module"></script>
+    <script src="./app.js?v=20260525-api-spend-63" type="module"></script>
   </body>
 </html>
