@@ -1246,6 +1246,8 @@ def _pending_action_from_text(text: str) -> str:
 
 def _pwa_casual_status_prompt(message: str) -> bool:
     clean = bot._normalise_short_reply(message)
+    clean = re.sub(r"\b(?:hey|hi|hello|yo|hira)\b", " ", clean)
+    clean = re.sub(r"\s+", " ", clean).strip()
     return clean in {
         "whats up",
         "what's up",
@@ -4099,7 +4101,15 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
         return _quick_sse_response(f1_sync_reply, history_key, history, route_name="f1_calendar_sync", tool_name="sync_f1_calendar")
 
     if _pwa_casual_status_prompt(message):
-        status_reply = await bot._execute_tool_offloop("get_assistant_context", {"days": 3})
+        try:
+            status_reply = await bot._execute_tool_offloop("get_assistant_context", {"days": 3})
+        except Exception as exc:
+            bot.logger.warning(f"PWA casual status brief failed: {exc}")
+            status_reply = await asyncio.to_thread(
+                _safe_text,
+                lambda: bot.build_agenda(1),
+                "I could not pull the full status brief right now, but I am still here.",
+            )
         if not status_reply:
             status_reply = "I could not pull the current status brief right now. Try again in a moment."
         return _quick_sse_response(status_reply, history_key, history, route_name="natural_intent", tool_name="get_assistant_context")

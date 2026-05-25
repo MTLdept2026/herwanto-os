@@ -4631,6 +4631,56 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn('"name": "get_assistant_context"', body)
         self.assertNotIn('"final_mode": "backend_error"', body)
 
+    def test_whats_up_hira_uses_local_status_brief_before_model_route(self):
+        async def fake_execute_tool(name, inp):
+            self.assertEqual(name, "get_assistant_context")
+            self.assertEqual(inp, {"days": 3})
+            return "Quick read: marking light, next school block is clean."
+
+        async def run():
+            response = await web_app._chat_stream_response("Whats up hira", None, "phone")
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(web_app, "_update_working_memory", return_value={}),
+            patch.object(web_app, "_schedule_background_call"),
+            patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool),
+            patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("should not route to model")),
+        ):
+            body = asyncio.run(run())
+
+        self.assertIn("Quick read: marking light", body)
+        self.assertIn('"name": "natural_intent"', body)
+        self.assertNotIn("backend snag", body.lower())
+
+    def test_whats_up_hira_status_failure_falls_back_without_backend_snag(self):
+        async def run():
+            response = await web_app._chat_stream_response("Hey hira whats up", None, "phone")
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(web_app, "_update_working_memory", return_value={}),
+            patch.object(web_app, "_schedule_background_call"),
+            patch.object(bot, "_execute_tool_offloop", side_effect=RuntimeError("context failed")),
+            patch.object(bot, "build_agenda", return_value="Agenda: fallback still alive."),
+            patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("should not route to model")),
+        ):
+            body = asyncio.run(run())
+
+        self.assertIn("fallback still alive", body)
+        self.assertIn('"name": "natural_intent"', body)
+        self.assertNotIn("backend snag", body.lower())
+
     def test_backend_change_feeling_uses_local_checkin_before_model_route(self):
         async def run():
             response = await web_app._chat_stream_response(
