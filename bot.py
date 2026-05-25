@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import io
 import asyncio
+import contextvars
 import gc
 import json
 import base64
@@ -97,6 +98,10 @@ if LLM_PROVIDER == "openai" and not OPENAI_API_KEY:
 openai_client = OpenAI(api_key=OPENAI_API_KEY or "missing-key")
 async_openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY or "missing-key")
 _SYSTEM_PROMPT_CACHE = {"key": None, "value": None}
+_TOOL_DIRECT_USER_TEXT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "hira_tool_direct_user_text",
+    default=None,
+)
 
 
 def _invalidate_system_prompt_cache() -> None:
@@ -8545,8 +8550,31 @@ _STATE_CHANGING_ACTIONS = {
     "create_daily_checkin",
     "create_break_aware_daily_checkin",
     "create_followup",
+    "complete_task_by_text",
+    "complete_followup_by_text",
+    "add_marking_task",
+    "update_marking_progress",
+    "reset_marking_load",
+    "apply_mtl_failure_highlighting",
+    "update_mtl_class_score",
+    "fill_mtl_percentage_scores",
+    "generate_mtl_score_trend_report",
+    "remember_user_info",
+    "create_topic_profile",
+    "remember_source_insight",
+    "set_current_school_week",
+    "update_project_status",
+    "create_document_artifact",
+    "create_slide_deck_artifact",
+    "remember_artifact_template",
+    "create_gmail_draft",
 }
 _VAGUE_ACTION_REF_RE = re.compile(r"\b(this|that|it|that day|the day|same day|there|then)\b", re.I)
+_CONFIRM_ACTION_RE = re.compile(
+    r"^\s*(?:yes|yep|yeah|ok(?:ay)?|correct|confirm(?:ed)?|proceed|go ahead|do it|save it|add it|"
+    r"create it|delete it|remove it|mark it done|all day)(?:[.! ]*)$",
+    re.I,
+)
 
 
 def _action_field_text(inp: dict, *fields: str) -> str:
@@ -8568,12 +8596,144 @@ def _action_subject_for_audit(name: str, inp: dict) -> str:
         return str(inp.get("name", "") or "")
     if name == "create_followup":
         return str(inp.get("topic", "") or "")
+    if name in {"complete_task_by_text", "complete_followup_by_text", "update_marking_progress"}:
+        return str(inp.get("query", "") or "")
+    if name == "add_marking_task":
+        return str(inp.get("title", "") or "")
+    if name == "reset_marking_load":
+        return "marking load reset"
+    if name in {"apply_mtl_failure_highlighting", "fill_mtl_percentage_scores", "generate_mtl_score_trend_report"}:
+        return " ".join(
+            part for part in (
+                str(inp.get("class_query", "") or ""),
+                str(inp.get("assessment_query", "") or ""),
+            )
+            if part
+        ) or name
+    if name == "update_mtl_class_score":
+        return " ".join(
+            part for part in (
+                str(inp.get("class_query", "") or ""),
+                str(inp.get("student_query", "") or ""),
+                str(inp.get("score_column", "") or ""),
+            )
+            if part
+        )
+    if name == "remember_user_info":
+        return str(inp.get("text") or inp.get("memory") or inp.get("fact") or inp.get("note") or "")
+    if name == "create_topic_profile":
+        return str(inp.get("topic", "") or "")
+    if name == "remember_source_insight":
+        return str(inp.get("topic", "") or "")
+    if name == "set_current_school_week":
+        return str(inp.get("week_type", "") or "")
+    if name == "update_project_status":
+        return str(inp.get("project", "") or "")
+    if name in {"create_document_artifact", "create_slide_deck_artifact"}:
+        return str(inp.get("title", "") or "")
+    if name == "remember_artifact_template":
+        return str(inp.get("name", "") or "")
+    if name == "create_gmail_draft":
+        return str(inp.get("subject") or inp.get("to") or "")
     return ""
 
 
-def _validate_state_changing_action(name: str, inp: dict) -> tuple[bool, str]:
+def _tool_direct_user_text_from_messages(messages: list[dict], explicit: str | None = None) -> str | None:
+    if explicit is not None:
+        return str(explicit or "")
+    text = _strip_injected_chat_context(_latest_user_text(messages))
+    if "Extracted relevant text:" in text and "User note:" in text:
+        match = re.search(r"User note:\s*(.+?)(?:\n\n|$)", text, re.S)
+        return (match.group(1).strip() if match else "")
+    if "User note:" in text and ("Inspect this screenshot/document" in text or "Document type:" in text):
+        match = re.search(r"User note:\s*(.+?)(?:\n\n|$)", text, re.S)
+        return (match.group(1).strip() if match else "")
+    return text
+
+
+def _normalise_direct_user_text(value: str | None) -> str:
+    return " ".join(str(value or "").lower().split())
+
+
+def _direct_user_intent_allows_tool(name: str, direct_user_text: str | None) -> bool:
+    if direct_user_text is None:
+        return True
+    clean = _normalise_direct_user_text(direct_user_text)
+    if not clean:
+        return False
+    if _CONFIRM_ACTION_RE.fullmatch(clean):
+        return True
+
+    def has(pattern: str) -> bool:
+        return bool(re.search(pattern, clean, re.I))
+
+    if name == "create_calendar_event":
+        return (
+            has(r"\b(add|create|schedule|book|put|block)\b.*\b(calendar|event|meeting|appointment|duty|training|leave|all[- ]day)\b|\bcalendar\b.*\b(add|create|schedule|book|block)\b")
+            or (
+                has(r"\b(meeting|appointment|event|duty|training|match|leave|briefing|appointment)\b")
+                and has(r"\b(today|tomorrow|tonight|on|at|from|until|by|next|this|\d{1,2}(?::\d{2})?\s*(?:am|pm)?|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b")
+            )
+        )
+    if name == "delete_calendar_event_by_text":
+        return has(r"\b(delete|remove|cancel)\b.*\b(calendar|event|meeting|appointment|schedule)\b|\bcalendar\b.*\b(delete|remove|cancel)\b")
+    if name == "bulk_delete_duplicate_calendar_events":
+        return has(r"\b(duplicate|duplicates|duplicated|replicated|copies|copied)\b") and has(r"\b(delete|remove|clean|clear|dedupe)\b")
+    if name == "add_reminder":
+        return has(r"\b(remind|reminder|task|deadline|due|keep .*radar|track this|add .*todo|add .*to[- ]do)\b")
+    if name == "create_proactive_nudge":
+        return has(r"\b(nudge|ping|notify|notification|push|remind me)\b")
+    if name in {"create_daily_checkin", "create_break_aware_daily_checkin"}:
+        return has(r"\b(check[- ]?in|daily|every day|once per day|habit|ping|remind)\b")
+    if name == "create_followup":
+        return has(r"\b(follow[- ]?up|chase|owe.*reply|track.*reply)\b")
+    if name in {"complete_task_by_text", "complete_followup_by_text"}:
+        return has(r"\b(done|complete|completed|settled?|mark)\b")
+    if name in {"add_marking_task", "update_marking_progress", "reset_marking_load"}:
+        return has(r"\b(marking|scripts?|papers?|worksheets?|karangan|kefahaman|stack|marked|unmarked)\b") and has(r"\b(add|update|mark|marked|done|complete|reset|clear|close)\b")
+    if name == "apply_mtl_failure_highlighting":
+        return has(r"\b(highlight|colour|color|red[- ]?fill|red|format)\b") and has(r"\b(fail|failure|below|score|mark|percentage|%)\b")
+    if name == "update_mtl_class_score":
+        return has(r"\b(update|enter|write|put|set|fill)\b") and has(r"\b(score|mark|result|classlist|class list|student)\b")
+    if name == "fill_mtl_percentage_scores":
+        return has(r"\b(fill|create|calculate|generate)\b") and has(r"\b(percentage|percent|%)\b")
+    if name == "generate_mtl_score_trend_report":
+        return has(r"\b(create|generate|refresh|make)\b") and has(r"\b(trend|graph|chart|report|analysis tab)\b")
+    if name in {"remember_user_info", "create_topic_profile", "remember_source_insight", "remember_artifact_template"}:
+        return has(r"\b(remember|save|store|keep this|template|track this|follow this|new interest|source note)\b")
+    if name == "set_current_school_week":
+        return has(r"\b(set|lock|remember|this week|current week|school week)\b") and has(r"\b(odd|even|week)\b")
+    if name == "update_project_status":
+        return has(r"\b(update|set|save|store|project|status|milestone)\b")
+    if name == "create_document_artifact":
+        return has(r"\b(create|generate|make|write|build|draft)\b") and has(r"\b(document|docx|worksheet|letter|report|lesson plan|handout|memo|proposal|notes)\b")
+    if name == "create_slide_deck_artifact":
+        return has(r"\b(create|generate|make|build|draft)\b") and has(r"\b(slide|slides|deck|ppt|pptx|powerpoint|presentation)\b")
+    if name == "create_gmail_draft":
+        return has(r"\b(draft|compose|write|reply)\b") and has(r"\b(gmail|email|mail|reply)\b")
+    return True
+
+
+def _direct_user_intent_failure(name: str, direct_user_text: str | None) -> str:
+    if name not in _STATE_CHANGING_ACTIONS:
+        return ""
+    if _direct_user_intent_allows_tool(name, direct_user_text):
+        return ""
+    return (
+        "The current user turn did not explicitly request this specific write/delete/draft action. "
+        "Summarise the information and ask Herwanto to confirm the exact action before changing connected data."
+    )
+
+
+def _validate_state_changing_action(name: str, inp: dict, direct_user_text: str | None = None) -> tuple[bool, str]:
     if name not in _STATE_CHANGING_ACTIONS:
         return True, ""
+    direct_reason = _direct_user_intent_failure(
+        name,
+        _TOOL_DIRECT_USER_TEXT.get() if direct_user_text is None else direct_user_text,
+    )
+    if direct_reason:
+        return False, direct_reason
     subject = _action_subject_for_audit(name, inp).strip()
     if len(subject) < 3:
         return False, "The action subject is missing or too vague."
@@ -8610,6 +8770,21 @@ def _validate_state_changing_action(name: str, inp: dict) -> tuple[bool, str]:
     elif name == "create_followup":
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(inp.get("due_date", "") or "")):
             return False, "Follow-up needs a concrete YYYY-MM-DD due date."
+    elif name == "create_gmail_draft":
+        if any(not str(inp.get(field, "") or "").strip() for field in ("to", "subject", "body")):
+            return False, "Gmail draft needs a recipient, subject, and body."
+    elif name == "update_mtl_class_score":
+        if any(not str(inp.get(field, "") or "").strip() for field in ("student_query", "score_column", "score_value")):
+            return False, "Classlist score update needs a student, score column, and value."
+    elif name in {"create_document_artifact", "create_slide_deck_artifact"}:
+        if any(not str(inp.get(field, "") or "").strip() for field in ("title", "instructions")):
+            return False, "Artifact creation needs a title and instructions."
+    elif name == "remember_artifact_template":
+        if not str(inp.get("notes", "") or "").strip():
+            return False, "Template memory needs concrete notes."
+    elif name == "update_project_status":
+        if any(not str(inp.get(field, "") or "").strip() for field in ("project", "status")):
+            return False, "Project update needs a project and status."
     detail_text = _action_field_text(
         inp,
         "title",
@@ -8618,6 +8793,7 @@ def _validate_state_changing_action(name: str, inp: dict) -> tuple[bool, str]:
         "topic",
         "query",
         "notes",
+        "instructions",
     )
     if (
         name in {"create_calendar_event", "delete_calendar_event_by_text", "add_reminder", "create_proactive_nudge", "create_followup"}
@@ -8675,6 +8851,11 @@ def _action_clarification_prompt(name: str, inp: dict, reason: str) -> str:
     subject = _action_subject_for_audit(name, inp).strip()
     if "disabled" in clean_reason.lower():
         return ""
+    if "did not explicitly request" in clean_reason:
+        return (
+            "I can use that information, but I will not change connected data from inferred or embedded instructions. "
+            "Tell me the exact action to take if you want me to proceed."
+        )
     if "subject is missing" in clean_reason or "subject is only a vague reference" in clean_reason:
         label = {
             "create_calendar_event": "calendar item",
@@ -8708,8 +8889,8 @@ def _action_clarification_prompt(name: str, inp: dict, reason: str) -> str:
     return f"I can do that, but one detail is missing: {clean_reason}"
 
 
-def _validated_action_failure(name: str, inp: dict) -> str | None:
-    ok, reason = _validate_state_changing_action(name, inp)
+def _validated_action_failure(name: str, inp: dict, direct_user_text: str | None = None) -> str | None:
+    ok, reason = _validate_state_changing_action(name, inp, direct_user_text=direct_user_text)
     if ok:
         return None
     pieces = [f"action={name}", "status=blocked", f"reason={reason}"]
@@ -10863,8 +11044,10 @@ _SIDE_EFFECT_TOOL_PREFIXES = (
     "create_",
     "delete_",
     "fill_",
+    "generate_",
     "remember_",
     "reset_",
+    "set_",
     "update_",
 )
 
@@ -11288,7 +11471,26 @@ async def _run_agentic_openai(messages, max_tokens=2048, tools=None, openai_stat
     return strip_ai_citation_markers(_correct_weekday_date_mismatches(guarded_reply))
 
 
-async def _run_agentic_claude(messages, max_tokens=2048, tools=None, openai_state_key: str | None = None):
+async def _run_agentic_claude(
+    messages,
+    max_tokens=2048,
+    tools=None,
+    openai_state_key: str | None = None,
+    direct_user_text: str | None = None,
+):
+    token = _TOOL_DIRECT_USER_TEXT.set(_tool_direct_user_text_from_messages(messages, direct_user_text))
+    try:
+        return await _run_agentic_claude_impl(
+            messages,
+            max_tokens=max_tokens,
+            tools=tools,
+            openai_state_key=openai_state_key,
+        )
+    finally:
+        _TOOL_DIRECT_USER_TEXT.reset(token)
+
+
+async def _run_agentic_claude_impl(messages, max_tokens=2048, tools=None, openai_state_key: str | None = None):
     provider_status = _llm_provider_status_reply(messages)
     if provider_status:
         return provider_status
@@ -11896,7 +12098,27 @@ async def stream_agentic_openai(messages, max_tokens=650, tools=None, openai_sta
     yield {"type": "done", "text": corrected}
 
 
-async def stream_agentic_claude(messages, max_tokens=650, tools=None, openai_state_key: str | None = None):
+async def stream_agentic_claude(
+    messages,
+    max_tokens=650,
+    tools=None,
+    openai_state_key: str | None = None,
+    direct_user_text: str | None = None,
+):
+    token = _TOOL_DIRECT_USER_TEXT.set(_tool_direct_user_text_from_messages(messages, direct_user_text))
+    try:
+        async for event in stream_agentic_claude_impl(
+            messages,
+            max_tokens=max_tokens,
+            tools=tools,
+            openai_state_key=openai_state_key,
+        ):
+            yield event
+    finally:
+        _TOOL_DIRECT_USER_TEXT.reset(token)
+
+
+async def stream_agentic_claude_impl(messages, max_tokens=650, tools=None, openai_state_key: str | None = None):
     provider_status = _llm_provider_status_reply(messages)
     if provider_status:
         yield {"type": "text", "text": provider_status}
@@ -12021,7 +12243,8 @@ async def handle_photo(update, context):
                 {"type": "text", "text": f"{MEDIA_SCHEDULE_INSTRUCTION}\n\nUser note: {caption}"}
             ]}],
             max_tokens=2048,
-            tools=[CONTEXT_TOOL, CALENDAR_TOOL, REMINDER_TOOL]
+            tools=[CONTEXT_TOOL, CALENDAR_TOOL, REMINDER_TOOL],
+            direct_user_text=update.message.caption or "",
         )
         try:
             _remember_uploaded_file("photo", photo.file_id, caption, reply_text, mime_type="image/jpeg")
@@ -12086,7 +12309,8 @@ async def _process_office_document(update, doc, file_bytes: bytes, caption: str)
         reply_text = await _run_agentic_claude(
             [{"role": "user", "content": prompt}],
             max_tokens=3000,
-            tools=[CONTEXT_TOOL, CALENDAR_TOOL, REMINDER_TOOL, MEMORY_TOOL]
+            tools=[CONTEXT_TOOL, CALENDAR_TOOL, REMINDER_TOOL, MEMORY_TOOL],
+            direct_user_text=caption if update.message.caption else "",
         )
     except Exception as e:
         logger.error(f"Document Claude analysis error: {e}")
@@ -12146,7 +12370,8 @@ async def handle_document(update, context):
                 {"type": "text", "text": f"{MEDIA_SCHEDULE_INSTRUCTION}\n\nUser note: {caption}"}
             ]}],
             max_tokens=2048,
-            tools=[CONTEXT_TOOL, CALENDAR_TOOL, REMINDER_TOOL]
+            tools=[CONTEXT_TOOL, CALENDAR_TOOL, REMINDER_TOOL],
+            direct_user_text=update.message.caption or "",
         )
         try:
             _remember_uploaded_file(
@@ -12187,6 +12412,9 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "remember_source_insight":
         try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
             entry = dict(inp)
             entry["date"] = datetime.now(SGT).strftime("%Y-%m-%d %H:%M SGT")
             note = _add_source_note(entry)
@@ -12252,6 +12480,9 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "generate_mtl_score_trend_report":
         try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
             return gs.format_mtl_score_trend_report(
                 teacher_query="HERWANTO",
                 class_query=inp.get("class_query", ""),
@@ -12262,6 +12493,9 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "apply_mtl_failure_highlighting":
         try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
             return gs.format_mtl_failure_highlighting(
                 teacher_query="HERWANTO",
                 class_query=inp.get("class_query", ""),
@@ -12273,6 +12507,9 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "update_mtl_class_score":
         try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
             result = gs.update_mtl_class_score(
                 teacher_query="HERWANTO",
                 class_query=inp.get("class_query", ""),
@@ -12291,6 +12528,9 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "fill_mtl_percentage_scores":
         try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
             result = gs.fill_mtl_percentage_scores(
                 teacher_query="HERWANTO",
                 class_query=inp.get("class_query", ""),
@@ -12310,6 +12550,9 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "remember_user_info":
         try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
             memory_text = str(
                 inp.get("text")
                 or inp.get("memory")
@@ -12351,6 +12594,9 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "create_topic_profile":
         try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
             profile = _add_topic_profile(inp)
             track = ", ".join(profile.get("track") or []) or "general developments"
             live = ", ".join(profile.get("live_facts") or []) or "latest/current facts"
@@ -12363,6 +12609,9 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "set_current_school_week":
         try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
             monday = _set_current_school_week(inp["week_type"], inp.get("week_number"))
             number_note = f" School week {inp['week_number']}." if inp.get("week_number") else ""
             return f"Set timetable reference: week starting {monday} is {inp['week_type'].upper()}.{number_note}"
@@ -12526,6 +12775,9 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "add_marking_task":
         try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
             task = gs.add_marking_task(
                 inp["title"],
                 total_scripts=inp.get("total_scripts", 0),
@@ -12539,6 +12791,9 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "update_marking_progress":
         try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
             task, score = _find_best_marking_task(inp["query"])
             if not task or score < 0.35:
                 return "No confident marking stack match found."
@@ -12554,6 +12809,9 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "reset_marking_load":
         try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
             result = gs.reset_marking_tasks()
             count = int(result.get("cleared_count") or 0)
             if count:
@@ -12604,6 +12862,9 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "create_document_artifact":
         try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
             spec = _generate_document_spec(
                 inp["title"],
                 inp["instructions"],
@@ -12622,6 +12883,9 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "create_slide_deck_artifact":
         try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
             spec = _generate_slide_spec(
                 inp["title"],
                 inp["instructions"],
@@ -12640,6 +12904,9 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "remember_artifact_template":
         try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
             _add_memory("templates", f"{inp['name']}: {inp['notes']}")
             return f"Remembered artifact template: {inp['name']}"
         except Exception as e:
@@ -12664,6 +12931,9 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "complete_task_by_text":
         try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
             matches = _find_matching_reminders(inp["query"])
             if not matches:
                 return "No confident reminder match found."
@@ -12689,6 +12959,9 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "complete_followup_by_text":
         try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
             query = inp["query"]
             if str(query).strip().isdigit():
                 ok = gs.complete_followup(query)
@@ -12749,6 +13022,9 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "create_gmail_draft":
         try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
             account = _normalise_gmail_account(inp.get("account", "personal"))
             if not gs.gmail_ok(account):
                 return f"{gs.gmail_label(account).title()} is not connected."
@@ -12767,6 +13043,9 @@ async def _execute_tool(name: str, inp: dict) -> str:
 
     elif name == "update_project_status":
         try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
             gs.update_project(
                 inp["project"],
                 inp["status"],
@@ -12882,7 +13161,7 @@ async def _process_user_text(update, context, text: str):
 
     try:
         messages = list(history)
-        reply_text = await _run_agentic_claude(messages, max_tokens=1024)
+        reply_text = await _run_agentic_claude(messages, max_tokens=1024, direct_user_text=text)
 
         # Save only user message + final reply to persistent history
         history.append({"role": "assistant", "content": reply_text})

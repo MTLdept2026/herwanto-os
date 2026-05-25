@@ -2909,6 +2909,7 @@ async def _analyse_image_bytes(data: bytes, mime: str, filename: str, note: str)
         ]}],
         max_tokens=2200,
         tools=[bot.CONTEXT_TOOL, bot.CALENDAR_TOOL, bot.REMINDER_TOOL, bot.MEMORY_TOOL],
+        direct_user_text=note,
     )
     index = f"Image analysed: {filename or 'uploaded image'}"
     if normalise_note:
@@ -4186,6 +4187,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                     max_tokens=_CHAT_MAX_TOKENS,
                     tools=tools,
                     openai_state_key=history_key,
+                    direct_user_text=message,
                 )
             )
             first_text = not bool(presence_preface)
@@ -5841,6 +5843,7 @@ async def _process_upload_document(file: UploadFile, note: str = ""):
             reply_text = await bot._run_agentic_claude(
                 [{"role": "user", "content": text}],
                 max_tokens=1600,
+                direct_user_text=text,
             )
             return {"reply": reply_text, "index": f"Voice note transcribed: {text}"}
         except HTTPException:
@@ -5889,6 +5892,7 @@ async def _process_upload_path(tmp_path: str, mime: str, filename: str, note: st
             reply_text = await bot._run_agentic_claude(
                 [{"role": "user", "content": text}],
                 max_tokens=1600,
+                direct_user_text=text,
             )
             return {"reply": reply_text, "index": f"Voice note transcribed: {text}"}
         except HTTPException:
@@ -5919,5 +5923,6 @@ async def _analyse_document_excerpt(kind: str, index_note: str, excerpt: str, no
         [{"role": "user", "content": prompt}],
         max_tokens=2500,
         tools=[bot.CONTEXT_TOOL, bot.CALENDAR_TOOL, bot.REMINDER_TOOL, bot.MEMORY_TOOL],
+        direct_user_text=note,
     )
     return {"reply": reply_text, "index": index_note}
