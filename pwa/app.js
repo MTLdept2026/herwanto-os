@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260525-api-spend-63";
-const APP_SCRIPT = "app.js?v=20260525-api-spend-63";
-const EXPECTED_SW_CACHE = "hira-os-v133";
+const APP_VERSION = "20260525-api-spend-close-64";
+const APP_SCRIPT = "app.js?v=20260525-api-spend-close-64";
+const EXPECTED_SW_CACHE = "hira-os-v134";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
@@ -3778,16 +3778,21 @@ $("#installBtn").addEventListener("click", async () => {
   $("#installBtn").hidden = true;
 });
 
-$("#settingsBtn").addEventListener("click", () => {
+function setSettingsPanelOpen(open, { scroll = false } = {}) {
   const panel = $("#settingsPanel");
-  panel.toggleAttribute("hidden");
-  $("#settingsBtn").classList.toggle("is-open", !panel.hidden);
+  panel.hidden = !open;
+  $("#settingsBtn").classList.toggle("is-open", open);
   updateNotificationControls();
-  if (!panel.hidden) {
+  if (open) {
     renderAppVersion();
     loadApiSpend({ quiet: true });
     loadActionLedger({ quiet: true });
+    if (scroll) panel.scrollIntoView({ block: "start" });
   }
+}
+
+$("#settingsBtn").addEventListener("click", () => {
+  setSettingsPanelOpen($("#settingsPanel").hidden);
 });
 $("#notificationsBtn").addEventListener("click", () => {
   const panel = $("#notificationsPanel");
@@ -4034,10 +4039,8 @@ $("#timelineAgendaBtn").addEventListener("click", async () => {
 });
 $("#homeSettingsBtn").addEventListener("click", () => {
   const panel = $("#settingsPanel");
-  panel.hidden = false;
-  $("#settingsBtn").classList.add("is-open");
-  updateNotificationControls();
-  panel.scrollIntoView({ block: "start" });
+  const shouldOpen = panel.hidden;
+  setSettingsPanelOpen(shouldOpen, { scroll: shouldOpen });
 });
 $("#restoreBriefingsBtn").addEventListener("click", restoreHomeSections);
 document.querySelectorAll("[data-home-dismiss]").forEach((button) => {
