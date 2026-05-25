@@ -83,15 +83,31 @@ except ValueError:
     MORNING_DIGEST_ITEM_LIMIT = 16
 
 LLM_PROVIDER = os.environ.get("HIRA_LLM_PROVIDER", "anthropic").strip().lower() or "anthropic"
-if LLM_PROVIDER not in {"anthropic", "openai"}:
+if LLM_PROVIDER not in {"anthropic", "openai", "deepseek"}:
     logger.warning("Invalid HIRA_LLM_PROVIDER=%r; using anthropic", LLM_PROVIDER)
     LLM_PROVIDER = "anthropic"
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 if LLM_PROVIDER == "anthropic" and not ANTHROPIC_API_KEY:
     logger.warning("ANTHROPIC_API_KEY is not set; Claude calls will fail until it is configured.")
-claude = Anthropic(api_key=ANTHROPIC_API_KEY or "missing-key")
-async_claude = AsyncAnthropic(api_key=ANTHROPIC_API_KEY or "missing-key")
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/anthropic").strip() or "https://api.deepseek.com/anthropic"
+if LLM_PROVIDER == "deepseek" and not DEEPSEEK_API_KEY:
+    logger.warning("DEEPSEEK_API_KEY is not set; DeepSeek calls will fail until it is configured.")
+
+
+def _anthropic_compatible_client_kwargs() -> dict:
+    if LLM_PROVIDER == "deepseek":
+        return {"api_key": DEEPSEEK_API_KEY or "missing-key", "base_url": DEEPSEEK_BASE_URL}
+    kwargs = {"api_key": ANTHROPIC_API_KEY or "missing-key"}
+    anthropic_base_url = os.environ.get("ANTHROPIC_BASE_URL", "").strip()
+    if anthropic_base_url:
+        kwargs["base_url"] = anthropic_base_url
+    return kwargs
+
+
+claude = Anthropic(**_anthropic_compatible_client_kwargs())
+async_claude = AsyncAnthropic(**_anthropic_compatible_client_kwargs())
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 if LLM_PROVIDER == "openai" and not OPENAI_API_KEY:
@@ -180,6 +196,9 @@ def _model_from_env(key: str, default: str) -> str:
     if LLM_PROVIDER == "openai" and raw.lower().startswith("claude"):
         logger.warning("%s=%r is an Anthropic model while HIRA_LLM_PROVIDER=openai; using %s", key, raw, default)
         return default
+    if LLM_PROVIDER == "deepseek" and raw and not raw.lower().startswith("deepseek-"):
+        logger.warning("%s=%r is not a DeepSeek model while HIRA_LLM_PROVIDER=deepseek; using %s", key, raw, default)
+        return default
     return raw or default
 
 
@@ -198,9 +217,9 @@ def _env_int_setting(name: str, default: int, minimum: int = 1, maximum: int | N
     return min(value, maximum) if maximum is not None else value
 
 
-_DEFAULT_AGENTIC_MODEL = "gpt-5.4" if LLM_PROVIDER == "openai" else "claude-sonnet-4-6"
-_DEFAULT_DEEP_MODEL = "gpt-5.5" if LLM_PROVIDER == "openai" else _DEFAULT_AGENTIC_MODEL
-_DEFAULT_QUICK_MODEL = "gpt-5.4-mini" if LLM_PROVIDER == "openai" else "claude-haiku-4-5-20251001"
+_DEFAULT_AGENTIC_MODEL = "gpt-5.4" if LLM_PROVIDER == "openai" else "deepseek-v4-flash" if LLM_PROVIDER == "deepseek" else "claude-sonnet-4-6"
+_DEFAULT_DEEP_MODEL = "gpt-5.5" if LLM_PROVIDER == "openai" else "deepseek-v4-pro" if LLM_PROVIDER == "deepseek" else _DEFAULT_AGENTIC_MODEL
+_DEFAULT_QUICK_MODEL = "gpt-5.4-mini" if LLM_PROVIDER == "openai" else "deepseek-v4-flash" if LLM_PROVIDER == "deepseek" else "claude-haiku-4-5-20251001"
 _DEFAULT_ROUTER_MODEL = "gpt-5.4-nano" if LLM_PROVIDER == "openai" else _DEFAULT_QUICK_MODEL
 _DEFAULT_STRUCTURED_MODEL = "gpt-5.4-mini" if LLM_PROVIDER == "openai" else _DEFAULT_QUICK_MODEL
 AGENTIC_MODEL = _model_from_env("HIRA_AGENTIC_MODEL", _DEFAULT_AGENTIC_MODEL)
@@ -239,12 +258,19 @@ OPENAI_ACTION_PLANNER_ENABLED = _env_flag("HIRA_OPENAI_ACTION_PLANNER", LLM_PROV
 OPENAI_PROMPT_CACHE_RETENTION = os.environ.get("HIRA_OPENAI_PROMPT_CACHE_RETENTION", "24h").strip()
 OPENAI_SERVICE_TIER = os.environ.get("HIRA_OPENAI_SERVICE_TIER", "").strip()
 OPENAI_USAGE_TRACKING = _env_flag("HIRA_OPENAI_USAGE_TRACKING", LLM_PROVIDER == "openai")
+DEEPSEEK_USAGE_TRACKING = _env_flag("HIRA_DEEPSEEK_USAGE_TRACKING", LLM_PROVIDER == "deepseek")
 OPENAI_USAGE_PERSIST = _env_flag("HIRA_OPENAI_USAGE_PERSIST", True)
+DEEPSEEK_USAGE_PERSIST = _env_flag("HIRA_DEEPSEEK_USAGE_PERSIST", True)
 OPENAI_USAGE_PERSIST_INTERVAL_SECONDS = _env_int_setting("HIRA_OPENAI_USAGE_PERSIST_INTERVAL_SECONDS", 60, minimum=0, maximum=3600)
+DEEPSEEK_USAGE_PERSIST_INTERVAL_SECONDS = _env_int_setting("HIRA_DEEPSEEK_USAGE_PERSIST_INTERVAL_SECONDS", OPENAI_USAGE_PERSIST_INTERVAL_SECONDS, minimum=0, maximum=3600)
 try:
     OPENAI_USAGE_SGD_PER_USD = max(0.01, float(os.environ.get("HIRA_OPENAI_USAGE_SGD_PER_USD", "1.35") or 1.35))
 except ValueError:
     OPENAI_USAGE_SGD_PER_USD = 1.35
+try:
+    DEEPSEEK_USAGE_SGD_PER_USD = max(0.01, float(os.environ.get("HIRA_DEEPSEEK_USAGE_SGD_PER_USD", str(OPENAI_USAGE_SGD_PER_USD)) or OPENAI_USAGE_SGD_PER_USD))
+except ValueError:
+    DEEPSEEK_USAGE_SGD_PER_USD = OPENAI_USAGE_SGD_PER_USD
 QUICK_ROUTE_MAX_CHARS = _env_int_setting("HIRA_QUICK_ROUTE_MAX_CHARS", 220, minimum=40, maximum=800)
 QUICK_REPLY_MAX_TOKENS = _env_int_setting("HIRA_QUICK_REPLY_MAX_TOKENS", 160, minimum=60, maximum=400)
 NEWS_MAX_AGE_HOURS = _env_int_setting("HIRA_NEWS_MAX_AGE_HOURS", 24, minimum=1, maximum=336)
@@ -618,6 +644,7 @@ def build_runtime_status() -> dict:
             "assistant_memory": memory_storage,
         },
         "models": {
+            "provider": LLM_PROVIDER,
             "agentic": AGENTIC_MODEL,
             "deep": DEEP_MODEL,
             "quick": QUICK_MODEL,
@@ -649,6 +676,8 @@ def build_runtime_status() -> dict:
             "specialist_agents": "enabled_via_policy",
         },
         "openai_usage": openai_usage_status(),
+        "deepseek_usage": deepseek_usage_status(),
+        "api_usage": api_usage_status(),
         "memory_buckets": memory_counts,
         "memory_error": memory_error,
         "projects": {"count": project_count},
@@ -1938,10 +1967,15 @@ def _openai_value_to_plain(value, depth: int = 3):
 
 
 OPENAI_USAGE_CONFIG_KEY = "openai_usage_summary_v1"
+DEEPSEEK_USAGE_CONFIG_KEY = "deepseek_usage_summary_v1"
 _OPENAI_USAGE_SUMMARY = {"version": 1, "days": {}}
 _OPENAI_USAGE_SUMMARY_LOADED = False
 _OPENAI_USAGE_LAST_PERSISTED_AT = 0.0
 _OPENAI_USAGE_LOCK = threading.Lock()
+_DEEPSEEK_USAGE_SUMMARY = {"version": 1, "days": {}}
+_DEEPSEEK_USAGE_SUMMARY_LOADED = False
+_DEEPSEEK_USAGE_LAST_PERSISTED_AT = 0.0
+_DEEPSEEK_USAGE_LOCK = threading.Lock()
 
 _OPENAI_TEXT_PRICE_PER_MILLION = [
     ("gpt-5.5", {"input": 5.00, "cached_input": 0.50, "output": 30.00}),
@@ -1954,11 +1988,23 @@ _OPENAI_NATIVE_TOOL_ESTIMATES = {
     "file_search": 0.0025,
     "code_interpreter": 0.0300,
 }
+_DEEPSEEK_TEXT_PRICE_PER_MILLION = [
+    ("deepseek-v4-pro", {"input": 0.435, "cached_input": 0.003625, "output": 0.87}),
+    ("deepseek-v4-flash", {"input": 0.14, "cached_input": 0.0028, "output": 0.28}),
+]
 
 
 def _openai_price_for_model(model: str = "") -> dict:
     clean = str(model or "").lower()
     for prefix, price in _OPENAI_TEXT_PRICE_PER_MILLION:
+        if clean.startswith(prefix):
+            return price
+    return {"input": 0.0, "cached_input": 0.0, "output": 0.0}
+
+
+def _deepseek_price_for_model(model: str = "") -> dict:
+    clean = str(model or "").lower()
+    for prefix, price in _DEEPSEEK_TEXT_PRICE_PER_MILLION:
         if clean.startswith(prefix):
             return price
     return {"input": 0.0, "cached_input": 0.0, "output": 0.0}
@@ -1990,6 +2036,8 @@ def _openai_usage_from_response(resp) -> dict:
         _openai_usage_path(plain, "input_tokens_details", "cached_tokens")
         or _openai_usage_path(plain, "prompt_tokens_details", "cached_tokens")
         or _openai_usage_path(plain, "cached_tokens")
+        or _openai_usage_path(plain, "cache_read_input_tokens")
+        or _openai_usage_path(plain, "prompt_cache_hit_tokens")
     )
     reasoning_tokens = (
         _openai_usage_path(plain, "output_tokens_details", "reasoning_tokens")
@@ -2046,6 +2094,24 @@ def _openai_estimated_cost_usd(model: str, usage: dict, native_counts: dict | No
 
 def _openai_usd_to_sgd(amount: float) -> float:
     return round(float(amount or 0.0) * OPENAI_USAGE_SGD_PER_USD, 8)
+
+
+def _deepseek_estimated_cost_usd(model: str, usage: dict) -> float:
+    price = _deepseek_price_for_model(model)
+    cached = int(usage.get("cached_input_tokens", 0) or 0)
+    input_tokens = int(usage.get("input_tokens", 0) or 0)
+    billable_input = max(0, input_tokens - cached)
+    output_tokens = int(usage.get("output_tokens", 0) or 0)
+    estimate = (
+        billable_input * price["input"]
+        + cached * price["cached_input"]
+        + output_tokens * price["output"]
+    ) / 1_000_000
+    return round(estimate, 8)
+
+
+def _deepseek_usd_to_sgd(amount: float) -> float:
+    return round(float(amount or 0.0) * DEEPSEEK_USAGE_SGD_PER_USD, 8)
 
 
 def _openai_usage_empty_bucket() -> dict:
@@ -2114,6 +2180,33 @@ def _openai_persist_usage_summary_locked(now_ts: float) -> None:
         logger.debug("OpenAI usage summary persist skipped: %s", exc)
 
 
+def _deepseek_load_usage_summary_locked() -> None:
+    global _DEEPSEEK_USAGE_SUMMARY, _DEEPSEEK_USAGE_SUMMARY_LOADED
+    if _DEEPSEEK_USAGE_SUMMARY_LOADED:
+        return
+    _DEEPSEEK_USAGE_SUMMARY_LOADED = True
+    try:
+        raw = gs.get_config(DEEPSEEK_USAGE_CONFIG_KEY) or ""
+        parsed = json.loads(raw) if raw else {}
+        if isinstance(parsed, dict) and isinstance(parsed.get("days"), dict):
+            _DEEPSEEK_USAGE_SUMMARY = {"version": 1, "days": parsed.get("days") or {}}
+    except Exception as exc:
+        logger.debug("DeepSeek usage summary load skipped: %s", exc)
+
+
+def _deepseek_persist_usage_summary_locked(now_ts: float) -> None:
+    global _DEEPSEEK_USAGE_LAST_PERSISTED_AT
+    if not (DEEPSEEK_USAGE_PERSIST and google_ok()):
+        return
+    if DEEPSEEK_USAGE_PERSIST_INTERVAL_SECONDS and now_ts - _DEEPSEEK_USAGE_LAST_PERSISTED_AT < DEEPSEEK_USAGE_PERSIST_INTERVAL_SECONDS:
+        return
+    try:
+        gs.set_config(DEEPSEEK_USAGE_CONFIG_KEY, json.dumps(_DEEPSEEK_USAGE_SUMMARY, ensure_ascii=False))
+        _DEEPSEEK_USAGE_LAST_PERSISTED_AT = now_ts
+    except Exception as exc:
+        logger.debug("DeepSeek usage summary persist skipped: %s", exc)
+
+
 def _record_openai_usage(resp, kwargs: dict, stream: bool = False) -> dict:
     if not OPENAI_USAGE_TRACKING:
         return {}
@@ -2159,6 +2252,60 @@ def _record_openai_usage(resp, kwargs: dict, stream: bool = False) -> dict:
         _openai_persist_usage_summary_locked(now.timestamp())
     logger.info(
         "OpenAI usage tracked: model=%s tier=%s input=%s cached=%s output=%s est=S$%.5f",
+        model,
+        tier,
+        usage.get("input_tokens", 0),
+        usage.get("cached_input_tokens", 0),
+        usage.get("output_tokens", 0),
+        estimated_sgd,
+    )
+    return record
+
+
+def _record_deepseek_usage(resp, model: str = "", tier: str = "unknown", stream: bool = False) -> dict:
+    if not (LLM_PROVIDER == "deepseek" and DEEPSEEK_USAGE_TRACKING):
+        return {}
+    usage = _openai_usage_from_response(resp)
+    if not any(usage.get(key, 0) for key in ("input_tokens", "output_tokens", "total_tokens")):
+        return {}
+    model = str(model or getattr(resp, "model", "") or "unknown")
+    tier = str(tier or "unknown")
+    estimated_usd = _deepseek_estimated_cost_usd(model, usage)
+    estimated_sgd = _deepseek_usd_to_sgd(estimated_usd)
+    now = datetime.now(SGT)
+    day_key = now.strftime("%Y-%m-%d")
+    record = {
+        "at": now.isoformat(),
+        "provider": "deepseek",
+        "model": model,
+        "tier": tier,
+        "stream": bool(stream),
+        "estimated_sgd": estimated_sgd,
+        "sgd_per_usd": DEEPSEEK_USAGE_SGD_PER_USD,
+        "usage": usage,
+        "native_tools": {},
+    }
+    with _DEEPSEEK_USAGE_LOCK:
+        _deepseek_load_usage_summary_locked()
+        days = _DEEPSEEK_USAGE_SUMMARY.setdefault("days", {})
+        day = days.setdefault(day_key, _openai_usage_empty_bucket())
+        _openai_usage_add_metrics(day, usage, estimated_sgd)
+        models = day.setdefault("models", {})
+        model_bucket = models.setdefault(model, _openai_usage_empty_bucket())
+        _openai_usage_add_metrics(model_bucket, usage, estimated_sgd)
+        tiers = day.setdefault("tiers", {})
+        tier_bucket = tiers.setdefault(tier, _openai_usage_empty_bucket())
+        _openai_usage_add_metrics(tier_bucket, usage, estimated_sgd)
+
+        keep_after = (now - timedelta(days=45)).strftime("%Y-%m-%d")
+        for key in list(days.keys()):
+            if str(key) < keep_after:
+                days.pop(key, None)
+        _DEEPSEEK_USAGE_SUMMARY["updated_at"] = record["at"]
+        _DEEPSEEK_USAGE_SUMMARY["last_request"] = record
+        _deepseek_persist_usage_summary_locked(now.timestamp())
+    logger.info(
+        "DeepSeek usage tracked: model=%s tier=%s input=%s cached=%s output=%s est=S$%.5f",
         model,
         tier,
         usage.get("input_tokens", 0),
@@ -2222,6 +2369,42 @@ def openai_usage_status(days: int = 7) -> dict:
         "last_request": last_request,
         "note": "Estimated in SGD from Responses API usage fields, configured public USD pricing, and HIRA_OPENAI_USAGE_SGD_PER_USD; check OpenAI billing for the USD source of truth.",
     }
+
+
+def deepseek_usage_status(days: int = 7) -> dict:
+    current = datetime.now(SGT)
+    with _DEEPSEEK_USAGE_LOCK:
+        _deepseek_load_usage_summary_locked()
+        all_days = dict(_DEEPSEEK_USAGE_SUMMARY.get("days") or {})
+        last_request = dict(_DEEPSEEK_USAGE_SUMMARY.get("last_request") or {})
+    today_key = current.strftime("%Y-%m-%d")
+    aggregate = _openai_usage_empty_bucket()
+    for offset in range(max(1, int(days or 7))):
+        day = (current - timedelta(days=offset)).strftime("%Y-%m-%d")
+        bucket = all_days.get(day) or {}
+        _openai_usage_merge_bucket(aggregate, bucket)
+    return {
+        "provider": "deepseek",
+        "tracking": "enabled" if DEEPSEEK_USAGE_TRACKING else "disabled",
+        "persist": "enabled" if DEEPSEEK_USAGE_PERSIST else "disabled",
+        "currency": "SGD",
+        "sgd_per_usd": DEEPSEEK_USAGE_SGD_PER_USD,
+        "window_days": max(1, int(days or 7)),
+        "today": _openai_bucket_public(all_days.get(today_key)),
+        "last_7d": _openai_bucket_public(aggregate),
+        "models_today": _openai_top_buckets((all_days.get(today_key) or {}).get("models") or {}),
+        "tiers_today": _openai_top_buckets((all_days.get(today_key) or {}).get("tiers") or {}),
+        "last_request": last_request,
+        "note": "Estimated in SGD from DeepSeek API usage fields and current official DeepSeek public token pricing; check DeepSeek billing for the source of truth.",
+    }
+
+
+def api_usage_status(days: int = 7) -> dict:
+    if LLM_PROVIDER == "deepseek":
+        return deepseek_usage_status(days=days)
+    usage = openai_usage_status(days=days)
+    usage["provider"] = "openai"
+    return usage
 
 
 def _openai_native_observations(resp) -> list[dict]:
@@ -2453,6 +2636,7 @@ def _llm_text(model: str, max_tokens: int, messages: list[dict], system: str | N
     if system:
         kwargs["system"] = system
     resp = claude.messages.create(**kwargs)
+    _record_deepseek_usage(resp, model=model, tier="text", stream=False)
     return resp.content[0].text
 
 
@@ -2468,6 +2652,7 @@ async def _llm_text_async(model: str, max_tokens: int, messages: list[dict], sys
     if system:
         kwargs["system"] = system
     resp = await async_claude.messages.create(**kwargs)
+    _record_deepseek_usage(resp, model=model, tier="text", stream=False)
     return resp.content[0].text
 
 # Claude tool definition for web search
@@ -11612,12 +11797,15 @@ def _llm_provider_status_reply(messages: list[dict]) -> str | None:
     if not text:
         return None
     asks_provider = bool(re.search(r"\b(provider|llm|model|engine|backend|api)\b", text))
-    asks_openai_anthropic = bool(re.search(r"\b(openai|anthropic|claude|gpt)\b", text))
+    asks_openai_anthropic = bool(re.search(r"\b(openai|anthropic|claude|gpt|deepseek)\b", text))
     asks_identity = bool(re.search(r"\b(is|are|what|which|who|using|running|powered|backing|underneath|behind)\b", text))
     if not (asks_identity and (asks_provider or asks_openai_anthropic)):
         return None
 
-    provider_label = "OpenAI" if LLM_PROVIDER == "openai" else "Anthropic"
+    provider_label = {
+        "openai": "OpenAI",
+        "deepseek": "DeepSeek",
+    }.get(LLM_PROVIDER, "Anthropic")
     model = _agentic_model_for_messages(messages)
     vector_ids = _openai_file_search_vector_store_ids()
     native_file_search = "enabled" if vector_ids and LLM_PROVIDER == "openai" else "not configured"
@@ -11818,15 +12006,17 @@ async def _run_agentic_claude_impl(messages, max_tokens=2048, tools=None, openai
         kwargs = {}
         if tool_choice:
             kwargs["tool_choice"] = tool_choice
+        model = _agentic_model_for_messages(messages)
         try:
             resp = claude.messages.create(
-                model=_agentic_model_for_messages(messages),
+                model=model,
                 max_tokens=max_tokens,
                 system=CACHED_SYSTEM_PROMPT(),
                 tools=tools,
                 messages=messages,
                 **kwargs,
             )
+            _record_deepseek_usage(resp, model=model, tier=model_policy_for_messages(messages).get("tier", "agentic"), stream=False)
         except Exception as exc:
             fallback = _tool_action_fallback_reply(all_tool_results)
             if fallback:
@@ -12238,6 +12428,8 @@ async def stream_quick_pwa_reply(messages: list[dict], message: str):
             async for event in stream:
                 if event.type == "content_block_delta" and getattr(event.delta, "type", None) == "text_delta":
                     yield {"type": "text", "text": event.delta.text}
+            resp = await stream.get_final_message()
+        _record_deepseek_usage(resp, model=QUICK_MODEL, tier="quick", stream=True)
     except Exception as exc:
         logger.error(f"Quick PWA reply failed: {exc}")
         raise
@@ -12450,11 +12642,12 @@ async def stream_agentic_claude_impl(messages, max_tokens=650, tools=None, opena
         kwargs = {}
         if tool_choice:
             kwargs["tool_choice"] = tool_choice
+        model = _agentic_model_for_messages(messages)
         resp = None
         text_parts = []
         try:
             async with async_claude.messages.stream(
-                model=_agentic_model_for_messages(messages),
+                model=model,
                 max_tokens=max_tokens,
                 system=CACHED_SYSTEM_PROMPT(),
                 tools=tools,
@@ -12467,6 +12660,7 @@ async def stream_agentic_claude_impl(messages, max_tokens=650, tools=None, opena
                         text_parts.append(text)
                         yield {"type": "text", "text": text}
                 resp = await stream.get_final_message()
+            _record_deepseek_usage(resp, model=model, tier=model_policy_for_messages(messages).get("tier", "agentic"), stream=True)
         except Exception as exc:
             fallback = _tool_action_fallback_reply(all_tool_results)
             if fallback:

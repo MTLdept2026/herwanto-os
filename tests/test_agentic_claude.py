@@ -6635,6 +6635,38 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("gpt-5.4-mini", status["models_today"])
         self.assertIn("agentic", status["tiers_today"])
 
+    def test_deepseek_usage_record_updates_dashboard_summary(self):
+        resp = SimpleNamespace(
+            model="deepseek-v4-pro",
+            usage={
+                "input_tokens": 2000,
+                "output_tokens": 300,
+                "cache_read_input_tokens": 1000,
+            },
+        )
+        with (
+            patch.object(bot, "LLM_PROVIDER", "deepseek"),
+            patch.object(bot, "DEEPSEEK_USAGE_TRACKING", True),
+            patch.object(bot, "DEEPSEEK_USAGE_PERSIST", False),
+            patch.object(bot, "DEEPSEEK_USAGE_SGD_PER_USD", 1.35),
+            patch.object(bot, "_DEEPSEEK_USAGE_SUMMARY", {"version": 1, "days": {}}),
+            patch.object(bot, "_DEEPSEEK_USAGE_SUMMARY_LOADED", True),
+        ):
+            record = bot._record_deepseek_usage(resp, model="deepseek-v4-pro", tier="deep")
+            status = bot.deepseek_usage_status()
+            active = bot.api_usage_status()
+
+        self.assertEqual(record["provider"], "deepseek")
+        self.assertEqual(record["model"], "deepseek-v4-pro")
+        self.assertIn("estimated_sgd", record)
+        self.assertNotIn("prompt", record)
+        self.assertEqual(status["provider"], "deepseek")
+        self.assertEqual(status["today"]["requests"], 1)
+        self.assertEqual(status["today"]["cached_input_tokens"], 1000)
+        self.assertIn("deepseek-v4-pro", status["models_today"])
+        self.assertIn("deep", status["tiers_today"])
+        self.assertEqual(active["provider"], "deepseek")
+
     def test_openai_native_web_search_is_added_for_live_questions(self):
         with (
             patch.object(bot, "LLM_PROVIDER", "openai"),
@@ -6906,6 +6938,29 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("HIRA_LLM_PROVIDER=openai", reply)
         self.assertIn("gpt-test", reply)
         self.assertIn("OpenAI vector memory:", reply)
+
+    def test_deepseek_provider_status_uses_deepseek_label(self):
+        with (
+            patch.object(bot, "LLM_PROVIDER", "deepseek"),
+            patch.object(bot, "AGENTIC_MODEL", "deepseek-v4-flash"),
+            patch.object(bot, "DEEP_MODEL", "deepseek-v4-pro"),
+        ):
+            reply = bot._llm_provider_status_reply([{"role": "user", "content": "which deepseek api are you using?"}])
+
+        self.assertIn("DeepSeek", reply)
+        self.assertIn("HIRA_LLM_PROVIDER=deepseek", reply)
+        self.assertIn("deepseek-v4", reply)
+
+    def test_deepseek_provider_uses_dedicated_anthropic_compatible_config(self):
+        with (
+            patch.object(bot, "LLM_PROVIDER", "deepseek"),
+            patch.object(bot, "DEEPSEEK_API_KEY", "deepseek-key"),
+            patch.object(bot, "DEEPSEEK_BASE_URL", "https://api.deepseek.com/anthropic"),
+        ):
+            kwargs = bot._anthropic_compatible_client_kwargs()
+
+        self.assertEqual(kwargs["api_key"], "deepseek-key")
+        self.assertEqual(kwargs["base_url"], "https://api.deepseek.com/anthropic")
 
     def test_provider_status_ignores_injected_grounding_context(self):
         message = (

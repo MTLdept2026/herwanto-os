@@ -1365,10 +1365,11 @@ function apiSpendBreakdown(title, items = {}) {
 function renderApiSpend(data) {
   const el = $("#apiSpendOutput");
   if (!el) return;
-  const usage = data?.runtime?.openai_usage || data?.openai_usage || {};
+  const usage = data?.runtime?.api_usage || data?.api_usage || data?.runtime?.openai_usage || data?.openai_usage || {};
   const today = usage.today || {};
   const week = usage.last_7d || {};
   const lastRequest = usage.last_request || {};
+  const providerLabel = usage.provider ? String(usage.provider).replace(/^./, (char) => char.toUpperCase()) : "OpenAI";
   const nativeTools = Object.entries(today.native_tools || {})
     .filter(([, count]) => Number(count || 0) > 0)
     .map(([tool, count]) => `${tool.replaceAll("_", " ")} ${count}`)
@@ -1394,6 +1395,7 @@ function renderApiSpend(data) {
       </div>
     </div>
     <div class="api-spend-rows">
+      ${apiSpendRow("Provider", providerLabel)}
       ${apiSpendRow("Tracking", usage.tracking || "unknown", usage.tracking === "enabled" ? "status-ok" : "status-warn")}
       ${apiSpendRow("Cache hit", `${Math.round(Number(today.cache_hit_ratio || 0) * 100)}%`)}
       ${apiSpendRow("Input", `${formatTokenCount(today.input_tokens)} tokens`)}
