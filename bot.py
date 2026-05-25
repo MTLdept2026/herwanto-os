@@ -196,8 +196,8 @@ _DEEPSEEK_SUPPORTED_MODELS = {"deepseek-v4-flash", "deepseek-v4-pro"}
 
 def _model_from_env(key: str, default: str) -> str:
     raw = os.environ.get(key, "").strip()
-    if LLM_PROVIDER == "openai" and raw.lower().startswith("claude"):
-        logger.warning("%s=%r is an Anthropic model while HIRA_LLM_PROVIDER=openai; using %s", key, raw, default)
+    if LLM_PROVIDER == "openai" and raw.lower().startswith(("claude", "deepseek-")):
+        logger.warning("%s=%r is not an OpenAI model while HIRA_LLM_PROVIDER=openai; using %s", key, raw, default)
         return default
     if LLM_PROVIDER == "deepseek" and raw and raw not in _DEEPSEEK_SUPPORTED_MODELS:
         logger.warning(

@@ -7689,6 +7689,15 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(model, "deepseek-v4-pro")
 
+    def test_openai_provider_rejects_deepseek_model_env_overrides(self):
+        with (
+            patch.object(bot, "LLM_PROVIDER", "openai"),
+            patch.dict(os.environ, {"HIRA_AGENTIC_MODEL": "deepseek-v4-flash"}),
+        ):
+            model = bot._model_from_env("HIRA_AGENTIC_MODEL", "gpt-5.4")
+
+        self.assertEqual(model, "gpt-5.4")
+
     def test_deepseek_tool_loop_preserves_thinking_blocks_for_followup(self):
         class ThinkingToolMessages:
             def __init__(self):
