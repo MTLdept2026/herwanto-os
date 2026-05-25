@@ -4774,6 +4774,51 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("DeepSeek", body)
         self.assertNotIn("backend snag", body.lower())
 
+    def test_usual_self_feeling_uses_local_checkin_before_model_route(self):
+        async def run():
+            response = await web_app._chat_stream_response("do u feel like you usual self", None, "phone")
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(bot, "LLM_PROVIDER", "deepseek"),
+            patch.object(web_app, "_update_working_memory", side_effect=AssertionError("casual self-check should bypass model preflight")),
+            patch.object(web_app, "_schedule_background_call"),
+            patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("should not route to model")),
+            patch.object(bot, "stream_agentic_claude", side_effect=AssertionError("should not stream model")),
+        ):
+            body = asyncio.run(run())
+
+        self.assertIn('"name": "casual_checkin"', body)
+        self.assertIn("I’m awake", body)
+        self.assertIn("DeepSeek", body)
+
+    def test_deepseek_pro_max_advice_uses_local_reply_before_model_route(self):
+        async def run():
+            response = await web_app._chat_stream_response("setting everything to DeepSeek Pro max good idea?", None, "phone")
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(web_app, "_update_working_memory", side_effect=AssertionError("model config advice should bypass model preflight")),
+            patch.object(web_app, "_schedule_background_call"),
+            patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("should not route to model")),
+            patch.object(bot, "stream_agentic_claude", side_effect=AssertionError("should not stream model")),
+        ):
+            body = asyncio.run(run())
+
+        self.assertIn('"name": "model_config_advice"', body)
+        self.assertIn("No. Pro-max everything", body)
+        self.assertIn("Flash on quick/router/structured/normal agentic", body)
+
     def test_agenda_today_uses_local_agenda_before_model_route(self):
         async def run():
             response = await web_app._chat_stream_response("Ok whats on my agenda today", None, "phone")
@@ -4972,12 +5017,32 @@ class AgenticClaudeTests(unittest.TestCase):
             patch.object(bot, "_deepseek_openai_fallback_enabled", return_value=True),
             patch.object(bot.async_claude.messages, "stream", side_effect=RuntimeError("stream down")),
             patch.object(bot, "_run_agentic_claude_impl", side_effect=RuntimeError("retry down")),
+            patch.object(bot, "_deepseek_text_only_recovery_reply", side_effect=RuntimeError("text-only down")),
             patch.object(bot, "stream_agentic_openai", side_effect=fake_openai_stream),
         ):
             events = asyncio.run(run())
 
         self.assertTrue(any(event.get("patch", {}).get("provider_fallback") == "openai" for event in events))
         self.assertTrue(any(event.get("text") == "OpenAI agentic fallback reply." for event in events))
+
+    def test_deepseek_agentic_stream_uses_text_only_recovery_before_failure(self):
+        async def run():
+            return await _collect_async(bot.stream_agentic_claude_impl(
+                [{"role": "user", "content": "setting everything to DeepSeek Pro max good idea?"}],
+                tools=[{"name": "noop", "description": "noop", "input_schema": {"type": "object", "properties": {}}}],
+            ))
+
+        with (
+            patch.object(bot, "LLM_PROVIDER", "deepseek"),
+            patch.object(bot.async_claude.messages, "stream", side_effect=RuntimeError("stream down")),
+            patch.object(bot, "_run_agentic_claude_impl", side_effect=RuntimeError("retry down")),
+            patch.object(bot, "_deepseek_text_only_recovery_reply", return_value="No. Keep Flash for cheap paths and Pro for deep work."),
+        ):
+            events = asyncio.run(run())
+
+        self.assertTrue(any(event.get("patch", {}).get("deepseek_recovery") == "text_only" for event in events))
+        self.assertTrue(any(event.get("type") == "replace" and "Keep Flash" in event.get("text", "") for event in events))
+        self.assertTrue(any(event.get("type") == "done" for event in events))
 
     def test_deepseek_openai_fallback_is_opt_in(self):
         with (

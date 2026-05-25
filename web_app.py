@@ -1301,7 +1301,12 @@ def _pwa_assistant_feeling_reply(message: str) -> str:
         clean,
         bot.re.I,
     ))
-    if not asks_feeling or not mentions_backend_change:
+    asks_usual_self = bool(bot.re.search(
+        r"\b(?:usual self|normal self|yourself|urself|still you|same hira|same self)\b",
+        clean,
+        bot.re.I,
+    ))
+    if not asks_feeling or not (mentions_backend_change or asks_usual_self):
         return ""
     provider = {
         "openai": "OpenAI",
@@ -1311,6 +1316,26 @@ def _pwa_assistant_feeling_reply(message: str) -> str:
     return (
         f"I’m awake. The chat brain is routed through {provider} now, so I’m watching the new path closely. "
         "If I sound flat or hit snags, that’s the integration wobbling, not me giving up."
+    )
+
+
+def _pwa_model_config_advice_reply(message: str) -> str:
+    clean = bot._normalise_short_reply(message)
+    if not clean:
+        return ""
+    mentions_model_stack = bool(re.search(r"\b(?:deepseek|model|provider|backend|api|v4|pro|flash|thinking)\b", clean))
+    asks_for_judgement = bool(re.search(r"\b(?:good idea|bad idea|should i|worth it|set(?:ting)?|everything|all|max)\b", clean))
+    pro_max_everything = bool(
+        re.search(r"\b(?:everything|all)\b", clean)
+        and re.search(r"\b(?:pro|v4 pro)\b", clean)
+        and re.search(r"\bmax\b", clean)
+    )
+    if not (mentions_model_stack and (asks_for_judgement or pro_max_everything)):
+        return ""
+    return (
+        "No. Pro-max everything is expensive theatre: impressive smoke, not better command. "
+        "Keep Flash on quick/router/structured/normal agentic turns, Pro only for deep work, and `HIRA_DEEPSEEK_THINKING_MODE=auto`. "
+        "That gives Hira taste where it matters without making every “yo” arrive in a tuxedo with a bill."
     )
 
 
@@ -4066,6 +4091,16 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             history_key,
             quick_history,
             route_name="casual_checkin",
+        )
+
+    model_config_advice = _pwa_model_config_advice_reply(message)
+    if model_config_advice:
+        quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
+        return _quick_sse_response(
+            model_config_advice,
+            history_key,
+            quick_history,
+            route_name="model_config_advice",
         )
 
     if _pwa_casual_status_prompt(message):

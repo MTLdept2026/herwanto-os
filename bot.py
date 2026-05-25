@@ -2827,6 +2827,30 @@ async def _openai_fallback_text_async(
     return _openai_text_from_response(resp)
 
 
+async def _deepseek_text_only_recovery_reply(messages: list[dict], max_tokens: int = 650) -> str:
+    policy = model_policy_for_messages(messages)
+    model = str(policy.get("model") or _agentic_model_for_messages(messages))
+    clean_messages = []
+    for message in (messages or [])[-6:]:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content", "")
+        if isinstance(content, list):
+            content = _message_text_for_routing([message])
+        clean_messages.append({"role": message.get("role", "user"), "content": str(content or "")})
+    return await _llm_text_async(
+        model=model,
+        max_tokens=min(max_tokens, 900),
+        system=(
+            f"{CACHED_SYSTEM_PROMPT()}\n\n"
+            "Recovery mode: the richer DeepSeek tool/stream path failed before any action happened. "
+            "Answer this turn directly from the visible text only. Keep H.I.R.A's discerning chief-of-staff voice: "
+            "be concise, candid, and useful; do not claim tool access or live checks."
+        ),
+        messages=clean_messages or [{"role": "user", "content": _message_text_for_routing(messages)}],
+    )
+
+
 def _llm_text(model: str, max_tokens: int, messages: list[dict], system: str | None = None) -> str:
     if LLM_PROVIDER == "openai":
         resp = _openai_create_response(model=model, max_tokens=max_tokens, messages=messages, system=system)
@@ -12994,6 +13018,14 @@ async def stream_agentic_claude_impl(messages, max_tokens=650, tools=None, opena
                     yield {"type": "done", "text": reply}
                     return
                 except Exception as retry_exc:
+                    try:
+                        text = await _deepseek_text_only_recovery_reply(list(messages), max_tokens=max_tokens)
+                        yield {"type": "trace", "patch": {"deepseek_recovery": "text_only"}}
+                        yield {"type": "replace", "text": text}
+                        yield {"type": "done", "text": text}
+                        return
+                    except Exception as text_retry_exc:
+                        retry_exc = text_retry_exc
                     if _deepseek_openai_fallback_enabled():
                         logger.warning("DeepSeek agentic retry failed; falling back to OpenAI: %s", retry_exc)
                         yield {"type": "trace", "patch": {
