@@ -11796,9 +11796,18 @@ def _llm_provider_status_reply(messages: list[dict]) -> str | None:
     text = _strip_injected_chat_context(raw_text).lower()
     if not text:
         return None
+    asks_feeling = bool(re.search(r"\b(?:how\s+(?:are|r)\s+(?:you|u)|how'?s\s+it\s+feeling|feel(?:ing)?|vibe)\b", text))
     asks_provider = bool(re.search(r"\b(provider|llm|model|engine|backend|api)\b", text))
     asks_openai_anthropic = bool(re.search(r"\b(openai|anthropic|claude|gpt|deepseek)\b", text))
     asks_identity = bool(re.search(r"\b(is|are|what|which|who|using|running|powered|backing|underneath|behind)\b", text))
+    explicit_status_question = bool(
+        re.search(r"\b(?:what|which)\s+(?:provider|llm|model|engine|backend|api)\b", text)
+        or re.search(r"\b(?:provider|llm|model|engine|backend|api)\s+(?:are|r|is)\s+(?:you|u|it|h\.?i\.?r\.?a\.?)\s+(?:using|running|on|routed|backed)", text)
+        or re.search(r"\b(?:are|r|is)\s+(?:you|u|it|h\.?i\.?r\.?a\.?)\s+(?:using|running|on|routed|backed).*?\b(?:openai|anthropic|claude|gpt|deepseek)\b", text)
+        or re.search(r"\bis\s+it\s+(?:openai|anthropic|claude|gpt|deepseek)\b", text)
+    )
+    if asks_feeling and not explicit_status_question:
+        return None
     if not (asks_identity and (asks_provider or asks_openai_anthropic)):
         return None
 

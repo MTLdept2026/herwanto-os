@@ -6951,6 +6951,15 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("HIRA_LLM_PROVIDER=deepseek", reply)
         self.assertIn("deepseek-v4", reply)
 
+    def test_backend_change_feeling_prompt_does_not_force_provider_status(self):
+        with patch.object(bot, "LLM_PROVIDER", "deepseek"):
+            reply = bot._llm_provider_status_reply([{
+                "role": "user",
+                "content": "Hey hira. Did another backend change. How are u feeling",
+            }])
+
+        self.assertIsNone(reply)
+
     def test_deepseek_provider_uses_dedicated_anthropic_compatible_config(self):
         with (
             patch.object(bot, "LLM_PROVIDER", "deepseek"),

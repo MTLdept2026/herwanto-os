@@ -2367,12 +2367,18 @@ function notificationKindClass(kind) {
 }
 
 function markdownish(text) {
-  return escapeHtml(text || "")
+  const codeSpans = [];
+  const protectedText = String(text || "").replace(/`([^`]+)`/g, (_match, code) => {
+    const index = codeSpans.length;
+    codeSpans.push(`<code>${escapeHtml(code)}</code>`);
+    return `\u0000CODE${index}\u0000`;
+  });
+  return escapeHtml(protectedText)
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/\*([^*]+)\*/g, "<strong>$1</strong>")
     .replace(/_([^_]+)_/g, "<em>$1</em>")
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\*/g, "");
+    .replace(/\*/g, "")
+    .replace(/\u0000CODE(\d+)\u0000/g, (_match, index) => codeSpans[Number(index)] || "");
 }
 
 function stripCitationMarkers(text) {
