@@ -475,6 +475,8 @@ def specialist_policy_for_text(text: str = "") -> dict:
     ]
     for specialist, pattern in checks:
         if re.search(pattern, clean):
+            if specialist == "sports_live" and _is_casual_sports_lifestyle_text(clean):
+                continue
             return {"specialist": specialist, "reason": f"matched_{specialist}"}
     return {"specialist": "general", "reason": "ordinary_chat"}
 
@@ -723,6 +725,29 @@ VOLATILE_FACT_PATTERN = re.compile(
     r")\b",
     re.I,
 )
+
+LIVE_SPORTS_FACT_PATTERN = re.compile(
+    r"\b(?:latest|current|live|today|tomorrow|result|results|score|scores|standings?|table|"
+    r"line-?up|starting xi|fixtures?|schedule|injur(?:y|ies)|transfers?|rumou?rs?|"
+    r"match|game|odds|qualification|qualify|who won|where (?:are|is)|when (?:are|is|do|does))\b",
+    re.I,
+)
+
+CASUAL_SPORTS_LIFESTYLE_PATTERN = re.compile(
+    r"\b(?:epl|premier league|football|season)\b.*\b(?:over|ended|done|break|off[- ]?season|"
+    r"distraction|hobby|watch|play|fill|void|bored|weekend|something new)\b|"
+    r"\b(?:distraction|hobby|watch|play|fill|void|bored|something new)\b.*\b(?:epl|premier league|football|season|weekend)\b",
+    re.I,
+)
+
+
+def _is_casual_sports_lifestyle_text(text: str) -> bool:
+    clean = " ".join(str(text or "").lower().split())
+    if not clean:
+        return False
+    if LIVE_SPORTS_FACT_PATTERN.search(clean):
+        return False
+    return bool(CASUAL_SPORTS_LIFESTYLE_PATTERN.search(clean))
 
 DAY_REFERENCE_PATTERN = re.compile(
     r"\b(today|tomorrow|tonight|this\s+week|next\s+week|"
@@ -1108,13 +1133,17 @@ def source_discipline_for_text(text: str) -> dict:
 
     tools: list[str] = []
     semantic_flags = _semantic_intent_flags(clean)
+    casual_sports_lifestyle = _is_casual_sports_lifestyle_text(clean)
     if re.search(r"https?://\S+", clean):
         tools.append("fetch_url")
     if _is_timetable_verification_query(clean):
         tools.append("get_timetable")
     if _is_cca_schedule_query_text(lowered):
         tools.append("get_cca_schedule")
-    if re.search(r"\b(liverpool|lfc|epl|premier league|anfield|salah|wirtz|isak|transfer|rumou?r|lineup|starting xi)\b", lowered):
+    if (
+        not casual_sports_lifestyle
+        and re.search(r"\b(liverpool|lfc|epl|premier league|anfield|salah|wirtz|isak|transfer|rumou?r|lineup|starting xi)\b", lowered)
+    ):
         tools.append("get_liverpool_brief")
     if re.search(r"\b(f1|formula 1|grand prix|mercedes|russell|antonelli|hamilton|qualifying|driver standings|constructor standings)\b", lowered):
         tools.append("get_f1_brief")
@@ -1129,7 +1158,7 @@ def source_discipline_for_text(text: str) -> dict:
         lowered,
     ))
     if (
-        VOLATILE_FACT_PATTERN.search(clean)
+        (VOLATILE_FACT_PATTERN.search(clean) and not casual_sports_lifestyle)
         or current_source_sensitive
         or re.search(r"\b(ai|apple|android|ios|macos|singapore education|moe)\b", lowered)
         or favourite_news_topic_queries(clean)
@@ -1142,7 +1171,8 @@ def source_discipline_for_text(text: str) -> dict:
         tools.append("web_search")
 
     deduped_tools = list(dict.fromkeys(tools))
-    needs_live = bool(deduped_tools) or bool(VOLATILE_FACT_PATTERN.search(clean)) or current_source_sensitive
+    volatile_fact = bool(VOLATILE_FACT_PATTERN.search(clean)) and not casual_sports_lifestyle
+    needs_live = bool(deduped_tools) or volatile_fact or current_source_sensitive
     confidence = "needs_live_source" if needs_live else "memory_ok"
     reason = (
         "Question appears time-sensitive, source-sensitive, or about a volatile fact."
@@ -1164,7 +1194,9 @@ def source_discipline_hint(text: str) -> str:
     return (
         "\n\n[Source discipline: confidence=needs_live_source. "
         f"Reason: {discipline['reason']} Recommended tools: {tools}. "
-        "Do not rely only on memory or older assistant turns; cite or summarise source-backed findings and label rumours/live facts clearly. "
+        "Do not rely only on memory or older assistant turns; use source-backed findings to answer confidently, "
+        "but do not paste a bibliography, source list, or raw links unless Herwanto asks to dig deeper or show sources. "
+        "Label rumours/live facts clearly. "
         "If source checks fail or do not confirm the fact, say that instead of guessing.]"
     )
 
@@ -1523,6 +1555,7 @@ Rules:
 - Prefer doing the requested action or lookup over explaining which command to use. Only mention a slash command if the user asks how to do it manually or the action is blocked.
 - After tool results, answer in natural language with a brief useful summary. Do not dump raw tool output unless the user asks for raw output.
 - For tool-backed answers, lead with the brief answer first: the result, blocker, or recommendation in 1-3 tight sentences or bullets. Add useful detail after that only when it helps. Do not make Herwanto wait through method notes before the answer.
+- For live-source answers, use sources as quiet verification. Do not talk like a bibliography: no default source list, citation block, or raw links. Give source names/dates only when they materially affect trust, and offer the deeper evidence drawer only if Herwanto asks to dig deeper, show sources, or send links. Never expose Google News RSS redirects, search redirects, or backend/API endpoints in chat.
 - When Herwanto corrects you, repair the answer before reassuring him: first state the corrected fact with source-backed details if the fact is live/current, then apologise briefly, then say the prevention rule. Never respond to a correction with only "noted" or "won't happen again".
 - If you say you will check, pull, verify, look up, or get the actual result/details, you must call the relevant tool in that same turn before answering. Do not end with "give me a moment" as the final answer.
 - Be upfront about uncertainty and failures. Do not invent backend diagnoses, permission stories, service-account problems, sheet IDs, or "session memory only" explanations unless a tool/status result in this turn explicitly showed that. If memory/tool access fails, quote the exact tool failure briefly and say what is unverified.
@@ -1575,7 +1608,7 @@ Rules:
 - When the user asks to colour, color, highlight, or red-fill failures below the pass mark in an MTL percentage column — call apply_mtl_failure_highlighting. Default failure threshold is 50 unless Herwanto says another pass mark. If he asks for both failure colouring and sheet-side analysis/graphs, call apply_mtl_failure_highlighting and generate_mtl_score_trend_report in the same turn.
 - When the user asks to calculate and enter a score/mark/result into an MTL classlist sheet, calculate only from the numbers he gives or sheet values retrieved with include_scores=true, then call update_mtl_class_score. Do not guess a student or column; if the tool reports ambiguity, ask for the missing class/student/column detail.
 - When the user asks to fill or create percentage columns in an MTL classlist, call fill_mtl_percentage_scores. The tool can create a missing percentage column immediately after the raw score column, e.g. create/fill WA2 (100%) after WA2 (40). Use class_query and assessment_query if the user provides them; otherwise the tool will ask for specificity when multiple columns match.
-- When the user asks about latest news, current events, headlines, football, Liverpool/LFC, F1, AI, Singapore education, apps, Android/Google I/O/Gemini, Apple, Nothing OS, or his shortlisted topics — call get_latest_news and/or web_search before answering. News must be up-to-the-minute/hour where the source path supports it: default to items published within the configured freshness window, include timestamps when available, and if only stale items appear, say no fresh usable item was found instead of padding the answer. Prefer get_liverpool_brief for Liverpool/LFC questions and get_f1_brief for Formula 1 questions because they gather structured source slices, but if those are thin, stale, or say "no items found", immediately run web_search with a targeted query.
+- When the user asks about latest news, current events, headlines, current football/Liverpool/LFC/F1 facts, AI, Singapore education, apps, Android/Google I/O/Gemini, Apple, Nothing OS, or his shortlisted topics — call get_latest_news and/or web_search before answering. For casual lifestyle chat that merely mentions football/EPL/F1 as a hobby, taste, boredom, or weekend-distraction context, answer conversationally without turning it into a live-source report. News must be up-to-the-minute/hour where the source path supports it: default to items published within the configured freshness window, include timestamps when available, and if only stale items appear, say no fresh usable item was found instead of padding the answer. Prefer get_liverpool_brief for Liverpool/LFC questions and get_f1_brief for Formula 1 questions because they gather structured source slices, but if those are thin, stale, or say "no items found", immediately run web_search with a targeted query.
 - For Liverpool/F1 result or score questions, answer the result first in the first sentence only when a live/source tool confirms it. Treat SOURCE CONTRACT status=confirmed as usable; treat unconfirmed, stale, or failed as a hard stop. Do not lead with programme notes, previews, line-ups, fan reaction, or where Herwanto can check it himself. If get_liverpool_brief/get_f1_brief does not contain a clear confirmed scoreline, run web_search with an exact "team/opponent/date full-time score" query before answering. Only say the result is unavailable after that targeted lookup fails.
 - For volatile facts, use this source contract discipline: confirmed = answer directly with source/as_of; unconfirmed = say what was checked and what was missing; stale = leave it out of news answers unless Herwanto explicitly asks for older context; failed = say the live check failed. Never upgrade unconfirmed/stale/failed tool output into a confident fact.
 - For sports corrections and follow-ups, preserve the conversation subject. If Herwanto corrects a Liverpool/F1 claim, or then asks "what was the match like?", "the result?", "recap?", "home or away?", or "actual details?", use the relevant structured sports brief before answering even if the follow-up omits the team name.
@@ -1640,7 +1673,64 @@ def strip_ai_citation_markers(text: str = "") -> str:
     clean = re.sub(r"[ \t]{2,}", " ", clean)
     clean = re.sub(r"[ \t]+([.,;:!?])", r"\1", clean)
     clean = re.sub(r"\n[ \t]+", "\n", clean)
-    return clean.strip()
+    return strip_source_plumbing_urls(clean)
+
+
+SOURCE_PLUMBING_URL_RE = re.compile(
+    r"https?://(?:news\.google\.com/rss/articles|site\.api\.espn\.com/apis/|duckduckgo\.com/l/\?)\S+",
+    re.I,
+)
+
+
+SOURCE_DETAIL_REQUEST_RE = re.compile(
+    r"\b(?:show|send|give|include|cite|list)\b.{0,40}\b(?:sources?|links?|urls?|evidence|receipts?)\b|"
+    r"\b(?:sources?|citations?|links?|urls?|evidence|receipts?|dig deeper|source trail|where did you get)\b",
+    re.I,
+)
+
+
+def wants_source_details(text: str = "") -> bool:
+    return bool(SOURCE_DETAIL_REQUEST_RE.search(str(text or "")))
+
+
+def strip_source_plumbing_urls(text: str = "") -> str:
+    raw = str(text or "")
+    if not raw:
+        return ""
+    lines: list[str] = []
+    for original in raw.splitlines():
+        line = SOURCE_PLUMBING_URL_RE.sub("", original).rstrip()
+        if not line.strip():
+            continue
+        if re.search(r"\b(?:source|sources|report|calendar|scoreboard|probe|live brief)\b", line, re.I):
+            line = re.sub(r":\s*$", "", line)
+        lines.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def strip_source_bibliography_noise(text: str = "", *, allow_source_details: bool = False) -> str:
+    clean = strip_source_plumbing_urls(text)
+    if allow_source_details:
+        return clean
+    raw_lines = clean.splitlines()
+    kept: list[str] = []
+    for index, original in enumerate(raw_lines):
+        stripped = original.strip()
+        if not stripped:
+            kept.append(original)
+            continue
+        next_line = raw_lines[index + 1].strip() if index + 1 < len(raw_lines) else ""
+        if re.search(r"https?://", stripped):
+            continue
+        if re.match(r"^(?:[-*•]\s*)?(?:sources?|references?|links?|evidence|receipts?)\s*:", stripped, re.I):
+            continue
+        if (
+            next_line.startswith(("http://", "https://"))
+            and re.search(r"\b(?:source|official|calendar|report|scoreboard|brief|live|probe|article|coverage)\b", stripped, re.I)
+        ):
+            continue
+        kept.append(original)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
 
 
 def _openai_incomplete_reason(resp) -> str:
@@ -11634,6 +11724,7 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         r"android|ios|macos|apple|ai|f1|formula 1|liverpool|lfc|epl|premier league)\b",
         effective_text,
     ))
+    casual_sports_lifestyle = _is_casual_sports_lifestyle_text(effective_text)
     dated_absence_calendar_intent = _is_dated_absence_calendar_intent(effective_text)
     implicit_task_request = _is_implicit_task_request(effective_text)
     semantic_flags = _semantic_intent_flags(effective_text)
@@ -11652,6 +11743,9 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
     if reference_only_message:
         add(CONTEXT_TOOL, MEMORY_TOOL)
         return tools
+
+    if casual_sports_lifestyle:
+        add(CONTEXT_TOOL, MEMORY_TOOL)
 
     if re.search(r"\b(gmail|email|emails|mail|inbox|unread|draft|reply)\b", effective_text) or "gmail" in semantic_flags:
         add(GMAIL_BRIEF_TOOL, GMAIL_DRAFT_TOOL)
@@ -11709,7 +11803,10 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         combined,
     )
     if (
-        re.search(r"\b(digest|briefing|news|latest|headline|headlines|search|web|shortlist|shortlisted|preferred topics|football|f1|liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|android|android 17|google i/o|google io|gemini|pixel|apple|ios|ai|singapore education)\b", effective_text)
+        (
+            re.search(r"\b(digest|briefing|news|latest|headline|headlines|search|web|shortlist|shortlisted|preferred topics|football|f1|liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|android|android 17|google i/o|google io|gemini|pixel|apple|ios|ai|singapore education)\b", effective_text)
+            and not casual_sports_lifestyle
+        )
         or current_source_sensitive
         or favourite_topic_matches
         or sports_followup
@@ -12352,6 +12449,8 @@ async def _run_agentic_claude_impl(messages, max_tokens=2048, tools=None, openai
     return _correct_weekday_date_mismatches(guarded_reply)
 
 def _looks_tool_heavy(text: str) -> bool:
+    if _is_casual_sports_lifestyle_text(text):
+        return False
     return bool(re.search(
         r"\b(calendar|schedule|meeting|event|duty|roster|rostered|nsg|n2a?|c\s*div|b\s*div|remind|nudge|notify|notification|notifications|push|task|due|marking|scripts?|"
         r"email|gmail|inbox|draft|reply|timetable|lesson|news|latest|search|digest|briefing|shortlist|shortlisted|preferred topics|remember|memory|don'?t forget|"

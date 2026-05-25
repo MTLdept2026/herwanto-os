@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260525-api-spend-close-64";
-const APP_SCRIPT = "app.js?v=20260525-api-spend-close-64";
-const EXPECTED_SW_CACHE = "hira-os-v134";
+const APP_VERSION = "20260525-source-cleanup-65";
+const APP_SCRIPT = "app.js?v=20260525-source-cleanup-65";
+const EXPECTED_SW_CACHE = "hira-os-v135";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
@@ -2394,6 +2394,33 @@ function stripCitationMarkers(text) {
     .trim();
 }
 
+const SOURCE_PLUMBING_URL_PATTERN = /https?:\/\/(?:news\.google\.com\/rss\/articles|site\.api\.espn\.com\/apis\/|duckduckgo\.com\/l\/\?)\S+/gi;
+
+function stripSourcePlumbingUrls(text) {
+  const rawLines = String(text || "").split("\n");
+  const lines = rawLines
+    .map((line, index) => {
+      let clean = line.replace(SOURCE_PLUMBING_URL_PATTERN, "").trimEnd();
+      const nextLine = String(rawLines[index + 1] || "").trim();
+      if (!clean.trim()) return "";
+      if (/https?:\/\//i.test(clean)) return "";
+      if (/^\s*(?:[-*•]\s*)?(?:source|sources|references|links|evidence|receipts)\s*:/i.test(clean)) return "";
+      if (
+        /^https?:\/\//i.test(nextLine) &&
+        /\b(?:source|official|calendar|report|scoreboard|probe|article|coverage)\b/i.test(clean)
+      ) {
+        return "";
+      }
+      if (/^\s*(?:[-*•]\s*)?(?:source|sources|link|links)\s*:?\s*$/i.test(clean)) return "";
+      if (/\b(?:source|sources|report|calendar|scoreboard|probe|live brief)\b/i.test(clean)) {
+        clean = clean.replace(/:\s*$/, "");
+      }
+      return clean;
+    })
+    .filter(Boolean);
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 function renderTextBlock(text) {
   return (text || "")
     .split("\n")
@@ -2509,7 +2536,7 @@ function visibleChatText(text, { final = false } = {}) {
   const clean = String(text || "").trim();
   if (!clean) return "";
   if (isInternalToolPayload(clean)) return final ? INTERNAL_TOOL_FALLBACK : "";
-  return stripCitationMarkers(text);
+  return stripSourcePlumbingUrls(stripCitationMarkers(text));
 }
 
 function cleanStoredChatHistory(items = []) {

@@ -5452,6 +5452,32 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertNotIn("get_latest_news", names)
         self.assertNotIn("web_search", names)
 
+    def test_casual_epl_weekend_distraction_is_not_live_news(self):
+        text = "Now that epl season is over gonna need a new distraction during weekend"
+
+        discipline = bot.source_discipline_for_text(text)
+        tools = bot.pwa_tools_for_message(text)
+        names = {tool["name"] for tool in tools}
+
+        self.assertFalse(discipline["needs_live_check"])
+        self.assertNotIn("get_liverpool_brief", discipline["recommended_tools"])
+        self.assertNotIn("get_latest_news", discipline["recommended_tools"])
+        self.assertFalse(bot._looks_tool_heavy(text))
+        self.assertNotIn("get_latest_news", names)
+        self.assertNotIn("get_liverpool_brief", names)
+        self.assertEqual(bot.specialist_policy_for_text(text)["specialist"], "general")
+
+    def test_current_epl_table_still_requires_live_sources(self):
+        text = "Where are Liverpool in the current EPL table?"
+
+        discipline = bot.source_discipline_for_text(text)
+        names = {tool["name"] for tool in bot.pwa_tools_for_message(text)}
+
+        self.assertTrue(discipline["needs_live_check"])
+        self.assertIn("get_liverpool_brief", discipline["recommended_tools"])
+        self.assertIn("get_latest_news", discipline["recommended_tools"])
+        self.assertIn("get_liverpool_brief", names)
+
     def test_model_policy_ignores_injected_pwa_context_for_triage(self):
         message = (
             "Triage my current load. Pick the top 3 things I should handle next.\n\n"
@@ -5800,6 +5826,37 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("Google previews Android 17 features", answer)
         self.assertNotIn("https://", answer)
         self.assertNotIn("news.google.com/rss", answer)
+
+    def test_default_chat_cleanup_removes_source_bibliography_noise(self):
+        raw = "\n".join([
+            "- One weekend rabbit hole: F1.",
+            "- Sources: Formula 1 race report (24 May 2026):",
+            "https://news.google.com/rss/articles/CBMiVeryLongRedirect?oc=5",
+            "Official 2026 calendar:",
+            "https://www.formula1.com/en/racing/2026",
+            "- The actual recommendation survives.",
+        ])
+
+        clean = bot.strip_source_bibliography_noise(raw)
+
+        self.assertIn("One weekend rabbit hole", clean)
+        self.assertIn("actual recommendation survives", clean)
+        self.assertNotIn("Sources:", clean)
+        self.assertNotIn("https://", clean)
+        self.assertNotIn("Official 2026 calendar", clean)
+
+    def test_requested_source_details_keep_normal_links_but_strip_plumbing(self):
+        raw = "\n".join([
+            "Sources:",
+            "https://news.google.com/rss/articles/CBMiVeryLongRedirect?oc=5",
+            "https://www.formula1.com/en/racing/2026",
+        ])
+
+        clean = bot.strip_source_bibliography_noise(raw, allow_source_details=True)
+
+        self.assertIn("Sources", clean)
+        self.assertIn("https://www.formula1.com/en/racing/2026", clean)
+        self.assertNotIn("news.google.com/rss", clean)
 
     def test_openai_degraded_request_keeps_function_tools_but_drops_native_tools(self):
         kwargs = {

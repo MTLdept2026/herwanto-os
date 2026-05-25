@@ -42,8 +42,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260524-chat-progress-citation-62"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v132"
+PWA_APP_VERSION = "20260525-source-cleanup-65"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v135"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -4418,6 +4418,14 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                 yield sse(event)
 
             reply_text = final_text or "".join(reply_parts).strip()
+            cleaned_reply_text = bot.strip_source_bibliography_noise(
+                bot.strip_ai_citation_markers(reply_text),
+                allow_source_details=bot.wants_source_details(message),
+            )
+            if cleaned_reply_text and cleaned_reply_text != reply_text:
+                reply_text = cleaned_reply_text
+                yield sse({"type": "replace", "text": reply_text})
+                yield sse({"type": "done", "text": reply_text})
             recovered_action_text = ""
             if not trace.get("tools_called"):
                 try:
