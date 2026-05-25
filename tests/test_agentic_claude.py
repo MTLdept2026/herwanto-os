@@ -631,6 +631,8 @@ class AgenticClaudeTests(unittest.TestCase):
         style = bot.hira_wit_style_brief()
 
         self.assertIn("dryly witty", style)
+        self.assertIn("discernment", style)
+        self.assertIn("chief-of-staff", style)
         self.assertIn("self-deprecating humour", style)
         self.assertIn("never at Herwanto's expense", style)
         self.assertIn("skip humour", style)
