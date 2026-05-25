@@ -2679,6 +2679,26 @@ def _deepseek_anthropic_request_options(policy: dict | None = None, tier: str = 
     }
 
 
+def _deepseek_request_shape_error(exc: Exception) -> bool:
+    status = getattr(exc, "status_code", None)
+    if status in {400, 422}:
+        return True
+    message = str(exc or "").lower()
+    return any(token in message for token in (
+        "400",
+        "422",
+        "bad request",
+        "invalid",
+        "unsupported",
+        "unknown parameter",
+        "unexpected keyword",
+        "thinking",
+        "output_config",
+        "tool",
+        "schema",
+    ))
+
+
 def _anthropic_text_from_message(resp) -> str:
     for block in getattr(resp, "content", []) or []:
         if getattr(block, "type", None) == "text":
@@ -12213,20 +12233,26 @@ async def _run_agentic_claude_impl(messages, max_tokens=2048, tools=None, openai
         policy = model_policy_for_messages(messages)
         forced_tool = _forced_tool_for_current_turn(messages, tools)
         tool_choice = {"type": "tool", "name": forced_tool} if forced_tool else None
-        kwargs = {}
+        base_kwargs = {}
         if tool_choice:
-            kwargs["tool_choice"] = tool_choice
-        kwargs.update(_deepseek_anthropic_request_options(policy, tier=str(policy.get("tier") or "agentic")))
+            base_kwargs["tool_choice"] = tool_choice
+        base_kwargs.update(_deepseek_anthropic_request_options(policy, tier=str(policy.get("tier") or "agentic")))
         model = str(policy.get("model") or _agentic_model_for_messages(messages))
-        try:
-            resp = claude.messages.create(
+
+        def create_message(request_tools, request_kwargs):
+            payload = dict(
                 model=model,
                 max_tokens=max_tokens,
                 system=CACHED_SYSTEM_PROMPT(),
-                tools=tools,
                 messages=messages,
-                **kwargs,
             )
+            if request_tools:
+                payload["tools"] = request_tools
+            payload.update(request_kwargs)
+            return claude.messages.create(**payload)
+
+        try:
+            resp = create_message(tools, base_kwargs)
             _record_deepseek_usage(resp, model=model, tier=policy.get("tier", "agentic"), stream=False)
         except Exception as exc:
             fallback = _tool_action_fallback_reply(all_tool_results)
@@ -12236,7 +12262,24 @@ async def _run_agentic_claude_impl(messages, max_tokens=2048, tools=None, openai
                 guarded = _backend_claim_guardrail(guarded, all_tool_results)
                 guarded = _cca_sheet_user_burden_guardrail(guarded, all_tool_results)
                 return _correct_weekday_date_mismatches(guarded)
-            raise
+            if not (LLM_PROVIDER == "deepseek" and _deepseek_request_shape_error(exc)):
+                raise
+            degraded_attempts = [
+                ("no_thinking", tools, {"thinking": {"type": "disabled"}}),
+                ("no_tools", None, {"thinking": {"type": "disabled"}}),
+            ]
+            for reason, attempt_tools, attempt_kwargs in degraded_attempts:
+                if reason == "no_tools" and forced_tool:
+                    continue
+                try:
+                    logger.warning("DeepSeek agentic request failed; retrying with %s request shape: %s", reason, exc)
+                    resp = create_message(attempt_tools, attempt_kwargs)
+                    _record_deepseek_usage(resp, model=model, tier=policy.get("tier", "agentic"), stream=False)
+                    break
+                except Exception as retry_exc:
+                    exc = retry_exc
+            else:
+                raise exc
 
         if resp.stop_reason != "tool_use":
             segment = await _run_forced_weather_fallback(forced_tool)
@@ -12330,6 +12373,8 @@ def _safe_short_quick_chat(text: str, recent_context: str = "") -> bool:
         return False
     if re.search(r"https?://|www\.|\b(?:source|cite|citation|latest|today|tomorrow|now|current|live|check|search|look up|calendar|gmail|email|file|upload|remember|remind|draft|create|delete|update|mark done)\b", clean):
         return False
+    if len(clean.split()) <= 10 and re.search(r"\b(?:switched|changed|tweaked|moved|set)\b.*\b(?:backend|model|provider|api)\b", clean):
+        return True
     return _obvious_quick_chat(text)
 
 _CONTEXTUAL_FOLLOWUP_REPLIES = {

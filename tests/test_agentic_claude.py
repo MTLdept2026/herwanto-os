@@ -312,6 +312,9 @@ class AgenticClaudeTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertTrue(asyncio.run(bot.should_route_quick_pwa_chat([], text)))
 
+    def test_backend_switch_comment_is_quick_chat(self):
+        self.assertTrue(asyncio.run(bot.should_route_quick_pwa_chat([], "Switched things up a bit on ur backend")))
+
     def test_pwa_yes_pls_after_calendar_offer_uses_context_tool(self):
         messages = [
             {
@@ -5053,6 +5056,71 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(captured["model"], "deepseek-v4-pro")
         self.assertEqual(captured["thinking"], {"type": "enabled"})
         self.assertEqual(captured["output_config"], {"effort": "max"})
+
+    def test_deepseek_agentic_retries_without_thinking_on_request_shape_error(self):
+        calls = []
+
+        def fake_create(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise RuntimeError("400 unsupported thinking/output_config")
+            return SimpleNamespace(
+                stop_reason="end_turn",
+                content=[SimpleNamespace(type="text", text="Recovered inside DeepSeek.")],
+            )
+
+        async def run():
+            return await bot._run_agentic_claude_impl(
+                [{"role": "user", "content": "Switched things up a bit on ur backend"}],
+                max_tokens=400,
+                tools=[{"name": "noop", "description": "noop", "input_schema": {"type": "object", "properties": {}}}],
+            )
+
+        with (
+            patch.object(bot, "LLM_PROVIDER", "deepseek"),
+            patch.object(bot, "DEEPSEEK_THINKING_MODE", "auto"),
+            patch.object(bot, "CACHED_SYSTEM_PROMPT", return_value="System"),
+            patch.object(bot.claude.messages, "create", side_effect=fake_create),
+        ):
+            reply = asyncio.run(run())
+
+        self.assertEqual(reply, "Recovered inside DeepSeek.")
+        self.assertEqual(calls[0]["thinking"], {"type": "enabled"})
+        self.assertEqual(calls[1]["thinking"], {"type": "disabled"})
+        self.assertIn("tools", calls[1])
+        self.assertNotIn("output_config", calls[1])
+
+    def test_deepseek_agentic_retries_without_tools_after_tool_shape_error(self):
+        calls = []
+
+        def fake_create(**kwargs):
+            calls.append(kwargs)
+            if len(calls) < 3:
+                raise RuntimeError("400 tool schema unsupported")
+            return SimpleNamespace(
+                stop_reason="end_turn",
+                content=[SimpleNamespace(type="text", text="Recovered without tools.")],
+            )
+
+        async def run():
+            return await bot._run_agentic_claude_impl(
+                [{"role": "user", "content": "Say a normal hello"}],
+                max_tokens=400,
+                tools=[{"name": "noop", "description": "noop", "input_schema": {"type": "object", "properties": {}}}],
+            )
+
+        with (
+            patch.object(bot, "LLM_PROVIDER", "deepseek"),
+            patch.object(bot, "DEEPSEEK_THINKING_MODE", "auto"),
+            patch.object(bot, "CACHED_SYSTEM_PROMPT", return_value="System"),
+            patch.object(bot.claude.messages, "create", side_effect=fake_create),
+        ):
+            reply = asyncio.run(run())
+
+        self.assertEqual(reply, "Recovered without tools.")
+        self.assertIn("tools", calls[1])
+        self.assertNotIn("tools", calls[2])
+        self.assertEqual(calls[2]["thinking"], {"type": "disabled"})
 
     def test_deepseek_blocks_unsupported_image_inputs_honestly(self):
         async def run():
