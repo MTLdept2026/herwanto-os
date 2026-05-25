@@ -9517,7 +9517,7 @@ def _direct_user_intent_allows_tool(name: str, direct_user_text: str | None) -> 
     if name == "set_current_school_week":
         return has(r"\b(set|lock|remember|this week|current week|school week)\b") and has(r"\b(odd|even|week)\b")
     if name == "update_project_status":
-        return has(r"\b(update|set|save|store|project|status|milestone)\b")
+        return has(r"\b(update|set|save|store|project|status|milestone|stalled|blocked|approved|rejected|submitted|review|launched|shipped|released|done|completed|pending|waiting)\b")
     if name == "create_document_artifact":
         return has(r"\b(create|generate|make|write|build|draft)\b") and has(r"\b(document|docx|worksheet|letter|report|lesson plan|handout|memo|proposal|notes)\b")
     if name == "create_slide_deck_artifact":
@@ -9774,9 +9774,32 @@ def _is_clarification_detail_reply(text: str) -> bool:
     return len(clean.split()) <= 8 and bool(_CLARIFICATION_DETAIL_RE.search(text or ""))
 
 
+def _is_blocked_action_clarification_reply(text: str, blocked: dict | None = None) -> bool:
+    blocked = blocked or {}
+    if not blocked:
+        return False
+    if _is_clarification_detail_reply(text):
+        return True
+    clean = _normalise_short_reply(text)
+    if not clean or "?" in str(text or ""):
+        return False
+    action = str(blocked.get("action", "") or "")
+    if action == "update_project_status":
+        if len(clean.split()) > 18:
+            return False
+        return bool(re.search(
+            r"\b(?:stalled|blocked|pending|waiting|submitted|approved|rejected|review|"
+            r"launched|shipped|released|done|completed|paused|on hold|delayed|"
+            r"demands?|requirement|playstore|app store|google|apple)\b",
+            clean,
+            re.I,
+        ))
+    return False
+
+
 def _blocked_action_effective_text(text: str, recent_context: str = "") -> str:
     blocked = _latest_blocked_action_from_context(recent_context)
-    if not blocked or not _is_clarification_detail_reply(text):
+    if not blocked or not _is_blocked_action_clarification_reply(text, blocked):
         return str(text or "")
     parts = [
         f"Continue pending blocked action: {blocked.get('action', '')}.",
@@ -11740,6 +11763,14 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
             if item not in tools:
                 tools.append(item)
 
+    blocked_action = _latest_blocked_action_from_context(context)
+    if (
+        blocked_action.get("action") == "update_project_status"
+        and _is_blocked_action_clarification_reply(text, blocked_action)
+    ):
+        add(PROJECT_TOOL, MEMORY_TOOL)
+        return tools
+
     if reference_only_message:
         add(CONTEXT_TOOL, MEMORY_TOOL)
         return tools
@@ -12645,7 +12676,8 @@ def thread_state_for_turn(
     }
 
 def _contextual_followup_requires_full(text: str, recent_context: str = "") -> bool:
-    if _latest_blocked_action_from_context(recent_context) and _is_clarification_detail_reply(text):
+    blocked = _latest_blocked_action_from_context(recent_context)
+    if blocked and _is_blocked_action_clarification_reply(text, blocked):
         return True
     if not _is_contextual_followup_reply(text):
         return False

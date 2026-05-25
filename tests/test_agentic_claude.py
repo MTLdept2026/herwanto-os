@@ -685,6 +685,26 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(state["blocked_action"]["action"], "create_calendar_event")
         self.assertIn("pending blocked action", state["reason"])
 
+    def test_blocked_project_status_clarification_does_not_route_to_tasks(self):
+        blocked = bot._validated_action_failure(
+            "update_project_status",
+            {"project": "Ruh", "status": ""},
+        )
+        text = "Stalled due to playstore's ridiculous demands"
+        tools = bot.pwa_tools_for_message(text, recent_context=blocked)
+        names = {tool["name"] for tool in tools}
+        forced = bot._forced_tool_for_current_turn(
+            [{"role": "assistant", "content": blocked}, {"role": "user", "content": text}],
+            tools,
+        )
+        state = bot.thread_state_for_turn(text, blocked, names)
+
+        self.assertIn("update_project_status", names)
+        self.assertNotIn("get_task_brief", names)
+        self.assertEqual(forced, "update_project_status")
+        self.assertEqual(state["blocked_action"]["action"], "update_project_status")
+        self.assertIn("pending blocked action", state["reason"])
+
     def test_availability_planning_forces_checked_slot_tool(self):
         forced = bot._forced_tool_for_text(
             "find the best slots to schedule Sahibba training after school not during my CCA day",
