@@ -1262,6 +1262,34 @@ def _pwa_casual_status_prompt(message: str) -> bool:
     }
 
 
+def _pwa_assistant_feeling_reply(message: str) -> str:
+    text = str(message or "").strip()
+    clean = bot._normalise_short_reply(text)
+    if not clean:
+        return ""
+    asks_feeling = bool(bot.re.search(
+        r"\b(?:how\s+(?:are|r)\s+(?:you|u)|how'?s\s+it\s+feeling|feel(?:ing)?|alive|awake)\b",
+        clean,
+        bot.re.I,
+    ))
+    mentions_backend_change = bool(bot.re.search(
+        r"\b(?:backend|provider|model|deepseek|openai|api|route|routing|switched|changed|change)\b",
+        clean,
+        bot.re.I,
+    ))
+    if not asks_feeling or not mentions_backend_change:
+        return ""
+    provider = {
+        "openai": "OpenAI",
+        "deepseek": "DeepSeek",
+        "anthropic": "Anthropic",
+    }.get(bot.LLM_PROVIDER, bot.LLM_PROVIDER.upper())
+    return (
+        f"I’m awake. The chat brain is routed through {provider} now, so I’m watching the new path closely. "
+        "If I sound flat or hit snags, that’s the integration wobbling, not me giving up."
+    )
+
+
 def _pwa_topic_news_queries(message: str, recent_context: str = "") -> list[tuple[str, str]]:
     return bot.favourite_news_topic_queries(message, recent_context)
 
@@ -3943,6 +3971,16 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             quick_history,
             route_name="triage",
             tool_name="get_assistant_context",
+        )
+
+    assistant_feeling_reply = _pwa_assistant_feeling_reply(message)
+    if assistant_feeling_reply:
+        quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
+        return _quick_sse_response(
+            assistant_feeling_reply,
+            history_key,
+            quick_history,
+            route_name="casual_checkin",
         )
 
     working_memory = _update_working_memory(history_key, history, message)

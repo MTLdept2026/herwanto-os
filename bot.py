@@ -12440,6 +12440,16 @@ async def stream_quick_pwa_reply(messages: list[dict], message: str):
             resp = await stream.get_final_message()
         _record_deepseek_usage(resp, model=QUICK_MODEL, tier="quick", stream=True)
     except Exception as exc:
+        if LLM_PROVIDER == "deepseek":
+            logger.warning("DeepSeek quick stream failed; retrying with non-streaming request: %s", exc)
+            text = await _llm_text_async(
+                model=QUICK_MODEL,
+                max_tokens=QUICK_REPLY_MAX_TOKENS,
+                system=system,
+                messages=prompt_messages,
+            )
+            yield {"type": "text", "text": text}
+            return
         logger.error(f"Quick PWA reply failed: {exc}")
         raise
 
@@ -12671,6 +12681,17 @@ async def stream_agentic_claude_impl(messages, max_tokens=650, tools=None, opena
                 resp = await stream.get_final_message()
             _record_deepseek_usage(resp, model=model, tier=model_policy_for_messages(messages).get("tier", "agentic"), stream=True)
         except Exception as exc:
+            if LLM_PROVIDER == "deepseek" and not all_tool_results:
+                logger.warning("DeepSeek agentic stream failed; retrying with non-streaming request: %s", exc)
+                reply = await _run_agentic_claude_impl(
+                    list(messages),
+                    max_tokens=max_tokens,
+                    tools=tools,
+                    openai_state_key=openai_state_key,
+                )
+                yield {"type": "replace", "text": reply}
+                yield {"type": "done", "text": reply}
+                return
             fallback = _tool_action_fallback_reply(all_tool_results)
             if fallback:
                 logger.warning("Claude stream follow-up failed after tool actions; returning tool-result fallback: %s", exc)

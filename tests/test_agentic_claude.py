@@ -4631,6 +4631,34 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn('"name": "get_assistant_context"', body)
         self.assertNotIn('"final_mode": "backend_error"', body)
 
+    def test_backend_change_feeling_uses_local_checkin_before_model_route(self):
+        async def run():
+            response = await web_app._chat_stream_response(
+                "Hey hira. Did another backend change. How are u feeling",
+                None,
+                "phone",
+            )
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(bot, "LLM_PROVIDER", "deepseek"),
+            patch.object(web_app, "_update_working_memory", side_effect=AssertionError("casual check-in should bypass model preflight")),
+            patch.object(web_app, "_schedule_background_call"),
+            patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("should not route to model")),
+            patch.object(bot, "stream_agentic_claude", side_effect=AssertionError("should not stream model")),
+        ):
+            body = asyncio.run(run())
+
+        self.assertIn('"name": "casual_checkin"', body)
+        self.assertIn("I’m awake", body)
+        self.assertIn("DeepSeek", body)
+        self.assertNotIn("backend snag", body.lower())
+
     def test_pwa_tool_route_streams_presence_preface_into_same_answer(self):
         async def fake_agentic_stream(*_args, **_kwargs):
             yield {"type": "tool", "name": "get_gmail_brief"}
