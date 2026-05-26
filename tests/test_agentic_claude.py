@@ -5519,10 +5519,7 @@ class AgenticClaudeTests(unittest.TestCase):
             web_app._pwa_topic_news_queries("How about Nothing?", "Quick live pass with recent news."),
             [("Nothing", "Nothing Phone Nothing OS Nothing Ear CMF Carl Pei Android update launch product news")],
         )
-        self.assertEqual(
-            [label for label, _query in web_app._pwa_topic_news_queries("I asked only about Teenage Engineering and Nothing")],
-            ["Teenage Engineering", "Nothing"],
-        )
+        self.assertEqual(web_app._pwa_topic_news_queries("I asked only about Teenage Engineering and Nothing"), [])
 
     def test_favourite_topic_news_semantics_ignore_plain_nothing_due(self):
         self.assertEqual(bot.favourite_news_topic_queries("Nothing much to handle."), [])
@@ -5541,6 +5538,12 @@ class AgenticClaudeTests(unittest.TestCase):
         topics = bot.favourite_news_topic_queries("Any SG Education updates I should know?")
 
         self.assertEqual(topics, [("SG Education", "Singapore education MOE schools teachers curriculum")])
+
+    def test_plain_app_development_ambition_is_not_topic_news(self):
+        text = "Time to find me a hobby that will make me millions so i can retire and go into app development"
+
+        self.assertEqual(bot.favourite_news_topic_queries(text), [])
+        self.assertEqual(web_app._pwa_topic_news_queries(text), [])
 
     def test_triage_current_load_is_not_misrouted_to_live_news(self):
         text = (

@@ -7064,7 +7064,6 @@ FAVOURITE_NEWS_TOPIC_RULES = [
         "query": "solo developer iOS Android React Vite Capacitor Railway Netlify GitHub update",
         "patterns": (
             r"\bsolo dev(?:eloper)?\b",
-            r"\bapp dev(?:elopment)?\b",
             r"\breact\b",
             r"\bvite\b",
             r"\bcapacitor\b",
@@ -7150,7 +7149,7 @@ FAVOURITE_NEWS_TOPIC_RULES = [
     },
 ]
 FAVOURITE_NEWS_PROMPT_CUE_RE = re.compile(
-    r"\b(?:how about|what about|anything|any recent|updates?|latest|news|headlines?|brief|digest|radar|stuff|check|find|look up|topics?|favourites?|favorites?|fav)\b",
+    r"\b(?:how about|what about|anything on|anything about|any recent|updates?|latest|news|headlines?|brief|digest|radar|topics?|favourites?|favorites?|fav)\b",
     re.I,
 )
 FAVOURITE_NEWS_CONTEXT_RE = re.compile(
@@ -7190,7 +7189,10 @@ def favourite_news_topic_queries(text: str = "", recent_context: str = "") -> li
         inherited_explicit = contextual_affirmation and any(
             re.search(pattern, context, re.I) for pattern in rule.get("patterns", ())
         )
-        if explicit or inherited_explicit:
+        if inherited_explicit:
+            add(str(rule["label"]), str(rule["query"]))
+            continue
+        if explicit and (prompt_cue or inherited_news_context):
             add(str(rule["label"]), str(rule["query"]))
             continue
         bare_pattern = str(rule.get("bare_pattern") or "")
