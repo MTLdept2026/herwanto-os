@@ -326,6 +326,61 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertTrue(frame["should_route_quick"])
         self.assertTrue(routed_quick)
 
+    def test_response_plan_for_mixed_vent_and_soft_advice_prefers_empathy_then_judgement(self):
+        text = "I'm tired lah, but should I send that reply tonight?"
+
+        frame = bot.conversation_pragmatic_frame(text)
+        plan = bot.conversation_response_plan(
+            text,
+            frame=frame,
+            style_profile={"conversation_judgement": "judgement_first"},
+            relevant_episodes=[],
+        )
+
+        self.assertEqual(plan["opener"], "brief_empathy_then_judgement")
+        self.assertEqual(plan["structure"], "judgement_then_why")
+        self.assertEqual(plan["length"], "brief")
+
+    def test_response_plan_switches_to_structured_analysis_when_asked(self):
+        text = "Can you analyze whether I should keep this app local or move it to Railway?"
+
+        frame = bot.conversation_pragmatic_frame(text)
+        plan = bot.conversation_response_plan(text, frame=frame, style_profile={}, relevant_episodes=[])
+
+        self.assertEqual(frame["response_mode"], "analyze")
+        self.assertEqual(plan["opener"], "frame_then_analysis")
+        self.assertEqual(plan["structure"], "judgement_then_tradeoffs")
+        self.assertEqual(plan["length"], "structured")
+
+    def test_reply_self_repair_verdict_flags_generic_stressed_advice_reply(self):
+        text = "I'm shattered, should I send that reply tonight?"
+        frame = bot.conversation_pragmatic_frame(text)
+        plan = bot.conversation_response_plan(text, frame=frame, style_profile={}, relevant_episodes=[], relevant_arcs=[])
+
+        verdict = bot.reply_self_repair_verdict(text, "Sure.", frame=frame, response_plan=plan, relevant_arcs=[])
+
+        self.assertTrue(verdict["needs_repair"])
+        self.assertIn("too_generic", verdict["flags"])
+        self.assertIn("missed_judgement", verdict["flags"])
+
+    def test_maybe_self_repair_reply_rewrites_generic_draft(self):
+        text = "I'm tired lah, but should I send that reply tonight?"
+        frame = bot.conversation_pragmatic_frame(text)
+        plan = bot.conversation_response_plan(text, frame=frame, style_profile={}, relevant_episodes=[], relevant_arcs=[])
+
+        with patch.object(bot, "_llm_text_async", return_value="Long day, fair. I'd send it tonight and keep it clean."):
+            repaired, meta = asyncio.run(bot.maybe_self_repair_reply(
+                text,
+                "Sure.",
+                frame=frame,
+                response_plan=plan,
+                style_profile={},
+                relevant_arcs=[],
+            ))
+
+        self.assertTrue(meta["repaired"])
+        self.assertIn("send it tonight", repaired)
+
     def test_pwa_yes_pls_after_calendar_offer_uses_context_tool(self):
         messages = [
             {
@@ -6586,9 +6641,65 @@ class AgenticClaudeTests(unittest.TestCase):
             )
             due = bot.due_conversation_carryovers(now=tomorrow, limit=1)
 
+        self.assertIn("relationship_arc", {item["type"] for item in recorded})
         self.assertIn("conversation_carryover", {item["type"] for item in recorded})
         self.assertEqual(len(due), 1)
-        self.assertIn("reply", due[0]["question"].lower())
+        self.assertTrue(due[0]["question"].startswith("Did you end up"))
+
+    def test_chat_learning_event_records_structured_episode_fields(self):
+        store = {}
+        now = bot.SGT.localize(bot.datetime(2026, 5, 26, 21, 15))
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot, "datetime", wraps=bot.datetime) as fake_datetime,
+            patch.object(bot.gs, "get_config", side_effect=lambda key: store.get(key, "")),
+            patch.object(bot.gs, "set_config", side_effect=lambda key, value: store.__setitem__(key, value)),
+        ):
+            fake_datetime.now.return_value = now
+            recorded = bot.record_chat_learning_event(
+                "My boss email thread is still bugging me. Should I send that reply tonight?",
+                "Short call: send it tonight, clean and calm.",
+                source="test",
+            )
+
+        self.assertIn("conversation_episode", {item["type"] for item in recorded})
+        saved = json.loads(store["assistant_memory"])
+        episode = json.loads(saved["conversation_episodes"][0])
+        self.assertEqual(episode["actors"], ["boss"])
+        self.assertIn("boss email thread", episode["problem"].lower())
+        self.assertEqual(episode["desired_outcome"], "Decide whether to send that reply tonight")
+        self.assertIn("send it tonight", episode["assistant_last_stance"].lower())
+        self.assertEqual(episode["next_checkin_hint"], "Did you end up deciding to send that reply tonight?")
+
+    def test_chat_learning_event_builds_long_horizon_relationship_arc(self):
+        store = {}
+        first = bot.SGT.localize(bot.datetime(2026, 5, 20, 21, 15))
+        second = bot.SGT.localize(bot.datetime(2026, 5, 23, 20, 45))
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot, "datetime", wraps=bot.datetime) as fake_datetime,
+            patch.object(bot.gs, "get_config", side_effect=lambda key: store.get(key, "")),
+            patch.object(bot.gs, "set_config", side_effect=lambda key, value: store.__setitem__(key, value)),
+        ):
+            fake_datetime.now.return_value = first
+            bot.record_chat_learning_event(
+                "My boss email thread is still bugging me. Should I send that reply tonight?",
+                "Short call: send it tonight, clean and calm.",
+                source="test",
+            )
+            fake_datetime.now.return_value = second
+            bot.record_chat_learning_event(
+                "Boss email thread is back again and still annoying me.",
+                "Then send it and get it off your desk.",
+                source="test",
+            )
+
+        arcs = json.loads(store["conversation_relationship_arcs"])
+        self.assertEqual(len(arcs), 1)
+        self.assertEqual(arcs[0]["recurrence_count"], 2)
+        self.assertEqual(arcs[0]["status"], "active")
 
     def test_chat_learning_event_marks_single_active_conversation_episode_resolved(self):
         store = {}
@@ -6608,6 +6719,8 @@ class AgenticClaudeTests(unittest.TestCase):
             "tags": ["work", "email", "reply", "boss"],
         }, ensure_ascii=False)]
         store["assistant_memory"] = json.dumps(memory, ensure_ascii=False)
+        bot.gs._memory_cache["value"] = None
+        bot.gs._memory_cache["expires_at"] = 0.0
 
         with (
             patch.object(bot, "google_ok", return_value=True),
@@ -6790,6 +6903,112 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertEqual(recalled[0]["category"], "conversation_episodes")
         self.assertIn("Boss email thread", recalled[0]["text"])
+
+    def test_response_plan_surfaces_continuity_from_active_episode(self):
+        episode = {
+            "id": "episode-1",
+            "created_at": "2026-05-26T21:00:00+08:00",
+            "last_seen_at": "2026-05-26T21:00:00+08:00",
+            "resolved_at": "",
+            "source": "test",
+            "subject": "that reply",
+            "summary": "Boss email thread felt awkward and I was unsure whether to send the reply that night.",
+            "problem": "Boss email thread felt awkward and I was unsure whether to send the reply that night",
+            "desired_outcome": "Decide whether to send that reply tonight",
+            "resolution": "",
+            "speech_act": "ask_advice",
+            "tone_read": "stressed",
+            "status": "active",
+            "actors": ["boss"],
+            "tags": ["work", "email", "reply", "boss"],
+        }
+
+        plan = bot.conversation_response_plan(
+            "Still thinking about that office reply tbh",
+            style_profile={"conversation_followthrough": "check_in_on_open_loops"},
+            relevant_episodes=[episode],
+        )
+
+        self.assertIn("Open loop", plan["continuity_note"])
+        self.assertIn("Desired outcome", plan["continuity_note"])
+
+    def test_relevant_relationship_arc_surfaces_older_recurring_issue(self):
+        store = {}
+        arcs = [{
+            "id": "arc-1",
+            "subject": "that reply",
+            "summary": "Boss email thread kept resurfacing.",
+            "problem": "Boss email thread kept resurfacing and felt awkward.",
+            "desired_outcome": "Decide whether to send that reply tonight",
+            "status": "active",
+            "first_seen_at": "2026-05-01T21:00:00+08:00",
+            "last_seen_at": "2026-05-12T21:00:00+08:00",
+            "last_resolved_at": "",
+            "recurrence_count": 3,
+            "reopened_count": 1,
+            "actors": ["boss"],
+            "tags": ["work", "email", "reply", "boss"],
+        }]
+        store["conversation_relationship_arcs"] = json.dumps(arcs, ensure_ascii=False)
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "get_config", side_effect=lambda key: store.get(key, "")),
+        ):
+            recalled = bot.retrieve_relevant_relationship_arcs("that office reply issue is back again", limit=1)
+
+        self.assertEqual(recalled[0]["id"], "arc-1")
+        self.assertEqual(recalled[0]["recurrence_count"], 3)
+
+    def test_personal_operator_state_surfaces_open_loops_and_triage_mode(self):
+        store = {}
+        arcs = [{
+            "id": "arc-1",
+            "subject": "that reply",
+            "summary": "Boss email thread kept resurfacing.",
+            "problem": "Boss email thread kept resurfacing and felt awkward.",
+            "desired_outcome": "Decide whether to send that reply tonight",
+            "status": "active",
+            "first_seen_at": "2026-05-01T21:00:00+08:00",
+            "last_seen_at": "2026-05-12T21:00:00+08:00",
+            "last_resolved_at": "",
+            "recurrence_count": 3,
+            "reopened_count": 1,
+            "actors": ["boss"],
+            "tags": ["work", "email", "reply", "boss"],
+        }]
+        store["conversation_relationship_arcs"] = json.dumps(arcs, ensure_ascii=False)
+        store["conversation_carryovers"] = json.dumps([], ensure_ascii=False)
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "get_config", side_effect=lambda key: store.get(key, "")),
+            patch.object(bot.gs, "get_taste_profile", return_value={"conversation_followthrough": "check_in_on_open_loops"}),
+        ):
+            state = bot.personal_operator_state_for_turn("What should I tackle first today?")
+
+        self.assertEqual(state["mode"], "triage")
+        self.assertTrue(any("recurring x3" in item for item in state["open_loops"]))
+        self.assertIn("follow-through", state["guidance"].lower())
+
+    def test_absorb_taste_hint_captures_interaction_style_preferences(self):
+        store = {}
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "get_config", side_effect=lambda key: store.get(key, "")),
+            patch.object(bot.gs, "set_config", side_effect=lambda key, value: store.__setitem__(key, value)),
+        ):
+            captured = bot.absorb_taste_hint(
+                "Be blunt with me, don't just give options, keep it short, and follow up tomorrow if something is unresolved."
+            )
+            profile = json.loads(store["taste_profile"])
+
+        self.assertTrue(captured)
+        self.assertEqual(profile["conversation_directness"], "direct")
+        self.assertEqual(profile["conversation_judgement"], "judgement_first")
+        self.assertEqual(profile["conversation_briefness"], "concise")
+        self.assertEqual(profile["conversation_followthrough"], "check_in_on_open_loops")
 
     def test_proactive_intelligence_flags_packed_due_marking_day(self):
         load = {

@@ -3996,6 +3996,11 @@ DEFAULT_TASTE_PROFILE = {
     "design_taste": "",
     "business_lens": "",
     "islamic_content_tone": "",
+    "conversation_directness": "",
+    "conversation_humour": "",
+    "conversation_judgement": "",
+    "conversation_briefness": "",
+    "conversation_followthrough": "",
 }
 
 

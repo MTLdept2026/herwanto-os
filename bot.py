@@ -1481,7 +1481,12 @@ def _memory_item_text(item) -> str:
             "next_behavior",
             "topic",
             "insight",
+            "actors",
             "subject",
+            "problem",
+            "desired_outcome",
+            "stakes",
+            "assistant_last_stance",
             "summary",
             "resolution",
             "text",
@@ -1490,7 +1495,10 @@ def _memory_item_text(item) -> str:
         ):
             value = item.get(key)
             if value:
-                parts.append(str(value))
+                if isinstance(value, list):
+                    parts.append(", ".join(str(part) for part in value if str(part).strip()))
+                else:
+                    parts.append(str(value))
         tags = item.get("tags")
         if isinstance(tags, list) and tags:
             parts.append(", ".join(str(tag) for tag in tags[:8]))
@@ -1498,6 +1506,147 @@ def _memory_item_text(item) -> str:
             parts = [json.dumps(item, ensure_ascii=False)]
         return " | ".join(parts)
     return str(item)
+
+
+def _conversation_actor_hints(text: str) -> list[str]:
+    clean = " ".join(str(text or "").split())
+    checks = [
+        ("boss", r"\b(?:boss|manager|hod|principal)\b"),
+        ("colleague", r"\b(?:colleague|coworker|teammate|team lead|staff)\b"),
+        ("client", r"\b(?:client|customer|buyer)\b"),
+        ("student", r"\b(?:student|students)\b"),
+        ("teacher", r"\b(?:teacher|teachers)\b"),
+        ("mum", r"\b(?:mum|mom|mother)\b"),
+        ("dad", r"\b(?:dad|father)\b"),
+        ("wife", r"\b(?:wife)\b"),
+        ("husband", r"\b(?:husband)\b"),
+        ("family", r"\b(?:family|parents)\b"),
+    ]
+    actors: list[str] = []
+    for label, pattern in checks:
+        if re.search(pattern, clean, re.I) and label not in actors:
+            actors.append(label)
+    return actors[:6]
+
+
+def _conversation_problem_hint(text: str, subject: str = "") -> str:
+    clean = " ".join(str(text or "").split()).strip()
+    if not clean:
+        return ""
+    before_ask = re.split(
+        r"\b(?:should i|do you think|what do you think|would you|what do i do|how do i|any idea if)\b",
+        clean,
+        maxsplit=1,
+        flags=re.I,
+    )[0].strip(" ,.;:!?")
+    if len(before_ask.split()) >= 4 and before_ask.lower() != clean.lower():
+        return _clip_memory_text(before_ask, 140)
+    first_sentence = re.split(r"[.!?]", clean, maxsplit=1)[0].strip(" ,.;:!?")
+    if len(first_sentence.split()) >= 4:
+        return _clip_memory_text(first_sentence, 140)
+    if subject:
+        return _clip_memory_text(f"Ongoing issue around {subject}", 140)
+    return _clip_memory_text(clean, 140)
+
+
+def _conversation_desired_outcome_hint(text: str) -> str:
+    clean = " ".join(str(text or "").split()).strip()
+    if not clean:
+        return ""
+    patterns = (
+        (r"\bshould i\s+([^?.!]{4,140})", "Decide whether to {}"),
+        (r"\bwould you\s+([^?.!]{4,140})", "Decide whether to {}"),
+        (r"\bhow do i\s+([^?.!]{4,140})", "Work out how to {}"),
+        (r"\bwhat do i do about\s+([^?.!]{4,140})", "Figure out what to do about {}"),
+        (r"\bwhat do i do with\s+([^?.!]{4,140})", "Figure out what to do with {}"),
+        (r"\bany idea if\s+([^?.!]{4,140})", "Work out whether {}"),
+        (r"\bi need to\s+([^?.!]{4,140})", "Get clear on how to {}"),
+        (r"\bi have to\s+([^?.!]{4,140})", "Get clear on how to {}"),
+    )
+    for pattern, template in patterns:
+        match = re.search(pattern, clean, re.I)
+        if not match:
+            continue
+        clause = match.group(1).strip(" ,.;:!?")
+        clause = re.sub(r"^(?:just|really)\s+", "", clause, flags=re.I)
+        if clause:
+            return _clip_memory_text(template.format(clause), 140)
+    return ""
+
+
+def _conversation_stakes_hint(text: str, tags: list[str] | None = None, actors: list[str] | None = None) -> str:
+    lowered = " ".join(str(text or "").lower().split())
+    tag_set = set(tags or [])
+    actor_set = set(actors or [])
+    if re.search(r"\b(?:deadline|due|tonight|tomorrow|urgent|asap)\b", lowered):
+        return "Time-sensitive and easy to overthink if it drags."
+    if {"boss", "client"} & actor_set or {"boss", "work"} & tag_set:
+        return "Could affect work tone or create awkward fallout if handled badly."
+    if {"school", "student", "teacher"} & tag_set:
+        return "Touches school follow-through, so the tone and timing matter."
+    if "family" in tag_set:
+        return "Personal relationship stakes are tied up in it."
+    if "money" in tag_set:
+        return "Money is attached, so a sloppy call could sting."
+    if re.search(r"\b(?:awkward|mess|issue|problem|stuck|stress|rough)\b", lowered):
+        return "It feels emotionally sticky even if the practical move is simple."
+    return ""
+
+
+def _assistant_stance_hint(text: str) -> str:
+    clean = " ".join(str(text or "").split()).strip()
+    if not clean:
+        return ""
+    sentence = re.split(r"[.!?]", clean, maxsplit=1)[0].strip(" ,.;:!?")
+    sentence = re.sub(r"^(?:got it|fair|short call|my call|i think)\s*[:,-]?\s*", "", sentence, flags=re.I)
+    return _clip_memory_text(sentence, 140)
+
+
+def _conversation_next_checkin_hint(subject: str = "", desired_outcome: str = "", problem: str = "") -> str:
+    outcome = str(desired_outcome or "").strip()
+    clean_subject = str(subject or "").strip()
+    if outcome.startswith("Decide whether to "):
+        action = outcome[len("Decide whether to "):].strip()
+        return f"Did you end up deciding to {action}?"
+    if outcome.startswith("Work out how to "):
+        action = outcome[len("Work out how to "):].strip()
+        return f"Any clearer on how you want to {action}?"
+    if outcome.startswith("Figure out what to do about "):
+        item = outcome[len("Figure out what to do about "):].strip()
+        return f"Any clearer on what you want to do about {item}?"
+    if outcome.startswith("Get clear on how to "):
+        action = outcome[len("Get clear on how to "):].strip()
+        return f"Did that get any clearer around {action}?"
+    if clean_subject:
+        if clean_subject.lower() in {"work", "school"}:
+            clean_subject = f"that {clean_subject} matter"
+        return f"Yesterday sounded rough around {clean_subject}. Feeling any better about it today?"
+    if problem:
+        return "Yesterday sounded a bit heavy. Feeling any better about that today?"
+    return ""
+
+
+def _conversation_episode_details(
+    text: str,
+    subject: str = "",
+    assistant_text: str = "",
+    frame: dict | None = None,
+) -> dict:
+    frame = frame or conversation_pragmatic_frame(text)
+    actors = _conversation_actor_hints(text)
+    tags = _conversation_episode_tags(text, subject)
+    problem = _conversation_problem_hint(text, subject)
+    desired_outcome = _conversation_desired_outcome_hint(text)
+    stakes = _conversation_stakes_hint(text, tags=tags, actors=actors)
+    return {
+        "actors": actors,
+        "problem": problem,
+        "desired_outcome": desired_outcome,
+        "stakes": stakes,
+        "assistant_last_stance": _assistant_stance_hint(assistant_text),
+        "user_mood": str(frame.get("tone_read", "") or ""),
+        "next_checkin_hint": _conversation_next_checkin_hint(subject, desired_outcome, problem),
+    }
 
 
 def _conversation_episode_tags(text: str, subject: str = "") -> list[str]:
@@ -1534,6 +1683,7 @@ def _parse_conversation_episode(item) -> dict:
     if not isinstance(parsed, dict):
         return {}
     tags = parsed.get("tags")
+    actors = parsed.get("actors")
     return {
         "id": str(parsed.get("id", "")).strip(),
         "created_at": str(parsed.get("created_at", "")).strip(),
@@ -1542,10 +1692,17 @@ def _parse_conversation_episode(item) -> dict:
         "source": str(parsed.get("source", "")).strip(),
         "subject": str(parsed.get("subject", "")).strip(),
         "summary": str(parsed.get("summary", "")).strip(),
+        "problem": str(parsed.get("problem", "")).strip(),
+        "desired_outcome": str(parsed.get("desired_outcome", "")).strip(),
+        "stakes": str(parsed.get("stakes", "")).strip(),
+        "assistant_last_stance": str(parsed.get("assistant_last_stance", "")).strip(),
+        "user_mood": str(parsed.get("user_mood", "") or parsed.get("tone_read", "")).strip(),
+        "next_checkin_hint": str(parsed.get("next_checkin_hint", "")).strip(),
         "resolution": str(parsed.get("resolution", "")).strip(),
         "speech_act": str(parsed.get("speech_act", "")).strip(),
         "tone_read": str(parsed.get("tone_read", "")).strip(),
         "status": str(parsed.get("status", "") or "active").strip(),
+        "actors": [str(actor).strip() for actor in actors if str(actor).strip()][:6] if isinstance(actors, list) else [],
         "tags": [str(tag).strip() for tag in tags if str(tag).strip()][:8] if isinstance(tags, list) else [],
     }
 
@@ -1579,6 +1736,213 @@ def _save_conversation_episodes(entries: list[dict]) -> None:
         clean.append(json.dumps(parsed, ensure_ascii=False, sort_keys=True))
     memory["conversation_episodes"] = clean
     gs.set_memory(memory)
+
+
+_CONVERSATION_RELATIONSHIP_ARCS_KEY = "conversation_relationship_arcs"
+
+
+def _parse_relationship_arc(item) -> dict:
+    if isinstance(item, dict):
+        parsed = dict(item)
+    else:
+        try:
+            parsed = json.loads(str(item or ""))
+        except Exception:
+            parsed = {}
+    if not isinstance(parsed, dict):
+        return {}
+    tags = parsed.get("tags")
+    actors = parsed.get("actors")
+    recurrence_count = parsed.get("recurrence_count", 1)
+    reopened_count = parsed.get("reopened_count", 0)
+    try:
+        recurrence_count = max(1, int(recurrence_count))
+    except Exception:
+        recurrence_count = 1
+    try:
+        reopened_count = max(0, int(reopened_count))
+    except Exception:
+        reopened_count = 0
+    return {
+        "id": str(parsed.get("id", "")).strip(),
+        "subject": str(parsed.get("subject", "")).strip(),
+        "summary": str(parsed.get("summary", "")).strip(),
+        "problem": str(parsed.get("problem", "")).strip(),
+        "desired_outcome": str(parsed.get("desired_outcome", "")).strip(),
+        "stakes": str(parsed.get("stakes", "")).strip(),
+        "assistant_last_stance": str(parsed.get("assistant_last_stance", "")).strip(),
+        "user_mood": str(parsed.get("user_mood", "")).strip(),
+        "next_checkin_hint": str(parsed.get("next_checkin_hint", "")).strip(),
+        "source": str(parsed.get("source", "")).strip(),
+        "status": str(parsed.get("status", "") or "active").strip(),
+        "first_seen_at": str(parsed.get("first_seen_at", "")).strip(),
+        "last_seen_at": str(parsed.get("last_seen_at", "") or parsed.get("first_seen_at", "")).strip(),
+        "last_resolved_at": str(parsed.get("last_resolved_at", "")).strip(),
+        "recurrence_count": recurrence_count,
+        "reopened_count": reopened_count,
+        "actors": [str(actor).strip() for actor in actors if str(actor).strip()][:6] if isinstance(actors, list) else [],
+        "tags": [str(tag).strip() for tag in tags if str(tag).strip()][:8] if isinstance(tags, list) else [],
+    }
+
+
+def _load_relationship_arcs() -> list[dict]:
+    if not google_ok():
+        return []
+    try:
+        raw = gs.get_config(_CONVERSATION_RELATIONSHIP_ARCS_KEY)
+    except Exception as exc:
+        logger.debug(f"Could not load relationship arcs: {exc}")
+        return []
+    if not raw:
+        return []
+    try:
+        stored = json.loads(raw)
+    except Exception:
+        return []
+    arcs: list[dict] = []
+    for item in stored if isinstance(stored, list) else []:
+        arc = _parse_relationship_arc(item)
+        if arc.get("id") and (arc.get("subject") or arc.get("summary")):
+            arcs.append(arc)
+    arcs.sort(key=lambda item: (item.get("last_seen_at", ""), item.get("first_seen_at", "")))
+    return arcs[-80:]
+
+
+def _save_relationship_arcs(arcs: list[dict]) -> None:
+    if not google_ok():
+        return
+    clean: list[dict] = []
+    for item in arcs[-80:]:
+        arc = _parse_relationship_arc(item)
+        if arc.get("id") and (arc.get("subject") or arc.get("summary")):
+            clean.append(arc)
+    gs.set_config(_CONVERSATION_RELATIONSHIP_ARCS_KEY, json.dumps(clean, ensure_ascii=False))
+
+
+def _relationship_arc_age_days(arc: dict, now: datetime | None = None) -> int:
+    current = now or datetime.now(SGT)
+    raw = str(arc.get("last_seen_at", "") or arc.get("first_seen_at", "")).strip()
+    if not raw:
+        return 9999
+    try:
+        seen = datetime.fromisoformat(raw)
+        if seen.tzinfo is None:
+            seen = SGT.localize(seen)
+        else:
+            seen = seen.astimezone(SGT)
+    except Exception:
+        return 9999
+    return abs((current - seen).days)
+
+
+def _matching_relationship_arc_index(
+    arcs: list[dict],
+    subject: str = "",
+    tags: set[str] | None = None,
+    actors: set[str] | None = None,
+    now: datetime | None = None,
+    max_age_days: int = 60,
+) -> int:
+    subject_clean = str(subject or "").strip().lower()
+    wanted_tags = set(tags or set())
+    wanted_actors = {str(actor).strip().lower() for actor in actors or set() if str(actor).strip()}
+    for idx in range(len(arcs) - 1, -1, -1):
+        arc = arcs[idx]
+        if _relationship_arc_age_days(arc, now=now) > max_age_days:
+            continue
+        arc_subject = str(arc.get("subject", "")).strip().lower()
+        arc_tags = {str(tag).strip() for tag in arc.get("tags", []) if str(tag).strip()}
+        arc_actors = {str(actor).strip().lower() for actor in arc.get("actors", []) if str(actor).strip()}
+        subject_match = bool(
+            subject_clean and arc_subject
+            and (subject_clean == arc_subject or subject_clean in arc_subject or arc_subject in subject_clean)
+        )
+        tag_overlap = len(wanted_tags & arc_tags)
+        actor_overlap = len(wanted_actors & arc_actors)
+        if subject_match or tag_overlap >= 2 or (tag_overlap and actor_overlap):
+            return idx
+    return -1
+
+
+def record_relationship_arc_from_episode(episode: dict, now: datetime | None = None) -> dict:
+    entry = _parse_conversation_episode(episode)
+    if not google_ok() or not entry.get("id"):
+        return {}
+    subject = str(entry.get("subject", "")).strip()
+    tags = {str(tag).strip() for tag in entry.get("tags", []) if str(tag).strip()}
+    actors = {str(actor).strip() for actor in entry.get("actors", []) if str(actor).strip()}
+    if not subject and not tags:
+        return {}
+    current = now or datetime.now(SGT)
+    arcs = _load_relationship_arcs()
+    idx = _matching_relationship_arc_index(arcs, subject=subject, tags=tags, actors=actors, now=current, max_age_days=90)
+    status = "resolved" if str(entry.get("status", "")).strip() == "resolved" else (
+        "active" if str(entry.get("status", "")).strip() == "active" else "watching"
+    )
+    if idx >= 0:
+        previous = arcs[idx]
+        previous_seen_raw = str(previous.get("last_seen_at", "") or "").strip()
+        same_day = False
+        if previous_seen_raw:
+            try:
+                previous_seen = datetime.fromisoformat(previous_seen_raw)
+                if previous_seen.tzinfo is None:
+                    previous_seen = SGT.localize(previous_seen)
+                else:
+                    previous_seen = previous_seen.astimezone(SGT)
+                same_day = previous_seen.date() == current.date()
+            except Exception:
+                same_day = False
+        recurrence_count = int(previous.get("recurrence_count", 1) or 1)
+        if not same_day and status != "resolved":
+            recurrence_count += 1
+        reopened_count = int(previous.get("reopened_count", 0) or 0)
+        if str(previous.get("status", "")).strip() == "resolved" and status in {"active", "watching"}:
+            reopened_count += 1
+        updated = {
+            **previous,
+            "subject": subject or str(previous.get("subject", "")).strip(),
+            "summary": str(entry.get("summary", "") or previous.get("summary", "")).strip(),
+            "problem": str(entry.get("problem", "") or previous.get("problem", "")).strip(),
+            "desired_outcome": str(entry.get("desired_outcome", "") or previous.get("desired_outcome", "")).strip(),
+            "stakes": str(entry.get("stakes", "") or previous.get("stakes", "")).strip(),
+            "assistant_last_stance": str(entry.get("assistant_last_stance", "") or previous.get("assistant_last_stance", "")).strip(),
+            "user_mood": str(entry.get("user_mood", "") or previous.get("user_mood", "")).strip(),
+            "next_checkin_hint": str(entry.get("next_checkin_hint", "") or previous.get("next_checkin_hint", "")).strip(),
+            "last_seen_at": current.isoformat(),
+            "last_resolved_at": current.isoformat() if status == "resolved" else str(previous.get("last_resolved_at", "")).strip(),
+            "status": status,
+            "recurrence_count": recurrence_count,
+            "reopened_count": reopened_count,
+            "actors": sorted({*previous.get("actors", []), *actors})[:6],
+            "tags": sorted({*previous.get("tags", []), *tags})[:8],
+        }
+        arcs[idx] = updated
+        _save_relationship_arcs(arcs)
+        return updated
+    arc = {
+        "id": hashlib.sha1(f"{current.isoformat()}|arc|{subject}|{entry.get('summary', '')[:80]}".encode("utf-8")).hexdigest()[:12],
+        "subject": subject,
+        "summary": str(entry.get("summary", "")).strip(),
+        "problem": str(entry.get("problem", "")).strip(),
+        "desired_outcome": str(entry.get("desired_outcome", "")).strip(),
+        "stakes": str(entry.get("stakes", "")).strip(),
+        "assistant_last_stance": str(entry.get("assistant_last_stance", "")).strip(),
+        "user_mood": str(entry.get("user_mood", "")).strip(),
+        "next_checkin_hint": str(entry.get("next_checkin_hint", "")).strip(),
+        "source": str(entry.get("source", "")).strip(),
+        "status": status,
+        "first_seen_at": current.isoformat(),
+        "last_seen_at": current.isoformat(),
+        "last_resolved_at": current.isoformat() if status == "resolved" else "",
+        "recurrence_count": 1,
+        "reopened_count": 0,
+        "actors": sorted(actors)[:6],
+        "tags": sorted(tags)[:8],
+    }
+    arcs.append(arc)
+    _save_relationship_arcs(arcs)
+    return arc
 
 
 def _conversation_episode_age_days(entry: dict, now: datetime | None = None) -> int:
@@ -1670,14 +2034,22 @@ def _conversation_episode_retrieval_score(
     overlap = sum(1 for token in tokens if token in lower)
     entry_tags = {str(tag).strip() for tag in entry.get("tags", []) if str(tag).strip()}
     tag_overlap = len(query_tags & entry_tags)
+    actor_overlap = len(
+        _intent_tokens(" ".join(str(actor) for actor in entry.get("actors", []) if actor))
+        & tokens
+    )
+    problem_overlap = len(_intent_tokens(str(entry.get("problem", "") or "")) & tokens)
+    outcome_overlap = len(_intent_tokens(str(entry.get("desired_outcome", "") or "")) & tokens)
     subject_overlap = len(
         _intent_tokens(str(query_frame.get("subject", "") or ""))
         & _intent_tokens(str(entry.get("subject", "") or ""))
     )
-    score = 6 + (overlap * 4) + (tag_overlap * 6) + (subject_overlap * 5)
+    score = 6 + (overlap * 4) + (tag_overlap * 6) + (subject_overlap * 5) + (actor_overlap * 4) + (problem_overlap * 3) + (outcome_overlap * 3)
     if query_frame.get("speech_act") in {"vent", "ask_advice"} and entry.get("speech_act") in {"vent", "ask_advice", "update"}:
         score += 3
     if str(entry.get("status", "")).strip() == "active":
+        score += 2
+    if re.search(r"\b(?:yesterday|again|still|back in my head|same thing)\b", text, re.I) and str(entry.get("status", "")).strip() == "active":
         score += 2
     age_days = _conversation_episode_age_days(entry)
     if age_days <= 3:
@@ -1699,6 +2071,105 @@ def _intent_tokens(text: str) -> set[str]:
         token for token in re.findall(r"[a-z0-9][a-z0-9_.@-]*", (text or "").lower())
         if len(token) > 2 and token not in stop
     }
+
+
+def retrieve_relevant_conversation_episodes(
+    text: str,
+    limit: int = 2,
+    statuses: set[str] | None = None,
+) -> list[dict]:
+    if not memory_ok():
+        return []
+    tokens = _intent_tokens(text)
+    if not tokens and len((text or "").strip()) < 8:
+        return []
+    try:
+        memory = gs.get_memory()
+    except Exception as exc:
+        logger.debug(f"Conversation episode retrieval failed: {exc}")
+        return []
+    query_frame = conversation_pragmatic_frame(text)
+    query_tags = set(_conversation_episode_tags(text, str(query_frame.get("subject", "") or "")))
+    allowed_statuses = statuses or {"active", "noted", "resolved"}
+    scored: list[dict] = []
+    for item in memory.get("conversation_episodes", [])[-200:]:
+        entry = _parse_conversation_episode(item)
+        if not entry.get("id") or str(entry.get("status", "")).strip() not in allowed_statuses:
+            continue
+        score = _conversation_episode_retrieval_score(entry, text, tokens, query_tags, query_frame)
+        rendered = _memory_item_text(entry).lower()
+        overlap = sum(1 for token in tokens if token in rendered)
+        tag_overlap = len(query_tags & {str(tag).strip() for tag in entry.get("tags", []) if str(tag).strip()})
+        subject_overlap = len(
+            _intent_tokens(str(query_frame.get("subject", "") or ""))
+            & _intent_tokens(str(entry.get("subject", "") or ""))
+        )
+        if score >= 10 and (overlap or tag_overlap or subject_overlap):
+            scored.append({**entry, "_score": score})
+    scored.sort(
+        key=lambda item: (
+            int(item.get("_score", 0) or 0),
+            str(item.get("last_seen_at", "") or item.get("created_at", "")),
+        ),
+        reverse=True,
+    )
+    return scored[: max(1, limit)]
+
+
+def retrieve_relevant_relationship_arcs(
+    text: str,
+    limit: int = 2,
+    statuses: set[str] | None = None,
+) -> list[dict]:
+    if not google_ok():
+        return []
+    tokens = _intent_tokens(text)
+    if not tokens and len((text or "").strip()) < 8:
+        return []
+    query_frame = conversation_pragmatic_frame(text)
+    query_tags = set(_conversation_episode_tags(text, str(query_frame.get("subject", "") or "")))
+    allowed_statuses = statuses or {"active", "watching", "resolved"}
+    scored: list[dict] = []
+    for arc in _load_relationship_arcs():
+        status = str(arc.get("status", "")).strip()
+        if status not in allowed_statuses:
+            continue
+        rendered = _memory_item_text(arc)
+        lower = rendered.lower()
+        overlap = sum(1 for token in tokens if token in lower)
+        tag_overlap = len(query_tags & {str(tag).strip() for tag in arc.get("tags", []) if str(tag).strip()})
+        subject_overlap = len(
+            _intent_tokens(str(query_frame.get("subject", "") or ""))
+            & _intent_tokens(str(arc.get("subject", "") or ""))
+        )
+        actor_overlap = len(
+            _intent_tokens(" ".join(str(actor) for actor in arc.get("actors", []) if actor))
+            & tokens
+        )
+        score = 8 + (overlap * 4) + (tag_overlap * 5) + (subject_overlap * 5) + (actor_overlap * 4)
+        score += min(8, int(arc.get("recurrence_count", 1) or 1) * 2)
+        if status == "active":
+            score += 4
+        elif status == "watching":
+            score += 2
+        age_days = _relationship_arc_age_days(arc)
+        if age_days <= 7:
+            score += 3
+        elif age_days <= 30:
+            score += 2
+        if re.search(r"\b(?:again|still|back|recurring|same thing|yesterday)\b", text, re.I) and int(arc.get("recurrence_count", 1) or 1) > 1:
+            score += 3
+        if score >= 12 and (overlap or tag_overlap or subject_overlap or actor_overlap):
+            scored.append({**arc, "_score": score})
+    scored.sort(
+        key=lambda item: (
+            int(item.get("_score", 0) or 0),
+            int(item.get("recurrence_count", 1) or 1),
+            str(item.get("last_seen_at", "") or item.get("first_seen_at", "")),
+        ),
+        reverse=True,
+    )
+    return scored[: max(1, limit)]
 
 
 def retrieve_relevant_memory(text: str, limit: int = 6) -> list[dict]:
@@ -1790,6 +2261,12 @@ def retrieve_relevant_memory(text: str, limit: int = 6) -> list[dict]:
                     "text": rendered,
                     "score": score,
                 })
+    for arc in retrieve_relevant_relationship_arcs(text, limit=min(3, limit), statuses={"active", "watching", "resolved"}):
+        scored.append({
+            "category": "relationship_arcs",
+            "text": _clip_memory_text(_memory_item_text(arc), 420),
+            "score": int(arc.get("_score", 0) or 0),
+        })
     scored.sort(key=lambda item: (item["score"], item["category"]), reverse=True)
     return scored[: max(1, min(int(limit or 6), 12))]
 
@@ -1882,6 +2359,440 @@ def pragmatic_frame_system_hint(frame: dict) -> str:
     if implicit_ask:
         parts.append(f"Implicit ask: {implicit_ask[:140]}.")
     return "Conversation read: " + " ".join(parts)
+
+
+def interaction_style_profile() -> dict:
+    if not google_ok():
+        return {}
+    try:
+        profile = gs.get_taste_profile()
+    except Exception as exc:
+        logger.debug(f"Interaction style profile load failed: {exc}")
+        return {}
+    fields = {
+        "conversation_directness": str(profile.get("conversation_directness", "") or "").strip(),
+        "conversation_humour": str(profile.get("conversation_humour", "") or "").strip(),
+        "conversation_judgement": str(profile.get("conversation_judgement", "") or "").strip(),
+        "conversation_briefness": str(profile.get("conversation_briefness", "") or "").strip(),
+        "conversation_followthrough": str(profile.get("conversation_followthrough", "") or "").strip(),
+    }
+    return {key: value for key, value in fields.items() if value}
+
+
+def interaction_style_context(profile: dict | None = None) -> str:
+    payload = dict(interaction_style_profile() if profile is None else profile)
+    if not payload:
+        return ""
+    return (
+        "\n\n[Interaction style: Apply these standing conversational preferences when they fit the turn: "
+        f"{json.dumps(payload, ensure_ascii=False)}]"
+    )
+
+
+def interaction_style_system_hint(profile: dict | None = None) -> str:
+    profile = dict(interaction_style_profile() if profile is None else profile)
+    if not profile:
+        return ""
+    parts: list[str] = []
+    if profile.get("conversation_directness"):
+        parts.append(f"Directness preference: {profile['conversation_directness']}.")
+    if profile.get("conversation_humour"):
+        parts.append(f"Humour preference: {profile['conversation_humour']}.")
+    if profile.get("conversation_judgement"):
+        parts.append(f"Advice preference: {profile['conversation_judgement']}.")
+    if profile.get("conversation_briefness"):
+        parts.append(f"Length preference: {profile['conversation_briefness']}.")
+    if profile.get("conversation_followthrough"):
+        parts.append(f"Continuity preference: {profile['conversation_followthrough']}.")
+    return "User style: " + " ".join(parts)
+
+
+def conversation_response_plan(
+    text: str,
+    recent_context: str = "",
+    frame: dict | None = None,
+    style_profile: dict | None = None,
+    relevant_episodes: list[dict] | None = None,
+    relevant_arcs: list[dict] | None = None,
+    operator_state: dict | None = None,
+) -> dict:
+    frame = frame or conversation_pragmatic_frame(text, recent_context=recent_context)
+    style = dict(interaction_style_profile() if style_profile is None else style_profile)
+    episodes = list(
+        retrieve_relevant_conversation_episodes(text, limit=2, statuses={"active", "noted"})
+        if relevant_episodes is None else relevant_episodes
+    )
+    arcs = list(
+        retrieve_relevant_relationship_arcs(text, limit=2, statuses={"active", "watching"})
+        if relevant_arcs is None else relevant_arcs
+    )
+    operator_state = dict(operator_state or {})
+    arc_anchor = next((entry for entry in arcs if str(entry.get("status", "")).strip() == "active"), arcs[0] if arcs else {})
+    episode_anchor = next((entry for entry in episodes if str(entry.get("status", "")).strip() == "active"), episodes[0] if episodes else {})
+    anchor = arc_anchor or episode_anchor
+    speech_act = str(frame.get("speech_act", "") or "update")
+    tone_read = str(frame.get("tone_read", "") or "neutral")
+    response_mode = str(frame.get("response_mode", "") or "converse")
+    operator_mode = str(operator_state.get("mode", "") or "")
+
+    opener = "direct_answer"
+    structure = "brief_answer"
+    challenge_level = "supportive"
+    length = "brief"
+
+    if response_mode == "analyze":
+        opener = "frame_then_analysis"
+        structure = "judgement_then_tradeoffs"
+        challenge_level = "clean_pushback"
+        length = "structured"
+    elif speech_act == "ask_advice":
+        opener = "brief_empathy_then_judgement" if tone_read in {"stressed", "wry"} else "direct_judgement"
+        structure = "call_then_why"
+        challenge_level = "clean_pushback"
+        length = "brief"
+    elif speech_act == "vent":
+        opener = "acknowledge_then_help"
+        structure = "empathy_then_next_step"
+        challenge_level = "supportive"
+        length = "brief"
+    elif speech_act == "banter":
+        opener = "light_banter"
+        structure = "natural_reply"
+        challenge_level = "playful"
+        length = "brief"
+    elif speech_act == "correction":
+        opener = "own_and_update"
+        structure = "fix_then_move"
+        challenge_level = "direct"
+        length = "brief"
+    elif speech_act == "deep_analysis":
+        opener = "frame_then_analysis"
+        structure = "judgement_then_tradeoffs"
+        challenge_level = "clean_pushback"
+        length = "structured"
+    elif speech_act == "update" and tone_read in {"stressed", "wry"}:
+        opener = "acknowledge_then_answer"
+        structure = "brief_answer"
+
+    if operator_mode == "triage" and response_mode == "converse":
+        opener = "direct_judgement" if speech_act == "ask_advice" else opener
+        structure = "priority_order_then_reason"
+        length = "structured" if length == "brief" else length
+
+    if style.get("conversation_judgement") == "judgement_first":
+        if structure in {"brief_answer", "call_then_why"}:
+            structure = "judgement_then_why"
+        elif structure == "judgement_then_tradeoffs":
+            structure = "judgement_then_tradeoffs"
+    if style.get("conversation_briefness") == "roomy" and length == "brief" and speech_act in {"ask_advice", "vent", "update"}:
+        length = "short"
+    if style.get("conversation_briefness") == "concise" and length == "short":
+        length = "brief"
+    if style.get("conversation_directness") == "gentle" and challenge_level == "clean_pushback":
+        challenge_level = "gentle_pushback"
+    if style.get("conversation_directness") == "direct" and challenge_level in {"supportive", "gentle_pushback"}:
+        challenge_level = "clean_pushback"
+
+    continuity_note = ""
+    if anchor:
+        subject = str(anchor.get("subject", "") or "that issue").strip()
+        problem = str(anchor.get("problem", "") or anchor.get("summary", "")).strip()
+        desired_outcome = str(anchor.get("desired_outcome", "") or "").strip()
+        if desired_outcome:
+            continuity_note = f"Open loop: {subject}. Desired outcome: {desired_outcome}."
+        elif problem:
+            continuity_note = f"Open loop: {problem[:140]}."
+    if style.get("conversation_followthrough") == "check_in_on_open_loops" and anchor and not continuity_note:
+        continuity_note = f"Open loop: {str(anchor.get('subject', '') or 'that issue').strip()}."
+
+    reason = (
+        "Deeper reasoning was asked for explicitly."
+        if response_mode == "analyze" else
+        "The turn needs a human-feeling judgement call, not just neutral options."
+        if speech_act == "ask_advice" else
+        "The turn reads like an emotional update that should be met with some tact first."
+        if speech_act == "vent" else
+        "The turn can stay light and conversational."
+    )
+
+    return {
+        "opener": opener,
+        "structure": structure,
+        "challenge_level": challenge_level,
+        "length": length,
+        "continuity_note": continuity_note[:220],
+        "reference_subject": str(anchor.get("subject", "") or "")[:80] if anchor else "",
+        "reason": reason[:220],
+    }
+
+
+def response_plan_context(plan: dict) -> str:
+    if not plan:
+        return ""
+    payload = {
+        "opener": str(plan.get("opener", "") or ""),
+        "structure": str(plan.get("structure", "") or ""),
+        "challenge_level": str(plan.get("challenge_level", "") or ""),
+        "length": str(plan.get("length", "") or ""),
+        "continuity_note": str(plan.get("continuity_note", "") or "")[:220],
+    }
+    payload = {key: value for key, value in payload.items() if value}
+    if not payload:
+        return ""
+    return (
+        "\n\n[Reply plan: Use this response shape unless the live turn clearly needs something else: "
+        f"{json.dumps(payload, ensure_ascii=False)}]"
+    )
+
+
+def response_plan_system_hint(plan: dict) -> str:
+    if not plan:
+        return ""
+    parts = [
+        f"Opener: {plan.get('opener', 'direct_answer')}.",
+        f"Structure: {plan.get('structure', 'brief_answer')}.",
+        f"Challenge level: {plan.get('challenge_level', 'supportive')}.",
+        f"Length: {plan.get('length', 'brief')}.",
+    ]
+    continuity_note = str(plan.get("continuity_note", "") or "").strip()
+    if continuity_note:
+        parts.append(f"Continuity: {continuity_note[:160]}.")
+    return "Reply plan: " + " ".join(parts)
+
+
+def personal_operator_state_for_turn(
+    text: str,
+    recent_context: str = "",
+    working_memory: dict | None = None,
+) -> dict:
+    frame = conversation_pragmatic_frame(text, recent_context=recent_context)
+    style = interaction_style_profile()
+    arcs = retrieve_relevant_relationship_arcs(text, limit=3, statuses={"active", "watching"})
+    carryovers = due_conversation_carryovers(limit=2)
+    clean = " ".join(str(text or "").lower().split())
+    if re.search(r"\b(?:priority|priorities|what needs doing|what do i need to do|what should i tackle|order of attack|top 3|focus)\b", clean):
+        mode = "triage"
+    elif str(frame.get("response_mode", "")).strip() == "analyze":
+        mode = "analysis"
+    elif str(frame.get("response_mode", "")).strip() == "execute":
+        mode = "execution"
+    elif str(frame.get("speech_act", "")).strip() in {"vent", "ask_advice"} and str(frame.get("tone_read", "")).strip() in {"stressed", "wry"}:
+        mode = "steady_room"
+    else:
+        mode = "companionship"
+
+    if mode == "triage" and not arcs:
+        arcs = [
+            arc for arc in sorted(
+                _load_relationship_arcs(),
+                key=lambda item: (
+                    int(item.get("recurrence_count", 1) or 1),
+                    str(item.get("last_seen_at", "") or item.get("first_seen_at", "")),
+                ),
+                reverse=True,
+            )
+            if str(arc.get("status", "")).strip() in {"active", "watching"}
+        ][:3]
+
+    open_loops: list[str] = []
+    for arc in arcs:
+        subject = str(arc.get("subject", "") or arc.get("problem", "") or "that issue").strip()
+        recurrence = int(arc.get("recurrence_count", 1) or 1)
+        status = str(arc.get("status", "") or "active").strip()
+        label = subject
+        if recurrence > 1:
+            label = f"{label} (recurring x{recurrence})"
+        if status == "watching":
+            label = f"{label} [watch]"
+        open_loops.append(label[:140])
+
+    due_checkins = [
+        str(item.get("question", "") or item.get("subject", "")).strip()[:140]
+        for item in carryovers
+        if str(item.get("status", "")).strip() == "active"
+    ][:2]
+
+    guidance = (
+        "Treat open loops and current operational priorities as the backbone of the answer."
+        if mode == "triage" else
+        "Steady the room first, then give the practical move."
+        if mode == "steady_room" else
+        "Keep continuity in view so H.I.R.A does not restart from zero."
+    )
+    if style.get("conversation_followthrough") == "check_in_on_open_loops" and open_loops:
+        guidance = f"{guidance} The user likes follow-through on unresolved matters."
+
+    return {
+        "mode": mode,
+        "open_loops": open_loops[:3],
+        "due_checkins": due_checkins,
+        "guidance": guidance[:220],
+        "followthrough_style": str(style.get("conversation_followthrough", "") or "").strip(),
+        "relevant_arcs": arcs[:3],
+    }
+
+
+def personal_operator_context(state: dict) -> str:
+    if not state:
+        return ""
+    payload = {
+        "mode": str(state.get("mode", "") or ""),
+        "open_loops": list(state.get("open_loops") or [])[:3],
+        "due_checkins": list(state.get("due_checkins") or [])[:2],
+        "guidance": str(state.get("guidance", "") or "")[:220],
+    }
+    payload = {key: value for key, value in payload.items() if value not in ("", None, [], False)}
+    if not payload:
+        return ""
+    return (
+        "\n\n[Personal operator state: Use this to maintain continuity, priorities, and follow-through: "
+        f"{json.dumps(payload, ensure_ascii=False)}]"
+    )
+
+
+def personal_operator_system_hint(state: dict | None = None) -> str:
+    state = dict(state or {})
+    if not state:
+        return ""
+    parts = [f"Operator mode: {state.get('mode', 'companionship')}."]
+    loops = list(state.get("open_loops") or [])
+    if loops:
+        parts.append(f"Open loops: {'; '.join(loops[:2])}.")
+    guidance = str(state.get("guidance", "") or "").strip()
+    if guidance:
+        parts.append(f"Guidance: {guidance[:160]}.")
+    return "Operator state: " + " ".join(parts)
+
+
+def reply_self_repair_verdict(
+    user_text: str,
+    reply_text: str,
+    recent_context: str = "",
+    frame: dict | None = None,
+    response_plan: dict | None = None,
+    relevant_arcs: list[dict] | None = None,
+    trace: dict | None = None,
+) -> dict:
+    clean_reply = " ".join(str(reply_text or "").split())
+    lowered = clean_reply.lower()
+    frame = frame or conversation_pragmatic_frame(user_text, recent_context=recent_context)
+    response_plan = dict(response_plan or {})
+    relevant_arcs = list(relevant_arcs or [])
+    trace = trace or {}
+    flags: list[str] = []
+
+    if not clean_reply:
+        return {"needs_repair": False, "flags": [], "reason": "empty reply"}
+    if trace.get("source_discipline", {}).get("needs_live_check") and not (
+        trace.get("tools_called") or trace.get("openai_citations") or trace.get("source_contracts_seen")
+    ):
+        return {"needs_repair": False, "flags": [], "reason": "source-sensitive reply without evidence; let source guardrails handle it"}
+
+    speech_act = str(frame.get("speech_act", "") or "")
+    tone_read = str(frame.get("tone_read", "") or "")
+    response_mode = str(frame.get("response_mode", "") or "")
+    plan_structure = str(response_plan.get("structure", "") or "")
+    generic_reply = _normalise_short_reply(clean_reply) in {
+        "got it", "fair", "makes sense", "noted", "okay", "ok", "sure", "yep", "yeah", "alright"
+    }
+    empathy_seen = bool(re.search(r"\b(?:rough|heavy|fair|long day|tired|annoying|frustrating|i get why|i can see why|that sounds)\b", lowered))
+    judgement_seen = bool(re.search(r"\b(?:i'?d|i would|my call|short call|best move|send it|wait on it|skip it|do it|hold off)\b", lowered))
+    analysis_shape = bool(re.search(r"\b(?:first|second|trade[- ]?off|because|risk|best move|stronger move)\b", lowered))
+
+    if generic_reply and speech_act not in {"banter"}:
+        flags.append("too_generic")
+    if speech_act in {"vent", "ask_advice"} and tone_read in {"stressed", "wry"} and not empathy_seen:
+        flags.append("missed_empathy")
+    if speech_act == "ask_advice" and plan_structure in {"call_then_why", "judgement_then_why", "priority_order_then_reason"} and not judgement_seen:
+        flags.append("missed_judgement")
+    if response_mode == "analyze" and (len(clean_reply.split()) < 35 or not analysis_shape):
+        flags.append("too_shallow_for_analysis")
+    if speech_act == "correction" and not re.search(r"\b(?:actually|correct|right one|fixed|you'?re right|i messed that up)\b", lowered):
+        flags.append("missed_correction_repair")
+    if relevant_arcs and re.search(r"\b(?:still|again|yesterday|back|same thing|that issue|that reply|that office)\b", user_text, re.I):
+        anchor = relevant_arcs[0]
+        subject_tokens = list(_intent_tokens(str(anchor.get("subject", "") or anchor.get("problem", "") or "")))
+        if subject_tokens and not any(token in lowered for token in subject_tokens[:4]):
+            flags.append("missed_continuity")
+    if speech_act in {"vent", "ask_advice"} and lowered.startswith(("sure", "yep", "yes", "ok", "okay")):
+        flags.append("tone_deaf_opening")
+
+    return {
+        "needs_repair": bool(flags),
+        "flags": flags,
+        "reason": ", ".join(flags) if flags else "reply looks fine",
+    }
+
+
+async def maybe_self_repair_reply(
+    user_text: str,
+    reply_text: str,
+    recent_context: str = "",
+    frame: dict | None = None,
+    response_plan: dict | None = None,
+    style_profile: dict | None = None,
+    relevant_arcs: list[dict] | None = None,
+    trace: dict | None = None,
+) -> tuple[str, dict]:
+    verdict = reply_self_repair_verdict(
+        user_text,
+        reply_text,
+        recent_context=recent_context,
+        frame=frame,
+        response_plan=response_plan,
+        relevant_arcs=relevant_arcs,
+        trace=trace,
+    )
+    if not verdict.get("needs_repair"):
+        return reply_text, {"repaired": False, "verdict": verdict}
+
+    frame = frame or conversation_pragmatic_frame(user_text, recent_context=recent_context)
+    response_plan = dict(response_plan or {})
+    style_profile = dict(interaction_style_profile() if style_profile is None else style_profile)
+    relevant_arcs = list(relevant_arcs or [])
+    trace = trace or {}
+    arc_notes = []
+    for arc in relevant_arcs[:2]:
+        subject = str(arc.get("subject", "") or arc.get("problem", "") or "open loop").strip()
+        outcome = str(arc.get("desired_outcome", "") or "").strip()
+        recurrence = int(arc.get("recurrence_count", 1) or 1)
+        line = subject
+        if outcome:
+            line = f"{line} | desired outcome: {outcome}"
+        if recurrence > 1:
+            line = f"{line} | recurring x{recurrence}"
+        arc_notes.append(line[:220])
+    length_target = "Keep it to 1-4 short sentences." if str(response_plan.get("length", "") or "brief") != "structured" else "Use a compact structured answer with a clear judgement and tradeoffs."
+    prompt = (
+        "Repair this H.I.R.A draft so it sounds more human, better fitted to the user's nuance, and more like a sharp chief-of-staff.\n\n"
+        "Hard constraints:\n"
+        "- Do not add new facts, source claims, or tool claims that are not already supported by the draft/trace.\n"
+        "- Preserve any concrete recommendation already present unless it is clearly generic filler.\n"
+        "- Improve tone, continuity, and directness without becoming verbose.\n"
+        f"- {length_target}\n\n"
+        f"User message: {user_text[:600]}\n"
+        f"Recent context: {recent_context[:500]}\n"
+        f"Conversation frame: {json.dumps(frame or {}, ensure_ascii=False)}\n"
+        f"Reply plan: {json.dumps(response_plan, ensure_ascii=False)}\n"
+        f"Interaction style: {json.dumps(style_profile, ensure_ascii=False)}\n"
+        f"Relevant open loops: {json.dumps(arc_notes, ensure_ascii=False)}\n"
+        f"Repair reasons: {json.dumps(verdict.get('flags', []), ensure_ascii=False)}\n"
+        f"Draft reply: {reply_text[:1400]}\n\n"
+        "Return only the repaired final reply."
+    )
+    try:
+        repaired = (await _llm_text_async(
+            model=QUICK_MODEL,
+            max_tokens=260 if str(response_plan.get("length", "") or "") != "structured" else 420,
+            messages=[{"role": "user", "content": prompt}],
+        ) or "").strip()
+    except Exception as exc:
+        logger.debug(f"Self-repair rewrite failed: {exc}")
+        return reply_text, {"repaired": False, "verdict": verdict, "error": str(exc)}
+    repaired = strip_ai_citation_markers(" ".join(repaired.split()))
+    if not repaired or repaired == " ".join(str(reply_text or "").split()):
+        return reply_text, {"repaired": False, "verdict": verdict, "reason": "rewrite_same_or_empty"}
+    return repaired, {"repaired": True, "verdict": verdict}
 
 
 def hira_wit_style_brief() -> str:
@@ -4817,12 +5728,17 @@ def _save_conversation_carryovers(items: list[dict]) -> None:
     gs.set_config(_CONVERSATION_CARRYOVERS_KEY, json.dumps(clean, ensure_ascii=False))
 
 
-def _conversation_carryover_question(subject: str = "") -> str:
+def _conversation_carryover_question(subject: str = "", next_checkin_hint: str = "", problem: str = "") -> str:
+    hint = str(next_checkin_hint or "").strip()
+    if hint:
+        return hint
     clean_subject = str(subject or "").strip()
     if clean_subject:
         if clean_subject.lower() in {"work", "school"}:
             clean_subject = f"that {clean_subject} matter"
         return f"Yesterday sounded rough around {clean_subject}. Feeling any better about it today?"
+    if problem:
+        return "Yesterday sounded a bit heavy. Feeling any better about that today?"
     return "Yesterday sounded a bit heavy. Feeling any better about that today?"
 
 
@@ -4832,7 +5748,6 @@ def record_conversation_episode(
     source: str = "chat",
     subject_hint: str = "",
 ) -> dict:
-    del assistant_text
     if not google_ok():
         return {}
     summary = _clip_memory_text(user_text, 240)
@@ -4841,6 +5756,7 @@ def record_conversation_episode(
     frame = conversation_pragmatic_frame(summary)
     subject = str(subject_hint or frame.get("carryover_subject", "") or frame.get("subject", "") or _conversation_subject_hint(summary)).strip()
     tags = set(_conversation_episode_tags(summary, subject))
+    details = _conversation_episode_details(summary, subject=subject, assistant_text=assistant_text, frame=frame)
     now = datetime.now(SGT)
     entries = _load_conversation_episodes()
 
@@ -4853,6 +5769,7 @@ def record_conversation_episode(
                 "resolved_at": now.isoformat(),
                 "resolution": summary,
                 "status": "resolved",
+                "assistant_last_stance": details.get("assistant_last_stance", "") or str(entries[idx].get("assistant_last_stance", "")).strip(),
             }
             entries[idx] = updated
             _save_conversation_episodes(entries)
@@ -4873,14 +5790,22 @@ def record_conversation_episode(
     idx = _matching_conversation_episode_index(entries, subject=subject, tags=tags, now=now, max_age_days=5)
     if idx >= 0:
         merged_tags = sorted({*entries[idx].get("tags", []), *tags})[:8]
+        merged_actors = sorted({*entries[idx].get("actors", []), *details.get("actors", [])})[:6]
         updated = {
             **entries[idx],
             "last_seen_at": now.isoformat(),
             "subject": subject or str(entries[idx].get("subject", "")).strip(),
             "summary": summary,
+            "problem": details.get("problem", "") or str(entries[idx].get("problem", "")).strip(),
+            "desired_outcome": details.get("desired_outcome", "") or str(entries[idx].get("desired_outcome", "")).strip(),
+            "stakes": details.get("stakes", "") or str(entries[idx].get("stakes", "")).strip(),
+            "assistant_last_stance": details.get("assistant_last_stance", "") or str(entries[idx].get("assistant_last_stance", "")).strip(),
+            "user_mood": details.get("user_mood", "") or str(entries[idx].get("user_mood", "")).strip(),
+            "next_checkin_hint": details.get("next_checkin_hint", "") or str(entries[idx].get("next_checkin_hint", "")).strip(),
             "speech_act": str(frame.get("speech_act", "") or entries[idx].get("speech_act", "")).strip(),
             "tone_read": str(frame.get("tone_read", "") or entries[idx].get("tone_read", "")).strip(),
             "status": "active" if status == "active" else str(entries[idx].get("status", "") or "noted"),
+            "actors": merged_actors,
             "tags": merged_tags,
         }
         entries[idx] = updated
@@ -4895,10 +5820,17 @@ def record_conversation_episode(
         "source": source,
         "subject": subject,
         "summary": summary,
+        "problem": details.get("problem", ""),
+        "desired_outcome": details.get("desired_outcome", ""),
+        "stakes": details.get("stakes", ""),
+        "assistant_last_stance": details.get("assistant_last_stance", ""),
+        "user_mood": details.get("user_mood", ""),
+        "next_checkin_hint": details.get("next_checkin_hint", ""),
         "resolution": "",
         "speech_act": str(frame.get("speech_act", "")).strip(),
         "tone_read": str(frame.get("tone_read", "")).strip(),
         "status": status,
+        "actors": details.get("actors", []),
         "tags": sorted(tags)[:8],
     }
     entries.append(entry)
@@ -4906,7 +5838,7 @@ def record_conversation_episode(
     return entry
 
 
-def record_conversation_carryover(user_text: str, assistant_text: str = "", source: str = "chat") -> dict:
+def record_conversation_carryover(user_text: str, assistant_text: str = "", source: str = "chat", episode: dict | None = None) -> dict:
     del assistant_text
     if not google_ok():
         return {}
@@ -4918,6 +5850,7 @@ def record_conversation_carryover(user_text: str, assistant_text: str = "", sour
         return {}
     now = datetime.now(SGT)
     subject = str(frame.get("carryover_subject", "") or _conversation_subject_hint(summary)).strip()
+    episode = _parse_conversation_episode(episode or {})
     identity = f"{now.date().isoformat()}|{source}|{subject or summary[:80].lower()}"
     entry_id = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:12]
     entry = {
@@ -4927,7 +5860,11 @@ def record_conversation_carryover(user_text: str, assistant_text: str = "", sour
         "source": source,
         "subject": subject,
         "summary": str(frame.get("carryover_summary", "") or summary).strip(),
-        "question": _conversation_carryover_question(subject),
+        "question": _conversation_carryover_question(
+            subject,
+            next_checkin_hint=str(episode.get("next_checkin_hint", "")).strip(),
+            problem=str(episode.get("problem", "")).strip(),
+        ),
         "status": "active",
         "last_prompted_at": "",
         "prompted_via": "",
@@ -5042,6 +5979,7 @@ def record_chat_learning_event(
 
     now = datetime.now(SGT).strftime("%Y-%m-%d %H:%M SGT")
     recorded: list[dict] = []
+    episode: dict = {}
     try:
         episode = record_conversation_episode(
             user_summary,
@@ -5054,7 +5992,13 @@ def record_chat_learning_event(
     except Exception as exc:
         logger.warning(f"Could not record conversation episode: {exc}")
     try:
-        carryover = record_conversation_carryover(user_summary, assistant_summary, source=source)
+        relationship_arc = record_relationship_arc_from_episode(episode)
+        if relationship_arc:
+            recorded.append({"type": "relationship_arc", "entry": relationship_arc})
+    except Exception as exc:
+        logger.warning(f"Could not record relationship arc: {exc}")
+    try:
+        carryover = record_conversation_carryover(user_summary, assistant_summary, source=source, episode=episode)
         if carryover:
             recorded.append({"type": "conversation_carryover", "entry": carryover})
     except Exception as exc:
@@ -7855,6 +8799,51 @@ def absorb_ownership_signal(text: str) -> bool:
         return False
 
 
+def absorb_interaction_style_hint(text: str) -> bool:
+    if not google_ok():
+        return False
+    clean = " ".join(str(text or "").split())
+    lower = clean.lower()
+    if len(clean) < 12:
+        return False
+    updates: dict[str, str] = {}
+    if re.search(r"\b(?:be blunt|be direct|tell me straight|don't sugarcoat|dont sugarcoat|say it cleanly|no fluff)\b", lower):
+        updates["conversation_directness"] = "direct"
+    elif re.search(r"\b(?:be gentle|go easy|soften it|be softer)\b", lower):
+        updates["conversation_directness"] = "gentle"
+    if re.search(r"\b(?:dry wit|dry humour|dry humor|light banter|a little edge)\b", lower):
+        updates["conversation_humour"] = "dry"
+    elif re.search(r"\b(?:no jokes|skip the jokes|less humour|less humor|serious tone)\b", lower):
+        updates["conversation_humour"] = "minimal"
+    if re.search(r"\b(?:give me a judgement call|give me a judgment call|pick a side|tell me what you'd do|tell me what you would do|not just a menu of options|don't just give options|dont just give options)\b", lower):
+        updates["conversation_judgement"] = "judgement_first"
+    elif re.search(r"\b(?:give me options|lay out options|show me the options)\b", lower):
+        updates["conversation_judgement"] = "options_first"
+    if re.search(r"\b(?:keep it short|keep replies short|be concise|keep it concise|not too long|short answer)\b", lower):
+        updates["conversation_briefness"] = "concise"
+    elif re.search(r"\b(?:go deeper|more detail|show your working|walk me through it|talk me through it)\b", lower):
+        updates["conversation_briefness"] = "roomy"
+    if re.search(r"\b(?:remember unresolved stuff|check in next day|follow up tomorrow|ask me about it tomorrow|follow through on previous issues)\b", lower):
+        updates["conversation_followthrough"] = "check_in_on_open_loops"
+    if not updates:
+        return False
+    try:
+        profile = gs.get_taste_profile()
+        changed = False
+        for field, value in updates.items():
+            if str(profile.get(field, "") or "").strip() == value:
+                continue
+            profile[field] = value
+            changed = True
+        if not changed:
+            return False
+        gs.set_taste_profile(profile)
+        return True
+    except Exception as exc:
+        logger.warning(f"Interaction style capture failed: {exc}")
+        return False
+
+
 def absorb_taste_hint(text: str) -> bool:
     ownership_captured = absorb_ownership_signal(text)
     timetable_clear_captured = absorb_timetable_clear_context(text)
@@ -7862,11 +8851,12 @@ def absorb_taste_hint(text: str) -> bool:
     absence_captured = absorb_day_state_context(text)
     duty_captured = absorb_duty_state_context(text)
     source_pref_captured = absorb_source_citation_preference(text)
+    interaction_style_captured = absorb_interaction_style_hint(text)
     if not google_ok():
-        return ownership_captured or timetable_clear_captured or relief_captured or absence_captured or duty_captured or source_pref_captured
+        return ownership_captured or timetable_clear_captured or relief_captured or absence_captured or duty_captured or source_pref_captured or interaction_style_captured
     clean = str(text or "").strip()
     if len(clean) < 12:
-        return ownership_captured or timetable_clear_captured or relief_captured or absence_captured or duty_captured or source_pref_captured
+        return ownership_captured or timetable_clear_captured or relief_captured or absence_captured or duty_captured or source_pref_captured or interaction_style_captured
     lower = clean.lower()
     taste_markers = (
         "i like", "i prefer", "my taste", "my style", "i hate", "i dislike",
@@ -7874,7 +8864,7 @@ def absorb_taste_hint(text: str) -> bool:
         "too noisy", "too cluttered", "not my vibe", "my vibe",
     )
     if not any(marker in lower for marker in taste_markers):
-        return ownership_captured or timetable_clear_captured or relief_captured or absence_captured or duty_captured or source_pref_captured
+        return ownership_captured or timetable_clear_captured or relief_captured or absence_captured or duty_captured or source_pref_captured or interaction_style_captured
     try:
         profile = gs.get_taste_profile()
         field = "quality_bar"
@@ -7886,13 +8876,13 @@ def absorb_taste_hint(text: str) -> bool:
         existing_text = ", ".join(existing) if isinstance(existing, list) else str(existing or "").strip()
         hint = clean[:240]
         if hint.lower() in existing_text.lower():
-            return ownership_captured or timetable_clear_captured or relief_captured or absence_captured or duty_captured or source_pref_captured
+            return ownership_captured or timetable_clear_captured or relief_captured or absence_captured or duty_captured or source_pref_captured or interaction_style_captured
         profile[field] = f"{existing_text}\n- {hint}".strip() if existing_text else f"- {hint}"
         gs.set_taste_profile(profile)
         return True
     except Exception as exc:
         logger.warning(f"Taste hint capture failed: {exc}")
-        return ownership_captured or timetable_clear_captured or relief_captured or absence_captured or duty_captured or source_pref_captured
+        return ownership_captured or timetable_clear_captured or relief_captured or absence_captured or duty_captured or source_pref_captured or interaction_style_captured
 
 
 RELIEF_MEMORY_PREFIX = "relief:"
@@ -13670,14 +14660,27 @@ async def stream_quick_pwa_reply(messages: list[dict], message: str):
         if isinstance(item.get("content"), str)
     )
     frame = conversation_pragmatic_frame(message, recent_context=recent_context)
+    style_profile = interaction_style_profile()
+    operator_state = personal_operator_state_for_turn(message, recent_context=recent_context)
+    reply_plan = conversation_response_plan(
+        message,
+        recent_context=recent_context,
+        frame=frame,
+        style_profile=style_profile,
+        relevant_arcs=operator_state.get("relevant_arcs", []),
+        operator_state=operator_state,
+    )
     system = (
         "You are H.I.R.A, Herwanto's concise personal assistant. "
-        "Answer lightweight chat naturally in one or two short sentences. "
+        "Answer lightweight chat naturally. Default to one or two short sentences, but use up to four short sentences when empathy, continuity, or a clean judgement call needs a touch more room. "
         "Stay attentive to tone without over-reading it. "
         "Keep discernment and taste even in small talk; do not merely agree or produce generic assistant filler. "
         "Do not use tools or pretend to have checked live data. "
         f"{hira_wit_style_brief()}"
+        f"{interaction_style_system_hint(style_profile)} "
+        f"{personal_operator_system_hint(operator_state)} "
         f"{pragmatic_frame_system_hint(frame)} "
+        f"{response_plan_system_hint(reply_plan)} "
         f"{lens}"
     )
     try:
@@ -15031,7 +16034,24 @@ async def _process_user_text(update, context, text: str):
         account_hint, _ = _extract_gmail_account_from_text(text)
         user_content = f"{text}\n\n[Email account hint: use account=\"{account_hint}\" for Gmail tools.]"
     frame = conversation_pragmatic_frame(text)
-    user_content = f"{user_content}{pragmatic_frame_context(frame)}{intent_lens_hint(text)}{source_discipline_hint(text)}"
+    style_profile = interaction_style_profile()
+    operator_state = personal_operator_state_for_turn(text)
+    reply_plan = conversation_response_plan(
+        text,
+        frame=frame,
+        style_profile=style_profile,
+        relevant_arcs=operator_state.get("relevant_arcs", []),
+        operator_state=operator_state,
+    )
+    user_content = (
+        f"{user_content}"
+        f"{pragmatic_frame_context(frame)}"
+        f"{response_plan_context(reply_plan)}"
+        f"{personal_operator_context(operator_state)}"
+        f"{interaction_style_context(style_profile)}"
+        f"{intent_lens_hint(text)}"
+        f"{source_discipline_hint(text)}"
+    )
     history.append({"role": "user", "content": user_content})
     if len(history) > MAX_TURNS:
         # Summarise the about-to-be-dropped portion before trimming
@@ -15046,6 +16066,14 @@ async def _process_user_text(update, context, text: str):
     try:
         messages = list(history)
         reply_text = await _run_agentic_claude(messages, max_tokens=1024, direct_user_text=text)
+        reply_text, _repair_meta = await maybe_self_repair_reply(
+            text,
+            reply_text,
+            frame=frame,
+            response_plan=reply_plan,
+            style_profile=style_profile,
+            relevant_arcs=operator_state.get("relevant_arcs", []),
+        )
 
         # Save only user message + final reply to persistent history
         history.append({"role": "assistant", "content": reply_text})

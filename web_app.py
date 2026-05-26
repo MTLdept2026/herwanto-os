@@ -4205,6 +4205,20 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
     )
     source_hint_message = bot._contextual_followup_effective_text(message, recent_context_for_followup)
     initial_thread_state = bot.thread_state_for_turn(message, recent_context_for_followup)
+    style_profile = bot.interaction_style_profile()
+    operator_state = bot.personal_operator_state_for_turn(
+        message,
+        recent_context=recent_context_for_followup,
+        working_memory=working_memory,
+    )
+    response_plan = bot.conversation_response_plan(
+        message,
+        recent_context=recent_context_for_followup,
+        frame=initial_thread_state.get("pragmatic_frame", {}),
+        style_profile=style_profile,
+        relevant_arcs=operator_state.get("relevant_arcs", []),
+        operator_state=operator_state,
+    )
     user_content = message
     if bot.re.search(r"\b(?:personal|personal\s*2|second(?:ary)?|other\s+personal|work|moe|school)\s+(?:gmail|email|emails|mail|inbox)\b", message, bot.re.I):
         account_hint, _ = bot._extract_gmail_account_from_text(message)
@@ -4212,6 +4226,9 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
     user_content = (
         f"{user_content}"
         f"{bot.pragmatic_frame_context(initial_thread_state.get('pragmatic_frame', {}))}"
+        f"{bot.response_plan_context(response_plan)}"
+        f"{bot.personal_operator_context(operator_state)}"
+        f"{bot.interaction_style_context(style_profile)}"
         f"{_working_memory_context(working_memory)}"
         f"{_recent_turn_grounding_context(history, message)}"
         f"{_thread_state_context(initial_thread_state)}"
@@ -4485,6 +4502,27 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                 })
                 yield sse({"type": "replace", "text": reply_text})
                 yield sse({"type": "done", "text": reply_text})
+            repaired_reply_text, repair_meta = await bot.maybe_self_repair_reply(
+                message,
+                reply_text,
+                recent_context=recent_context_for_followup,
+                frame=initial_thread_state.get("pragmatic_frame", {}),
+                response_plan=response_plan,
+                style_profile=style_profile,
+                relevant_arcs=operator_state.get("relevant_arcs", []),
+                trace=trace,
+            )
+            if repair_meta.get("repaired") and repaired_reply_text != reply_text:
+                reply_text = repaired_reply_text
+                _merge_chat_trace(trace, {
+                    "reply_repair": repair_meta,
+                    "final_mode": "self_repaired",
+                })
+                yield sse({"type": "trace", "trace": trace})
+                yield sse({"type": "replace", "text": reply_text})
+                yield sse({"type": "done", "text": reply_text})
+            elif repair_meta.get("verdict", {}).get("flags"):
+                _merge_chat_trace(trace, {"reply_repair": repair_meta})
             response_contract = response_contract_for_reply(reply_text, trace)
             _merge_chat_trace(trace, {"response_contract": response_contract})
             if _empty_chat_reply(reply_text):
