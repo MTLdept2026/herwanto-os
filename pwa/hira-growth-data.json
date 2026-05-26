@@ -1,23 +1,23 @@
 {
-  "updated": "2026-05-22",
+  "updated": "2026-05-26",
   "name": "H.I.R.A Growth Log",
   "subtitle": "How Herwanto Intelligent Response Agent grew from an installable assistant into a more reliable, visually coherent personal operating system.",
   "summary": {
     "start": "2026-04-28",
-    "current": "2026-05-22",
-    "commitsTracked": 331,
-    "majorPhases": 34,
-    "currentStage": "OpenAI full-power mode with vector memory, native tool evidence, and safer action preflight"
+    "current": "2026-05-26",
+    "commitsTracked": 358,
+    "majorPhases": 37,
+    "currentStage": "Long-horizon conversational memory with operator-state continuity and self-repair"
   },
   "metrics": [
     {
       "label": "Days of build acceleration",
-      "value": "24",
-      "note": "From first installable PWA commit to a sharper Nothing-style app identity with explicit trust rails, ClassOps intelligence, Postgres-backed operational memory, OpenAI full-power routing, vector memory, and wordsmith-grade semantic intent."
+      "value": "28",
+      "note": "From first installable PWA commit to a sharper Nothing-style app identity with explicit trust rails, ClassOps intelligence, Postgres-backed operational memory, OpenAI full-power routing, vector memory, wordsmith-grade semantic intent, and a more human conversational operator layer."
     },
     {
       "label": "Tracked upgrade commits",
-      "value": "331",
+      "value": "358",
       "note": "Grouped from git history through the growth-log minisite."
     },
     {
@@ -45,7 +45,7 @@
     {
       "name": "Context",
       "score": 100,
-      "description": "Timetable, Google Calendar, reminder-worthy events, rough travel buffers, MTL classlists and marks fields, Dropbox lesson folders, checked availability slots, Drive references, file memory, Postgres-backed long-term memory, OpenAI vector memory, uploaded-file semantic recall, topic profiles, conversation summaries, relevant-memory retrieval, intent lensing, wordsmith semantic profiling, short-lived working memory, and home intelligence synthesis."
+      "description": "Timetable, Google Calendar, reminder-worthy events, rough travel buffers, MTL classlists and marks fields, Dropbox lesson folders, checked availability slots, Drive references, file memory, Postgres-backed long-term memory, OpenAI vector memory, uploaded-file semantic recall, topic profiles, conversation summaries, conversation episodes, relationship arcs, relevant-memory retrieval, intent lensing, wordsmith semantic profiling, short-lived working memory, operator-state continuity, and home intelligence synthesis."
     },
     {
       "name": "Live Knowledge",
@@ -55,7 +55,7 @@
     {
       "name": "Self-Improvement",
       "score": 100,
-      "description": "Postgres-backed memory commits, priority-weighted memory prompt, relevant recall, working memory, conversation-continuation guardrails, OpenAI response-state continuity, vector-store sync, structured action preflight, semantic corpus tests, action validation/audits, persistent action ledger, source/memory/native-tool trace visibility, ClassOps blind-spot checks, intent lens, proactive workload insights, OS readiness scoring, forecast radar, adaptive planning, 7-day trial loop, notification feedback learning, implicit correction detection, weekly consolidation, and conversation summarisation."
+      "description": "Postgres-backed memory commits, priority-weighted memory prompt, relevant recall, working memory, conversation-continuation guardrails, OpenAI response-state continuity, vector-store sync, structured action preflight, semantic corpus tests, action validation/audits, persistent action ledger, source/memory/native-tool trace visibility, ClassOps blind-spot checks, intent lens, proactive workload insights, OS readiness scoring, forecast radar, adaptive planning, 7-day trial loop, notification feedback learning, implicit correction detection, weekly consolidation, conversation summarisation, reply self-repair, and a personal operator layer that keeps continuity and open loops in view."
     }
   ],
   "chapters": [
@@ -630,6 +630,24 @@
         "Email-link queries, favourite-topic news follow-ups, deterministic triage, and H.I.R.A's compact answer voice were tightened around the new model backend."
       ],
       "impact": "For Herwanto, H.I.R.A should now feel smarter in the places that matter: better recall of memory and uploaded files, safer tool actions, more honest live-source handling, clearer runtime self-reporting, and less random route-jumping in the PWA."
+    },
+    {
+      "date": "2026-05-26",
+      "era": "Conversational Operator",
+      "title": "Hira starts carrying the situation, not just the sentence",
+      "commit": "e14e571",
+      "tag": "Conversation Intelligence",
+      "summary": "H.I.R.A gained long-horizon relationship arcs, a personal operator state, and a self-repair pass so it can remember recurring situations, keep open loops alive, and tighten weak replies before they land.",
+      "details": [
+        "Conversation episodes now store richer situation fields such as actors, problem, desired outcome, stakes, assistant stance, user mood, and next-day check-in hints instead of only a loose summary.",
+        "Repeated episodes are now rolled up into relationship arcs with recurrence and reopen tracking, so recurring work, school, or family matters can stay semantically alive across older conversations.",
+        "A personal operator-state layer now surfaces open loops, due check-ins, continuity guidance, and a lightweight operating mode such as triage, analysis, execution, or steady_room before H.I.R.A answers.",
+        "Both quick PWA replies and full model prompts now receive the same operator/continuity context, so ordinary banter can still remember unresolved threads without forcing a tool path.",
+        "A reply self-repair pass now catches generic, tone-deaf, too-shallow, or continuity-blind drafts and rewrites them before they are saved or shown as the final answer.",
+        "Interaction-style memory now captures explicit preferences such as bluntness, judgement-first advice, concise replies, and follow-through on unresolved matters.",
+        "Transcript-style tests now cover recurring-issue recall, self-repair, operator-state triage, structured advice mode, and continuity across older open loops."
+      ],
+      "impact": "H.I.R.A should now feel less like a smart classifier and more like a real chief-of-staff with memory: it can remember the shape of a situation, carry it forward, and stop flimsy replies before they hit the chat."
     }
   ],
   "currentCapabilities": [
@@ -653,8 +671,11 @@
     "Proactive intelligence scanner for workload pinch points, marking pressure, follow-ups, quiet windows, and upcoming packed days.",
     "Unified Proactive Intelligence v2 queue that ranks nudges, check-ins, follow-ups, prayers, tasks, digest picks, and internal intelligence with suppression and feedback learning.",
     "Short-lived PWA working memory that tracks the current subject, latest correction, pending action, and older competing subjects during follow-up chats.",
+    "Long-horizon conversation memory that rolls recurring episodes into relationship arcs with actors, stakes, desired outcomes, recurrence count, reopen tracking, and more specific next-day follow-up prompts.",
     "Clarification memory that keeps blocked Action audit context alive so short replies like all day can continue the original calendar/reminder action instead of restarting the conversation.",
+    "Personal operator-state prompting that keeps open loops, due check-ins, and continuity guidance visible so H.I.R.A can behave more like a pocket chief-of-staff than a stateless chatbot.",
     "Action validation and audit receipts for state-changing tools so vague calendar/reminder/nudge/follow-up saves are blocked or reviewable.",
+    "Reply self-repair that can catch generic, tone-deaf, shallow, or continuity-blind drafts and rewrite them before they become the final answer.",
     "Restored cockpit-style home surface with local time, tabs, dashboard panels, workload context, marking, file memory, chat, refreshed identity assets, and preserved dotted H.I.R.A display typography.",
     "Recoverable push notification system with Postgres delivery logs, notification state, recovery status, confirmed-push completion checks, and catch-up retry behavior for daily briefings.",
     "Action-enabled push notifications: Done, Snooze 30m, Useful, and Not useful feed back into task/check-in/follow-up completion, proactive nudges, and notification outcome memory.",
