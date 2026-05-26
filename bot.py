@@ -532,6 +532,7 @@ MEMORY_DISPLAY_CATEGORIES = (
     "templates",
     "constraints",
     "recent_summaries",
+    "conversation_episodes",
     "topic_profiles",
     "correction_ledger",
     "self_reflections",
@@ -555,6 +556,7 @@ MEMORY_PROMPT_LIMITS: dict[str, int | None] = {
     "places":             30,
     "source_notes":       20,
     "recent_summaries":   15,
+    "conversation_episodes": 12,
     "templates":          20,
     "files":              15,
 }
@@ -1473,14 +1475,218 @@ def build_memory_review(limit: int = 5) -> dict:
 def _memory_item_text(item) -> str:
     if isinstance(item, dict):
         parts = []
-        for key in ("correction", "learned", "next_behavior", "topic", "insight", "summary", "text", "stable_context", "preferred_angle"):
+        for key in (
+            "correction",
+            "learned",
+            "next_behavior",
+            "topic",
+            "insight",
+            "subject",
+            "summary",
+            "resolution",
+            "text",
+            "stable_context",
+            "preferred_angle",
+        ):
             value = item.get(key)
             if value:
                 parts.append(str(value))
+        tags = item.get("tags")
+        if isinstance(tags, list) and tags:
+            parts.append(", ".join(str(tag) for tag in tags[:8]))
         if not parts:
             parts = [json.dumps(item, ensure_ascii=False)]
         return " | ".join(parts)
     return str(item)
+
+
+def _conversation_episode_tags(text: str, subject: str = "") -> list[str]:
+    combined = f"{subject} {text}".lower()
+    checks = [
+        ("work", r"\b(?:work|office|boss|manager|colleague|coworker|client|project|deadline)\b"),
+        ("school", r"\b(?:school|class|student|lesson|teacher|marking|moe)\b"),
+        ("family", r"\b(?:family|mum|mom|mother|dad|father|wife|husband|son|daughter)\b"),
+        ("email", r"\b(?:email|mail|gmail|thread)\b"),
+        ("reply", r"\b(?:reply|respond|response|follow[- ]?up)\b"),
+        ("meeting", r"\b(?:meeting|call|discussion)\b"),
+        ("deadline", r"\b(?:deadline|due|submission)\b"),
+        ("project", r"\b(?:project|launch|client|deliverable)\b"),
+        ("boss", r"\b(?:boss|manager|hod|principal)\b"),
+        ("colleague", r"\b(?:colleague|coworker|team|staff)\b"),
+        ("student", r"\b(?:student|students|class|marking)\b"),
+        ("money", r"\b(?:money|budget|price|pricing|invoice|pay)\b"),
+    ]
+    tags: list[str] = []
+    for label, pattern in checks:
+        if re.search(pattern, combined):
+            tags.append(label)
+    return tags[:8]
+
+
+def _parse_conversation_episode(item) -> dict:
+    if isinstance(item, dict):
+        parsed = dict(item)
+    else:
+        try:
+            parsed = json.loads(str(item or ""))
+        except Exception:
+            parsed = {}
+    if not isinstance(parsed, dict):
+        return {}
+    tags = parsed.get("tags")
+    return {
+        "id": str(parsed.get("id", "")).strip(),
+        "created_at": str(parsed.get("created_at", "")).strip(),
+        "last_seen_at": str(parsed.get("last_seen_at", "") or parsed.get("created_at", "")).strip(),
+        "resolved_at": str(parsed.get("resolved_at", "")).strip(),
+        "source": str(parsed.get("source", "")).strip(),
+        "subject": str(parsed.get("subject", "")).strip(),
+        "summary": str(parsed.get("summary", "")).strip(),
+        "resolution": str(parsed.get("resolution", "")).strip(),
+        "speech_act": str(parsed.get("speech_act", "")).strip(),
+        "tone_read": str(parsed.get("tone_read", "")).strip(),
+        "status": str(parsed.get("status", "") or "active").strip(),
+        "tags": [str(tag).strip() for tag in tags if str(tag).strip()][:8] if isinstance(tags, list) else [],
+    }
+
+
+def _load_conversation_episodes() -> list[dict]:
+    if not google_ok():
+        return []
+    try:
+        memory = gs.get_memory()
+    except Exception as exc:
+        logger.warning(f"Could not load conversation episodes: {exc}")
+        return []
+    episodes: list[dict] = []
+    for item in memory.get("conversation_episodes", []):
+        entry = _parse_conversation_episode(item)
+        if entry.get("id") and entry.get("summary"):
+            episodes.append(entry)
+    episodes.sort(key=lambda entry: (entry.get("last_seen_at", ""), entry.get("created_at", "")))
+    return episodes[-80:]
+
+
+def _save_conversation_episodes(entries: list[dict]) -> None:
+    if not google_ok():
+        return
+    memory = gs.get_memory()
+    clean: list[str] = []
+    for entry in entries[-80:]:
+        parsed = _parse_conversation_episode(entry)
+        if not parsed.get("id") or not parsed.get("summary"):
+            continue
+        clean.append(json.dumps(parsed, ensure_ascii=False, sort_keys=True))
+    memory["conversation_episodes"] = clean
+    gs.set_memory(memory)
+
+
+def _conversation_episode_age_days(entry: dict, now: datetime | None = None) -> int:
+    current = now or datetime.now(SGT)
+    raw = str(entry.get("last_seen_at", "") or entry.get("created_at", "")).strip()
+    if not raw:
+        return 9999
+    try:
+        seen = datetime.fromisoformat(raw)
+        if seen.tzinfo is None:
+            seen = SGT.localize(seen)
+        else:
+            seen = seen.astimezone(SGT)
+    except Exception:
+        return 9999
+    return abs((current - seen).days)
+
+
+def _matching_conversation_episode_index(
+    entries: list[dict],
+    subject: str = "",
+    tags: set[str] | None = None,
+    now: datetime | None = None,
+    statuses: set[str] | None = None,
+    max_age_days: int = 7,
+) -> int:
+    subject_clean = str(subject or "").strip().lower()
+    wanted_tags = set(tags or set())
+    allowed_statuses = statuses or {"active", "noted"}
+    fallback_idx = -1
+    fallback_count = 0
+    for idx in range(len(entries) - 1, -1, -1):
+        entry = entries[idx]
+        if str(entry.get("status", "")).strip() not in allowed_statuses:
+            continue
+        if _conversation_episode_age_days(entry, now=now) > max_age_days:
+            continue
+        entry_subject = str(entry.get("subject", "")).strip().lower()
+        entry_tags = {str(tag).strip() for tag in entry.get("tags", []) if str(tag).strip()}
+        subject_match = bool(
+            subject_clean and entry_subject
+            and (subject_clean == entry_subject or subject_clean in entry_subject or entry_subject in subject_clean)
+        )
+        tag_overlap = len(wanted_tags & entry_tags)
+        if subject_match or tag_overlap >= 2:
+            return idx
+        fallback_idx = idx
+        fallback_count += 1
+    if not subject_clean and not wanted_tags and fallback_count == 1:
+        return fallback_idx
+    return -1
+
+
+def _resolve_related_conversation_carryovers(subject: str = "", tags: set[str] | None = None, now: datetime | None = None) -> None:
+    if not google_ok():
+        return
+    subject_clean = str(subject or "").strip().lower()
+    wanted_tags = set(tags or set())
+    current = now or datetime.now(SGT)
+    items = _load_conversation_carryovers()
+    changed = False
+    active_candidates = [item for item in items if str(item.get("status", "")).strip() == "active"]
+    for item in active_candidates:
+        carry_subject = str(item.get("subject", "")).strip().lower()
+        carry_tags = set(_conversation_episode_tags(str(item.get("summary", "")), carry_subject))
+        subject_match = bool(
+            subject_clean and carry_subject
+            and (subject_clean == carry_subject or subject_clean in carry_subject or carry_subject in subject_clean)
+        )
+        tag_overlap = len(wanted_tags & carry_tags)
+        if subject_match or tag_overlap >= 2 or (len(active_candidates) == 1 and not subject_clean):
+            item["status"] = "resolved"
+            item["last_prompted_at"] = current.isoformat()
+            item["prompted_via"] = "resolved"
+            changed = True
+    if changed:
+        _save_conversation_carryovers(items)
+
+
+def _conversation_episode_retrieval_score(
+    entry: dict,
+    text: str,
+    tokens: set[str],
+    query_tags: set[str],
+    query_frame: dict,
+) -> int:
+    rendered = _memory_item_text(entry)
+    lower = rendered.lower()
+    overlap = sum(1 for token in tokens if token in lower)
+    entry_tags = {str(tag).strip() for tag in entry.get("tags", []) if str(tag).strip()}
+    tag_overlap = len(query_tags & entry_tags)
+    subject_overlap = len(
+        _intent_tokens(str(query_frame.get("subject", "") or ""))
+        & _intent_tokens(str(entry.get("subject", "") or ""))
+    )
+    score = 6 + (overlap * 4) + (tag_overlap * 6) + (subject_overlap * 5)
+    if query_frame.get("speech_act") in {"vent", "ask_advice"} and entry.get("speech_act") in {"vent", "ask_advice", "update"}:
+        score += 3
+    if str(entry.get("status", "")).strip() == "active":
+        score += 2
+    age_days = _conversation_episode_age_days(entry)
+    if age_days <= 3:
+        score += 4
+    elif age_days <= 7:
+        score += 3
+    elif age_days <= 14:
+        score += 2
+    return score
 
 
 def _intent_tokens(text: str) -> set[str]:
@@ -1506,6 +1712,8 @@ def retrieve_relevant_memory(text: str, limit: int = 6) -> list[dict]:
     except Exception as exc:
         logger.debug(f"Relevant memory retrieval failed: {exc}")
         return []
+    query_frame = conversation_pragmatic_frame(text)
+    query_tags = set(_conversation_episode_tags(text, str(query_frame.get("subject", "") or "")))
 
     # 2026-05-12: bumped profile (1→5) and people (3→5) priorities. Both store the
     # arbitrary "remember X about me/family" facts that /remember defaults to, and the
@@ -1517,6 +1725,7 @@ def retrieve_relevant_memory(text: str, limit: int = 6) -> list[dict]:
         "self_reflections": 8,
         "preferences": 7,
         "topic_profiles": 7,
+        "conversation_episodes": 7,
         "profile": 5,    # was 1 — default /remember bucket, must surface on single keyword overlap
         "people": 5,     # was 3 — names/relationships need to surface easily
         "recent_summaries": 5,
@@ -1535,6 +1744,25 @@ def retrieve_relevant_memory(text: str, limit: int = 6) -> list[dict]:
         # 2026-05-12: scan last 200 items per category (was 60) so older durable facts
         # remain retrievable. Sheets-backed memory; cheap to walk.
         for recency, item in enumerate(items[-200:]):
+            if category == "conversation_episodes":
+                entry = _parse_conversation_episode(item)
+                if not entry.get("id"):
+                    continue
+                rendered = _clip_memory_text(_memory_item_text(entry), 420)
+                score = _conversation_episode_retrieval_score(entry, text, tokens, query_tags, query_frame)
+                overlap = sum(1 for token in tokens if token in rendered.lower())
+                tag_overlap = len(query_tags & {str(tag).strip() for tag in entry.get("tags", []) if str(tag).strip()})
+                subject_overlap = len(
+                    _intent_tokens(str(query_frame.get("subject", "") or ""))
+                    & _intent_tokens(str(entry.get("subject", "") or ""))
+                )
+                if score >= 10 and (overlap or tag_overlap or subject_overlap):
+                    scored.append({
+                        "category": category,
+                        "text": rendered,
+                        "score": score,
+                    })
+                continue
             rendered = _clip_memory_text(_memory_item_text(item), 420)
             lower = rendered.lower()
             overlap = sum(1 for token in tokens if token in lower)
@@ -3642,7 +3870,7 @@ MEMORY_TOOL = {
         "properties": {
             "category": {
                 "type": "string",
-                "description": "One of: profile, preferences, people, places, teaching, business, projects, sports, files, templates, constraints, recent_summaries"
+                "description": "One of: profile, preferences, people, places, teaching, business, projects, sports, files, templates, constraints, recent_summaries, conversation_episodes"
             },
             "text": {"type": "string", "description": "Concise memory to store"}
         },
@@ -4275,7 +4503,10 @@ def _format_memory(memory: dict) -> str:
             continue
         lines.append(f"*{category.title()}*")
         for item in items:
-            lines.append(f"- {item}")
+            rendered = item
+            if category == "conversation_episodes":
+                rendered = _memory_item_text(_parse_conversation_episode(item))
+            lines.append(f"- {rendered}")
         lines.append("")
     return "\n".join(lines).strip()
 
@@ -4595,6 +4826,86 @@ def _conversation_carryover_question(subject: str = "") -> str:
     return "Yesterday sounded a bit heavy. Feeling any better about that today?"
 
 
+def record_conversation_episode(
+    user_text: str,
+    assistant_text: str = "",
+    source: str = "chat",
+    subject_hint: str = "",
+) -> dict:
+    del assistant_text
+    if not google_ok():
+        return {}
+    summary = _clip_memory_text(user_text, 240)
+    if not summary:
+        return {}
+    frame = conversation_pragmatic_frame(summary)
+    subject = str(subject_hint or frame.get("carryover_subject", "") or frame.get("subject", "") or _conversation_subject_hint(summary)).strip()
+    tags = set(_conversation_episode_tags(summary, subject))
+    now = datetime.now(SGT)
+    entries = _load_conversation_episodes()
+
+    if _CONVERSATION_CLOSURE_RE.search(summary):
+        idx = _matching_conversation_episode_index(entries, subject=subject, tags=tags, now=now, max_age_days=14)
+        if idx >= 0:
+            updated = {
+                **entries[idx],
+                "last_seen_at": now.isoformat(),
+                "resolved_at": now.isoformat(),
+                "resolution": summary,
+                "status": "resolved",
+            }
+            entries[idx] = updated
+            _save_conversation_episodes(entries)
+            _resolve_related_conversation_carryovers(subject=subject, tags=tags, now=now)
+            return updated
+        return {}
+
+    should_record = bool(
+        frame.get("carry_forward")
+        and len(summary.split()) >= 6
+        and (subject or tags)
+        and frame.get("speech_act") in {"vent", "ask_advice", "update", "correction"}
+    )
+    if not should_record:
+        return {}
+
+    status = "active" if frame.get("carryover_worthy") or frame.get("speech_act") in {"vent", "ask_advice"} else "noted"
+    idx = _matching_conversation_episode_index(entries, subject=subject, tags=tags, now=now, max_age_days=5)
+    if idx >= 0:
+        merged_tags = sorted({*entries[idx].get("tags", []), *tags})[:8]
+        updated = {
+            **entries[idx],
+            "last_seen_at": now.isoformat(),
+            "subject": subject or str(entries[idx].get("subject", "")).strip(),
+            "summary": summary,
+            "speech_act": str(frame.get("speech_act", "") or entries[idx].get("speech_act", "")).strip(),
+            "tone_read": str(frame.get("tone_read", "") or entries[idx].get("tone_read", "")).strip(),
+            "status": "active" if status == "active" else str(entries[idx].get("status", "") or "noted"),
+            "tags": merged_tags,
+        }
+        entries[idx] = updated
+        _save_conversation_episodes(entries)
+        return updated
+
+    entry = {
+        "id": hashlib.sha1(f"{now.isoformat()}|{source}|{subject}|{summary[:80]}".encode("utf-8")).hexdigest()[:12],
+        "created_at": now.isoformat(),
+        "last_seen_at": now.isoformat(),
+        "resolved_at": "",
+        "source": source,
+        "subject": subject,
+        "summary": summary,
+        "resolution": "",
+        "speech_act": str(frame.get("speech_act", "")).strip(),
+        "tone_read": str(frame.get("tone_read", "")).strip(),
+        "status": status,
+        "tags": sorted(tags)[:8],
+    }
+    entries.append(entry)
+    _save_conversation_episodes(entries)
+    return entry
+
+
 def record_conversation_carryover(user_text: str, assistant_text: str = "", source: str = "chat") -> dict:
     del assistant_text
     if not google_ok():
@@ -4716,7 +5027,12 @@ def conversation_carryover_greeting_reply(message: str, now: datetime | None = N
     return opener + str(item.get("question", "") or _conversation_carryover_question(item.get("subject", "")))
 
 
-def record_chat_learning_event(user_text: str, assistant_text: str = "", source: str = "chat") -> list[dict]:
+def record_chat_learning_event(
+    user_text: str,
+    assistant_text: str = "",
+    source: str = "chat",
+    subject_hint: str = "",
+) -> list[dict]:
     if not google_ok():
         return []
     user_summary = _clip_memory_text(user_text, 360)
@@ -4726,6 +5042,17 @@ def record_chat_learning_event(user_text: str, assistant_text: str = "", source:
 
     now = datetime.now(SGT).strftime("%Y-%m-%d %H:%M SGT")
     recorded: list[dict] = []
+    try:
+        episode = record_conversation_episode(
+            user_summary,
+            assistant_summary,
+            source=source,
+            subject_hint=subject_hint,
+        )
+        if episode:
+            recorded.append({"type": "conversation_episode", "entry": episode})
+    except Exception as exc:
+        logger.warning(f"Could not record conversation episode: {exc}")
     try:
         carryover = record_conversation_carryover(user_summary, assistant_summary, source=source)
         if carryover:
@@ -11891,7 +12218,7 @@ async def remember_cmd(update, context):
     if not text:
         await reply(update,
             "Usage: `/remember preferences | Keep replies very concise`\n"
-            "Categories: profile, preferences, people, places, teaching, business, projects, sports, files, templates, constraints, recent_summaries, topic_profiles",
+            "Categories: profile, preferences, people, places, teaching, business, projects, sports, files, templates, constraints, recent_summaries, conversation_episodes, topic_profiles",
             parse_mode="Markdown")
         return
     if "|" in text:
@@ -13294,6 +13621,12 @@ async def should_route_quick_pwa_chat(messages: list[dict], message: str) -> boo
     ):
         return False
     if FAST_CHAT_MODE:
+        if (
+            frame.get("should_route_quick")
+            and frame.get("speech_act") == "ask_advice"
+            and (frame.get("subject") or frame.get("tone_read") in {"wry", "stressed", "playful"})
+        ):
+            return True
         return _safe_short_quick_chat(text, recent_context)
     if frame.get("response_mode") in {"clarify", "analyze", "research", "execute"}:
         return False

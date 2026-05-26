@@ -4559,6 +4559,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                 message,
                 reply_text,
                 source="pwa",
+                subject_hint=str(working_memory.get("current_subject", "") or ""),
             )
             yield sse(timing("saved"))
             _finalise_chat_trace(trace, "answered")

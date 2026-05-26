@@ -6587,6 +6587,38 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(len(due), 1)
         self.assertIn("reply", due[0]["question"].lower())
 
+    def test_chat_learning_event_marks_single_active_conversation_episode_resolved(self):
+        store = {}
+        memory = {category: [] for category in bot.MEMORY_DISPLAY_CATEGORIES}
+        memory["conversation_episodes"] = [json.dumps({
+            "id": "episode-1",
+            "created_at": "2026-05-26T21:00:00+08:00",
+            "last_seen_at": "2026-05-26T21:00:00+08:00",
+            "resolved_at": "",
+            "source": "test",
+            "subject": "that reply",
+            "summary": "My boss email thread was still bugging me.",
+            "resolution": "",
+            "speech_act": "ask_advice",
+            "tone_read": "stressed",
+            "status": "active",
+            "tags": ["work", "email", "reply", "boss"],
+        }, ensure_ascii=False)]
+        store["assistant_memory"] = json.dumps(memory, ensure_ascii=False)
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "get_config", side_effect=lambda key: store.get(key, "")),
+            patch.object(bot.gs, "set_config", side_effect=lambda key, value: store.__setitem__(key, value)),
+        ):
+            recorded = bot.record_chat_learning_event("All good now.", "Nice.", source="test")
+
+        self.assertIn("conversation_episode", {item["type"] for item in recorded})
+        saved = json.loads(store["assistant_memory"])
+        episode = json.loads(saved["conversation_episodes"][0])
+        self.assertEqual(episode["status"], "resolved")
+        self.assertIn("All good now", episode["resolution"])
+
     def test_carryover_greeting_prompts_once_then_marks_item_prompted(self):
         store = {}
         created_at = bot.SGT.localize(bot.datetime(2026, 5, 26, 22, 0))
@@ -6729,6 +6761,32 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("growth log", recalled[0]["text"])
         self.assertIn("Likely intent", hint)
         self.assertIn("correction_ledger", hint)
+
+    def test_relevant_memory_retrieval_surfaces_semantic_conversation_episode(self):
+        fake_memory = {category: [] for category in bot.MEMORY_DISPLAY_CATEGORIES}
+        fake_memory["conversation_episodes"] = [json.dumps({
+            "id": "episode-1",
+            "created_at": "2026-05-26T21:00:00+08:00",
+            "last_seen_at": "2026-05-26T21:00:00+08:00",
+            "resolved_at": "",
+            "source": "test",
+            "subject": "that reply",
+            "summary": "Boss email thread felt awkward and I was unsure whether to send the reply that night.",
+            "resolution": "",
+            "speech_act": "ask_advice",
+            "tone_read": "stressed",
+            "status": "active",
+            "tags": ["work", "email", "reply", "boss"],
+        }, ensure_ascii=False)]
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "get_memory", return_value=fake_memory),
+        ):
+            recalled = bot.retrieve_relevant_memory("that office issue from yesterday is back in my head", limit=1)
+
+        self.assertEqual(recalled[0]["category"], "conversation_episodes")
+        self.assertIn("Boss email thread", recalled[0]["text"])
 
     def test_proactive_intelligence_flags_packed_due_marking_day(self):
         load = {
