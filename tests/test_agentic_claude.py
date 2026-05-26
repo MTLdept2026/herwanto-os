@@ -315,6 +315,17 @@ class AgenticClaudeTests(unittest.TestCase):
     def test_backend_switch_comment_is_quick_chat(self):
         self.assertTrue(asyncio.run(bot.should_route_quick_pwa_chat([], "Switched things up a bit on ur backend")))
 
+    def test_mixed_vent_and_soft_advice_stays_quick(self):
+        text = "I'm tired lah, but should I send that reply tonight?"
+
+        frame = bot.conversation_pragmatic_frame(text)
+        routed_quick = asyncio.run(bot.should_route_quick_pwa_chat([], text))
+
+        self.assertEqual(frame["speech_act"], "ask_advice")
+        self.assertEqual(frame["response_mode"], "converse")
+        self.assertTrue(frame["should_route_quick"])
+        self.assertTrue(routed_quick)
+
     def test_pwa_yes_pls_after_calendar_offer_uses_context_tool(self):
         messages = [
             {
@@ -2363,6 +2374,43 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertLess(text.index("*Morning digest:*"), text.index("*Today's lessons"))
         self.assertIn("AI release", text)
 
+    def test_morning_briefing_includes_conversation_carryover_note(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 27, 7, 30))
+        store = {
+            "conversation_carryovers": json.dumps([{
+                "id": "carry-1",
+                "created_at": "2026-05-26T21:00:00+08:00",
+                "due_date": "2026-05-27",
+                "source": "test",
+                "subject": "that reply",
+                "summary": "My boss email thread is still bugging me.",
+                "question": "Yesterday sounded rough around that reply. Feeling any better about it today?",
+                "status": "active",
+                "last_prompted_at": "",
+                "prompted_via": "",
+            }], ensure_ascii=False)
+        }
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot, "datetime", wraps=bot.datetime) as fake_datetime,
+            patch.object(bot, "_fresh_morning_digest", return_value=""),
+            patch.object(bot, "_lessons_for_date", return_value=([], "")),
+            patch.object(bot, "build_islamic_brief", return_value="Prayer rhythm"),
+            patch.object(bot.gs, "get_today_events", return_value=[]),
+            patch.object(bot.gs, "format_events", return_value="Nothing scheduled."),
+            patch.object(bot.gs, "get_reminders", return_value=[]),
+            patch.object(bot.gs, "get_marking_tasks", return_value=[]),
+            patch.object(bot, "build_classops_status_summary", return_value={}),
+            patch.object(classops_ai, "brief_lines", return_value=[]),
+            patch.object(bot.gs, "get_config", side_effect=lambda key: store.get(key, "")),
+        ):
+            fake_datetime.now.return_value = now
+            text = bot.build_briefing(record_news_digest=False)
+
+        self.assertIn("*Carry-over from yesterday:*", text)
+        self.assertIn("that reply", text)
+
     def test_evening_briefing_waits_for_confirmed_phone_push(self):
         with (
             patch.object(bot, "google_ok", return_value=True),
@@ -2583,6 +2631,35 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(queue[0]["title"], "Beta")
         self.assertFalse(queue[0]["suppressed"])
         self.assertTrue(any(item["title"] == "Alpha" and item["suppressed"] for item in queue))
+
+    def test_proactive_v2_queue_includes_due_conversation_carryover(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 27, 9, 0))
+        store = {
+            "conversation_carryovers": json.dumps([{
+                "id": "carry-1",
+                "created_at": "2026-05-26T21:00:00+08:00",
+                "due_date": "2026-05-27",
+                "source": "test",
+                "subject": "that reply",
+                "summary": "My boss email thread is still bugging me.",
+                "question": "Yesterday sounded rough around that reply. Feeling any better about it today?",
+                "status": "active",
+                "last_prompted_at": "",
+                "prompted_via": "",
+            }], ensure_ascii=False)
+        }
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "get_config", side_effect=lambda key: store.get(key, "")),
+            patch.object(bot, "_notification_feedback_bias", return_value=0),
+            patch.object(bot, "_should_suppress_notification", return_value=False),
+        ):
+            queue = bot.build_proactive_v2_queue(now=now, families={"carryover"})
+
+        self.assertEqual(len(queue), 1)
+        self.assertEqual(queue[0]["family"], "carryover")
+        self.assertIn("Feeling any better", queue[0]["body"])
 
     def test_calendar_reminder_candidate_for_upcoming_trigger_event(self):
         now = bot.SGT.localize(bot.datetime(2026, 5, 5, 14, 30))
@@ -5454,6 +5531,17 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertFalse(discipline["needs_live_check"])
         self.assertNotIn("get_latest_news", discipline["recommended_tools"])
 
+    def test_school_day_small_talk_does_not_trigger_sg_education_news(self):
+        text = "Today was last day of term 3 so no lessons until school reopens in term 3."
+
+        self.assertEqual(bot.favourite_news_topic_queries(text), [])
+        self.assertEqual(web_app._pwa_topic_news_queries(text), [])
+
+    def test_school_updates_prompt_still_maps_to_sg_education_news(self):
+        topics = bot.favourite_news_topic_queries("Any SG Education updates I should know?")
+
+        self.assertEqual(topics, [("SG Education", "Singapore education MOE schools teachers curriculum")])
+
     def test_triage_current_load_is_not_misrouted_to_live_news(self):
         text = (
             "Triage my current load. Pick the top 3 things I should handle next, "
@@ -6475,6 +6563,58 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(len(memory["correction_ledger"]), 1)
         self.assertEqual(len(memory["self_reflections"]), 1)
         self.assertIn("Wirtz and Isak", memory["correction_ledger"][0])
+
+    def test_chat_learning_event_records_next_day_carryover_for_unresolved_work_vent(self):
+        store = {}
+        now = bot.SGT.localize(bot.datetime(2026, 5, 26, 21, 15))
+        tomorrow = now + bot.timedelta(days=1)
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot, "datetime", wraps=bot.datetime) as fake_datetime,
+            patch.object(bot.gs, "get_config", side_effect=lambda key: store.get(key, "")),
+            patch.object(bot.gs, "set_config", side_effect=lambda key, value: store.__setitem__(key, value)),
+        ):
+            fake_datetime.now.return_value = now
+            recorded = bot.record_chat_learning_event(
+                "My boss email thread is still bugging me. Should I send that reply tonight?",
+                "Short call: send it tonight, clean and calm.",
+                source="test",
+            )
+            due = bot.due_conversation_carryovers(now=tomorrow, limit=1)
+
+        self.assertIn("conversation_carryover", {item["type"] for item in recorded})
+        self.assertEqual(len(due), 1)
+        self.assertIn("reply", due[0]["question"].lower())
+
+    def test_carryover_greeting_prompts_once_then_marks_item_prompted(self):
+        store = {}
+        created_at = bot.SGT.localize(bot.datetime(2026, 5, 26, 22, 0))
+        next_morning = bot.SGT.localize(bot.datetime(2026, 5, 27, 8, 15))
+        entry = {
+            "id": "carry-1",
+            "created_at": created_at.isoformat(),
+            "due_date": next_morning.date().isoformat(),
+            "source": "test",
+            "subject": "that reply",
+            "summary": "My boss email thread is still bugging me.",
+            "question": "Yesterday sounded rough around that reply. Feeling any better about it today?",
+            "status": "active",
+            "last_prompted_at": "",
+            "prompted_via": "",
+        }
+        store["conversation_carryovers"] = json.dumps([entry], ensure_ascii=False)
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "get_config", side_effect=lambda key: store.get(key, "")),
+            patch.object(bot.gs, "set_config", side_effect=lambda key, value: store.__setitem__(key, value)),
+        ):
+            reply = bot.conversation_carryover_greeting_reply("Morning", now=next_morning)
+            due_after = bot.due_conversation_carryovers(now=next_morning, limit=1)
+
+        self.assertIn("Feeling any better", reply)
+        self.assertEqual(due_after, [])
 
     def test_execute_source_note_tool(self):
         with patch.object(bot.gs, "add_source_note", return_value={

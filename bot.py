@@ -1010,6 +1010,248 @@ def semantic_intent_profile(text: str, recent_context: str = "") -> dict:
     return profile
 
 
+_CONVERSATION_NEGATIVE_TONE_RE = re.compile(
+    r"\b(?:"
+    r"long day|tired|knackered|shagged|rough|drained|draining|stressed|stressful|"
+    r"annoyed|frustrated|fed up|upset|angry|irritated|exhausted|burnt out|burned out|"
+    r"overwhelmed|heavy day|bad day|pain in the neck|what a day|what a mess"
+    r")\b",
+    re.I,
+)
+_CONVERSATION_PLAYFUL_TONE_RE = re.compile(r"\b(?:haha|lol|lmao|hehe|lah|sia|bro|mate)\b", re.I)
+_CONVERSATION_ADVICE_RE = re.compile(
+    r"\b(?:should i|do you think|what do you think|worth it|would you|what do i do|how do i|any idea if)\b",
+    re.I,
+)
+_CONVERSATION_ANALYSIS_RE = re.compile(
+    r"\b(?:analyse|analyze|analysis|deep dive|compare|comparison|trade[- ]?off|pros and cons|"
+    r"break down|walk me through|review|audit|evaluate|architecture|strategy|plan this out)\b",
+    re.I,
+)
+_CONVERSATION_FACTUAL_RE = re.compile(
+    r"\b(?:what|when|where|who|which|how many|how much|is there|are there|did|does|do)\b",
+    re.I,
+)
+_CONVERSATION_CLOSURE_RE = re.compile(
+    r"\b(?:sorted|settled|resolved|all good now|fine now|better now|handled|done with it|no issue now)\b",
+    re.I,
+)
+
+
+def _conversation_subject_hint(text: str) -> str:
+    clean = " ".join(str(text or "").split())
+    if not clean:
+        return ""
+    for pattern in (
+        r"\babout\s+([^.,;!?]{3,70})",
+        r"\bregarding\s+([^.,;!?]{3,70})",
+        r"\bwith\s+([^.,;!?]{3,70})",
+        r"\bover\s+([^.,;!?]{3,70})",
+    ):
+        match = re.search(pattern, clean, re.I)
+        if match:
+            subject = re.sub(r"^(?:the|my|this|that)\s+", "", match.group(1).strip(), flags=re.I)
+            subject = re.sub(r"\b(?:today|tonight|yesterday|again)$", "", subject, flags=re.I).strip(" ,.;:!?")
+            if len(subject) >= 3:
+                return " ".join(subject.split()[:8])
+
+    lowered = clean.lower()
+    if re.search(r"\b(?:email|reply|message|draft)\b", lowered):
+        return "that reply"
+    if re.search(r"\b(?:meeting|call)\b", lowered):
+        return "that meeting"
+    if re.search(r"\b(?:deadline|submission)\b", lowered):
+        return "that deadline"
+    if re.search(r"\b(?:boss|manager|colleague|coworker|client|project)\b", lowered):
+        return "that work matter"
+    if re.search(r"\b(?:work|office)\b", lowered):
+        return "work"
+    if re.search(r"\b(?:school|class|student|lesson|marking|moe|teacher)\b", lowered):
+        return "school"
+    return ""
+
+
+def _conversation_explicit_ask(text: str) -> str:
+    clean = " ".join(str(text or "").split())
+    if not clean:
+        return ""
+    for pattern in (
+        r"((?:should i|do you think|what do you think|would you|what do i do|how do i)[^?.!]{0,140}\??)",
+        r"((?:can you|could you|would you|help me|check if|tell me|brief me)[^?.!]{0,140}\??)",
+        r"((?:analyse|analyze|compare|review|audit|evaluate|break down)[^?.!]{0,140}\??)",
+    ):
+        match = re.search(pattern, clean, re.I)
+        if match:
+            return match.group(1).strip()
+    if "?" in clean:
+        question = clean.split("?", 1)[0].strip()
+        if question:
+            return f"{question}?"
+    return ""
+
+
+def conversation_pragmatic_frame(
+    text: str,
+    recent_context: str = "",
+    available_tools: set[str] | None = None,
+) -> dict:
+    raw_text = str(text or "")
+    effective_text = _contextual_followup_effective_text(raw_text, recent_context)
+    clean = " ".join(effective_text.split())
+    lowered = clean.lower()
+    semantic_flags = _semantic_intent_flags(clean)
+    intent_profile = semantic_intent_profile(clean, recent_context=recent_context)
+    source_policy = source_discipline_for_text(clean)
+    explicit_ask = _conversation_explicit_ask(clean)
+    subject = _conversation_subject_hint(clean)
+    negative_tone = bool(_CONVERSATION_NEGATIVE_TONE_RE.search(clean))
+    playful_tone = bool(_CONVERSATION_PLAYFUL_TONE_RE.search(clean))
+    advice_ask = bool(_CONVERSATION_ADVICE_RE.search(clean))
+    analysis_ask = bool(_CONVERSATION_ANALYSIS_RE.search(clean))
+    factual_query = bool(explicit_ask and _CONVERSATION_FACTUAL_RE.search(clean)) or (
+        "?" in clean and not advice_ask and not analysis_ask
+    )
+    actionish = bool(semantic_flags & {
+        "task", "calendar", "reminder", "gmail_draft", "followup",
+        "document", "slides", "memory",
+    })
+    memory_commit = _is_memory_commit_query_text(clean)
+    correction = _looks_like_correction(clean)
+    needs_live_check = bool(source_policy.get("needs_live_check"))
+    tools_available = available_tools or set()
+    forced_context_tool = _contextual_followup_tool_from_context(raw_text, recent_context, tools_available) if tools_available else ""
+    needs_tools = bool(
+        forced_context_tool
+        or (needs_live_check and source_policy.get("recommended_tools"))
+        or (actionish and not memory_commit and (source_policy.get("recommended_tools") or needs_live_check))
+    )
+
+    if correction:
+        speech_act = "correction"
+    elif memory_commit:
+        speech_act = "memory_commit"
+    elif analysis_ask:
+        speech_act = "deep_analysis"
+    elif advice_ask:
+        speech_act = "ask_advice"
+    elif actionish:
+        speech_act = "ask_action"
+    elif factual_query or needs_live_check:
+        speech_act = "factual_query"
+    elif negative_tone:
+        speech_act = "vent"
+    elif _obvious_quick_chat(clean) or playful_tone:
+        speech_act = "banter"
+    else:
+        speech_act = "update"
+
+    if intent_profile.get("needs_clarification") and speech_act in {"ask_action", "memory_commit", "factual_query"}:
+        response_mode = "clarify"
+    elif speech_act == "deep_analysis":
+        response_mode = "analyze"
+    elif speech_act == "ask_action":
+        response_mode = "execute"
+    elif speech_act == "factual_query" and needs_live_check:
+        response_mode = "research"
+    else:
+        response_mode = "converse"
+
+    if response_mode == "analyze":
+        analysis_depth = "high"
+    elif response_mode in {"research", "execute"}:
+        analysis_depth = "medium"
+    elif speech_act == "ask_advice":
+        analysis_depth = "low"
+    else:
+        analysis_depth = "low"
+
+    if correction:
+        tone_read = "firm"
+    elif negative_tone and playful_tone:
+        tone_read = "wry"
+    elif negative_tone:
+        tone_read = "stressed"
+    elif playful_tone:
+        tone_read = "playful"
+    elif len(clean.split()) <= 4 and clean:
+        tone_read = "clipped"
+    else:
+        tone_read = "neutral"
+
+    implicit_ask = ""
+    if speech_act == "vent":
+        implicit_ask = "Acknowledge the mood before moving into solutions."
+    elif speech_act == "ask_advice":
+        implicit_ask = "Give a judgement call, not just a menu of options."
+    elif speech_act == "correction":
+        implicit_ask = "Update the read and stop repeating the earlier miss."
+    elif speech_act == "deep_analysis":
+        implicit_ask = "Show structure, tradeoffs, and the stronger move."
+    elif speech_act == "banter":
+        implicit_ask = "Keep it natural and light without turning generic."
+
+    carry_forward = speech_act in {"vent", "update", "ask_advice", "correction"}
+    carryover_worthy = bool(
+        speech_act in {"vent", "ask_advice"}
+        and not _CONVERSATION_CLOSURE_RE.search(clean)
+        and re.search(
+            r"\b(?:work|office|boss|manager|colleague|client|project|deadline|reply|email|"
+            r"school|class|student|lesson|marking|family)\b",
+            lowered,
+        )
+        and (
+            advice_ask
+            or re.search(
+                r"\b(?:issue|problem|mess|awkward|stuck|still|again|tomorrow|tonight|reply|email|deadline|"
+                r"boss|manager|colleague|client|project|student|marking)\b",
+                lowered,
+            )
+        )
+    )
+    carryover_summary = _clip_memory_text(clean, 220) if carryover_worthy else ""
+
+    should_route_quick = bool(
+        clean
+        and len(raw_text.strip()) <= QUICK_ROUTE_MAX_CHARS
+        and response_mode == "converse"
+        and analysis_depth == "low"
+        and not needs_tools
+        and not needs_live_check
+    )
+
+    if response_mode == "clarify":
+        reason = intent_profile.get("clarification_reason") or "Needs one missing detail before acting."
+    elif response_mode == "analyze":
+        reason = "The turn asks for deliberate reasoning rather than a light chat response."
+    elif response_mode == "research":
+        reason = "The turn points at live or volatile facts."
+    elif speech_act == "vent":
+        reason = "The turn reads like an emotional update that benefits from acknowledgement first."
+    elif speech_act == "ask_advice":
+        reason = "The turn asks for judgement in ordinary language."
+    else:
+        reason = "The turn can stay conversational without tools."
+
+    return {
+        "speech_act": speech_act,
+        "response_mode": response_mode,
+        "analysis_depth": analysis_depth,
+        "tone_read": tone_read,
+        "explicit_ask": explicit_ask[:180],
+        "implicit_ask": implicit_ask[:220],
+        "subject": subject[:80],
+        "needs_live_check": needs_live_check,
+        "needs_tools": needs_tools,
+        "should_route_quick": should_route_quick,
+        "carry_forward": carry_forward,
+        "carryover_worthy": carryover_worthy,
+        "carryover_subject": subject[:80],
+        "carryover_summary": carryover_summary,
+        "semantic_flags": sorted(semantic_flags),
+        "reason": reason[:220],
+    }
+
+
 def _is_reference_only_message(text: str) -> bool:
     clean = " ".join(str(text or "").lower().split())
     if not clean or not SEMANTIC_REFERENCE_ONLY_PATTERN.search(clean):
@@ -1373,6 +1615,45 @@ def intent_lens_hint(text: str) -> str:
         lines.append("- No highly relevant stored memory found; do not pretend otherwise.")
     lines.append("Use this lens quietly. Do not mention it unless Herwanto asks how you reasoned.]")
     return "\n".join(lines)
+
+
+def pragmatic_frame_context(frame: dict) -> str:
+    if not frame:
+        return ""
+    payload = {
+        "speech_act": str(frame.get("speech_act", "") or ""),
+        "response_mode": str(frame.get("response_mode", "") or ""),
+        "analysis_depth": str(frame.get("analysis_depth", "") or ""),
+        "tone_read": str(frame.get("tone_read", "") or ""),
+        "explicit_ask": str(frame.get("explicit_ask", "") or "")[:180],
+        "implicit_ask": str(frame.get("implicit_ask", "") or "")[:180],
+        "subject": str(frame.get("subject", "") or "")[:80],
+        "carry_forward": bool(frame.get("carry_forward")),
+    }
+    payload = {key: value for key, value in payload.items() if value not in ("", None, False)}
+    if not payload:
+        return ""
+    return (
+        "\n\n[Pragmatic frame: Use this conversational read before answering: "
+        f"{json.dumps(payload, ensure_ascii=False)}]"
+    )
+
+
+def pragmatic_frame_system_hint(frame: dict) -> str:
+    if not frame:
+        return ""
+    parts = [
+        f"Speech act: {frame.get('speech_act', 'update')}.",
+        f"Response mode: {frame.get('response_mode', 'converse')}.",
+        f"Tone read: {frame.get('tone_read', 'neutral')}.",
+    ]
+    explicit_ask = str(frame.get("explicit_ask", "") or "").strip()
+    implicit_ask = str(frame.get("implicit_ask", "") or "").strip()
+    if explicit_ask:
+        parts.append(f"Explicit ask: {explicit_ask[:140]}.")
+    if implicit_ask:
+        parts.append(f"Implicit ask: {implicit_ask[:140]}.")
+    return "Conversation read: " + " ".join(parts)
 
 
 def hira_wit_style_brief() -> str:
@@ -4242,16 +4523,218 @@ def _looks_reflection_worthy(text: str) -> bool:
         clean,
     ))
 
+_CONVERSATION_CARRYOVERS_KEY = "conversation_carryovers"
+
+
+def _load_conversation_carryovers() -> list[dict]:
+    if not google_ok():
+        return []
+    try:
+        raw = gs.get_config(_CONVERSATION_CARRYOVERS_KEY)
+    except Exception as exc:
+        logger.warning(f"Could not load conversation carry-overs: {exc}")
+        return []
+    if not raw:
+        return []
+    try:
+        items = json.loads(raw)
+    except Exception:
+        return []
+    clean: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        entry = {
+            "id": str(item.get("id", "")).strip(),
+            "created_at": str(item.get("created_at", "")).strip(),
+            "due_date": str(item.get("due_date", "")).strip(),
+            "source": str(item.get("source", "")).strip(),
+            "subject": str(item.get("subject", "")).strip(),
+            "summary": str(item.get("summary", "")).strip(),
+            "question": str(item.get("question", "")).strip(),
+            "status": str(item.get("status", "") or "active").strip(),
+            "last_prompted_at": str(item.get("last_prompted_at", "")).strip(),
+            "prompted_via": str(item.get("prompted_via", "")).strip(),
+        }
+        if entry["id"] and entry["summary"]:
+            clean.append(entry)
+    clean.sort(key=lambda entry: (entry.get("created_at", ""), entry.get("id", "")), reverse=True)
+    return clean[:40]
+
+
+def _save_conversation_carryovers(items: list[dict]) -> None:
+    if not google_ok():
+        return
+    clean: list[dict] = []
+    for item in items[:40]:
+        if not isinstance(item, dict):
+            continue
+        entry = {
+            "id": str(item.get("id", "")).strip(),
+            "created_at": str(item.get("created_at", "")).strip(),
+            "due_date": str(item.get("due_date", "")).strip(),
+            "source": str(item.get("source", "")).strip(),
+            "subject": str(item.get("subject", "")).strip(),
+            "summary": str(item.get("summary", "")).strip(),
+            "question": str(item.get("question", "")).strip(),
+            "status": str(item.get("status", "") or "active").strip(),
+            "last_prompted_at": str(item.get("last_prompted_at", "")).strip(),
+            "prompted_via": str(item.get("prompted_via", "")).strip(),
+        }
+        if entry["id"] and entry["summary"]:
+            clean.append(entry)
+    gs.set_config(_CONVERSATION_CARRYOVERS_KEY, json.dumps(clean, ensure_ascii=False))
+
+
+def _conversation_carryover_question(subject: str = "") -> str:
+    clean_subject = str(subject or "").strip()
+    if clean_subject:
+        if clean_subject.lower() in {"work", "school"}:
+            clean_subject = f"that {clean_subject} matter"
+        return f"Yesterday sounded rough around {clean_subject}. Feeling any better about it today?"
+    return "Yesterday sounded a bit heavy. Feeling any better about that today?"
+
+
+def record_conversation_carryover(user_text: str, assistant_text: str = "", source: str = "chat") -> dict:
+    del assistant_text
+    if not google_ok():
+        return {}
+    summary = _clip_memory_text(user_text, 220)
+    if not summary:
+        return {}
+    frame = conversation_pragmatic_frame(summary)
+    if not frame.get("carryover_worthy"):
+        return {}
+    now = datetime.now(SGT)
+    subject = str(frame.get("carryover_subject", "") or _conversation_subject_hint(summary)).strip()
+    identity = f"{now.date().isoformat()}|{source}|{subject or summary[:80].lower()}"
+    entry_id = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:12]
+    entry = {
+        "id": entry_id,
+        "created_at": now.isoformat(),
+        "due_date": (now.date() + timedelta(days=1)).isoformat(),
+        "source": source,
+        "subject": subject,
+        "summary": str(frame.get("carryover_summary", "") or summary).strip(),
+        "question": _conversation_carryover_question(subject),
+        "status": "active",
+        "last_prompted_at": "",
+        "prompted_via": "",
+    }
+    items = _load_conversation_carryovers()
+    replaced = False
+    for idx, item in enumerate(items):
+        if str(item.get("id", "")) == entry_id:
+            items[idx] = {**item, **entry}
+            replaced = True
+            break
+    if not replaced:
+        items.insert(0, entry)
+    _save_conversation_carryovers(items)
+    return entry
+
+
+def due_conversation_carryovers(now: datetime | None = None, limit: int = 3) -> list[dict]:
+    if not google_ok():
+        return []
+    current = now or datetime.now(SGT)
+    today = current.date().isoformat()
+    due: list[dict] = []
+    for item in _load_conversation_carryovers():
+        if str(item.get("status", "active")) != "active":
+            continue
+        due_date = str(item.get("due_date", "")).strip()
+        if due_date and due_date > today:
+            continue
+        last_prompted_at = str(item.get("last_prompted_at", "")).strip()
+        if last_prompted_at[:10] == today:
+            continue
+        due.append(item)
+        if len(due) >= max(1, int(limit or 3)):
+            break
+    return due
+
+
+def mark_conversation_carryover_prompted(carryover_id: str, now: datetime | None = None, via: str = "") -> None:
+    if not google_ok() or not str(carryover_id or "").strip():
+        return
+    current = now or datetime.now(SGT)
+    items = _load_conversation_carryovers()
+    changed = False
+    for item in items:
+        if str(item.get("id", "")) != str(carryover_id):
+            continue
+        item["status"] = "prompted"
+        item["last_prompted_at"] = current.isoformat()
+        item["prompted_via"] = str(via or "").strip()
+        changed = True
+        break
+    if changed:
+        _save_conversation_carryovers(items)
+
+
+def conversation_carryover_brief_lines(now: datetime | None = None) -> list[str]:
+    due = due_conversation_carryovers(now=now, limit=1)
+    if not due:
+        return []
+    item = due[0]
+    subject = str(item.get("subject", "")).strip()
+    if subject:
+        if subject.lower() in {"work", "school"}:
+            subject = f"that {subject} matter"
+        body = f"- Yesterday ended with {subject} still sounding unresolved."
+    else:
+        body = "- Yesterday ended with something still sounding unresolved."
+    return ["*Carry-over from yesterday:*", body]
+
+
+def conversation_carryover_greeting_reply(message: str, now: datetime | None = None) -> str:
+    clean = re.sub(r"\bhira\b", " ", _normalise_short_reply(message), flags=re.I)
+    clean = re.sub(r"\s+", " ", clean).strip()
+    if clean not in {
+        "hi",
+        "hello",
+        "hey",
+        "yo",
+        "morning",
+        "good morning",
+        "whats up",
+        "what's up",
+        "sup",
+        "wassup",
+        "what up",
+        "what is up",
+    }:
+        return ""
+    due = due_conversation_carryovers(now=now, limit=1)
+    if not due:
+        return ""
+    current = now or datetime.now(SGT)
+    item = due[0]
+    mark_conversation_carryover_prompted(item.get("id", ""), now=current, via="greeting")
+    opener = "Morning. " if current.hour < 12 else ""
+    return opener + str(item.get("question", "") or _conversation_carryover_question(item.get("subject", "")))
+
+
 def record_chat_learning_event(user_text: str, assistant_text: str = "", source: str = "chat") -> list[dict]:
     if not google_ok():
         return []
     user_summary = _clip_memory_text(user_text, 360)
     assistant_summary = _clip_memory_text(assistant_text, 260)
-    if not user_summary or not _looks_reflection_worthy(user_summary):
+    if not user_summary:
         return []
 
     now = datetime.now(SGT).strftime("%Y-%m-%d %H:%M SGT")
     recorded: list[dict] = []
+    try:
+        carryover = record_conversation_carryover(user_summary, assistant_summary, source=source)
+        if carryover:
+            recorded.append({"type": "conversation_carryover", "entry": carryover})
+    except Exception as exc:
+        logger.warning(f"Could not record conversation carry-over: {exc}")
+
+    if not _looks_reflection_worthy(user_summary):
+        return recorded
     try:
         if _looks_like_correction(user_summary):
             correction = gs.add_correction({
@@ -5681,6 +6164,22 @@ def build_proactive_v2_queue(now: datetime | None = None, days: int = 7, familie
                     action_hint="Open the full digest for the rest of the shortlist.",
                     metadata={"digest_key": str(entry.get("key", ""))},
                 ))
+        if allow("carryover") and google_ok():
+            for item in due_conversation_carryovers(now=current, limit=2):
+                subject = str(item.get("subject", "")).strip() or "yesterday's unresolved issue"
+                candidates.append(_make_proactive_candidate(
+                    "carryover",
+                    f"carryover:{item.get('id', '')}",
+                    "update",
+                    "Yesterday's carry-over",
+                    str(item.get("question", "") or _conversation_carryover_question(subject)),
+                    74,
+                    priority="medium",
+                    why="Yesterday's conversation sounded unresolved and is due for a gentle check-in.",
+                    action_hint="Acknowledge it or ignore it if it passed on its own.",
+                    event_date=str(item.get("due_date", "")),
+                    metadata={"carryover_id": str(item.get("id", "")), "subject": subject},
+                ))
         if allow("intelligence"):
             for insight in build_proactive_intelligence_insights(days=days, now=current):
                 score = {"high": 84, "medium": 72, "low": 58}.get(insight.get("priority", "medium"), 72)
@@ -5855,6 +6354,8 @@ async def _dispatch_proactive_candidates(context, candidates: list[dict], limit:
             gs.mark_followup_prompted(candidate.get("metadata", {}).get("followup_id", ""), datetime.now(SGT).strftime("%Y-%m-%d"))
         elif family == "intelligence":
             _mark_proactive_seen(candidate.get("metadata", {}).get("insight_id", ""), datetime.now(SGT))
+        elif family == "carryover":
+            mark_conversation_carryover_prompted(candidate.get("metadata", {}).get("carryover_id", ""), now=current, via="proactive")
         elif family in {"calendar_reminder", "task"} and push_sent > 0:
             _mark_action_reminder_delivered(source, datetime.now(SGT))
         sent_count += 1
@@ -6268,9 +6769,6 @@ FAVOURITE_NEWS_TOPIC_RULES = [
             r"\bsg education\b",
             r"\bsingapore education\b",
             r"\bmoe\b",
-            r"\bschools?\b",
-            r"\bteachers?\b",
-            r"\bcurriculum\b",
         ),
     },
     {
@@ -10567,6 +11065,11 @@ def build_briefing(record_news_digest: bool = False):
         except Exception as e:
             logger.warning(f"ClassOps briefing scan failed: {e}")
 
+    carryover_lines = conversation_carryover_brief_lines(now=now)
+    if carryover_lines:
+        lines.append("")
+        lines.extend(carryover_lines)
+
     lines.append("\nHave a productive day!")
     return "\n".join(lines)
 
@@ -12135,6 +12638,7 @@ def _openai_action_preflight_tool(preflight: dict, tools: list[dict] | None = No
 _INJECTED_CHAT_CONTEXT_RE = re.compile(
     r"\n\s*\[(?:"
     r"Email account hint|"
+    r"Pragmatic frame|"
     r"Working memory(?: for this PWA chat)?|"
     r"Recent[- ]turn grounding(?: for follow-up resolution)?|"
     r"Thread state|"
@@ -12647,6 +13151,11 @@ def thread_state_for_turn(
     effective_text = _contextual_followup_effective_text(raw_text, recent_context)
     discipline = source_discipline_for_text(effective_text)
     intent_profile = semantic_intent_profile(effective_text, recent_context=recent_context)
+    pragmatic_frame = conversation_pragmatic_frame(
+        raw_text,
+        recent_context=recent_context,
+        available_tools=available_tools,
+    )
     blocked_action = _latest_blocked_action_from_context(recent_context)
     forced_context_tool = _contextual_followup_tool_from_context(raw_text, recent_context, available_tools)
     recommended_tools = list(discipline.get("recommended_tools") or [])
@@ -12662,6 +13171,7 @@ def thread_state_for_turn(
         "recommended_tools": recommended_tools,
         "contextual_tool": forced_context_tool or "",
         "intent_profile": intent_profile,
+        "pragmatic_frame": pragmatic_frame,
         "blocked_action": blocked_action,
         "confidence": "contextual" if is_followup else str(discipline.get("confidence", "unknown") or "unknown"),
         "reason": (
@@ -12757,6 +13267,7 @@ async def should_route_quick_pwa_chat(messages: list[dict], message: str) -> boo
         for item in messages[-4:]
         if isinstance(item.get("content"), str)
     ).lower()
+    frame = conversation_pragmatic_frame(text, recent_context=recent_context)
     if (
         re.search(r"\b(?:try again|retry|again|nothing filled|not filled|didn'?t fill|did not fill|still blank|same permission|permissions?)\b", text, re.I)
         and re.search(r"\b(?:classlist|class list|2g3|3g3|1g2|wa1|wa2|fa1|fa2|percentage|percent|%)\b", recent_context)
@@ -12771,22 +13282,37 @@ async def should_route_quick_pwa_chat(messages: list[dict], message: str) -> boo
         or _is_memory_commit_query_text(text)
     ):
         return False
-    if not text or len(text) > QUICK_ROUTE_MAX_CHARS or _looks_tool_heavy(text):
+    if not text or len(text) > QUICK_ROUTE_MAX_CHARS:
+        return False
+    if _looks_tool_heavy(text) and not (
+        frame.get("speech_act") == "ask_advice" and frame.get("response_mode") == "converse"
+    ):
         return False
     if (
         re.search(r"\b(match|result|recap|score|home|away|host(?:ed)?|fixture|game|details?)\b", text, re.I)
         and re.search(r"\b(liverpool|lfc|man utd|man united|manchester united|f1|formula 1|grand prix)\b", recent_context)
     ):
         return False
+    if FAST_CHAT_MODE:
+        return _safe_short_quick_chat(text, recent_context)
+    if frame.get("response_mode") in {"clarify", "analyze", "research", "execute"}:
+        return False
+    if frame.get("should_route_quick"):
+        return True
     if _safe_short_quick_chat(text, recent_context):
         return True
-    if FAST_CHAT_MODE:
-        return False
     try:
+        frame_payload = {
+            "speech_act": frame.get("speech_act", ""),
+            "response_mode": frame.get("response_mode", ""),
+            "tone_read": frame.get("tone_read", ""),
+            "explicit_ask": frame.get("explicit_ask", ""),
+        }
         prompt = (
             "Classify whether this chat message can be answered as lightweight small talk "
             "without tools, private data, calendar, Gmail, tasks, files, or web lookup. "
             "Reply with only QUICK or FULL.\n\n"
+            f"Frame: {json.dumps(frame_payload, ensure_ascii=False)}\n"
             f"Message: {text}"
         )
         verdict = (await _llm_text_async(
@@ -12803,6 +13329,12 @@ async def stream_quick_pwa_reply(messages: list[dict], message: str):
     context = messages[-6:]
     prompt_messages = context + [{"role": "user", "content": message}]
     lens = intent_lens_hint(message)
+    recent_context = "\n".join(
+        str(item.get("content", ""))[:500]
+        for item in context
+        if isinstance(item.get("content"), str)
+    )
+    frame = conversation_pragmatic_frame(message, recent_context=recent_context)
     system = (
         "You are H.I.R.A, Herwanto's concise personal assistant. "
         "Answer lightweight chat naturally in one or two short sentences. "
@@ -12810,6 +13342,7 @@ async def stream_quick_pwa_reply(messages: list[dict], message: str):
         "Keep discernment and taste even in small talk; do not merely agree or produce generic assistant filler. "
         "Do not use tools or pretend to have checked live data. "
         f"{hira_wit_style_brief()}"
+        f"{pragmatic_frame_system_hint(frame)} "
         f"{lens}"
     )
     try:
@@ -14162,7 +14695,8 @@ async def _process_user_text(update, context, text: str):
     if re.search(r"\b(?:personal|personal\s*2|second(?:ary)?|other\s+personal|work|moe|school)\s+(?:gmail|email|emails|mail|inbox)\b", text, re.I):
         account_hint, _ = _extract_gmail_account_from_text(text)
         user_content = f"{text}\n\n[Email account hint: use account=\"{account_hint}\" for Gmail tools.]"
-    user_content = f"{user_content}{intent_lens_hint(text)}{source_discipline_hint(text)}"
+    frame = conversation_pragmatic_frame(text)
+    user_content = f"{user_content}{pragmatic_frame_context(frame)}{intent_lens_hint(text)}{source_discipline_hint(text)}"
     history.append({"role": "user", "content": user_content})
     if len(history) > MAX_TURNS:
         # Summarise the about-to-be-dropped portion before trimming

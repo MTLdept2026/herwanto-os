@@ -1548,10 +1548,19 @@ def _update_working_memory(history_key: str, history: list, message: str) -> dic
             "current_subject": "",
             "pending_action": "",
             "competing_subjects": [],
+            "speech_act": "",
+            "response_mode": "",
+            "tone_read": "",
             "updated_at": datetime.now(bot.SGT).isoformat(),
         }
         _save_working_memory(history_key, updated)
         return updated
+    recent_context = "\n".join(
+        str(item.get("content", ""))[:400]
+        for item in history[-6:]
+        if isinstance(item, dict) and isinstance(item.get("content"), str)
+    )
+    frame = bot.conversation_pragmatic_frame(message, recent_context=recent_context)
     previous_subject = str(memory.get("current_subject", "") or "")
     candidates: list[tuple[str, str, str]] = []
     for item in history[-8:]:
@@ -1597,6 +1606,9 @@ def _update_working_memory(history_key: str, history: list, message: str) -> dic
         "latest_correction": latest_correction,
         "pending_action": pending_action,
         "competing_subjects": competing[-3:],
+        "speech_act": str(frame.get("speech_act", "") or ""),
+        "response_mode": str(frame.get("response_mode", "") or ""),
+        "tone_read": str(frame.get("tone_read", "") or ""),
         "updated_at": datetime.now(bot.SGT).isoformat(),
     }
     _save_working_memory(history_key, updated)
@@ -1608,7 +1620,10 @@ def _working_memory_context(memory: dict) -> str:
     pending = memory.get("pending_action")
     correction = memory.get("latest_correction")
     competing = memory.get("competing_subjects") or []
-    if not any([subject, pending, correction, competing]):
+    speech_act = memory.get("speech_act")
+    response_mode = memory.get("response_mode")
+    tone_read = memory.get("tone_read")
+    if not any([subject, pending, correction, competing, speech_act, response_mode, tone_read]):
         return ""
     parts = ["\n\n[Working memory for this PWA chat:"]
     if subject:
@@ -1619,6 +1634,12 @@ def _working_memory_context(memory: dict) -> str:
         parts.append(f"Latest user correction/clarification: {correction}.")
     if competing:
         parts.append(f"Older competing subjects in this chat: {', '.join(competing)}.")
+    if speech_act:
+        parts.append(f"Current conversational move: {speech_act}.")
+    if response_mode:
+        parts.append(f"Preferred response mode: {response_mode}.")
+    if tone_read:
+        parts.append(f"Tone read: {tone_read}.")
     parts.append(
         "Use the current subject and latest user correction before older assistant guesses. "
         "If action details are still incomplete, ask for only the missing detail.]"
@@ -3371,6 +3392,7 @@ def _thread_state_context(thread_state: dict) -> str:
         "contextual_tool": thread_state.get("contextual_tool", ""),
         "needs_live_check": bool(thread_state.get("needs_live_check")),
         "effective_text": str(thread_state.get("effective_text", ""))[:700],
+        "pragmatic_frame": thread_state.get("pragmatic_frame", {}),
     }
     return (
         "\n\n[Thread state: The user is continuing a recent offer/topic. "
@@ -3467,6 +3489,23 @@ def _finalise_chat_trace(trace: dict, final_mode: str = "answered") -> dict:
 def _quick_sse_response(reply: str, history_key: str, history: list, route_name: str = "quick", tool_name: str = ""):
     history.append({"role": "assistant", "content": reply})
     _save_history_best_effort(history_key, history)
+    if route_name == "quick" and bot.google_ok():
+        user_text = next(
+            (
+                bot._strip_injected_chat_context(str(item.get("content", "")))
+                for item in reversed(history[:-1])
+                if isinstance(item, dict) and item.get("role") == "user" and isinstance(item.get("content"), str)
+            ),
+            "",
+        )
+        if user_text:
+            _schedule_background_call(
+                "quick chat learning event",
+                bot.record_chat_learning_event,
+                user_text,
+                reply,
+                source="pwa",
+            )
     trace = _new_chat_trace("", route_name=route_name)
     if tool_name:
         _merge_chat_trace(trace, {"tools_called": [tool_name]})
@@ -4172,6 +4211,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
         user_content = f"{message}\n\n[Email account hint: use account=\"{account_hint}\" for Gmail tools.]"
     user_content = (
         f"{user_content}"
+        f"{bot.pragmatic_frame_context(initial_thread_state.get('pragmatic_frame', {}))}"
         f"{_working_memory_context(working_memory)}"
         f"{_recent_turn_grounding_context(history, message)}"
         f"{_thread_state_context(initial_thread_state)}"
@@ -4204,6 +4244,10 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
     provider_status_reply = bot._llm_provider_status_reply([{"role": "user", "content": message}])
     if provider_status_reply:
         return _quick_sse_response(provider_status_reply, history_key, history, route_name="provider_status")
+
+    carryover_greeting_reply = bot.conversation_carryover_greeting_reply(message)
+    if carryover_greeting_reply:
+        return _quick_sse_response(carryover_greeting_reply, history_key, history, route_name="carryover_checkin")
 
     checkin_command = _pwa_checkin_command_reply(message)
     if checkin_command:
