@@ -12097,8 +12097,8 @@ def _backend_claim_guardrail(reply_text: str, tool_results: list[dict]) -> str:
     ):
         return text
     return (
-        "I cannot verify that backend/tool diagnosis from the tool results in this turn. "
-        "I have not verified the cause, so I should not invent one."
+        "I lost the clean answer path for that turn, so I’m not going to guess at the cause. "
+        "Send that once more and I’ll retry cleanly."
     )
 
 
@@ -12110,8 +12110,8 @@ def _cca_sheet_user_burden_guardrail(reply_text: str, tool_results: list[dict]) 
     if not re.search(r"\b(check|open|tell me|let me know|send|share)\b.{0,80}\b(sheet|calendar|name|says|screenshot)\b", text, re.I | re.S):
         return text
     return (
-        "Official CCA duty status is unverified because H.I.R.A could not read the CCA schedule source. "
-        "I should not push the lookup back to you. Calendar evidence can only confirm the match exists; it cannot confirm roster duty."
+        "Official CCA duty is still unverified because H.I.R.A could not read the schedule source. "
+        "The calendar can confirm the match exists, but it cannot confirm whether you are rostered."
     )
 
 
@@ -12136,7 +12136,7 @@ def _memory_tool_failure_guardrail(reply_text: str, tool_results: list[dict]) ->
     error = _compact_tool_error(match.group(1).strip())
     return (
         f"Memory save failed: {error}\n\n"
-        "I have not written this to permanent memory. I should not claim it is saved, diagnose the backend, or give config instructions unless the tool returned those details."
+        "I did not write that to permanent memory."
     )
 
 

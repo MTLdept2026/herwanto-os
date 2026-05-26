@@ -1181,6 +1181,50 @@ def _clean_turn_text(text: str) -> str:
     return " ".join(clean.split())
 
 
+_RETRY_MESSAGE_RE = re.compile(
+    r"^\s*(?:try again|retry|again|one more time|rerun|run it again|resend)\s*[.!?]*\s*$",
+    re.I,
+)
+_FAILED_ASSISTANT_REPLY_RE = re.compile(
+    r"(?:"
+    r"(?:^|[\n])Failed(?: to [^\n.]+)?|"
+    r"failed pass|"
+    r"chat handoff failed|"
+    r"source check also failed|"
+    r"live news check failed|"
+    r"did not return a real answer|"
+    r"didn[’']t receive a usable h\.i\.r\.a response|"
+    r"hit a backend snag|"
+    r"try again in a moment|"
+    r"lost the clean answer path|"
+    r"lost the actual answer"
+    r")\b",
+    re.I,
+)
+
+
+def _retry_target_message(message: str, history: list) -> str:
+    if not _RETRY_MESSAGE_RE.fullmatch(str(message or "").strip()):
+        return ""
+    last_assistant = next(
+        (
+            str(item.get("content", "") or "")
+            for item in reversed(history or [])
+            if isinstance(item, dict) and item.get("role") == "assistant" and isinstance(item.get("content"), str)
+        ),
+        "",
+    )
+    if not last_assistant or not _FAILED_ASSISTANT_REPLY_RE.search(last_assistant):
+        return ""
+    for item in reversed(history or []):
+        if not isinstance(item, dict) or item.get("role") != "user" or not isinstance(item.get("content"), str):
+            continue
+        candidate = _clean_turn_text(item.get("content", ""))
+        if candidate:
+            return candidate
+    return ""
+
+
 def _normalise_subject(raw: str) -> str:
     subject = _SUBJECT_STOP_RE.split(raw or "", maxsplit=1)[0]
     subject = re.sub(r"^[\"'`*_\\s]+|[\"'`*_.,!?;:\\s]+$", "", subject)
@@ -4086,6 +4130,9 @@ async def chat(
 async def _chat_stream_response(message: str, location: DeviceLocation | None, x_hira_client: str | None):
     history_key = _history_key(x_hira_client)
     history = _get_history_best_effort(history_key)
+    retry_target = _retry_target_message(message, history)
+    if retry_target:
+        message = retry_target
 
     live_briefing_slot = _live_briefing_slot(message)
     if live_briefing_slot:

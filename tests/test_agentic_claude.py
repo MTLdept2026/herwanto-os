@@ -2149,9 +2149,8 @@ class AgenticClaudeTests(unittest.TestCase):
 
         guarded = bot._backend_claim_guardrail(reply, [])
 
-        self.assertIn("cannot verify", guarded)
-        self.assertIn("not verified the cause", guarded)
-        self.assertNotIn("I should show", guarded)
+        self.assertIn("retry cleanly", guarded)
+        self.assertNotIn("cannot verify", guarded)
         self.assertNotIn("service account needs access", guarded)
 
     def test_memory_backend_claim_allowed_with_tool_evidence(self):
@@ -2168,7 +2167,7 @@ class AgenticClaudeTests(unittest.TestCase):
 
         guarded = bot._backend_claim_guardrail(reply, [])
 
-        self.assertIn("cannot verify", guarded)
+        self.assertIn("retry cleanly", guarded)
         self.assertNotIn("per-minute quota", guarded)
 
     def test_cca_access_failure_does_not_push_sheet_check_to_user(self):
@@ -2178,7 +2177,8 @@ class AgenticClaudeTests(unittest.TestCase):
             [{"content": "CCA schedule unavailable: Sheets API access failed with HTTP 403. Official CCA duty status is unverified."}],
         )
 
-        self.assertIn("should not push", guarded)
+        self.assertIn("still unverified", guarded)
+        self.assertIn("cannot confirm whether you are rostered", guarded)
         self.assertNotIn("tell me if your name", guarded)
 
     def test_memory_tool_failure_reports_only_tool_error(self):
@@ -2192,7 +2192,7 @@ class AgenticClaudeTests(unittest.TestCase):
         )
 
         self.assertIn("Memory save failed: Google Sheets denied write access while updating Config.", guarded)
-        self.assertIn("have not written this", guarded)
+        self.assertIn("I did not write that to permanent memory.", guarded)
         self.assertNotIn("service account", guarded)
 
     def test_commit_to_memory_forces_memory_tool(self):
@@ -5754,6 +5754,26 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(tool, "get_latest_news")
         self.assertEqual(result, "")
         self.assertIn("live news source check also failed", text)
+
+    def test_retry_target_message_replays_previous_user_turn_after_failed_reply(self):
+        history = [
+            {"role": "user", "content": "Lets see the side hustle lanes"},
+            {"role": "assistant", "content": "I lost the clean answer path for that turn, so I’m not going to guess at the cause. Send that once more and I’ll retry cleanly."},
+        ]
+
+        target = web_app._retry_target_message("Try again", history)
+
+        self.assertEqual(target, "Lets see the side hustle lanes")
+
+    def test_retry_target_message_ignores_non_failure_previous_reply(self):
+        history = [
+            {"role": "user", "content": "Any Android updates?"},
+            {"role": "assistant", "content": "I can look that up and cite current sources if you want."},
+        ]
+
+        target = web_app._retry_target_message("Try again", history)
+
+        self.assertEqual(target, "")
 
     def test_generic_favourite_topics_prompt_uses_shortlist_digest_route(self):
         topics = bot.favourite_news_topic_queries("Any recent news on my favourite sports teams and topics?")
