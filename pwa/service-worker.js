@@ -1,9 +1,9 @@
-const CACHE_NAME = "hira-os-v138";
-const HIRA_APP_VERSION = "20260527-session-fallback-68";
+const CACHE_NAME = "hira-os-v137";
+const HIRA_APP_VERSION = "20260527-reminder-queue-67";
 const ASSETS = [
   "/",
-  "/styles.css?v=20260527-session-fallback-68",
-  "/app.js?v=20260527-session-fallback-68",
+  "/styles.css?v=20260527-reminder-queue-67",
+  "/app.js?v=20260527-reminder-queue-67",
   "/static/icon.svg",
   "/static/icon-192.png",
   "/static/icon-512.png",
