@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260526-startup-fix-66";
-const APP_SCRIPT = "app.js?v=20260526-startup-fix-66";
-const EXPECTED_SW_CACHE = "hira-os-v136";
+const APP_VERSION = "20260527-auth-startup-order-69";
+const APP_SCRIPT = "app.js?v=20260527-auth-startup-order-69";
+const EXPECTED_SW_CACHE = "hira-os-v139";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
@@ -688,7 +688,7 @@ function setNotificationButtons({ label, title, stateText, tone = "neutral", dis
   }
 }
 
-async function updateNotificationControls() {
+async function updateNotificationControls({ allowServerSync = true } = {}) {
   if (!("Notification" in window)) {
     setNotificationButtons({
       label: "Unavailable",
@@ -743,7 +743,7 @@ async function updateNotificationControls() {
   try {
     const registration = await navigator.serviceWorker.ready;
     let subscription = await registration.pushManager.getSubscription();
-    if (state.sessionUnlocked) {
+    if (allowServerSync && state.sessionUnlocked) {
       const synced = await ensurePushSubscription().catch((error) => {
         setStatus(`Push reconnect: ${error.message}`, "warn");
         return false;
@@ -1516,7 +1516,7 @@ function serviceWorkerVersionRequest(worker, timeoutMs = 900) {
   });
 }
 
-async function readAppVersionState() {
+async function readAppVersionState({ allowServerLookup = true } = {}) {
   const stateInfo = {
     appVersion: APP_VERSION,
     appScript: APP_SCRIPT,
@@ -1547,21 +1547,25 @@ async function readAppVersionState() {
   } else {
     stateInfo.updateState = "No service worker";
   }
-  try {
-    const server = await api("/api/app/version", { headers: headers(false) });
-    stateInfo.serverCommit = server.git_commit || "--";
-    stateInfo.serverTime = server.server_time || "--";
-  } catch (_) {
-    stateInfo.serverCommit = "Unavailable";
+  if (allowServerLookup && state.sessionUnlocked) {
+    try {
+      const server = await api("/api/app/version", { headers: headers(false) });
+      stateInfo.serverCommit = server.git_commit || "--";
+      stateInfo.serverTime = server.server_time || "--";
+    } catch (_) {
+      stateInfo.serverCommit = "Unavailable";
+    }
+  } else {
+    stateInfo.serverCommit = state.sessionUnlocked ? "Pending" : "Locked";
   }
   return stateInfo;
 }
 
-async function renderAppVersion() {
+async function renderAppVersion({ allowServerLookup = true } = {}) {
   const el = $("#versionOutput");
   if (!el) return;
   el.innerHTML = versionRow("App", `${APP_VERSION} · ${APP_SCRIPT}`);
-  const info = await readAppVersionState();
+  const info = await readAppVersionState({ allowServerLookup });
   const cacheOk = info.swCache === EXPECTED_SW_CACHE;
   const appOk = info.swAppVersion === APP_VERSION;
   const updateTone = cacheOk && appOk && info.controller === "Controlled" ? "status-ok" : "status-warn";
@@ -3816,9 +3820,9 @@ function setSettingsPanelOpen(open, { scroll = false } = {}) {
   const panel = $("#settingsPanel");
   panel.hidden = !open;
   $("#settingsBtn").classList.toggle("is-open", open);
-  updateNotificationControls();
+  updateNotificationControls({ allowServerSync: state.sessionUnlocked });
   if (open) {
-    renderAppVersion();
+    renderAppVersion({ allowServerLookup: state.sessionUnlocked });
     loadApiSpend({ quiet: true });
     loadActionLedger({ quiet: true });
     if (scroll) panel.scrollIntoView({ block: "start" });
@@ -3833,7 +3837,7 @@ $("#notificationsBtn").addEventListener("click", () => {
   panel.hidden = !panel.hidden;
   $("#notificationsBtn").classList.toggle("is-open", !panel.hidden);
   renderNotifications();
-  updateNotificationControls();
+  updateNotificationControls({ allowServerSync: state.sessionUnlocked });
 });
 $("#notificationsList").addEventListener("click", (event) => {
   const actionButton = event.target.closest("[data-notification-action]");
@@ -3912,7 +3916,7 @@ $("#checkAppUpdateBtn").addEventListener("click", async () => {
   button.textContent = "Checking";
   try {
     await checkForAppUpdate({ silent: false });
-    await renderAppVersion();
+    await renderAppVersion({ allowServerLookup: state.sessionUnlocked });
   } finally {
     button.disabled = false;
     button.textContent = previousLabel;
@@ -3935,10 +3939,13 @@ $("#saveTokenBtn").addEventListener("click", async () => {
   try {
     await createSession($("#tokenInput").value);
     $("#settingsPanel").hidden = true;
-    setStatus("Session unlocked on this device.", "ok");
-    updateNotificationControls();
-    loadHome({ force: true, useCache: false });
-    startNotificationPolling();
+    setStatus("Session unlocked on this device. Syncing live data...", "ok");
+    await loadHome({ force: true, useCache: false });
+    if (state.sessionUnlocked) {
+      await updateNotificationControls({ allowServerSync: true });
+      await renderAppVersion({ allowServerLookup: true });
+      startNotificationPolling();
+    }
   } catch (error) {
     $("#settingsPanel").hidden = false;
     setStatus(error.message, "error");
@@ -4100,7 +4107,7 @@ if ("serviceWorker" in navigator) {
   let refreshingForServiceWorker = false;
   navigator.serviceWorker.addEventListener("controllerchange", () => {
     reportClientModeToServiceWorker();
-    renderAppVersion();
+    renderAppVersion({ allowServerLookup: false });
     if (refreshingForServiceWorker) return;
     refreshingForServiceWorker = true;
     window.location.reload();
@@ -4110,10 +4117,10 @@ if ("serviceWorker" in navigator) {
     .then((registration) => {
       registration.update();
       reportClientModeToServiceWorker();
-      updateNotificationControls();
-      renderAppVersion();
+      updateNotificationControls({ allowServerSync: false });
+      renderAppVersion({ allowServerLookup: false });
     })
-    .catch(updateNotificationControls);
+    .catch(() => updateNotificationControls({ allowServerSync: false }));
   navigator.serviceWorker.addEventListener("message", (event) => {
     if (event.data?.type === "hira-notification") {
       rememberPushedNotification(event.data.item || {});
@@ -4133,7 +4140,7 @@ if ("serviceWorker" in navigator) {
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) {
     reportClientModeToServiceWorker();
-    updateNotificationControls();
+    updateNotificationControls({ allowServerSync: state.sessionUnlocked });
   }
 });
 
@@ -4151,9 +4158,9 @@ renderStoredChat();
 rememberNotificationFromUrl();
 mirrorStoredNotificationsToChat();
 renderNotifications();
-updateNotificationControls();
+updateNotificationControls({ allowServerSync: false });
 updateComposerState();
-renderAppVersion();
+renderAppVersion({ allowServerLookup: false });
 setView("home");
 updateLiveClock();
 renderNothingGlyph("time");
@@ -4166,8 +4173,12 @@ async function startAuthenticatedApp() {
     openTokenSettings("Save the H.I.R.A web token in this installed app once to sync live data.");
     return;
   }
-  loadHome({ background: true });
-  startNotificationPolling();
+  await loadHome({ background: true });
+  if (state.sessionUnlocked) {
+    await updateNotificationControls({ allowServerSync: true });
+    await renderAppVersion({ allowServerLookup: true });
+    startNotificationPolling();
+  }
 }
 
 startAuthenticatedApp();
