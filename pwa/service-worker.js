@@ -1,9 +1,9 @@
-const CACHE_NAME = "hira-os-v140";
-const HIRA_APP_VERSION = "20260527-session-header-fallback-70";
+const CACHE_NAME = "hira-os-v141";
+const HIRA_APP_VERSION = "20260527-persistent-token-71";
 const ASSETS = [
   "/",
-  "/styles.css?v=20260527-session-header-fallback-70",
-  "/app.js?v=20260527-session-header-fallback-70",
+  "/styles.css?v=20260527-persistent-token-71",
+  "/app.js?v=20260527-persistent-token-71",
   "/static/icon.svg",
   "/static/icon-192.png",
   "/static/icon-512.png",

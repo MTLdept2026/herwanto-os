@@ -42,8 +42,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260527-session-header-fallback-70"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v140"
+PWA_APP_VERSION = "20260527-persistent-token-71"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v141"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))

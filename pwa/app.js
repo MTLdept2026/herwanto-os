@@ -37,9 +37,9 @@ function saveSessionValue(key, value) {
   }
 }
 
-const APP_VERSION = "20260527-session-header-fallback-70";
-const APP_SCRIPT = "app.js?v=20260527-session-header-fallback-70";
-const EXPECTED_SW_CACHE = "hira-os-v140";
+const APP_VERSION = "20260527-persistent-token-71";
+const APP_SCRIPT = "app.js?v=20260527-persistent-token-71";
+const EXPECTED_SW_CACHE = "hira-os-v141";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
@@ -51,12 +51,12 @@ const HOME_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const HOME_REFRESH_THROTTLE_MS = 45 * 1000;
 const SOURCE_PLUMBING_URL_PATTERN = /https?:\/\/(?:news\.google\.com\/rss\/articles|site\.api\.espn\.com\/apis\/|duckduckgo\.com\/l\/\?)\S+/gi;
 let legacyWebToken = localStorage.getItem("hira_web_token") || "";
-if (legacyWebToken) localStorage.removeItem("hira_web_token");
 const runtimeWebToken = safeSessionValue(SESSION_TOKEN_KEY);
+const persistedWebToken = legacyWebToken || runtimeWebToken;
 
 const state = {
-  token: runtimeWebToken,
-  sessionUnlocked: localStorage.getItem("hira_session_unlocked") === "1" || Boolean(legacyWebToken) || Boolean(runtimeWebToken),
+  token: persistedWebToken,
+  sessionUnlocked: localStorage.getItem("hira_session_unlocked") === "1" || Boolean(persistedWebToken),
   theme: localStorage.getItem("hira_theme") || "light",
   clientId: localStorage.getItem("hira_client_id") || (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `hira-${Date.now()}`),
   deferredInstall: null,
@@ -386,8 +386,8 @@ async function createSession(token) {
     throw new Error(detail.detail || `Session unlock failed: ${response.status}`);
   }
   state.token = clean;
+  localStorage.setItem("hira_web_token", clean);
   saveSessionValue(SESSION_TOKEN_KEY, clean);
-  localStorage.removeItem("hira_web_token");
   state.sessionUnlocked = true;
   localStorage.setItem("hira_session_unlocked", "1");
   state.lastPushSyncAt = 0;
@@ -402,21 +402,14 @@ async function createSession(token) {
 }
 
 async function migrateLegacyToken() {
-  const token = legacyWebToken;
+  const token = String(legacyWebToken || runtimeWebToken || "").trim();
   legacyWebToken = "";
   if (!token) return;
-  try {
-    await createSession(token);
-    setStatus("Session restored on this device.", "ok");
-  } catch (error) {
-    state.token = "";
-    saveSessionValue(SESSION_TOKEN_KEY, "");
-    state.sessionUnlocked = false;
-    localStorage.removeItem("hira_web_token");
-    localStorage.removeItem("hira_session_unlocked");
-    $("#settingsPanel").hidden = false;
-    setStatus(`Saved token was rejected: ${error.message}`, "warn");
-  }
+  state.token = token;
+  state.sessionUnlocked = true;
+  localStorage.setItem("hira_web_token", token);
+  localStorage.setItem("hira_session_unlocked", "1");
+  saveSessionValue(SESSION_TOKEN_KEY, token);
 }
 
 async function api(path, options = {}, tokenPrompted = false) {
@@ -450,6 +443,7 @@ async function api(path, options = {}, tokenPrompted = false) {
   }
   if (response.status === 401) {
     state.token = "";
+    localStorage.removeItem("hira_web_token");
     saveSessionValue(SESSION_TOKEN_KEY, "");
     state.sessionUnlocked = false;
     localStorage.removeItem("hira_session_unlocked");
@@ -475,6 +469,7 @@ async function fetchWithToken(path, options = {}, tokenPrompted = false) {
   const response = await fetch(path, withAuth(options));
   if (response.status === 401) {
     state.token = "";
+    localStorage.removeItem("hira_web_token");
     saveSessionValue(SESSION_TOKEN_KEY, "");
     state.sessionUnlocked = false;
     localStorage.removeItem("hira_session_unlocked");
@@ -3983,8 +3978,8 @@ $("#clearTokenBtn").addEventListener("click", () => {
   state.token = "";
   state.sessionUnlocked = false;
   $("#tokenInput").value = "";
-  saveSessionValue(SESSION_TOKEN_KEY, "");
   localStorage.removeItem("hira_web_token");
+  saveSessionValue(SESSION_TOKEN_KEY, "");
   localStorage.removeItem("hira_session_unlocked");
   fetch("/api/auth/logout", {
     method: "POST",
@@ -4174,7 +4169,7 @@ window.matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", (
   if (state.theme === "auto") applyTheme();
 });
 
-$("#tokenInput").value = "";
+$("#tokenInput").value = state.token;
 localStorage.setItem("hira_client_id", state.clientId);
 applyTheme();
 refreshIcons();
