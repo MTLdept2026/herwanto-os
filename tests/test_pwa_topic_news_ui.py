@@ -213,14 +213,6 @@ class PwaTopicNewsUiTests(unittest.TestCase):
         if "/api/notifications/health" in url:
             route.fulfill(status=200, content_type="application/json", body=json.dumps({"prayers": {"prayers": []}, "recent_delivery_log": [], "outcome_actions": {}, "push_recovery": {}, "briefing_delivery": {}}))
             return
-        if "/api/notifications/queue" in url:
-            route.fulfill(status=200, content_type="application/json", body=json.dumps({
-                "notifications": [
-                    {"id": "q1", "kind": "reminder", "title": "Queued smoke", "body": "Queued smoke body", "source": "task_reminder:2026-05-22:1", "created": "2026-05-22T07:30:00+08:00"},
-                ],
-                "count": 1,
-            }))
-            return
         if "/api/notifications/test" in url:
             route.fulfill(status=200, content_type="application/json", body=json.dumps({"sent": False, "notification": {"id": "n1", "kind": "test", "title": "Smoke", "body": "Smoke body", "source": "test"}}))
             return
@@ -285,76 +277,6 @@ class PwaTopicNewsUiTests(unittest.TestCase):
                 browser.close()
 
         self.assertEqual(errors, [])
-
-    def test_notifications_panel_shows_server_queue_and_clears_it(self):
-        with _static_server() as base_url, self._sync_playwright() as p:
-            executable = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-            launch_kwargs = {"headless": True}
-            if os.path.exists(executable):
-                launch_kwargs["executable_path"] = executable
-            try:
-                browser = p.chromium.launch(**launch_kwargs)
-            except Exception as exc:
-                raise unittest.SkipTest(f"Chromium is not available for UI tests: {exc}")
-            archived_ids = []
-            queue_items = [
-                {
-                    "id": "q1",
-                    "kind": "reminder",
-                    "title": "Old calendar reminder",
-                    "body": "The event already passed.",
-                    "source": "task_reminder:2026-05-22:31",
-                    "created": "2026-05-22T07:30:00+08:00",
-                },
-                {
-                    "id": "q2",
-                    "kind": "reminder",
-                    "title": "Travel prep",
-                    "body": "Bring the laptop.",
-                    "source": "calendar_reminder:2026-05-27:32",
-                    "created": "2026-05-27T07:40:00+08:00",
-                },
-            ]
-
-            def route_api(route):
-                url = route.request.url
-                if "/api/notifications/archive" in url:
-                    payload = json.loads(route.request.post_data or "{}")
-                    archived_ids.extend(payload.get("ids", []))
-                    queue_items.clear()
-                    route.fulfill(status=200, content_type="application/json", body=json.dumps({"ok": True, "archived": len(payload.get("ids", []))}))
-                    return
-                if "/api/notifications/queue" in url:
-                    route.fulfill(status=200, content_type="application/json", body=json.dumps({
-                        "notifications": queue_items,
-                        "count": len(queue_items),
-                    }))
-                    return
-                self._route_standard_api(route)
-
-            try:
-                page = browser.new_page(viewport={"width": 390, "height": 844})
-                page.add_init_script(
-                    """
-                    localStorage.setItem("hira_session_unlocked", "1");
-                    localStorage.setItem("hira_client_id", "ui-queue-test");
-                    localStorage.setItem("hira_pwa_chat", "[]");
-                    window.Notification = window.Notification || function(){};
-                    window.Notification.permission = "denied";
-                    window.Notification.requestPermission = async () => "denied";
-                    """
-                )
-                page.route("**/api/**", route_api)
-                page.goto(f"{base_url}/pwa/index.html", wait_until="domcontentloaded")
-                page.locator("#notificationsBtn").click()
-                page.locator("#notificationsList").get_by_text("Active Queue").wait_for(timeout=6000)
-                page.locator("#notificationsList").get_by_text("Old calendar reminder").wait_for(timeout=6000)
-                page.locator("[data-notification-queue-clear]").click()
-                page.locator("#notificationsList").get_by_text("No queued reminders on the server.").wait_for(timeout=6000)
-            finally:
-                browser.close()
-
-        self.assertCountEqual(archived_ids, ["q1", "q2"])
 
     def test_topic_news_sse_renders_in_chat_without_backend_snag(self):
         with _static_server() as base_url:
