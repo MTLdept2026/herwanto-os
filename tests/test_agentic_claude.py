@@ -8788,6 +8788,48 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(ledger.call_args.kwargs["action"], "notification.snooze")
         self.assertEqual(ledger.call_args.kwargs["metadata"]["nudge_id"], "44")
 
+    def test_notifications_queue_lists_active_items_newest_first(self):
+        queued = [
+            {
+                "id": "1",
+                "kind": "reminder",
+                "title": "Older reminder",
+                "body": "Old body",
+                "created": "2026-05-24T07:30:00+08:00",
+                "source": "task_reminder:2026-05-24:31",
+                "archived": False,
+            },
+            {
+                "id": "2",
+                "kind": "reminder",
+                "title": "Newer reminder",
+                "body": "New body",
+                "created": "2026-05-27T07:30:00+08:00",
+                "source": "task_reminder:2026-05-27:32",
+                "archived": False,
+            },
+            {
+                "id": "3",
+                "kind": "reminder",
+                "title": "Archived reminder",
+                "body": "Archived body",
+                "created": "2026-05-26T07:30:00+08:00",
+                "source": "task_reminder:2026-05-26:33",
+                "archived": True,
+            },
+        ]
+
+        with (
+            patch.object(web_app, "_require_token"),
+            patch.object(web_app, "_archive_low_value_notifications") as prune,
+            patch.object(bot.gs, "get_app_notifications", return_value=queued),
+        ):
+            result = web_app.notifications_queue(limit=10, x_hira_token="token")
+
+        prune.assert_called_once()
+        self.assertEqual(result["count"], 2)
+        self.assertEqual([item["id"] for item in result["notifications"]], ["2", "1"])
+
     def test_pwa_nudges_command_lists_pending_nudges(self):
         nudges = [
             {

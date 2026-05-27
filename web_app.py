@@ -4997,6 +4997,33 @@ def notifications(
     return {"notifications": items}
 
 
+@app.get("/api/notifications/queue")
+def notifications_queue(
+    limit: int = 80,
+    x_hira_token: Optional[str] = Header(default=None),
+):
+    _require_token(x_hira_token)
+    try:
+        _archive_low_value_notifications()
+        queued = bot.gs.get_app_notifications(include_archived=False)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Notification queue unavailable: {exc}") from exc
+
+    def sort_key(item: dict) -> datetime:
+        try:
+            return datetime.fromisoformat(str(item.get("created", "") or ""))
+        except Exception:
+            return datetime.min.replace(tzinfo=bot.SGT)
+
+    clean_limit = max(1, min(int(limit or 80), 80))
+    queued = sorted(
+        [item for item in queued if not item.get("archived")],
+        key=sort_key,
+        reverse=True,
+    )
+    return {"notifications": queued[:clean_limit], "count": len(queued)}
+
+
 @app.get("/api/notifications/config")
 def notifications_config(x_hira_token: Optional[str] = Header(default=None)):
     _require_token(x_hira_token)

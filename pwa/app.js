@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260526-startup-fix-66";
-const APP_SCRIPT = "app.js?v=20260526-startup-fix-66";
-const EXPECTED_SW_CACHE = "hira-os-v136";
+const APP_VERSION = "20260527-reminder-queue-67";
+const APP_SCRIPT = "app.js?v=20260527-reminder-queue-67";
+const EXPECTED_SW_CACHE = "hira-os-v137";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
@@ -47,6 +47,10 @@ const state = {
   chatAttachments: [],
   chatHistory: safeJsonArray("hira_pwa_chat"),
   notifications: safeJsonArray("hira_pwa_notifications"),
+  notificationQueue: [],
+  notificationQueueLoaded: false,
+  notificationQueueLoading: false,
+  notificationQueueError: "",
   dismissedNotificationIds: safeJsonArray("hira_pwa_dismissed_notification_ids"),
   dismissedHomeSections: safeJsonArray("hira_pwa_dismissed_home_sections"),
   chatNotificationIds: safeJsonArray("hira_pwa_chat_notification_ids"),
@@ -586,62 +590,141 @@ function bytesEqual(left, right) {
   return a.every((value, index) => value === b[index]);
 }
 
+function rememberDismissedNotificationIds(ids) {
+  const merged = new Set(state.dismissedNotificationIds.map((item) => String(item || "")));
+  ids
+    .map((item) => String(item || ""))
+    .filter(Boolean)
+    .forEach((item) => merged.add(item));
+  state.dismissedNotificationIds = Array.from(merged).slice(-120);
+  saveDismissedNotificationIds();
+}
+
+function removeNotificationsFromView(ids) {
+  const targets = new Set(ids.map((item) => String(item || "")).filter(Boolean));
+  if (!targets.size) return;
+  state.notifications = state.notifications.filter((item) => !targets.has(String(item.id || "")));
+  state.notificationQueue = state.notificationQueue.filter((item) => !targets.has(String(item.id || "")));
+  saveNotifications();
+}
+
+function findNotificationItem(id) {
+  const target = String(id || "");
+  return (
+    state.notificationQueue.find((notification) => String(notification.id) === target)
+    || state.notifications.find((notification) => String(notification.id) === target)
+    || null
+  );
+}
+
+function renderNotificationCards(items, { showSource = false } = {}) {
+  return items.map((item) => {
+    const created = item.created ? new Date(item.created).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
+    const id = escapeHtml(String(item.id || ""));
+    const kind = notificationKindClass(item.kind);
+    const preview = notificationPreviewText(item.body || "");
+    const source = showSource && item.source
+      ? `<small class="notification-item-meta">${markdownish(String(item.source || ""))}</small>`
+      : "";
+    return `
+      <article class="notification-item ${kind}" data-notification-id="${id}">
+        <div class="notification-item-head">
+          <strong>${markdownish(item.title || "H.I.R.A")}</strong>
+          ${created ? `<small>${markdownish(created)}</small>` : ""}
+        </div>
+        ${source}
+        <p>${markdownish(preview)}</p>
+        <div class="notification-actions">
+          <button type="button" class="ghost-btn notification-done" data-notification-action="done" data-notification-id="${id}">
+            <span data-lucide="check-circle" aria-hidden="true"></span>
+            Done
+          </button>
+          <button type="button" class="ghost-btn notification-snooze" data-notification-action="snooze" data-notification-id="${id}">
+            <span data-lucide="alarm-clock" aria-hidden="true"></span>
+            Snooze
+          </button>
+          <button type="button" class="ghost-btn notification-open" data-notification-open="${id}">
+            <span data-lucide="book-open" aria-hidden="true"></span>
+            Read full
+          </button>
+          <button type="button" class="ghost-btn notification-dismiss" data-notification-dismiss="${id}">
+            <span data-lucide="x" aria-hidden="true"></span>
+            Dismiss
+          </button>
+        </div>
+        <div class="notification-feedback">
+          <button type="button" class="ghost-btn ${state.feedback[id] === "useful" ? "is-selected" : ""}" data-feedback-rating="useful" data-feedback-target="${id}">Useful</button>
+          <button type="button" class="ghost-btn ${state.feedback[id] === "not_now" ? "is-selected" : ""}" data-feedback-rating="not_now" data-feedback-target="${id}">Not now</button>
+        </div>
+      </article>
+    `;
+  }).join("");
+}
+
 function renderNotifications() {
   const badge = $("#notificationBadge");
   const list = $("#notificationsList");
-  const panel = $("#notificationsPanel");
-  const count = state.notifications.length;
+  const queueItems = state.notificationQueue.slice(0, 30);
+  const queuedIds = new Set(queueItems.map((item) => String(item.id || "")));
+  const localItems = state.notifications
+    .filter((item) => !queuedIds.has(String(item.id || "")))
+    .slice(0, 12);
+  const count = state.notificationQueueLoaded ? state.notificationQueue.length + localItems.length : state.notifications.length;
   badge.hidden = count === 0;
   badge.textContent = String(Math.min(count, 99));
-  if (!count) {
+  if (!queueItems.length && !localItems.length) {
     list.innerHTML = `
       <div class="notification-empty">
-        <p>No app notifications yet.</p>
-        <small>Use the toggle above to enable device alerts for nudges and check-ins.</small>
+        <p>${markdownish(state.notificationQueueError ? "Could not load the active queue." : "No active queued reminders.")}</p>
+        <small>${markdownish(state.notificationQueueError || "Queued notifications will show up here, and you can dismiss them from the app.")}</small>
       </div>
     `;
     return;
   }
-  list.innerHTML = state.notifications
-    .slice(0, 12)
-    .map((item) => {
-      const created = item.created ? new Date(item.created).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
-      const id = escapeHtml(String(item.id || ""));
-      const kind = notificationKindClass(item.kind);
-      const preview = notificationPreviewText(item.body || "");
-      return `
-        <article class="notification-item ${kind}" data-notification-id="${id}">
-          <div class="notification-item-head">
-            <strong>${markdownish(item.title || "H.I.R.A")}</strong>
-            ${created ? `<small>${markdownish(created)}</small>` : ""}
+  const queueMeta = state.notificationQueueLoading
+    ? "Refreshing queue..."
+    : state.notificationQueueError
+      ? `Queue sync failed: ${state.notificationQueueError}`
+      : queueItems.length
+        ? `${state.notificationQueue.length} active queue item${state.notificationQueue.length === 1 ? "" : "s"} on the server.`
+        : "No queued reminders on the server.";
+  const sections = [];
+  if (state.sessionUnlocked) {
+    sections.push(`
+      <section class="notification-section">
+        <div class="section-head compact notification-section-head">
+          <div>
+            <h4>Active Queue</h4>
+            <p class="subtle notification-section-meta">${markdownish(queueMeta)}</p>
           </div>
-          <p>${markdownish(preview)}</p>
-          <div class="notification-actions">
-            <button type="button" class="ghost-btn notification-done" data-notification-action="done" data-notification-id="${id}">
-              <span data-lucide="check-circle" aria-hidden="true"></span>
-              Done
-            </button>
-            <button type="button" class="ghost-btn notification-snooze" data-notification-action="snooze" data-notification-id="${id}">
-              <span data-lucide="alarm-clock" aria-hidden="true"></span>
-              Snooze
-            </button>
-            <button type="button" class="ghost-btn notification-open" data-notification-open="${id}">
-              <span data-lucide="book-open" aria-hidden="true"></span>
-              Read full
-            </button>
-            <button type="button" class="ghost-btn notification-dismiss" data-notification-dismiss="${id}">
-              <span data-lucide="x" aria-hidden="true"></span>
-              Dismiss
-            </button>
+          <div class="inline-actions notification-panel-actions">
+            <button type="button" class="ghost-btn" data-notification-queue-refresh>Refresh</button>
+            <button type="button" class="ghost-btn" data-notification-queue-clear ${queueItems.length ? "" : "disabled"}>Clear all</button>
           </div>
-          <div class="notification-feedback">
-            <button type="button" class="ghost-btn ${state.feedback[id] === "useful" ? "is-selected" : ""}" data-feedback-rating="useful" data-feedback-target="${id}">Useful</button>
-            <button type="button" class="ghost-btn ${state.feedback[id] === "not_now" ? "is-selected" : ""}" data-feedback-rating="not_now" data-feedback-target="${id}">Not now</button>
+        </div>
+        ${queueItems.length ? renderNotificationCards(queueItems, { showSource: true }) : `
+          <div class="notification-empty compact">
+            <p>No queued reminders on the server.</p>
+            <small>This is the list to check when an old reminder keeps resurfacing.</small>
           </div>
-        </article>
-      `;
-    })
-    .join("");
+        `}
+      </section>
+    `);
+  }
+  if (localItems.length) {
+    sections.push(`
+      <section class="notification-section">
+        <div class="section-head compact notification-section-head">
+          <div>
+            <h4>Recent On This Device</h4>
+            <p class="subtle notification-section-meta">Saved locally for quick reopening.</p>
+          </div>
+        </div>
+        ${renderNotificationCards(localItems)}
+      </section>
+    `);
+  }
+  list.innerHTML = sections.join("");
   refreshIcons(list);
 }
 
@@ -1103,13 +1186,41 @@ async function markNotificationsSeen(ids) {
   }
 }
 
+async function loadNotificationQueue({ quiet = false, limit = 80 } = {}) {
+  if (!state.sessionUnlocked) {
+    state.notificationQueue = [];
+    state.notificationQueueLoaded = false;
+    state.notificationQueueLoading = false;
+    state.notificationQueueError = "";
+    renderNotifications();
+    return [];
+  }
+  state.notificationQueueLoading = true;
+  if (!quiet) renderNotifications();
+  try {
+    const data = await api(`/api/notifications/queue?limit=${Math.max(1, Math.min(limit, 80))}`, { headers: headers(false) });
+    state.notificationQueue = Array.isArray(data.notifications) ? data.notifications : [];
+    state.notificationQueueLoaded = true;
+    state.notificationQueueError = "";
+    renderNotifications();
+    return state.notificationQueue;
+  } catch (error) {
+    state.notificationQueueLoaded = true;
+    state.notificationQueueError = error.message;
+    renderNotifications();
+    if (!quiet && !/token/i.test(error.message)) setStatus(`Notification queue: ${error.message}`, "warn");
+    return [];
+  } finally {
+    state.notificationQueueLoading = false;
+    renderNotifications();
+  }
+}
+
 async function dismissNotification(id) {
   const notificationId = String(id || "");
   if (!notificationId) return;
-  state.dismissedNotificationIds.push(notificationId);
-  saveDismissedNotificationIds();
-  state.notifications = state.notifications.filter((item) => String(item.id) !== notificationId);
-  saveNotifications();
+  rememberDismissedNotificationIds([notificationId]);
+  removeNotificationsFromView([notificationId]);
   renderNotifications();
   try {
     await api("/api/notifications/archive", {
@@ -1120,6 +1231,24 @@ async function dismissNotification(id) {
     setStatus("Notification dismissed.", "ok");
   } catch (error) {
     setStatus(`Notification hidden here; server dismiss failed: ${error.message}`, "warn");
+  }
+}
+
+async function clearNotificationQueue() {
+  const ids = state.notificationQueue.map((item) => String(item.id || "")).filter(Boolean);
+  if (!ids.length) return;
+  rememberDismissedNotificationIds(ids);
+  removeNotificationsFromView(ids);
+  renderNotifications();
+  try {
+    await api("/api/notifications/archive", {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ ids }),
+    });
+    setStatus(`Cleared ${ids.length} queued notification${ids.length === 1 ? "" : "s"}.`, "ok");
+  } catch (error) {
+    setStatus(`Queue clear failed: ${error.message}`, "warn");
   }
 }
 
@@ -1163,9 +1292,8 @@ async function performNotificationAction(action, item = {}) {
       }),
     });
     if (["done", "snooze", "not_useful", "not_now"].includes(action)) {
-      state.dismissedNotificationIds.push(notification.id);
-      saveDismissedNotificationIds();
-      state.notifications = state.notifications.filter((existing) => String(existing.id) !== notification.id);
+      rememberDismissedNotificationIds([notification.id]);
+      removeNotificationsFromView([notification.id]);
     }
     if (["useful", "not_useful", "not_now"].includes(action)) {
       state.feedback[notification.id] = action;
@@ -1195,7 +1323,10 @@ async function pollNotifications() {
   try {
     const data = await api("/api/notifications?limit=12", { headers: headers(false) });
     const items = data.notifications || [];
-    if (!items.length) return;
+    if (!items.length) {
+      await loadNotificationQueue({ quiet: true });
+      return;
+    }
     const fresh = [];
     const activeItems = items.filter((item) => !isNotificationDismissed(item.id));
     const dismissedIds = items
@@ -1214,6 +1345,7 @@ async function pollNotifications() {
       }
     }
     await markNotificationsSeen(activeItems.map((item) => item.id));
+    await loadNotificationQueue({ quiet: true });
     if (fresh.length) {
       Promise.allSettled(fresh.map((item) => showSystemNotification(item))).catch(() => {});
     }
@@ -1240,6 +1372,7 @@ async function sendTestNotification(event) {
       headers: headers(false),
     });
     rememberNotification(data.notification);
+    await loadNotificationQueue({ quiet: true });
     setStatus(data.sent ? "Test push sent to this device." : "Test notification queued; push may need reconnecting.", data.sent ? "ok" : "warn");
   } catch (error) {
     setStatus(`Notification test failed: ${error.message}`, "error");
@@ -3737,10 +3870,8 @@ async function sendChat(message) {
       }
       if (event.type === "notifications_archived" && Array.isArray(event.ids)) {
         const archivedIds = new Set(event.ids.map(String));
-        state.dismissedNotificationIds.push(...archivedIds);
-        saveDismissedNotificationIds();
-        state.notifications = state.notifications.filter((item) => !archivedIds.has(String(item.id)));
-        saveNotifications();
+        rememberDismissedNotificationIds(Array.from(archivedIds));
+        removeNotificationsFromView(Array.from(archivedIds));
         renderNotifications();
       }
       if (event.type === "text" || event.type === "replace") {
@@ -3834,19 +3965,30 @@ $("#notificationsBtn").addEventListener("click", () => {
   $("#notificationsBtn").classList.toggle("is-open", !panel.hidden);
   renderNotifications();
   updateNotificationControls();
+  if (!panel.hidden) loadNotificationQueue({ quiet: true });
 });
 $("#notificationsList").addEventListener("click", (event) => {
+  const refreshQueue = event.target.closest("[data-notification-queue-refresh]");
+  if (refreshQueue) {
+    loadNotificationQueue();
+    return;
+  }
+  const clearQueue = event.target.closest("[data-notification-queue-clear]");
+  if (clearQueue && !clearQueue.disabled) {
+    clearNotificationQueue();
+    return;
+  }
   const actionButton = event.target.closest("[data-notification-action]");
   if (actionButton) {
     const id = actionButton.dataset.notificationId;
-    const item = state.notifications.find((notification) => String(notification.id) === String(id)) || { id };
+    const item = findNotificationItem(id) || { id };
     performNotificationAction(actionButton.dataset.notificationAction, item);
     return;
   }
   const open = event.target.closest("[data-notification-open]");
   if (open) {
     const id = open.dataset.notificationOpen;
-    const item = state.notifications.find((notification) => String(notification.id) === String(id)) || { id };
+    const item = findNotificationItem(id) || { id };
     openNotificationReader(item);
     return;
   }
@@ -3855,7 +3997,7 @@ $("#notificationsList").addEventListener("click", (event) => {
     const id = feedback.dataset.feedbackTarget;
     const rating = feedback.dataset.feedbackRating;
     if (rating === "not_now") {
-      const item = state.notifications.find((notification) => String(notification.id) === String(id)) || { id };
+      const item = findNotificationItem(id) || { id };
       performNotificationAction("not_now", item);
     } else {
       sendInsightFeedback(id, rating);
@@ -3870,7 +4012,7 @@ $("#notificationReader").addEventListener("click", (event) => {
   const actionButton = event.target.closest("[data-notification-action]");
   if (actionButton) {
     const id = actionButton.dataset.notificationId;
-    const item = state.activeNotificationItem || state.notifications.find((notification) => String(notification.id) === String(id)) || { id };
+    const item = state.activeNotificationItem || findNotificationItem(id) || { id };
     performNotificationAction(actionButton.dataset.notificationAction, item);
     closeNotificationReader();
     return;

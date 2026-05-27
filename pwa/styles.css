@@ -598,6 +598,30 @@ h3 {
   overflow: auto;
 }
 
+.notification-section {
+  display: grid;
+  gap: var(--space-sm);
+}
+
+.notification-section-head {
+  align-items: start;
+}
+
+.notification-section-meta {
+  margin-top: 4px;
+}
+
+.notification-panel-actions {
+  justify-content: end;
+  flex-wrap: wrap;
+}
+
+.notification-panel-actions .ghost-btn {
+  min-height: 32px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
 .notification-empty {
   display: grid;
   gap: 4px;
@@ -766,6 +790,14 @@ h3 {
   color: var(--text-primary);
   line-height: 1.45;
   white-space: pre-line;
+}
+
+.notification-item-meta {
+  color: var(--text-secondary);
+  font-family: var(--font-ui);
+  font-size: var(--label);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .notification-actions {
