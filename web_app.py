@@ -2251,6 +2251,31 @@ def _home_school_day_cleared_memory_for_date(target: date | datetime | str, memo
     return ""
 
 
+def _home_week_config() -> tuple[str | None, str | None]:
+    ref_date = _cached_google_config_value("week_ref_date")
+    ref_type = _cached_google_config_value("week_ref_type")
+    if ref_date or ref_type:
+        return ref_date, ref_type
+    return bot._get_week_config()
+
+
+def _home_lessons_for_date(target: date, week_config: tuple[str | None, str | None] | None = None):
+    official_week = bot.tt.get_school_week_info(target)
+    if official_week:
+        day_name = bot.tt.DAY_MAP.get(target.weekday())
+        if not day_name or official_week["is_school_holiday"]:
+            return [], ""
+        lessons = bot.tt.TIMETABLE.get((day_name, official_week["week_type"]), [])
+        return lessons, bot.tt.week_type_label(official_week["week_type"])
+
+    ref_date, ref_type = week_config or (None, None)
+    if not ref_date or not ref_type:
+        return [], ""
+    lessons = bot.tt.get_lessons(target, ref_date, ref_type)
+    wt = bot.tt.get_week_type(ref_date, ref_type, target)
+    return lessons, bot.tt.week_type_label(wt)
+
+
 def _home_agenda_structured(days: int, snapshot: dict) -> dict:
     days = max(1, min(int(days or 7), 14))
     now = datetime.now(bot.SGT)
@@ -2259,10 +2284,11 @@ def _home_agenda_structured(days: int, snapshot: dict) -> dict:
     day_map = {}
     relief_cache = {}
     memory = snapshot.get("memory") or {}
+    week_config = _home_week_config()
     for offset in range(days):
         target = today + bot.timedelta(days=offset)
         relief_cache[target.isoformat()] = bool(_home_school_day_cleared_memory_for_date(target, memory))
-        lessons, _wt_label = bot._lessons_for_date(target)
+        lessons, _wt_label = _home_lessons_for_date(target, week_config)
         visible_lessons = [] if relief_cache[target.isoformat()] else list(lessons or [])
         day_map[target.isoformat()] = {
             "date": target.isoformat(),
@@ -2311,7 +2337,7 @@ def _home_agenda_text(days: int, structured: dict, snapshot: dict) -> str:
     today = now.date()
     end_date = today + bot.timedelta(days=days)
     lines = [f"*Agenda*\n_{now.strftime('%A, %-d %B %Y, %H:%M SGT')}_\n"]
-    lessons, wt_label = bot._lessons_for_date(today)
+    lessons, wt_label = _home_lessons_for_date(today, _home_week_config())
     if wt_label and today.weekday() < 5:
         today_relief = bool((structured.get("days") or [{}])[0].get("relieved"))
         visible_lessons = [] if today_relief else list(lessons or [])
@@ -2397,7 +2423,13 @@ def _home_task_text(days: int, tasks: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _home_load_days_for_dates(dates: list, today: date, reminders: list[dict], memory: dict | None = None) -> list[dict]:
+def _home_load_days_for_dates(
+    dates: list,
+    today: date,
+    reminders: list[dict],
+    memory: dict | None = None,
+    week_config: tuple[str | None, str | None] | None = None,
+) -> list[dict]:
     if not dates:
         return []
     event_counts = {target.isoformat(): 0 for target in dates}
@@ -2412,7 +2444,7 @@ def _home_load_days_for_dates(dates: list, today: date, reminders: list[dict], m
             due_counts[due] += 1
     load_days = []
     for target in dates:
-        lessons, _ = bot._lessons_for_date(target)
+        lessons, _ = _home_lessons_for_date(target, week_config)
         key = target.isoformat()
         lesson_count = 0 if _home_school_day_cleared_memory_for_date(target, memory) else len(lessons or [])
         load_days.append(bot._daily_load_item(
@@ -2459,8 +2491,9 @@ def _home_daily_load(days: int, structured: dict, snapshot: dict) -> dict:
     }
     reminders = snapshot.get("reminders") or []
     memory = snapshot.get("memory") or {}
-    previous_week = _home_load_days_for_dates(bot._weekday_neighbors(today, -1), today, reminders, memory=memory)
-    next_week = _home_load_days_for_dates(bot._weekday_neighbors(today, 1), today, reminders, memory=memory)
+    week_config = _home_week_config()
+    previous_week = _home_load_days_for_dates(bot._weekday_neighbors(today, -1), today, reminders, memory=memory, week_config=week_config)
+    next_week = _home_load_days_for_dates(bot._weekday_neighbors(today, 1), today, reminders, memory=memory, week_config=week_config)
     return {
         "today": today_load,
         "days": load_days,
@@ -2489,17 +2522,39 @@ def _parallel_home_data(days: int) -> dict:
     fallbacks = _home_fallbacks()
     try:
         core_started = time.perf_counter()
+        snapshot_started = time.perf_counter()
         snapshot = _home_snapshot(days, timings=timings)
+        _home_timing(timings, "core.snapshot", snapshot_started)
+        agenda_started = time.perf_counter()
         agenda_structured = _home_agenda_structured(days, snapshot)
+        _home_timing(timings, "core.agenda_structured", agenda_started)
+        task_enrich_started = time.perf_counter()
         enriched_tasks = _home_enriched_tasks(snapshot)
+        _home_timing(timings, "core.task_enrich", task_enrich_started)
+        agenda_text_started = time.perf_counter()
+        agenda_text = _home_agenda_text(days, agenda_structured, snapshot)
+        _home_timing(timings, "core.agenda_text", agenda_text_started)
+        daily_load_started = time.perf_counter()
+        daily_load = _home_daily_load(days, agenda_structured, snapshot)
+        _home_timing(timings, "core.daily_load", daily_load_started)
+        task_text_started = time.perf_counter()
+        task_text = _home_task_text(days, enriched_tasks)
+        tasks_structured = _home_task_structured(days, enriched_tasks)
+        _home_timing(timings, "core.tasks", task_text_started)
+        files_started = time.perf_counter()
+        files_index = _home_files_index(snapshot)
+        _home_timing(timings, "core.files", files_started)
+        marking_started = time.perf_counter()
+        marking = _marking_summary_from_tasks(snapshot.get("marking_tasks") or [], connected=bool(snapshot.get("google")))
+        _home_timing(timings, "core.marking", marking_started)
         results = {
-            "agenda": _home_agenda_text(days, agenda_structured, snapshot),
+            "agenda": agenda_text,
             "agenda_structured": agenda_structured,
-            "daily_load": _home_daily_load(days, agenda_structured, snapshot),
-            "tasks": _home_task_text(days, enriched_tasks),
-            "tasks_structured": _home_task_structured(days, enriched_tasks),
-            "files": _home_files_index(snapshot),
-            "marking": _marking_summary_from_tasks(snapshot.get("marking_tasks") or [], connected=bool(snapshot.get("google"))),
+            "daily_load": daily_load,
+            "tasks": task_text,
+            "tasks_structured": tasks_structured,
+            "files": files_index,
+            "marking": marking,
         }
         _home_timing(timings, "core_build", core_started)
     except Exception as exc:
