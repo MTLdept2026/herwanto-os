@@ -20,24 +20,43 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260527-reminder-queue-67";
-const APP_SCRIPT = "app.js?v=20260527-reminder-queue-67";
-const EXPECTED_SW_CACHE = "hira-os-v137";
+function safeSessionValue(key) {
+  try {
+    return sessionStorage.getItem(key) || "";
+  } catch (_) {
+    return "";
+  }
+}
+
+function saveSessionValue(key, value) {
+  try {
+    if (value) sessionStorage.setItem(key, value);
+    else sessionStorage.removeItem(key);
+  } catch (_) {
+    // Session storage can be blocked in some embedded/PWA contexts.
+  }
+}
+
+const APP_VERSION = "20260527-session-fallback-68";
+const APP_SCRIPT = "app.js?v=20260527-session-fallback-68";
+const EXPECTED_SW_CACHE = "hira-os-v138";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
 const AGENDA_CACHE_KEY = "hira_pwa_agenda_snapshot_v1";
 const PUSH_SYNC_MODE_KEY = "hira_pwa_last_push_sync_mode";
 const PUSH_SYNC_ENDPOINT_KEY = "hira_pwa_last_push_sync_endpoint";
+const SESSION_TOKEN_KEY = "hira_web_session_token";
 const HOME_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const HOME_REFRESH_THROTTLE_MS = 45 * 1000;
 const SOURCE_PLUMBING_URL_PATTERN = /https?:\/\/(?:news\.google\.com\/rss\/articles|site\.api\.espn\.com\/apis\/|duckduckgo\.com\/l\/\?)\S+/gi;
 let legacyWebToken = localStorage.getItem("hira_web_token") || "";
 if (legacyWebToken) localStorage.removeItem("hira_web_token");
+const runtimeWebToken = safeSessionValue(SESSION_TOKEN_KEY);
 
 const state = {
-  token: "",
-  sessionUnlocked: localStorage.getItem("hira_session_unlocked") === "1" || Boolean(legacyWebToken),
+  token: runtimeWebToken,
+  sessionUnlocked: localStorage.getItem("hira_session_unlocked") === "1" || Boolean(legacyWebToken) || Boolean(runtimeWebToken),
   theme: localStorage.getItem("hira_theme") || "light",
   clientId: localStorage.getItem("hira_client_id") || (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `hira-${Date.now()}`),
   deferredInstall: null,
@@ -370,7 +389,8 @@ async function createSession(token) {
     const detail = await response.json().catch(() => ({}));
     throw new Error(detail.detail || `Session unlock failed: ${response.status}`);
   }
-  state.token = "";
+  state.token = clean;
+  saveSessionValue(SESSION_TOKEN_KEY, clean);
   localStorage.removeItem("hira_web_token");
   state.sessionUnlocked = true;
   localStorage.setItem("hira_session_unlocked", "1");
@@ -394,6 +414,7 @@ async function migrateLegacyToken() {
     setStatus("Session restored on this device.", "ok");
   } catch (error) {
     state.token = "";
+    saveSessionValue(SESSION_TOKEN_KEY, "");
     state.sessionUnlocked = false;
     localStorage.removeItem("hira_web_token");
     localStorage.removeItem("hira_session_unlocked");
@@ -432,6 +453,8 @@ async function api(path, options = {}, tokenPrompted = false) {
     );
   }
   if (response.status === 401) {
+    state.token = "";
+    saveSessionValue(SESSION_TOKEN_KEY, "");
     state.sessionUnlocked = false;
     localStorage.removeItem("hira_session_unlocked");
     openTokenSettings(
@@ -455,6 +478,8 @@ async function api(path, options = {}, tokenPrompted = false) {
 async function fetchWithToken(path, options = {}, tokenPrompted = false) {
   const response = await fetch(path, withAuth(options));
   if (response.status === 401) {
+    state.token = "";
+    saveSessionValue(SESSION_TOKEN_KEY, "");
     state.sessionUnlocked = false;
     localStorage.removeItem("hira_session_unlocked");
     openTokenSettings(
@@ -4093,6 +4118,7 @@ $("#clearTokenBtn").addEventListener("click", () => {
   state.token = "";
   state.sessionUnlocked = false;
   $("#tokenInput").value = "";
+  saveSessionValue(SESSION_TOKEN_KEY, "");
   localStorage.removeItem("hira_web_token");
   localStorage.removeItem("hira_session_unlocked");
   fetch("/api/auth/logout", {
