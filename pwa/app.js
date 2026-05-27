@@ -20,24 +20,31 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260526-startup-fix-66";
-const APP_SCRIPT = "app.js?v=20260526-startup-fix-66";
-const EXPECTED_SW_CACHE = "hira-os-v136";
+const APP_VERSION = "20260527-sync-baseline-67";
+const APP_SCRIPT = "app.js?v=20260527-sync-baseline-67";
+const EXPECTED_SW_CACHE = "hira-os-v137";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
 const AGENDA_CACHE_KEY = "hira_pwa_agenda_snapshot_v1";
 const PUSH_SYNC_MODE_KEY = "hira_pwa_last_push_sync_mode";
 const PUSH_SYNC_ENDPOINT_KEY = "hira_pwa_last_push_sync_endpoint";
+const SESSION_TOKEN_KEY = "hira_web_session_token";
 const HOME_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const HOME_REFRESH_THROTTLE_MS = 45 * 1000;
 const SOURCE_PLUMBING_URL_PATTERN = /https?:\/\/(?:news\.google\.com\/rss\/articles|site\.api\.espn\.com\/apis\/|duckduckgo\.com\/l\/\?)\S+/gi;
 let legacyWebToken = localStorage.getItem("hira_web_token") || "";
-if (legacyWebToken) localStorage.removeItem("hira_web_token");
+let runtimeWebToken = "";
+try {
+  runtimeWebToken = sessionStorage.getItem(SESSION_TOKEN_KEY) || "";
+} catch (_) {
+  runtimeWebToken = "";
+}
+const persistedWebToken = legacyWebToken || runtimeWebToken;
 
 const state = {
-  token: "",
-  sessionUnlocked: localStorage.getItem("hira_session_unlocked") === "1" || Boolean(legacyWebToken),
+  token: persistedWebToken,
+  sessionUnlocked: localStorage.getItem("hira_session_unlocked") === "1" || Boolean(persistedWebToken),
   theme: localStorage.getItem("hira_theme") || "light",
   clientId: localStorage.getItem("hira_client_id") || (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `hira-${Date.now()}`),
   deferredInstall: null,
@@ -366,8 +373,13 @@ async function createSession(token) {
     const detail = await response.json().catch(() => ({}));
     throw new Error(detail.detail || `Session unlock failed: ${response.status}`);
   }
-  state.token = "";
-  localStorage.removeItem("hira_web_token");
+  state.token = clean;
+  localStorage.setItem("hira_web_token", clean);
+  try {
+    sessionStorage.setItem(SESSION_TOKEN_KEY, clean);
+  } catch (_) {
+    // Session storage may be unavailable in some installed-app contexts.
+  }
   state.sessionUnlocked = true;
   localStorage.setItem("hira_session_unlocked", "1");
   state.lastPushSyncAt = 0;
@@ -382,19 +394,17 @@ async function createSession(token) {
 }
 
 async function migrateLegacyToken() {
-  const token = legacyWebToken;
+  const token = String(legacyWebToken || runtimeWebToken || "").trim();
   legacyWebToken = "";
   if (!token) return;
+  state.token = token;
+  state.sessionUnlocked = true;
+  localStorage.setItem("hira_web_token", token);
+  localStorage.setItem("hira_session_unlocked", "1");
   try {
-    await createSession(token);
-    setStatus("Session restored on this device.", "ok");
-  } catch (error) {
-    state.token = "";
-    state.sessionUnlocked = false;
-    localStorage.removeItem("hira_web_token");
-    localStorage.removeItem("hira_session_unlocked");
-    $("#settingsPanel").hidden = false;
-    setStatus(`Saved token was rejected: ${error.message}`, "warn");
+    sessionStorage.setItem(SESSION_TOKEN_KEY, token);
+  } catch (_) {
+    // Keep localStorage as the durable installed-app fallback.
   }
 }
 
@@ -428,7 +438,12 @@ async function api(path, options = {}, tokenPrompted = false) {
     );
   }
   if (response.status === 401) {
+    state.token = "";
     state.sessionUnlocked = false;
+    localStorage.removeItem("hira_web_token");
+    try {
+      sessionStorage.removeItem(SESSION_TOKEN_KEY);
+    } catch (_) {}
     localStorage.removeItem("hira_session_unlocked");
     openTokenSettings(
       tokenPrompted
@@ -451,7 +466,12 @@ async function api(path, options = {}, tokenPrompted = false) {
 async function fetchWithToken(path, options = {}, tokenPrompted = false) {
   const response = await fetch(path, withAuth(options));
   if (response.status === 401) {
+    state.token = "";
     state.sessionUnlocked = false;
+    localStorage.removeItem("hira_web_token");
+    try {
+      sessionStorage.removeItem(SESSION_TOKEN_KEY);
+    } catch (_) {}
     localStorage.removeItem("hira_session_unlocked");
     openTokenSettings(
       tokenPrompted
@@ -3952,6 +3972,9 @@ $("#clearTokenBtn").addEventListener("click", () => {
   state.sessionUnlocked = false;
   $("#tokenInput").value = "";
   localStorage.removeItem("hira_web_token");
+  try {
+    sessionStorage.removeItem(SESSION_TOKEN_KEY);
+  } catch (_) {}
   localStorage.removeItem("hira_session_unlocked");
   fetch("/api/auth/logout", {
     method: "POST",

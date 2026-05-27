@@ -1,9 +1,9 @@
-const CACHE_NAME = "hira-os-v136";
-const HIRA_APP_VERSION = "20260526-startup-fix-66";
+const CACHE_NAME = "hira-os-v137";
+const HIRA_APP_VERSION = "20260527-sync-baseline-67";
 const ASSETS = [
   "/",
-  "/styles.css?v=20260526-startup-fix-66",
-  "/app.js?v=20260526-startup-fix-66",
+  "/styles.css?v=20260527-sync-baseline-67",
+  "/app.js?v=20260527-sync-baseline-67",
   "/static/icon.svg",
   "/static/icon-192.png",
   "/static/icon-512.png",
@@ -48,6 +48,8 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
+  const url = new URL(event.request.url);
+  if (url.origin === self.location.origin && url.pathname.startsWith("/api/")) return;
   event.respondWith(
     fetch(event.request).catch(() => caches.match(event.request).then((cached) => cached || caches.match("/")))
   );
