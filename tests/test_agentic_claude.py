@@ -2,11 +2,13 @@ import asyncio
 import io
 import json
 import os
+import threading
 import time
 import unittest
 from datetime import date, datetime, timezone
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import ANY, patch
 
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
@@ -2316,6 +2318,39 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(result["fast"], "ok")
         self.assertEqual(result["slow"], "fallback-slow")
         self.assertTrue(any(item["phase"] == "test.slow" and item["status"] == "timeout" for item in timings))
+
+    def test_home_job_runner_timeout_does_not_block_followup_calls(self):
+        timings = []
+        release = threading.Event()
+        shared_executor = ThreadPoolExecutor(max_workers=1)
+
+        def blocked_source():
+            release.wait()
+            return "late"
+
+        try:
+            with patch.object(web_app, "_HOME_EXECUTOR", shared_executor, create=True):
+                first = web_app._home_run_jobs(
+                    {"slow": blocked_source},
+                    {"slow": "fallback-slow"},
+                    timeout=0.01,
+                    timings=timings,
+                    prefix="test.",
+                )
+                second = web_app._home_run_jobs(
+                    {"fast": lambda: "ok"},
+                    {"fast": "fallback-fast"},
+                    timeout=0.01,
+                    timings=timings,
+                    prefix="test.",
+                )
+        finally:
+            release.set()
+            shared_executor.shutdown(wait=False, cancel_futures=True)
+            time.sleep(0.02)
+
+        self.assertEqual(first["slow"], "fallback-slow")
+        self.assertEqual(second["fast"], "ok")
 
     def test_morning_briefing_waits_for_confirmed_phone_push(self):
         with (

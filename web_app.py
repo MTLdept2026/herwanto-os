@@ -50,7 +50,6 @@ try:
 except ValueError:
     _HOME_EXECUTOR_WORKERS = 4
 _HOME_EXECUTOR_WORKERS = max(1, min(4, _HOME_EXECUTOR_WORKERS))
-_HOME_EXECUTOR = ThreadPoolExecutor(max_workers=_HOME_EXECUTOR_WORKERS)
 _WEB_SCHEDULER_TASKS: list[asyncio.Task] = []
 _WEB_MEMORY_WATCHDOG_TASK: asyncio.Task | None = None
 _WEB_PUSH_RECOVERY_TASK: asyncio.Task | None = None
@@ -2174,28 +2173,32 @@ def _home_run_jobs(jobs: dict, fallbacks: dict, timeout: float, timings: list[di
             return "error", None, round((time.perf_counter() - started) * 1000), str(exc)
 
     submitted_at = {key: time.perf_counter() for key in jobs}
-    futures = {key: _HOME_EXECUTOR.submit(run_timed, builder) for key, builder in jobs.items()}
-    wait(futures.values(), timeout=timeout)
-    results = {}
-    for key, future in futures.items():
-        phase = f"{prefix}{key}" if prefix else key
-        if not future.done():
-            future.cancel()
-            results[key] = fallbacks[key]
-            _home_timing(timings, phase, submitted_at[key], "timeout", f">{timeout:.1f}s")
-            continue
-        try:
-            status, value, elapsed_ms, detail = future.result()
-            if status == "ok":
-                results[key] = value
-                _record_home_timing(timings, phase, elapsed_ms)
-            else:
+    executor = ThreadPoolExecutor(max_workers=max(1, min(_HOME_EXECUTOR_WORKERS, len(jobs))))
+    try:
+        futures = {key: executor.submit(run_timed, builder) for key, builder in jobs.items()}
+        wait(futures.values(), timeout=timeout)
+        results = {}
+        for key, future in futures.items():
+            phase = f"{prefix}{key}" if prefix else key
+            if not future.done():
+                future.cancel()
                 results[key] = fallbacks[key]
-                _record_home_timing(timings, phase, elapsed_ms, "error", detail)
-        except Exception as exc:
-            results[key] = fallbacks[key]
-            _home_timing(timings, phase, submitted_at[key], "error", str(exc))
-    return results
+                _home_timing(timings, phase, submitted_at[key], "timeout", f">{timeout:.1f}s")
+                continue
+            try:
+                status, value, elapsed_ms, detail = future.result()
+                if status == "ok":
+                    results[key] = value
+                    _record_home_timing(timings, phase, elapsed_ms)
+                else:
+                    results[key] = fallbacks[key]
+                    _record_home_timing(timings, phase, elapsed_ms, "error", detail)
+            except Exception as exc:
+                results[key] = fallbacks[key]
+                _home_timing(timings, phase, submitted_at[key], "error", str(exc))
+        return results
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _home_snapshot(days: int, timings: list[dict] | None = None) -> dict:
