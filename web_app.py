@@ -3627,18 +3627,6 @@ def _streaming_presence_preface(message: str, tool_name: str) -> str:
     return ""
 
 
-def _with_presence_preface(text: str, presence: str) -> str:
-    clean_text = str(text or "").strip()
-    clean_presence = str(presence or "").strip()
-    if not clean_presence:
-        return clean_text
-    if not clean_text:
-        return clean_presence
-    if clean_text.startswith(clean_presence):
-        return clean_text
-    return f"{clean_presence}\n\n{clean_text}"
-
-
 def _archive_notifications_by_source(source: str) -> list[str]:
     clean_source = str(source or "").strip()
     if not clean_source:
@@ -4489,9 +4477,6 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                         "presence_tool": presence_tool,
                     })
                     yield sse({"type": "trace", "trace": trace})
-                    reply_parts.append(f"{presence_preface}\n\n")
-                    yield sse(timing("first_token"))
-                    yield sse({"type": "text", "text": f"{presence_preface}\n\n"})
             stream = (
                 bot.stream_quick_pwa_reply(list(history[:-1]), message)
                 if quick
@@ -4503,7 +4488,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                     direct_user_text=message,
                 )
             )
-            first_text = not bool(presence_preface)
+            first_text = True
             async for event in stream:
                 if first_text and event.get("type") == "text":
                     first_text = False
@@ -4511,10 +4496,8 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                 if event.get("type") == "text":
                     reply_parts.append(event.get("text", ""))
                 elif event.get("type") == "replace":
-                    event = {**event, "text": _with_presence_preface(event.get("text", ""), presence_preface)}
                     reply_parts = [event.get("text", "")]
                 elif event.get("type") == "done":
-                    event = {**event, "text": _with_presence_preface(event.get("text", ""), presence_preface)}
                     final_text = event.get("text", "")
                 elif event.get("type") == "tool":
                     _merge_chat_trace(trace, {"tools_called": [event.get("name", "")]})
@@ -4588,16 +4571,15 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                         "confidence_gate": "fallback",
                         "final_mode": "empty_answer_fallback",
                     })
-                    reply_text = _with_presence_preface(fallback_text, presence_preface)
+                    reply_text = fallback_text
                 else:
                     _merge_chat_trace(trace, {
                         "confidence_gate": "failed" if trace.get("source_discipline", {}).get("needs_live_check") else trace.get("confidence_gate"),
                         "final_mode": "empty_answer",
                     })
-                    reply_text = _with_presence_preface(
+                    reply_text = (
                         "I lost the actual answer before it reached the chat, so I’m not going to pretend that was done. "
-                        "Try again in a moment.",
-                        presence_preface,
+                        "Try again in a moment."
                     )
                 yield sse({"type": "replace", "text": reply_text})
                 yield sse({"type": "done", "text": reply_text})
@@ -4622,7 +4604,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                         "final_mode": "no_access_claim_fallback",
                         "response_contract": {"status": "fallback_replaced_no_access_claim"},
                     })
-                    reply_text = _with_presence_preface(fallback_text, presence_preface)
+                    reply_text = fallback_text
                     yield sse({"type": "replace", "text": reply_text})
                     yield sse({"type": "done", "text": reply_text})
                 elif response_contract.get("weak_answer"):
@@ -4630,10 +4612,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                         "confidence_gate": "failed",
                         "final_mode": "weak_answer_blocked",
                     })
-                    reply_text = _with_presence_preface(
-                        "That was too thin for what you asked. I’m treating it as a failed pass, not a real answer.",
-                        presence_preface,
-                    )
+                    reply_text = "That was too thin for what you asked. I’m treating it as a failed pass, not a real answer."
                     yield sse({"type": "replace", "text": reply_text})
                     yield sse({"type": "done", "text": reply_text})
             history.append({"role": "assistant", "content": reply_text})
@@ -4668,7 +4647,6 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                     "confidence_gate": "fallback",
                     "final_mode": "fallback_summary",
                 })
-                fallback_text = _with_presence_preface(fallback_text, presence_preface)
                 history.append({"role": "assistant", "content": fallback_text})
                 _save_history_best_effort(history_key, history)
                 yield sse({"type": "text", "text": fallback_text})

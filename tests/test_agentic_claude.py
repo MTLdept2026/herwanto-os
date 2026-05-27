@@ -5474,7 +5474,7 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertTrue(any(event.get("patch", {}).get("vision_handoff") == "openai" for event in events))
         self.assertTrue(any(event.get("type") == "done" for event in events))
 
-    def test_pwa_tool_route_streams_presence_preface_into_same_answer(self):
+    def test_pwa_tool_route_keeps_presence_preface_out_of_visible_answer(self):
         async def fake_agentic_stream(*_args, **_kwargs):
             yield {"type": "tool", "name": "get_gmail_brief"}
             yield {"type": "text", "text": "Found one seminar link in the latest work thread."}
@@ -5509,13 +5509,10 @@ class AgenticClaudeTests(unittest.TestCase):
 
         text_events = [event.get("text", "") for event in events if event.get("type") == "text"]
         done_events = [event.get("text", "") for event in events if event.get("type") == "done"]
-        self.assertTrue(text_events[0].startswith("I'll check Work Gmail for the links now."))
-        self.assertIn("Found one seminar link", "".join(text_events))
-        self.assertTrue(done_events[-1].startswith("I'll check Work Gmail for the links now."))
-        self.assertIn("Found one seminar link", done_events[-1])
+        self.assertEqual(text_events, ["Found one seminar link in the latest work thread."])
+        self.assertEqual(done_events[-1], "Found one seminar link in the latest work thread.")
         saved_history = save_history.call_args.args[1]
-        self.assertTrue(saved_history[-1]["content"].startswith("I'll check Work Gmail for the links now."))
-        self.assertIn("Found one seminar link", saved_history[-1]["content"])
+        self.assertEqual(saved_history[-1]["content"], "Found one seminar link in the latest work thread.")
 
     def test_pwa_triage_uses_direct_context_route_before_model(self):
         task = {
