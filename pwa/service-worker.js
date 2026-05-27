@@ -1,9 +1,9 @@
-const CACHE_NAME = "hira-os-v142";
-const HIRA_APP_VERSION = "20260527-service-worker-api-bypass-72";
+const CACHE_NAME = "hira-os-v143";
+const HIRA_APP_VERSION = "20260527-post-sync-73";
 const ASSETS = [
   "/",
-  "/styles.css?v=20260527-service-worker-api-bypass-72",
-  "/app.js?v=20260527-service-worker-api-bypass-72",
+  "/styles.css?v=20260527-post-sync-73",
+  "/app.js?v=20260527-post-sync-73",
   "/static/icon.svg",
   "/static/icon-192.png",
   "/static/icon-512.png",

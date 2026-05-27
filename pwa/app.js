@@ -37,9 +37,9 @@ function saveSessionValue(key, value) {
   }
 }
 
-const APP_VERSION = "20260527-service-worker-api-bypass-72";
-const APP_SCRIPT = "app.js?v=20260527-service-worker-api-bypass-72";
-const EXPECTED_SW_CACHE = "hira-os-v142";
+const APP_VERSION = "20260527-post-sync-73";
+const APP_SCRIPT = "app.js?v=20260527-post-sync-73";
+const EXPECTED_SW_CACHE = "hira-os-v143";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
@@ -3275,7 +3275,12 @@ async function loadHome({ force = false, background = false, useCache = true } =
     }, 7000);
     const hardTimeout = window.setTimeout(() => controller.abort(), 28000);
     try {
-      const data = await api(`/api/home?days=${state.homeDays}`, { headers: headers(false), signal: controller.signal });
+      const data = await api("/api/home", {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({ days: state.homeDays }),
+        signal: controller.signal,
+      });
       saveHomeSnapshot(data);
       renderHomeData(data);
       const slowNote = homeSlowSyncNote(data.sync_timings);
@@ -3351,7 +3356,11 @@ async function loadAgenda(days = 7, { force = false, useCache = true } = {}) {
     $("#agendaOutput").innerHTML = "<div>Loading...</div>";
   }
   try {
-    const data = await api(`/api/agenda?days=${days}`, { headers: headers(false) });
+    const data = await api("/api/agenda", {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ days }),
+    });
     saveAgendaSnapshot(days, data);
     renderAgendaData(data);
     setStatus("Agenda refreshed.", "ok");
@@ -3364,7 +3373,11 @@ async function loadAgenda(days = 7, { force = false, useCache = true } = {}) {
 async function loadTasks(days = 30) {
   $("#tasksOutput").innerHTML = "<div>Loading...</div>";
   try {
-    const data = await api(`/api/tasks?days=${days}`, { headers: headers(false) });
+    const data = await api("/api/tasks", {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ days }),
+    });
     $("#tasksOutput").innerHTML = data.structured ? renderTaskList(data.structured) : renderTaskBriefFromText(data.text);
     refreshIcons($("#tasksOutput"));
     setStatus("Tasks refreshed.", "ok");
@@ -3454,7 +3467,7 @@ async function loadFilesLibrary() {
   if (!$("#fileLibrary")) return;
   $("#fileLibrary").innerHTML = "<div>Loading...</div>";
   try {
-    const data = await api("/api/files", { headers: headers(false) });
+    const data = await api("/api/files", { method: "POST", headers: headers() });
     $("#fileLibrary").innerHTML = renderTextBlock(data.text);
   } catch (error) {
     $("#fileLibrary").textContent = `Error: ${error.message}`;

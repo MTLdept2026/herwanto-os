@@ -42,8 +42,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260527-service-worker-api-bypass-72"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v142"
+PWA_APP_VERSION = "20260527-post-sync-73"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v143"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -892,6 +892,10 @@ class DeviceLocation(BaseModel):
 
 class AuthSessionRequest(BaseModel):
     token: str
+
+
+class SyncDaysRequest(BaseModel):
+    days: int = 7
 
 
 class ChatRequest(BaseModel):
@@ -3236,6 +3240,11 @@ async def home(days: int = 7, x_hira_token: Optional[str] = Header(default=None)
     }
 
 
+@app.post("/api/home")
+async def home_sync(req: SyncDaysRequest, x_hira_token: Optional[str] = Header(default=None)):
+    return await home(req.days, x_hira_token)
+
+
 def _briefing_replay_slot(message: str) -> str:
     clean = " ".join((message or "").lower().split())
     if not clean:
@@ -4941,6 +4950,11 @@ def agenda(days: int = 7, x_hira_token: Optional[str] = Header(default=None)):
     }
 
 
+@app.post("/api/agenda")
+def agenda_sync(req: SyncDaysRequest, x_hira_token: Optional[str] = Header(default=None)):
+    return agenda(req.days, x_hira_token)
+
+
 @app.get("/api/tasks")
 def tasks(days: int = 7, x_hira_token: Optional[str] = Header(default=None)):
     _require_token(x_hira_token)
@@ -4953,6 +4967,11 @@ def tasks(days: int = 7, x_hira_token: Optional[str] = Header(default=None)):
         "text": _safe_text(lambda: bot.build_task_brief(days), "Task brief unavailable until Google is connected."),
         "structured": structured,
     }
+
+
+@app.post("/api/tasks")
+def tasks_sync(req: SyncDaysRequest, x_hira_token: Optional[str] = Header(default=None)):
+    return tasks(req.days, x_hira_token)
 
 
 @app.get("/api/islamic")
@@ -5944,6 +5963,11 @@ def taste_profile_save(
 def files(x_hira_token: Optional[str] = Header(default=None)):
     _require_token(x_hira_token)
     return {"text": _safe_text(lambda: bot.build_files_index(), "File memory unavailable until Google is connected.")}
+
+
+@app.post("/api/files")
+def files_sync(x_hira_token: Optional[str] = Header(default=None)):
+    return files(x_hira_token)
 
 
 @app.post("/api/gmail")
