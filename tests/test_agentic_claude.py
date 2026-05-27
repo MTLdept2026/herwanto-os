@@ -1535,6 +1535,8 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("safeHttpUrl", app_js)
         self.assertIn("allowServerSync = true", app_js)
         self.assertIn("allowServerLookup = true", app_js)
+        self.assertIn("SESSION_TOKEN_KEY", app_js)
+        self.assertIn("saveSessionValue", app_js)
         self.assertIn('updateNotificationControls({ allowServerSync: false });', app_js)
         self.assertIn('renderAppVersion({ allowServerLookup: false });', app_js)
         self.assertNotIn('localStorage.setItem("hira_web_token"', app_js)
