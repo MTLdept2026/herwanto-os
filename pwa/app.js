@@ -37,9 +37,9 @@ function saveSessionValue(key, value) {
   }
 }
 
-const APP_VERSION = "20260527-persistent-token-71";
-const APP_SCRIPT = "app.js?v=20260527-persistent-token-71";
-const EXPECTED_SW_CACHE = "hira-os-v141";
+const APP_VERSION = "20260527-service-worker-api-bypass-72";
+const APP_SCRIPT = "app.js?v=20260527-service-worker-api-bypass-72";
+const EXPECTED_SW_CACHE = "hira-os-v142";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";

@@ -1527,6 +1527,8 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("standaloneClientIds", service_worker)
         self.assertIn("HIRA_CLIENT_MODE", service_worker)
         self.assertIn("standaloneClientIds.has(client.id)", service_worker)
+        self.assertIn('url.pathname.startsWith("/api/")', service_worker)
+        self.assertIn('if (url.origin === self.location.origin && url.pathname.startsWith("/api/")) return;', service_worker)
         self.assertIn("reportClientModeToServiceWorker", app_js)
         self.assertIn("GET_HIRA_VERSION", service_worker)
         self.assertIn("renderAppVersion", app_js)
