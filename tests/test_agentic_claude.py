@@ -2278,7 +2278,7 @@ class AgenticClaudeTests(unittest.TestCase):
             patch.object(web_app.bot.gs, "get_reminders", side_effect=RuntimeError("sheets down")),
             patch.object(web_app.bot.gs, "get_task_metadata", return_value={}),
             patch.object(web_app.bot.gs, "get_marking_tasks", return_value=[]),
-            patch.object(web_app.bot.gs, "get_memory", return_value={}),
+            patch.object(web_app.bot.gs, "get_memory", return_value={}) as get_memory,
             patch.object(web_app.bot.gs, "get_events_between", side_effect=RuntimeError("calendar down")),
             patch.object(web_app.bot, "_lessons_for_date", return_value=(lessons, "Odd")),
             patch.object(web_app.bot, "school_day_cleared_memory_for_date", return_value=""),
@@ -2297,6 +2297,7 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertNotIn("unavailable", data["daily_load"]["note"].lower())
         self.assertNotIn("unavailable", data["daily_load"]["rest_note"].lower())
         self.assertIn("sync_timings", data)
+        self.assertEqual(get_memory.call_count, 1)
 
     def test_home_job_runner_times_out_slow_optional_sources(self):
         timings = []
@@ -9479,7 +9480,7 @@ class AgenticClaudeTests(unittest.TestCase):
         with (
             patch.object(web_app.bot, "google_ok", return_value=True),
             patch.object(web_app.bot.gs, "gmail_ok", side_effect=lambda account="personal": True),
-            patch.object(web_app.bot, "work_gmail_monitor_status", return_value={
+            patch.object(web_app, "_cached_work_gmail_monitor_status", return_value={
                 "enabled": True,
                 "connected": True,
                 "status": "error",
@@ -9494,6 +9495,19 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertTrue(services["_details"]["work_gmail"]["configured"])
         self.assertEqual(services["_details"]["work_gmail"]["state"], "reconnect")
         self.assertEqual(services["_details"]["work_gmail"]["label"], "Reconnect")
+
+    def test_pwa_service_status_does_not_read_live_work_gmail_monitor(self):
+        with (
+            patch.object(web_app.bot, "google_ok", return_value=True),
+            patch.object(web_app.bot.gs, "gmail_ok", side_effect=lambda account="personal": True),
+            patch.object(web_app.bot, "work_gmail_monitor_status", side_effect=AssertionError("live monitor read")),
+            patch.object(web_app, "_cached_work_gmail_monitor_status", return_value={}),
+            patch.object(web_app.dropbox, "configured", return_value=False),
+        ):
+            services = web_app._service_status()
+
+        self.assertTrue(services["work_gmail"])
+        self.assertEqual(services["_details"]["work_gmail"]["state"], "on")
 
     def test_successful_work_gmail_fetch_marks_monitor_healthy(self):
         store = {}

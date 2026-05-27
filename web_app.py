@@ -2228,6 +2228,29 @@ def _home_snapshot(days: int, timings: list[dict] | None = None) -> dict:
     return snapshot
 
 
+def _home_school_day_cleared_memory_for_date(target: date | datetime | str, memory: dict | None) -> str:
+    try:
+        if isinstance(target, datetime):
+            day = target.astimezone(bot.SGT).date()
+        elif isinstance(target, date):
+            day = target
+        else:
+            day = date.fromisoformat(str(target)[:10])
+    except Exception:
+        return ""
+    markers = (
+        f"{bot.TIMETABLE_CLEAR_MEMORY_PREFIX}{day.isoformat()}",
+        f"{bot.RELIEF_MEMORY_PREFIX}{day.isoformat()}",
+        f"{bot.ABSENCE_MEMORY_PREFIX}{day.isoformat()}",
+    )
+    teaching_memory = (memory or {}).get("teaching", []) or []
+    for item in reversed(teaching_memory):
+        text = str(item or "").strip()
+        if any(marker in text for marker in markers):
+            return text
+    return ""
+
+
 def _home_agenda_structured(days: int, snapshot: dict) -> dict:
     days = max(1, min(int(days or 7), 14))
     now = datetime.now(bot.SGT)
@@ -2235,14 +2258,12 @@ def _home_agenda_structured(days: int, snapshot: dict) -> dict:
     end_date = today + bot.timedelta(days=days - 1)
     day_map = {}
     relief_cache = {}
+    memory = snapshot.get("memory") or {}
     for offset in range(days):
         target = today + bot.timedelta(days=offset)
-        try:
-            relief_cache[target.isoformat()] = bool(bot.school_day_cleared_memory_for_date(target))
-        except Exception:
-            relief_cache[target.isoformat()] = False
+        relief_cache[target.isoformat()] = bool(_home_school_day_cleared_memory_for_date(target, memory))
         lessons, _wt_label = bot._lessons_for_date(target)
-        visible_lessons = bot._visible_lessons_for_date(target, lessons)
+        visible_lessons = [] if relief_cache[target.isoformat()] else list(lessons or [])
         day_map[target.isoformat()] = {
             "date": target.isoformat(),
             "label": target.strftime("%A, %-d %B"),
@@ -2292,8 +2313,10 @@ def _home_agenda_text(days: int, structured: dict, snapshot: dict) -> str:
     lines = [f"*Agenda*\n_{now.strftime('%A, %-d %B %Y, %H:%M SGT')}_\n"]
     lessons, wt_label = bot._lessons_for_date(today)
     if wt_label and today.weekday() < 5:
+        today_relief = bool((structured.get("days") or [{}])[0].get("relieved"))
+        visible_lessons = [] if today_relief else list(lessons or [])
         lines.append(f"*Today at school ({bot._week_display(wt_label, today)})*")
-        lines.append(bot.tt.format_lessons(bot._visible_lessons_for_date(today, lessons)))
+        lines.append(bot.tt.format_lessons(visible_lessons))
         lines.append("")
     if not snapshot.get("google"):
         lines.append("_Google not connected._")
@@ -2374,7 +2397,7 @@ def _home_task_text(days: int, tasks: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _home_load_days_for_dates(dates: list, today: date, reminders: list[dict]) -> list[dict]:
+def _home_load_days_for_dates(dates: list, today: date, reminders: list[dict], memory: dict | None = None) -> list[dict]:
     if not dates:
         return []
     event_counts = {target.isoformat(): 0 for target in dates}
@@ -2391,10 +2414,11 @@ def _home_load_days_for_dates(dates: list, today: date, reminders: list[dict]) -
     for target in dates:
         lessons, _ = bot._lessons_for_date(target)
         key = target.isoformat()
+        lesson_count = 0 if _home_school_day_cleared_memory_for_date(target, memory) else len(lessons or [])
         load_days.append(bot._daily_load_item(
             target,
             today,
-            bot._effective_lesson_count(target, lessons),
+            lesson_count,
             event_counts.get(key, 0),
             due_counts.get(key, 0),
             0,
@@ -2434,8 +2458,9 @@ def _home_daily_load(days: int, structured: dict, snapshot: dict) -> dict:
         "marking_scripts": 0,
     }
     reminders = snapshot.get("reminders") or []
-    previous_week = _home_load_days_for_dates(bot._weekday_neighbors(today, -1), today, reminders)
-    next_week = _home_load_days_for_dates(bot._weekday_neighbors(today, 1), today, reminders)
+    memory = snapshot.get("memory") or {}
+    previous_week = _home_load_days_for_dates(bot._weekday_neighbors(today, -1), today, reminders, memory=memory)
+    next_week = _home_load_days_for_dates(bot._weekday_neighbors(today, 1), today, reminders, memory=memory)
     return {
         "today": today_load,
         "days": load_days,
@@ -2493,11 +2518,18 @@ def _parallel_home_data(days: int) -> dict:
             _home_timing(timings, "legacy_fallback", total_started, "error", str(fallback_exc))
             bot.logger.warning(f"Home timetable fallback failed: {fallback_exc}")
 
+    services_started = time.perf_counter()
+    try:
+        results["services"] = _service_status()
+        _home_timing(timings, "extra.services", services_started)
+    except Exception as exc:
+        results["services"] = fallbacks["services"]
+        _home_timing(timings, "extra.services", services_started, "error", str(exc))
+
     jobs = {
-        # Keep connection and delivery status ahead of slower enrichment jobs.
+        # Keep delivery status ahead of slower enrichment jobs.
         # These cards are the first place the UI reports whether H.I.R.A is
         # alive, so they should not be starved by digest/ClassOps fetches.
-        "services": _service_status,
         "briefing_delivery": _briefing_delivery_status,
         "prayers": bot.prayer_notification_status,
         "islamic": lambda: bot.build_islamic_brief(),
@@ -2512,8 +2544,35 @@ def _parallel_home_data(days: int) -> dict:
     return results
 
 
+def _cached_google_config_value(key: str) -> str:
+    cache = getattr(bot.gs, "_config_cache", None)
+    cache_valid = getattr(bot.gs, "_config_cache_valid", None)
+    if not isinstance(cache, dict) or not callable(cache_valid):
+        return ""
+    try:
+        if not cache_valid():
+            return ""
+        values = cache.get("values") or {}
+        return str(values.get(key, "") or "")
+    except Exception:
+        return ""
+
+
+def _cached_work_gmail_monitor_status() -> dict:
+    raw = _cached_google_config_value(getattr(bot, "WORK_GMAIL_MONITOR_STATUS_KEY", "work_gmail_monitor_status"))
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _service_status() -> dict:
-    work_gmail_status = bot.work_gmail_monitor_status()
+    # Home connection chips must stay cheap: they render while live sources may
+    # be degraded, so do not perform fresh Google reads here.
+    work_gmail_status = _cached_work_gmail_monitor_status()
     work_gmail_configured = bot.gs.gmail_ok("work")
     work_gmail_detail = str(work_gmail_status.get("detail", "") or "")
     work_gmail_error = str(work_gmail_status.get("status", "") or "").strip().lower() == "error"
