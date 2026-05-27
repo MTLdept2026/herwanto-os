@@ -20,6 +20,25 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
+function ensureArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function ensureObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function ensureText(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch (_) {
+    return String(value);
+  }
+}
+
 function safeSessionValue(key) {
   try {
     return sessionStorage.getItem(key) || "";
@@ -37,9 +56,9 @@ function saveSessionValue(key, value) {
   }
 }
 
-const APP_VERSION = "20260527-post-sync-73";
-const APP_SCRIPT = "app.js?v=20260527-post-sync-73";
-const EXPECTED_SW_CACHE = "hira-os-v143";
+const APP_VERSION = "20260527-sync-hardening-74";
+const APP_SCRIPT = "app.js?v=20260527-sync-hardening-74";
+const EXPECTED_SW_CACHE = "hira-os-v144";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
@@ -1214,7 +1233,7 @@ async function performNotificationAction(action, item = {}) {
 async function pollNotifications() {
   try {
     const data = await api("/api/notifications?limit=12", { headers: headers(false) });
-    const items = data.notifications || [];
+    const items = ensureArray(data.notifications);
     if (!items.length) return;
     const fresh = [];
     const activeItems = items.filter((item) => !isNotificationDismissed(item.id));
@@ -1239,7 +1258,10 @@ async function pollNotifications() {
     }
     if (fresh.length) setStatus(`${fresh.length} app notification${fresh.length === 1 ? "" : "s"} received.`, "ok");
   } catch (error) {
-    if (!/token/i.test(error.message)) setStatus(`Notifications: ${error.message}`, "warn");
+    console.warn("Notification sync failed", error);
+    if (!/token/i.test(error.message) && !$("#notificationsPanel")?.hidden) {
+      setStatus(`Notifications: ${error.message}`, "warn");
+    }
   }
 }
 
@@ -1717,7 +1739,7 @@ function startNotificationPolling() {
 }
 
 function countMeaningfulLines(text) {
-  return (text || "")
+  return ensureText(text)
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith("*") && !line.startsWith("_")).length;
@@ -1772,13 +1794,14 @@ function renderConnections(services) {
 }
 
 function renderProactiveQueue(data = {}) {
-  const top = Array.isArray(data.top) ? data.top : [];
-  const changed = Array.isArray(data.changed) ? data.changed : [];
+  const top = ensureArray(data.top);
+  const changed = ensureArray(data.changed).map(ensureText).filter(Boolean);
   if (!top.length) {
     const changedText = changed.length ? `<p class="subtle">${markdownish(changed.join(" "))}</p>` : "";
     return `<div class="empty-state compact">No urgent proactive items right now.</div>${changedText}`;
   }
-  const cards = top.map((item, index) => {
+  const cards = top.map((raw, index) => {
+    const item = ensureObject(raw);
     const score = Number(item.score || 0);
     const priority = String(item.priority || "medium").toUpperCase();
     const hint = item.action_hint ? `<p><strong>Next:</strong> ${markdownish(item.action_hint)}</p>` : "";
@@ -1802,13 +1825,14 @@ function renderProactiveQueue(data = {}) {
 }
 
 function renderMorningDigest(data = {}, { limit = 0 } = {}) {
-  const items = Array.isArray(data.items) ? data.items : [];
+  const items = ensureArray(data.items);
   if (!items.length) {
     return `<div class="empty-state compact">No digest items returned yet.</div>`;
   }
   const visible = limit > 0 ? items.slice(0, limit) : items;
   const extra = limit > 0 ? Math.max(0, items.length - visible.length) : 0;
-  const cards = visible.map((item, index) => {
+  const cards = visible.map((raw, index) => {
+    const item = ensureObject(raw);
     const meta = [item.label, item.source].filter(Boolean).join(" · ");
     const why = item.why ? `<p><strong>Why:</strong> ${markdownish(item.why)}</p>` : "";
     const title = markdownish(item.title || "Digest item");
@@ -1857,34 +1881,47 @@ function timelineRelativeLabel(start, now) {
 function agendaTimelineItems(structured = {}) {
   const today = Array.isArray(structured.days) ? structured.days[0] : null;
   if (!today) return [];
+  const lessons = ensureArray(today.lessons);
+  const events = ensureArray(today.events);
+  const due = ensureArray(today.due);
   return [
-    ...(today.lessons || []).map((item) => ({
-      kind: "lesson",
-      time: item.time || "Anytime",
-      title: item.title || item.subject || "Lesson",
-      meta: [item.subject, item.room].filter(Boolean).join(" · "),
-      start: minutesFromTime(item.time),
-    })),
-    ...(today.events || []).map((item) => ({
-      kind: "event",
-      time: item.time || "Anytime",
-      title: item.title || "Event",
-      meta: item.meta || "",
-      start: minutesFromTime(item.time),
-    })),
-    ...(today.due || []).map((item) => ({
-      kind: "due",
-      time: "Due",
-      title: item.title || item.category || "Task due",
-      meta: item.id ? `#${item.id}` : item.category || "",
-      start: 23 * 60 + 30,
-    })),
+    ...lessons.map((raw) => {
+      const item = ensureObject(raw);
+      return {
+        kind: "lesson",
+        time: item.time || "Anytime",
+        title: item.title || item.subject || "Lesson",
+        meta: [item.subject, item.room].filter(Boolean).join(" · "),
+        start: minutesFromTime(item.time),
+      };
+    }),
+    ...events.map((raw) => {
+      const item = ensureObject(raw);
+      return {
+        kind: "event",
+        time: item.time || "Anytime",
+        title: item.title || "Event",
+        meta: item.meta || "",
+        start: minutesFromTime(item.time),
+      };
+    }),
+    ...due.map((raw) => {
+      const item = ensureObject(raw);
+      return {
+        kind: "due",
+        time: "Due",
+        title: item.title || item.category || "Task due",
+        meta: item.id ? `#${item.id}` : item.category || "",
+        start: 23 * 60 + 30,
+      };
+    }),
   ];
 }
 
 function prayerTimelineItems(prayers = {}) {
   const windowMinutes = Number(prayers.window_minutes || 20);
-  return (prayers.prayers || [])
+  return ensureArray(prayers.prayers)
+    .map(ensureObject)
     .filter((item) => ["zohor", "asar", "maghrib", "isyak"].includes(item.key))
     .map((item) => {
       const start = minutesFromTime(item.time);
@@ -2069,12 +2106,14 @@ function intelligenceSeverityClass(severity) {
 }
 
 function renderIntelligenceList(items = [], emptyText = "No signal.") {
-  if (!Array.isArray(items) || !items.length) {
+  items = ensureArray(items);
+  if (!items.length) {
     return `<div class="intelligence-item empty"><strong>${markdownish(emptyText)}</strong></div>`;
   }
   return items
     .slice(0, 4)
-    .map((item) => {
+    .map((raw) => {
+      const item = ensureObject(raw);
       const severity = intelligenceSeverityClass(item.severity || "green");
       return `
         <article class="intelligence-item ${severity}">
@@ -2087,23 +2126,26 @@ function renderIntelligenceList(items = [], emptyText = "No signal.") {
 }
 
 function renderIntelligenceProtocol(protocol = {}) {
-  const steps = Array.isArray(protocol.steps) ? protocol.steps : [];
+  const steps = ensureArray(protocol.steps);
   $("#intelligenceConfidence").textContent = `${protocol.confidence || "Limited"} confidence`;
   $("#intelligenceProtocolSteps").innerHTML = steps.length
     ? steps
         .slice(0, 3)
-        .map((step) => `
-          <article class="protocol-step">
-            <div>
-              <strong>${markdownish(step.phase || "Now")}</strong>
-              <span>${markdownish(step.time || "")}</span>
-            </div>
-            <p>${markdownish(step.task || "")}</p>
-          </article>
-        `)
+        .map((raw) => {
+          const step = ensureObject(raw);
+          return `
+            <article class="protocol-step">
+              <div>
+                <strong>${markdownish(step.phase || "Now")}</strong>
+                <span>${markdownish(step.time || "")}</span>
+              </div>
+              <p>${markdownish(step.task || "")}</p>
+            </article>
+          `;
+        })
         .join("")
     : `<article class="protocol-step empty"><div><strong>Now</strong><span>0-20m</span></div><p>Waiting for a reliable operating signal.</p></article>`;
-  const evidence = Array.isArray(protocol.evidence) ? protocol.evidence.filter(Boolean) : [];
+  const evidence = ensureArray(protocol.evidence).filter(Boolean);
   $("#intelligenceEvidence").innerHTML = evidence.length
     ? evidence.slice(0, 4).map((item) => `<span>${markdownish(item)}</span>`).join("")
     : "<span>No evidence yet</span>";
@@ -2111,11 +2153,12 @@ function renderIntelligenceProtocol(protocol = {}) {
 
 function renderForecastRadar(forecast = {}) {
   $("#intelligenceForecastHorizon").textContent = forecast.horizon || "7 days";
-  const items = Array.isArray(forecast.items) ? forecast.items : [];
+  const items = ensureArray(forecast.items);
   $("#intelligenceForecast").innerHTML = items.length
     ? items
         .slice(0, 4)
-        .map((item) => {
+        .map((raw) => {
+          const item = ensureObject(raw);
           const severity = intelligenceSeverityClass(item.severity || "green");
           return `
             <article class="forecast-item ${severity}">
@@ -2132,20 +2175,23 @@ function renderForecastRadar(forecast = {}) {
 }
 
 function renderAdaptivePlan(plan = {}) {
-  const blocks = Array.isArray(plan.blocks) ? plan.blocks : [];
+  const blocks = ensureArray(plan.blocks);
   $("#intelligencePlan").innerHTML = blocks.length
     ? blocks
         .slice(0, 4)
-        .map((block) => `
-          <article class="plan-block">
-            <div>
-              <strong>${markdownish(block.label || "Block")}</strong>
-              <span>${markdownish(block.time || "")}</span>
-            </div>
-            <h4>${markdownish(block.title || "Execution block")}</h4>
-            <p>${markdownish(block.detail || "")}</p>
-          </article>
-        `)
+        .map((raw) => {
+          const block = ensureObject(raw);
+          return `
+            <article class="plan-block">
+              <div>
+                <strong>${markdownish(block.label || "Block")}</strong>
+                <span>${markdownish(block.time || "")}</span>
+              </div>
+              <h4>${markdownish(block.title || "Execution block")}</h4>
+              <p>${markdownish(block.detail || "")}</p>
+            </article>
+          `;
+        })
         .join("")
     : `<article class="plan-block"><div><strong>Prime</strong><span>Now</span></div><h4>Waiting</h4><p>No adaptive block yet.</p></article>`;
 }
@@ -2176,6 +2222,7 @@ function renderTrialLoop(trial = {}) {
 }
 
 function renderIntelligenceStack(intelligence = {}) {
+  intelligence = ensureObject(intelligence);
   const readiness = Math.max(0, Math.min(100, Number(intelligence.readiness || 0)));
   const tone = intelligenceSeverityClass(intelligence.tone || "green");
   $("#intelligenceMode").textContent = intelligence.mode || "Standby";
@@ -2184,7 +2231,7 @@ function renderIntelligenceStack(intelligence = {}) {
   const readinessEl = $("#intelligenceReadiness");
   readinessEl.className = `intelligence-readiness score-${tone}`;
   readinessEl.style.setProperty("--score-arc", `${readiness * 2.7}deg`);
-  const next = intelligence.next_move || {};
+  const next = ensureObject(intelligence.next_move);
   $("#intelligenceNextTitle").textContent = next.title || "Protect a clean block";
   $("#intelligenceNextBody").textContent = next.body || "No critical signal is dominating right now.";
   renderIntelligenceProtocol(intelligence.protocol || {});
@@ -2276,6 +2323,7 @@ function markingSegments(value, total) {
 }
 
 function renderMarkingSets(items = []) {
+  items = ensureArray(items);
   if (!items.length) {
     return `
       <div class="marking-set empty">
@@ -2360,7 +2408,7 @@ function scrollMessagesToBottom() {
 }
 
 function escapeHtml(text) {
-  return (text || "")
+  return String(text ?? "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -2420,7 +2468,7 @@ function stripCitationMarkers(text) {
 }
 
 function stripSourcePlumbingUrls(text) {
-  const rawLines = String(text || "").split("\n");
+  const rawLines = ensureText(text).split("\n");
   const lines = rawLines
     .map((line, index) => {
       let clean = line.replace(SOURCE_PLUMBING_URL_PATTERN, "").trimEnd();
@@ -2445,7 +2493,7 @@ function stripSourcePlumbingUrls(text) {
 }
 
 function renderTextBlock(text) {
-  return (text || "")
+  return ensureText(text)
     .split("\n")
     .map((line) => {
       if (!line.trim()) return "<div class='spacer'></div>";
@@ -2457,7 +2505,7 @@ function renderTextBlock(text) {
 function renderChatText(text) {
   const blocks = [];
   let openList = false;
-  for (const raw of (text || "").split("\n")) {
+  for (const raw of ensureText(text).split("\n")) {
     const line = raw.trim();
     if (!line) {
       if (openList) {
@@ -2575,7 +2623,7 @@ function cleanStoredChatHistory(items = []) {
 }
 
 function renderAgendaCards(text, { limit = 0 } = {}) {
-  const lines = (text || "")
+  const lines = ensureText(text)
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
@@ -2618,16 +2666,29 @@ function renderAgendaCards(text, { limit = 0 } = {}) {
 }
 
 function renderAgendaStructured(data) {
-  const days = data?.days || [];
+  const days = ensureArray(data?.days);
   if (!days.length) return "<div class='empty-state'>No agenda items found.</div>";
   return `
     <div class="agenda-day-list">
       ${days
-        .map((day) => {
+        .map((rawDay) => {
+          const day = ensureObject(rawDay);
+          const lessons = ensureArray(day.lessons);
+          const events = ensureArray(day.events);
+          const due = ensureArray(day.due);
           const items = [
-            ...(day.lessons || []).map((item) => ({ ...item, label: item.subject, meta: item.room })),
-            ...(day.events || []).map((item) => ({ ...item, label: "Event" })),
-            ...(day.due || []).map((item) => ({ ...item, time: "Due", label: item.category || "Task", meta: item.id ? `#${item.id}` : "" })),
+            ...lessons.map((raw) => {
+              const item = ensureObject(raw);
+              return { ...item, label: item.subject, meta: item.room };
+            }),
+            ...events.map((raw) => {
+              const item = ensureObject(raw);
+              return { ...item, label: "Event" };
+            }),
+            ...due.map((raw) => {
+              const item = ensureObject(raw);
+              return { ...item, time: "Due", label: item.category || "Task", meta: item.id ? `#${item.id}` : "" };
+            }),
           ];
           const context = [day.label, day.week].filter(Boolean).join(" · ") || "Calendar day";
           return `
@@ -2666,7 +2727,7 @@ function renderAgendaStructured(data) {
 }
 
 function renderTaskList(data, heading = "Task Brief · Now to 7 May", { limit = 0 } = {}) {
-  const items = data?.items || [];
+  const items = ensureArray(data?.items);
   if (!items.length) return "<div class='empty-state'>No active tasks in that window.</div>";
   const visible = limit > 0 ? items.slice(0, limit) : items;
   const extra = limit > 0 ? Math.max(0, items.length - visible.length) : 0;
@@ -2675,7 +2736,8 @@ function renderTaskList(data, heading = "Task Brief · Now to 7 May", { limit = 
       <div class="task-brief-head">${markdownish(heading)}</div>
       <div class="task-list">
       ${visible
-        .map((item) => {
+        .map((raw) => {
+          const item = ensureObject(raw);
           const due = item.due || item.weekday || "No due date";
           const meta = [item.category, item.priority, item.effort].filter(Boolean).join(" / ");
           return `
@@ -2715,7 +2777,7 @@ function renderTaskList(data, heading = "Task Brief · Now to 7 May", { limit = 
 }
 
 function renderTaskBriefFromText(text, options = {}) {
-  const lines = (text || "")
+  const lines = ensureText(text)
     .split("\n")
     .map((line) => line.replace(/^[•\-*]\s*/, "").trim())
     .filter(Boolean);

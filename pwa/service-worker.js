@@ -1,9 +1,9 @@
-const CACHE_NAME = "hira-os-v143";
-const HIRA_APP_VERSION = "20260527-post-sync-73";
+const CACHE_NAME = "hira-os-v144";
+const HIRA_APP_VERSION = "20260527-sync-hardening-74";
 const ASSETS = [
   "/",
-  "/styles.css?v=20260527-post-sync-73",
-  "/app.js?v=20260527-post-sync-73",
+  "/styles.css?v=20260527-sync-hardening-74",
+  "/app.js?v=20260527-sync-hardening-74",
   "/static/icon.svg",
   "/static/icon-192.png",
   "/static/icon-512.png",

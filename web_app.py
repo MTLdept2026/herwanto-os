@@ -42,8 +42,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260527-post-sync-73"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v143"
+PWA_APP_VERSION = "20260527-sync-hardening-74"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v144"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -96,7 +96,9 @@ _WEB_PUSH_RECOVERY_COOLDOWN = _env_int("HIRA_WEB_PUSH_RECOVERY_COOLDOWN_SECONDS"
 _WEB_PUSH_RECOVERY_MAX_AGE_HOURS = _env_int("HIRA_WEB_PUSH_RECOVERY_MAX_AGE_HOURS", 36, minimum=1)
 _WEB_PUSH_RECOVERY_LIMIT = _env_int("HIRA_WEB_PUSH_RECOVERY_LIMIT", 3, minimum=1)
 _HOME_PRIMARY_TIMEOUT_SECONDS = max(2.0, min(15.0, _env_float("HIRA_HOME_PRIMARY_TIMEOUT_SECONDS", 8.0)))
-_HOME_SECONDARY_TIMEOUT_SECONDS = max(2.0, min(15.0, _env_float("HIRA_HOME_SECONDARY_TIMEOUT_SECONDS", 8.0)))
+_HOME_SECONDARY_TIMEOUT_SECONDS = max(2.0, min(15.0, _env_float("HIRA_HOME_SECONDARY_TIMEOUT_SECONDS", 4.0)))
+_APP_NOTIFICATION_STALE_HOURS = _env_int("HIRA_APP_NOTIFICATION_STALE_HOURS", 48, minimum=1)
+_APP_CHECKIN_NOTIFICATION_STALE_HOURS = _env_int("HIRA_CHECKIN_NOTIFICATION_STALE_HOURS", 18, minimum=1)
 _STATIC_PATHS = {
     "/",
     "/growth",
@@ -460,9 +462,65 @@ def _archive_low_value_notifications() -> int:
     return archived
 
 
+def _notification_stale_hours(item: dict) -> int:
+    source = str(item.get("source", "") or "").strip().lower()
+    kind = str(item.get("kind", "") or "").strip().lower()
+    if source.startswith("checkin:"):
+        return _APP_CHECKIN_NOTIFICATION_STALE_HOURS
+    if kind in {"reminder", "briefing"} or source.startswith(("nudge:", "task_reminder:", "morning_briefing:", "evening_briefing:", "web_morning_briefing:", "web_evening_briefing:")):
+        return _APP_NOTIFICATION_STALE_HOURS
+    return _APP_NOTIFICATION_STALE_HOURS
+
+
+def _archive_stale_notifications(now: Optional[datetime] = None) -> int:
+    current = now or datetime.now(bot.SGT)
+    try:
+        queued = bot.gs.get_app_notifications(include_archived=False)
+    except Exception as exc:
+        bot.logger.warning(f"Could not scan stale notifications: {exc}")
+        return 0
+    ids: list[str] = []
+    by_id: dict[str, dict] = {}
+    for item in queued:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("id", "") or "").strip()
+        if not item_id:
+            continue
+        created = _parse_sgt_datetime(str(item.get("created", "") or ""))
+        max_age = bot.timedelta(hours=_notification_stale_hours(item))
+        if created is None:
+            source = str(item.get("source", "") or "").strip().lower()
+            kind = str(item.get("kind", "") or "").strip().lower()
+            stale = kind == "reminder" or source.startswith(("checkin:", "nudge:", "task_reminder:"))
+        else:
+            stale = created < current - max_age
+        if stale:
+            ids.append(item_id)
+            by_id[item_id] = item
+    if not ids:
+        return 0
+    try:
+        archived = bot.gs.archive_app_notifications(ids)
+    except Exception as exc:
+        bot.logger.warning(f"Could not archive stale notifications: {exc}")
+        return 0
+    for item_id in ids:
+        item = by_id.get(item_id, {})
+        bot._record_notification_outcome(
+            "expired",
+            notification_id=item_id,
+            source=item.get("source", ""),
+            kind=item.get("kind", ""),
+            title=item.get("title", ""),
+        )
+    return archived
+
+
 def recover_missed_push_notifications(limit: int | None = None) -> dict:
     current = datetime.now(bot.SGT)
     max_age = current - bot.timedelta(hours=_WEB_PUSH_RECOVERY_MAX_AGE_HOURS)
+    _archive_stale_notifications(current)
     _archive_low_value_notifications()
     try:
         queued = bot.gs.get_app_notifications(include_archived=False)
@@ -1707,6 +1765,51 @@ def _clamp_int(value, low: int = 0, high: int = 100) -> int:
     return max(low, min(high, int(round(value))))
 
 
+def _safe_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _home_intelligence_fallback(detail: str = "") -> dict:
+    payload = {
+        "generated_at": datetime.now(bot.SGT).strftime("%A, %-d %B %Y, %H:%M SGT"),
+        "readiness": 0,
+        "tone": "yellow",
+        "mode": "Limited Telemetry",
+        "signal": "Home intelligence is using safe fallback data.",
+        "next_move": {
+            "title": "Refresh or ask H.I.R.A",
+            "body": "The live data loaded, but the intelligence layer could not be built safely.",
+            "prompt": "Triage my current load from the visible calendar, tasks, marking, and notifications.",
+        },
+        "risks": [],
+        "opportunities": [],
+        "protocol": {
+            "confidence": "Limited",
+            "evidence": [],
+            "steps": [],
+        },
+        "forecast": {"horizon": "unknown", "items": []},
+        "adaptive_plan": {"blocks": []},
+        "trial": {
+            "metric": "Home intelligence fallback active.",
+            "target": "Reload after the next sync.",
+            "checkpoints": [],
+            "review_prompt": "",
+        },
+        "actions": [],
+    }
+    if detail:
+        payload["risks"].append({
+            "label": "Intelligence fallback",
+            "detail": str(detail)[:160],
+            "severity": "yellow",
+        })
+    return payload
+
+
 def _home_intelligence(results: dict, days: int) -> dict:
     daily_load = results.get("daily_load") if isinstance(results.get("daily_load"), dict) else {}
     today_load = daily_load.get("today") if isinstance(daily_load.get("today"), dict) else {}
@@ -1718,14 +1821,20 @@ def _home_intelligence(results: dict, days: int) -> dict:
     tasks = results.get("tasks_structured") if isinstance(results.get("tasks_structured"), dict) else {}
     task_items = tasks.get("items") if isinstance(tasks.get("items"), list) else []
     classops = results.get("classops") if isinstance(results.get("classops"), dict) else {}
-    classops_signal = classops_ai.top_home_signal(classops)
+    try:
+        classops_signal = classops_ai.top_home_signal(classops)
+    except Exception:
+        classops_signal = {}
 
-    load_score = int(today_load.get("score") or 0)
-    due_count = int(today_load.get("due") or len(today_agenda.get("due") or []))
-    lesson_count = int(today_load.get("lessons") or len(today_agenda.get("lessons") or []))
-    event_count = int(today_load.get("events") or len(today_agenda.get("events") or []))
-    unmarked = int(marking.get("unmarked_scripts") or today_load.get("marking_scripts") or 0)
-    active_stacks = int(marking.get("active_stacks") or 0)
+    today_due = today_agenda.get("due") if isinstance(today_agenda.get("due"), list) else []
+    today_lessons = today_agenda.get("lessons") if isinstance(today_agenda.get("lessons"), list) else []
+    today_events = today_agenda.get("events") if isinstance(today_agenda.get("events"), list) else []
+    load_score = _safe_int(today_load.get("score") or 0)
+    due_count = _safe_int(today_load.get("due") or len(today_due))
+    lesson_count = _safe_int(today_load.get("lessons") or len(today_lessons))
+    event_count = _safe_int(today_load.get("events") or len(today_events))
+    unmarked = _safe_int(marking.get("unmarked_scripts") or today_load.get("marking_scripts") or 0)
+    active_stacks = _safe_int(marking.get("active_stacks") or 0)
     current = datetime.now(bot.SGT)
     today_date = current.date()
     today = today_date.isoformat()
@@ -1736,9 +1845,9 @@ def _home_intelligence(results: dict, days: int) -> dict:
     service_values = {key: value for key, value in services.items() if not str(key).startswith("_")}
     connected_count = sum(1 for value in service_values.values() if value)
     disconnected_count = max(0, len(service_values) - connected_count)
-    classops_open = int(classops.get("open_submission_count") or classops.get("pending_count") or 0)
-    classops_concerns = int(classops.get("concern_count") or 0)
-    classops_due_now = int(classops.get("due_today_count") or 0) + int(classops.get("overdue_count") or 0)
+    classops_open = _safe_int(classops.get("open_submission_count") or classops.get("pending_count") or 0)
+    classops_concerns = _safe_int(classops.get("concern_count") or 0)
+    classops_due_now = _safe_int(classops.get("due_today_count") or 0) + _safe_int(classops.get("overdue_count") or 0)
 
     readiness = _clamp_int(
         94
@@ -1799,10 +1908,11 @@ def _home_intelligence(results: dict, days: int) -> dict:
     future_days = daily_load.get("days") if isinstance(daily_load.get("days"), list) else []
     future_spike = max(
         future_days[1: max(2, min(len(future_days), days))],
-        key=lambda item: int(item.get("score") or 0),
+        key=lambda item: _safe_int(item.get("score") or 0) if isinstance(item, dict) else 0,
         default=None,
     )
-    if future_spike and int(future_spike.get("score") or 0) >= 70:
+    future_score = _safe_int(future_spike.get("score") or 0) if isinstance(future_spike, dict) else 0
+    if future_spike and future_score >= 70:
         risks.append({
             "label": "Load spike",
             "detail": f"{future_spike.get('label', 'Soon')} is trending {str(future_spike.get('load', 'heavy')).lower()}",
@@ -1828,7 +1938,7 @@ def _home_intelligence(results: dict, days: int) -> dict:
 
     top = proactive.get("top") if isinstance(proactive.get("top"), list) else []
     lead = top[0] if top else None
-    classops_priority = int(classops_signal.get("score", 0) or 0) if classops_signal else 0
+    classops_priority = _safe_int(classops_signal.get("score", 0) or 0) if classops_signal else 0
     if classops_signal and (classops_signal.get("severity") in {"red", "orange"} or classops_priority >= 45):
         next_move_title = classops_signal.get("title") or "Clear ClassOps follow-up"
         next_move_body = classops_signal.get("detail") or "Open ClassOps and settle the highest-risk student/class signal first."
@@ -1873,7 +1983,7 @@ def _home_intelligence(results: dict, days: int) -> dict:
 
     if lesson_count or event_count:
         next_step = "Prepare for the next scheduled anchor, then keep the calendar gap protected."
-    elif future_spike and int(future_spike.get("score") or 0) >= 70:
+    elif future_spike and future_score >= 70:
         next_step = f"Pull work forward before {future_spike.get('label', 'the next spike')}."
     elif due_count:
         next_step = "Move one due item from pending to done before starting discretionary work."
@@ -1900,7 +2010,7 @@ def _home_intelligence(results: dict, days: int) -> dict:
     confidence = "High" if connected_count >= 3 else "Medium" if connected_count else "Limited"
 
     forecast_items = []
-    if future_spike and int(future_spike.get("score") or 0) >= 70:
+    if future_spike and future_score >= 70:
         forecast_items.append({
             "label": "Pressure spike",
             "when": future_spike.get("label") or future_spike.get("date") or "Soon",
@@ -2513,7 +2623,14 @@ def _parallel_home_data(days: int) -> dict:
         "classops": _classops_status_summary,
     }
     results.update(_home_run_jobs(jobs, fallbacks, _HOME_SECONDARY_TIMEOUT_SECONDS, timings, prefix="extra."))
-    results["intelligence"] = _home_intelligence(results, days)
+    intelligence_started = time.perf_counter()
+    try:
+        results["intelligence"] = _home_intelligence(results, days)
+        _home_timing(timings, "intelligence", intelligence_started)
+    except Exception as exc:
+        bot.logger.warning(f"Home intelligence fallback: {exc}")
+        _home_timing(timings, "intelligence", intelligence_started, "error", str(exc))
+        results["intelligence"] = _home_intelligence_fallback(str(exc))
     _home_timing(timings, "total", total_started)
     results["sync_timings"] = timings
     return results
@@ -3232,7 +3349,18 @@ async def home(days: int = 7, x_hira_token: Optional[str] = Header(default=None)
     days = max(1, min(14, days))
     now = datetime.now(bot.SGT)
     async with _HOME_SEMAPHORE:
-        data = await asyncio.to_thread(_parallel_home_data, days)
+        try:
+            data = await asyncio.to_thread(_parallel_home_data, days)
+        except Exception as exc:
+            bot.logger.exception(f"Home sync hard fallback: {exc}")
+            data = _home_fallbacks()
+            data["intelligence"] = _home_intelligence_fallback(str(exc))
+            data["sync_timings"] = [{
+                "phase": "home",
+                "elapsed_ms": 0,
+                "status": "error",
+                "detail": str(exc)[:160],
+            }]
     return {
         "greeting": now.strftime("%A, %-d %B"),
         "time_label": now.strftime("%H:%M SGT"),
@@ -5012,6 +5140,7 @@ def notifications(
 ):
     _require_token(x_hira_token)
     try:
+        _archive_stale_notifications()
         _archive_low_value_notifications()
         items = bot.gs.unseen_app_notifications(_client_key(x_hira_client), limit=limit)
     except Exception as exc:
