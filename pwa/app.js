@@ -20,62 +20,24 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-function ensureArray(value) {
-  return Array.isArray(value) ? value : [];
-}
-
-function ensureObject(value) {
-  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
-}
-
-function ensureText(value) {
-  if (value === null || value === undefined) return "";
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch (_) {
-    return String(value);
-  }
-}
-
-function safeSessionValue(key) {
-  try {
-    return sessionStorage.getItem(key) || "";
-  } catch (_) {
-    return "";
-  }
-}
-
-function saveSessionValue(key, value) {
-  try {
-    if (value) sessionStorage.setItem(key, value);
-    else sessionStorage.removeItem(key);
-  } catch (_) {
-    // Session storage can be blocked in some embedded/PWA contexts.
-  }
-}
-
-const APP_VERSION = "20260527-sync-hardening-74";
-const APP_SCRIPT = "app.js?v=20260527-sync-hardening-74";
-const EXPECTED_SW_CACHE = "hira-os-v144";
+const APP_VERSION = "20260526-startup-fix-66";
+const APP_SCRIPT = "app.js?v=20260526-startup-fix-66";
+const EXPECTED_SW_CACHE = "hira-os-v136";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
 const AGENDA_CACHE_KEY = "hira_pwa_agenda_snapshot_v1";
 const PUSH_SYNC_MODE_KEY = "hira_pwa_last_push_sync_mode";
 const PUSH_SYNC_ENDPOINT_KEY = "hira_pwa_last_push_sync_endpoint";
-const SESSION_TOKEN_KEY = "hira_web_session_token";
 const HOME_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const HOME_REFRESH_THROTTLE_MS = 45 * 1000;
 const SOURCE_PLUMBING_URL_PATTERN = /https?:\/\/(?:news\.google\.com\/rss\/articles|site\.api\.espn\.com\/apis\/|duckduckgo\.com\/l\/\?)\S+/gi;
 let legacyWebToken = localStorage.getItem("hira_web_token") || "";
-const runtimeWebToken = safeSessionValue(SESSION_TOKEN_KEY);
-const persistedWebToken = legacyWebToken || runtimeWebToken;
+if (legacyWebToken) localStorage.removeItem("hira_web_token");
 
 const state = {
-  token: persistedWebToken,
-  sessionUnlocked: localStorage.getItem("hira_session_unlocked") === "1" || Boolean(persistedWebToken),
+  token: "",
+  sessionUnlocked: localStorage.getItem("hira_session_unlocked") === "1" || Boolean(legacyWebToken),
   theme: localStorage.getItem("hira_theme") || "light",
   clientId: localStorage.getItem("hira_client_id") || (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `hira-${Date.now()}`),
   deferredInstall: null,
@@ -404,9 +366,8 @@ async function createSession(token) {
     const detail = await response.json().catch(() => ({}));
     throw new Error(detail.detail || `Session unlock failed: ${response.status}`);
   }
-  state.token = clean;
-  localStorage.setItem("hira_web_token", clean);
-  saveSessionValue(SESSION_TOKEN_KEY, clean);
+  state.token = "";
+  localStorage.removeItem("hira_web_token");
   state.sessionUnlocked = true;
   localStorage.setItem("hira_session_unlocked", "1");
   state.lastPushSyncAt = 0;
@@ -421,14 +382,20 @@ async function createSession(token) {
 }
 
 async function migrateLegacyToken() {
-  const token = String(legacyWebToken || runtimeWebToken || "").trim();
+  const token = legacyWebToken;
   legacyWebToken = "";
   if (!token) return;
-  state.token = token;
-  state.sessionUnlocked = true;
-  localStorage.setItem("hira_web_token", token);
-  localStorage.setItem("hira_session_unlocked", "1");
-  saveSessionValue(SESSION_TOKEN_KEY, token);
+  try {
+    await createSession(token);
+    setStatus("Session restored on this device.", "ok");
+  } catch (error) {
+    state.token = "";
+    state.sessionUnlocked = false;
+    localStorage.removeItem("hira_web_token");
+    localStorage.removeItem("hira_session_unlocked");
+    $("#settingsPanel").hidden = false;
+    setStatus(`Saved token was rejected: ${error.message}`, "warn");
+  }
 }
 
 async function api(path, options = {}, tokenPrompted = false) {
@@ -461,9 +428,6 @@ async function api(path, options = {}, tokenPrompted = false) {
     );
   }
   if (response.status === 401) {
-    state.token = "";
-    localStorage.removeItem("hira_web_token");
-    saveSessionValue(SESSION_TOKEN_KEY, "");
     state.sessionUnlocked = false;
     localStorage.removeItem("hira_session_unlocked");
     openTokenSettings(
@@ -487,9 +451,6 @@ async function api(path, options = {}, tokenPrompted = false) {
 async function fetchWithToken(path, options = {}, tokenPrompted = false) {
   const response = await fetch(path, withAuth(options));
   if (response.status === 401) {
-    state.token = "";
-    localStorage.removeItem("hira_web_token");
-    saveSessionValue(SESSION_TOKEN_KEY, "");
     state.sessionUnlocked = false;
     localStorage.removeItem("hira_session_unlocked");
     openTokenSettings(
@@ -727,7 +688,7 @@ function setNotificationButtons({ label, title, stateText, tone = "neutral", dis
   }
 }
 
-async function updateNotificationControls({ allowServerSync = true } = {}) {
+async function updateNotificationControls() {
   if (!("Notification" in window)) {
     setNotificationButtons({
       label: "Unavailable",
@@ -782,7 +743,7 @@ async function updateNotificationControls({ allowServerSync = true } = {}) {
   try {
     const registration = await navigator.serviceWorker.ready;
     let subscription = await registration.pushManager.getSubscription();
-    if (allowServerSync && state.sessionUnlocked) {
+    if (state.sessionUnlocked) {
       const synced = await ensurePushSubscription().catch((error) => {
         setStatus(`Push reconnect: ${error.message}`, "warn");
         return false;
@@ -1233,7 +1194,7 @@ async function performNotificationAction(action, item = {}) {
 async function pollNotifications() {
   try {
     const data = await api("/api/notifications?limit=12", { headers: headers(false) });
-    const items = ensureArray(data.notifications);
+    const items = data.notifications || [];
     if (!items.length) return;
     const fresh = [];
     const activeItems = items.filter((item) => !isNotificationDismissed(item.id));
@@ -1258,10 +1219,7 @@ async function pollNotifications() {
     }
     if (fresh.length) setStatus(`${fresh.length} app notification${fresh.length === 1 ? "" : "s"} received.`, "ok");
   } catch (error) {
-    console.warn("Notification sync failed", error);
-    if (!/token/i.test(error.message) && !$("#notificationsPanel")?.hidden) {
-      setStatus(`Notifications: ${error.message}`, "warn");
-    }
+    if (!/token/i.test(error.message)) setStatus(`Notifications: ${error.message}`, "warn");
   }
 }
 
@@ -1558,7 +1516,7 @@ function serviceWorkerVersionRequest(worker, timeoutMs = 900) {
   });
 }
 
-async function readAppVersionState({ allowServerLookup = true } = {}) {
+async function readAppVersionState() {
   const stateInfo = {
     appVersion: APP_VERSION,
     appScript: APP_SCRIPT,
@@ -1589,25 +1547,21 @@ async function readAppVersionState({ allowServerLookup = true } = {}) {
   } else {
     stateInfo.updateState = "No service worker";
   }
-  if (allowServerLookup && state.sessionUnlocked) {
-    try {
-      const server = await api("/api/app/version", { headers: headers(false) });
-      stateInfo.serverCommit = server.git_commit || "--";
-      stateInfo.serverTime = server.server_time || "--";
-    } catch (_) {
-      stateInfo.serverCommit = "Unavailable";
-    }
-  } else {
-    stateInfo.serverCommit = state.sessionUnlocked ? "Pending" : "Locked";
+  try {
+    const server = await api("/api/app/version", { headers: headers(false) });
+    stateInfo.serverCommit = server.git_commit || "--";
+    stateInfo.serverTime = server.server_time || "--";
+  } catch (_) {
+    stateInfo.serverCommit = "Unavailable";
   }
   return stateInfo;
 }
 
-async function renderAppVersion({ allowServerLookup = true } = {}) {
+async function renderAppVersion() {
   const el = $("#versionOutput");
   if (!el) return;
   el.innerHTML = versionRow("App", `${APP_VERSION} · ${APP_SCRIPT}`);
-  const info = await readAppVersionState({ allowServerLookup });
+  const info = await readAppVersionState();
   const cacheOk = info.swCache === EXPECTED_SW_CACHE;
   const appOk = info.swAppVersion === APP_VERSION;
   const updateTone = cacheOk && appOk && info.controller === "Controlled" ? "status-ok" : "status-warn";
@@ -1739,7 +1693,7 @@ function startNotificationPolling() {
 }
 
 function countMeaningfulLines(text) {
-  return ensureText(text)
+  return (text || "")
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith("*") && !line.startsWith("_")).length;
@@ -1794,14 +1748,13 @@ function renderConnections(services) {
 }
 
 function renderProactiveQueue(data = {}) {
-  const top = ensureArray(data.top);
-  const changed = ensureArray(data.changed).map(ensureText).filter(Boolean);
+  const top = Array.isArray(data.top) ? data.top : [];
+  const changed = Array.isArray(data.changed) ? data.changed : [];
   if (!top.length) {
     const changedText = changed.length ? `<p class="subtle">${markdownish(changed.join(" "))}</p>` : "";
     return `<div class="empty-state compact">No urgent proactive items right now.</div>${changedText}`;
   }
-  const cards = top.map((raw, index) => {
-    const item = ensureObject(raw);
+  const cards = top.map((item, index) => {
     const score = Number(item.score || 0);
     const priority = String(item.priority || "medium").toUpperCase();
     const hint = item.action_hint ? `<p><strong>Next:</strong> ${markdownish(item.action_hint)}</p>` : "";
@@ -1825,14 +1778,13 @@ function renderProactiveQueue(data = {}) {
 }
 
 function renderMorningDigest(data = {}, { limit = 0 } = {}) {
-  const items = ensureArray(data.items);
+  const items = Array.isArray(data.items) ? data.items : [];
   if (!items.length) {
     return `<div class="empty-state compact">No digest items returned yet.</div>`;
   }
   const visible = limit > 0 ? items.slice(0, limit) : items;
   const extra = limit > 0 ? Math.max(0, items.length - visible.length) : 0;
-  const cards = visible.map((raw, index) => {
-    const item = ensureObject(raw);
+  const cards = visible.map((item, index) => {
     const meta = [item.label, item.source].filter(Boolean).join(" · ");
     const why = item.why ? `<p><strong>Why:</strong> ${markdownish(item.why)}</p>` : "";
     const title = markdownish(item.title || "Digest item");
@@ -1881,47 +1833,34 @@ function timelineRelativeLabel(start, now) {
 function agendaTimelineItems(structured = {}) {
   const today = Array.isArray(structured.days) ? structured.days[0] : null;
   if (!today) return [];
-  const lessons = ensureArray(today.lessons);
-  const events = ensureArray(today.events);
-  const due = ensureArray(today.due);
   return [
-    ...lessons.map((raw) => {
-      const item = ensureObject(raw);
-      return {
-        kind: "lesson",
-        time: item.time || "Anytime",
-        title: item.title || item.subject || "Lesson",
-        meta: [item.subject, item.room].filter(Boolean).join(" · "),
-        start: minutesFromTime(item.time),
-      };
-    }),
-    ...events.map((raw) => {
-      const item = ensureObject(raw);
-      return {
-        kind: "event",
-        time: item.time || "Anytime",
-        title: item.title || "Event",
-        meta: item.meta || "",
-        start: minutesFromTime(item.time),
-      };
-    }),
-    ...due.map((raw) => {
-      const item = ensureObject(raw);
-      return {
-        kind: "due",
-        time: "Due",
-        title: item.title || item.category || "Task due",
-        meta: item.id ? `#${item.id}` : item.category || "",
-        start: 23 * 60 + 30,
-      };
-    }),
+    ...(today.lessons || []).map((item) => ({
+      kind: "lesson",
+      time: item.time || "Anytime",
+      title: item.title || item.subject || "Lesson",
+      meta: [item.subject, item.room].filter(Boolean).join(" · "),
+      start: minutesFromTime(item.time),
+    })),
+    ...(today.events || []).map((item) => ({
+      kind: "event",
+      time: item.time || "Anytime",
+      title: item.title || "Event",
+      meta: item.meta || "",
+      start: minutesFromTime(item.time),
+    })),
+    ...(today.due || []).map((item) => ({
+      kind: "due",
+      time: "Due",
+      title: item.title || item.category || "Task due",
+      meta: item.id ? `#${item.id}` : item.category || "",
+      start: 23 * 60 + 30,
+    })),
   ];
 }
 
 function prayerTimelineItems(prayers = {}) {
   const windowMinutes = Number(prayers.window_minutes || 20);
-  return ensureArray(prayers.prayers)
-    .map(ensureObject)
+  return (prayers.prayers || [])
     .filter((item) => ["zohor", "asar", "maghrib", "isyak"].includes(item.key))
     .map((item) => {
       const start = minutesFromTime(item.time);
@@ -2106,14 +2045,12 @@ function intelligenceSeverityClass(severity) {
 }
 
 function renderIntelligenceList(items = [], emptyText = "No signal.") {
-  items = ensureArray(items);
-  if (!items.length) {
+  if (!Array.isArray(items) || !items.length) {
     return `<div class="intelligence-item empty"><strong>${markdownish(emptyText)}</strong></div>`;
   }
   return items
     .slice(0, 4)
-    .map((raw) => {
-      const item = ensureObject(raw);
+    .map((item) => {
       const severity = intelligenceSeverityClass(item.severity || "green");
       return `
         <article class="intelligence-item ${severity}">
@@ -2126,26 +2063,23 @@ function renderIntelligenceList(items = [], emptyText = "No signal.") {
 }
 
 function renderIntelligenceProtocol(protocol = {}) {
-  const steps = ensureArray(protocol.steps);
+  const steps = Array.isArray(protocol.steps) ? protocol.steps : [];
   $("#intelligenceConfidence").textContent = `${protocol.confidence || "Limited"} confidence`;
   $("#intelligenceProtocolSteps").innerHTML = steps.length
     ? steps
         .slice(0, 3)
-        .map((raw) => {
-          const step = ensureObject(raw);
-          return `
-            <article class="protocol-step">
-              <div>
-                <strong>${markdownish(step.phase || "Now")}</strong>
-                <span>${markdownish(step.time || "")}</span>
-              </div>
-              <p>${markdownish(step.task || "")}</p>
-            </article>
-          `;
-        })
+        .map((step) => `
+          <article class="protocol-step">
+            <div>
+              <strong>${markdownish(step.phase || "Now")}</strong>
+              <span>${markdownish(step.time || "")}</span>
+            </div>
+            <p>${markdownish(step.task || "")}</p>
+          </article>
+        `)
         .join("")
     : `<article class="protocol-step empty"><div><strong>Now</strong><span>0-20m</span></div><p>Waiting for a reliable operating signal.</p></article>`;
-  const evidence = ensureArray(protocol.evidence).filter(Boolean);
+  const evidence = Array.isArray(protocol.evidence) ? protocol.evidence.filter(Boolean) : [];
   $("#intelligenceEvidence").innerHTML = evidence.length
     ? evidence.slice(0, 4).map((item) => `<span>${markdownish(item)}</span>`).join("")
     : "<span>No evidence yet</span>";
@@ -2153,12 +2087,11 @@ function renderIntelligenceProtocol(protocol = {}) {
 
 function renderForecastRadar(forecast = {}) {
   $("#intelligenceForecastHorizon").textContent = forecast.horizon || "7 days";
-  const items = ensureArray(forecast.items);
+  const items = Array.isArray(forecast.items) ? forecast.items : [];
   $("#intelligenceForecast").innerHTML = items.length
     ? items
         .slice(0, 4)
-        .map((raw) => {
-          const item = ensureObject(raw);
+        .map((item) => {
           const severity = intelligenceSeverityClass(item.severity || "green");
           return `
             <article class="forecast-item ${severity}">
@@ -2175,23 +2108,20 @@ function renderForecastRadar(forecast = {}) {
 }
 
 function renderAdaptivePlan(plan = {}) {
-  const blocks = ensureArray(plan.blocks);
+  const blocks = Array.isArray(plan.blocks) ? plan.blocks : [];
   $("#intelligencePlan").innerHTML = blocks.length
     ? blocks
         .slice(0, 4)
-        .map((raw) => {
-          const block = ensureObject(raw);
-          return `
-            <article class="plan-block">
-              <div>
-                <strong>${markdownish(block.label || "Block")}</strong>
-                <span>${markdownish(block.time || "")}</span>
-              </div>
-              <h4>${markdownish(block.title || "Execution block")}</h4>
-              <p>${markdownish(block.detail || "")}</p>
-            </article>
-          `;
-        })
+        .map((block) => `
+          <article class="plan-block">
+            <div>
+              <strong>${markdownish(block.label || "Block")}</strong>
+              <span>${markdownish(block.time || "")}</span>
+            </div>
+            <h4>${markdownish(block.title || "Execution block")}</h4>
+            <p>${markdownish(block.detail || "")}</p>
+          </article>
+        `)
         .join("")
     : `<article class="plan-block"><div><strong>Prime</strong><span>Now</span></div><h4>Waiting</h4><p>No adaptive block yet.</p></article>`;
 }
@@ -2222,7 +2152,6 @@ function renderTrialLoop(trial = {}) {
 }
 
 function renderIntelligenceStack(intelligence = {}) {
-  intelligence = ensureObject(intelligence);
   const readiness = Math.max(0, Math.min(100, Number(intelligence.readiness || 0)));
   const tone = intelligenceSeverityClass(intelligence.tone || "green");
   $("#intelligenceMode").textContent = intelligence.mode || "Standby";
@@ -2231,7 +2160,7 @@ function renderIntelligenceStack(intelligence = {}) {
   const readinessEl = $("#intelligenceReadiness");
   readinessEl.className = `intelligence-readiness score-${tone}`;
   readinessEl.style.setProperty("--score-arc", `${readiness * 2.7}deg`);
-  const next = ensureObject(intelligence.next_move);
+  const next = intelligence.next_move || {};
   $("#intelligenceNextTitle").textContent = next.title || "Protect a clean block";
   $("#intelligenceNextBody").textContent = next.body || "No critical signal is dominating right now.";
   renderIntelligenceProtocol(intelligence.protocol || {});
@@ -2323,7 +2252,6 @@ function markingSegments(value, total) {
 }
 
 function renderMarkingSets(items = []) {
-  items = ensureArray(items);
   if (!items.length) {
     return `
       <div class="marking-set empty">
@@ -2408,7 +2336,7 @@ function scrollMessagesToBottom() {
 }
 
 function escapeHtml(text) {
-  return String(text ?? "")
+  return (text || "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -2468,7 +2396,7 @@ function stripCitationMarkers(text) {
 }
 
 function stripSourcePlumbingUrls(text) {
-  const rawLines = ensureText(text).split("\n");
+  const rawLines = String(text || "").split("\n");
   const lines = rawLines
     .map((line, index) => {
       let clean = line.replace(SOURCE_PLUMBING_URL_PATTERN, "").trimEnd();
@@ -2493,7 +2421,7 @@ function stripSourcePlumbingUrls(text) {
 }
 
 function renderTextBlock(text) {
-  return ensureText(text)
+  return (text || "")
     .split("\n")
     .map((line) => {
       if (!line.trim()) return "<div class='spacer'></div>";
@@ -2505,7 +2433,7 @@ function renderTextBlock(text) {
 function renderChatText(text) {
   const blocks = [];
   let openList = false;
-  for (const raw of ensureText(text).split("\n")) {
+  for (const raw of (text || "").split("\n")) {
     const line = raw.trim();
     if (!line) {
       if (openList) {
@@ -2623,7 +2551,7 @@ function cleanStoredChatHistory(items = []) {
 }
 
 function renderAgendaCards(text, { limit = 0 } = {}) {
-  const lines = ensureText(text)
+  const lines = (text || "")
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
@@ -2666,29 +2594,16 @@ function renderAgendaCards(text, { limit = 0 } = {}) {
 }
 
 function renderAgendaStructured(data) {
-  const days = ensureArray(data?.days);
+  const days = data?.days || [];
   if (!days.length) return "<div class='empty-state'>No agenda items found.</div>";
   return `
     <div class="agenda-day-list">
       ${days
-        .map((rawDay) => {
-          const day = ensureObject(rawDay);
-          const lessons = ensureArray(day.lessons);
-          const events = ensureArray(day.events);
-          const due = ensureArray(day.due);
+        .map((day) => {
           const items = [
-            ...lessons.map((raw) => {
-              const item = ensureObject(raw);
-              return { ...item, label: item.subject, meta: item.room };
-            }),
-            ...events.map((raw) => {
-              const item = ensureObject(raw);
-              return { ...item, label: "Event" };
-            }),
-            ...due.map((raw) => {
-              const item = ensureObject(raw);
-              return { ...item, time: "Due", label: item.category || "Task", meta: item.id ? `#${item.id}` : "" };
-            }),
+            ...(day.lessons || []).map((item) => ({ ...item, label: item.subject, meta: item.room })),
+            ...(day.events || []).map((item) => ({ ...item, label: "Event" })),
+            ...(day.due || []).map((item) => ({ ...item, time: "Due", label: item.category || "Task", meta: item.id ? `#${item.id}` : "" })),
           ];
           const context = [day.label, day.week].filter(Boolean).join(" · ") || "Calendar day";
           return `
@@ -2727,7 +2642,7 @@ function renderAgendaStructured(data) {
 }
 
 function renderTaskList(data, heading = "Task Brief · Now to 7 May", { limit = 0 } = {}) {
-  const items = ensureArray(data?.items);
+  const items = data?.items || [];
   if (!items.length) return "<div class='empty-state'>No active tasks in that window.</div>";
   const visible = limit > 0 ? items.slice(0, limit) : items;
   const extra = limit > 0 ? Math.max(0, items.length - visible.length) : 0;
@@ -2736,8 +2651,7 @@ function renderTaskList(data, heading = "Task Brief · Now to 7 May", { limit = 
       <div class="task-brief-head">${markdownish(heading)}</div>
       <div class="task-list">
       ${visible
-        .map((raw) => {
-          const item = ensureObject(raw);
+        .map((item) => {
           const due = item.due || item.weekday || "No due date";
           const meta = [item.category, item.priority, item.effort].filter(Boolean).join(" / ");
           return `
@@ -2777,7 +2691,7 @@ function renderTaskList(data, heading = "Task Brief · Now to 7 May", { limit = 
 }
 
 function renderTaskBriefFromText(text, options = {}) {
-  const lines = ensureText(text)
+  const lines = (text || "")
     .split("\n")
     .map((line) => line.replace(/^[•\-*]\s*/, "").trim())
     .filter(Boolean);
@@ -3337,12 +3251,7 @@ async function loadHome({ force = false, background = false, useCache = true } =
     }, 7000);
     const hardTimeout = window.setTimeout(() => controller.abort(), 28000);
     try {
-      const data = await api("/api/home", {
-        method: "POST",
-        headers: headers(),
-        body: JSON.stringify({ days: state.homeDays }),
-        signal: controller.signal,
-      });
+      const data = await api(`/api/home?days=${state.homeDays}`, { headers: headers(false), signal: controller.signal });
       saveHomeSnapshot(data);
       renderHomeData(data);
       const slowNote = homeSlowSyncNote(data.sync_timings);
@@ -3418,11 +3327,7 @@ async function loadAgenda(days = 7, { force = false, useCache = true } = {}) {
     $("#agendaOutput").innerHTML = "<div>Loading...</div>";
   }
   try {
-    const data = await api("/api/agenda", {
-      method: "POST",
-      headers: headers(),
-      body: JSON.stringify({ days }),
-    });
+    const data = await api(`/api/agenda?days=${days}`, { headers: headers(false) });
     saveAgendaSnapshot(days, data);
     renderAgendaData(data);
     setStatus("Agenda refreshed.", "ok");
@@ -3435,11 +3340,7 @@ async function loadAgenda(days = 7, { force = false, useCache = true } = {}) {
 async function loadTasks(days = 30) {
   $("#tasksOutput").innerHTML = "<div>Loading...</div>";
   try {
-    const data = await api("/api/tasks", {
-      method: "POST",
-      headers: headers(),
-      body: JSON.stringify({ days }),
-    });
+    const data = await api(`/api/tasks?days=${days}`, { headers: headers(false) });
     $("#tasksOutput").innerHTML = data.structured ? renderTaskList(data.structured) : renderTaskBriefFromText(data.text);
     refreshIcons($("#tasksOutput"));
     setStatus("Tasks refreshed.", "ok");
@@ -3529,7 +3430,7 @@ async function loadFilesLibrary() {
   if (!$("#fileLibrary")) return;
   $("#fileLibrary").innerHTML = "<div>Loading...</div>";
   try {
-    const data = await api("/api/files", { method: "POST", headers: headers() });
+    const data = await api("/api/files", { headers: headers(false) });
     $("#fileLibrary").innerHTML = renderTextBlock(data.text);
   } catch (error) {
     $("#fileLibrary").textContent = `Error: ${error.message}`;
@@ -3915,9 +3816,9 @@ function setSettingsPanelOpen(open, { scroll = false } = {}) {
   const panel = $("#settingsPanel");
   panel.hidden = !open;
   $("#settingsBtn").classList.toggle("is-open", open);
-  updateNotificationControls({ allowServerSync: state.sessionUnlocked });
+  updateNotificationControls();
   if (open) {
-    renderAppVersion({ allowServerLookup: state.sessionUnlocked });
+    renderAppVersion();
     loadApiSpend({ quiet: true });
     loadActionLedger({ quiet: true });
     if (scroll) panel.scrollIntoView({ block: "start" });
@@ -3932,7 +3833,7 @@ $("#notificationsBtn").addEventListener("click", () => {
   panel.hidden = !panel.hidden;
   $("#notificationsBtn").classList.toggle("is-open", !panel.hidden);
   renderNotifications();
-  updateNotificationControls({ allowServerSync: state.sessionUnlocked });
+  updateNotificationControls();
 });
 $("#notificationsList").addEventListener("click", (event) => {
   const actionButton = event.target.closest("[data-notification-action]");
@@ -4011,7 +3912,7 @@ $("#checkAppUpdateBtn").addEventListener("click", async () => {
   button.textContent = "Checking";
   try {
     await checkForAppUpdate({ silent: false });
-    await renderAppVersion({ allowServerLookup: state.sessionUnlocked });
+    await renderAppVersion();
   } finally {
     button.disabled = false;
     button.textContent = previousLabel;
@@ -4034,13 +3935,10 @@ $("#saveTokenBtn").addEventListener("click", async () => {
   try {
     await createSession($("#tokenInput").value);
     $("#settingsPanel").hidden = true;
-    setStatus("Session unlocked on this device. Syncing live data...", "ok");
-    await loadHome({ force: true, useCache: false });
-    if (state.sessionUnlocked) {
-      await updateNotificationControls({ allowServerSync: true });
-      await renderAppVersion({ allowServerLookup: true });
-      startNotificationPolling();
-    }
+    setStatus("Session unlocked on this device.", "ok");
+    updateNotificationControls();
+    loadHome({ force: true, useCache: false });
+    startNotificationPolling();
   } catch (error) {
     $("#settingsPanel").hidden = false;
     setStatus(error.message, "error");
@@ -4054,7 +3952,6 @@ $("#clearTokenBtn").addEventListener("click", () => {
   state.sessionUnlocked = false;
   $("#tokenInput").value = "";
   localStorage.removeItem("hira_web_token");
-  saveSessionValue(SESSION_TOKEN_KEY, "");
   localStorage.removeItem("hira_session_unlocked");
   fetch("/api/auth/logout", {
     method: "POST",
@@ -4203,7 +4100,7 @@ if ("serviceWorker" in navigator) {
   let refreshingForServiceWorker = false;
   navigator.serviceWorker.addEventListener("controllerchange", () => {
     reportClientModeToServiceWorker();
-    renderAppVersion({ allowServerLookup: false });
+    renderAppVersion();
     if (refreshingForServiceWorker) return;
     refreshingForServiceWorker = true;
     window.location.reload();
@@ -4213,10 +4110,10 @@ if ("serviceWorker" in navigator) {
     .then((registration) => {
       registration.update();
       reportClientModeToServiceWorker();
-      updateNotificationControls({ allowServerSync: false });
-      renderAppVersion({ allowServerLookup: false });
+      updateNotificationControls();
+      renderAppVersion();
     })
-    .catch(() => updateNotificationControls({ allowServerSync: false }));
+    .catch(updateNotificationControls);
   navigator.serviceWorker.addEventListener("message", (event) => {
     if (event.data?.type === "hira-notification") {
       rememberPushedNotification(event.data.item || {});
@@ -4236,7 +4133,7 @@ if ("serviceWorker" in navigator) {
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) {
     reportClientModeToServiceWorker();
-    updateNotificationControls({ allowServerSync: state.sessionUnlocked });
+    updateNotificationControls();
   }
 });
 
@@ -4254,9 +4151,9 @@ renderStoredChat();
 rememberNotificationFromUrl();
 mirrorStoredNotificationsToChat();
 renderNotifications();
-updateNotificationControls({ allowServerSync: false });
+updateNotificationControls();
 updateComposerState();
-renderAppVersion({ allowServerLookup: false });
+renderAppVersion();
 setView("home");
 updateLiveClock();
 renderNothingGlyph("time");
@@ -4269,12 +4166,8 @@ async function startAuthenticatedApp() {
     openTokenSettings("Save the H.I.R.A web token in this installed app once to sync live data.");
     return;
   }
-  await loadHome({ background: true });
-  if (state.sessionUnlocked) {
-    await updateNotificationControls({ allowServerSync: true });
-    await renderAppVersion({ allowServerLookup: true });
-    startNotificationPolling();
-  }
+  loadHome({ background: true });
+  startNotificationPolling();
 }
 
 startAuthenticatedApp();
