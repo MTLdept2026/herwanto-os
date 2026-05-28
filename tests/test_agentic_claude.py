@@ -312,6 +312,13 @@ class AgenticClaudeTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertTrue(asyncio.run(bot.should_route_quick_pwa_chat([], text)))
 
+    def test_morning_greetings_are_quick_chat(self):
+        phrases = ["morning", "good morning", "morning hira", "good morning Hira", "hira morning"]
+
+        for text in phrases:
+            with self.subTest(text=text):
+                self.assertTrue(asyncio.run(bot.should_route_quick_pwa_chat([], text)))
+
     def test_backend_switch_comment_is_quick_chat(self):
         self.assertTrue(asyncio.run(bot.should_route_quick_pwa_chat([], "Switched things up a bit on ur backend")))
 
@@ -4857,6 +4864,29 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertNotIn('"name": "natural_intent"', body)
         self.assertNotIn("backend snag", body.lower())
 
+    def test_morning_hira_uses_local_greeting_before_model_route(self):
+        async def run():
+            response = await web_app._chat_stream_response("Morning Hira", None, "phone")
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(web_app, "_schedule_background_call"),
+            patch.object(bot, "conversation_carryover_greeting_reply", return_value=""),
+            patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("plain greeting should not route to model")),
+            patch.object(bot, "stream_quick_pwa_reply", side_effect=AssertionError("plain greeting should not stream model")),
+            patch.object(bot, "stream_agentic_claude", side_effect=AssertionError("plain greeting should not stream agentic model")),
+        ):
+            body = asyncio.run(run())
+
+        self.assertIn('"name": "greeting"', body)
+        self.assertIn("Morning", body)
+        self.assertNotIn("backend snag", body.lower())
+
     def test_explicit_status_phrase_matrix_uses_local_status_before_model_route(self):
         phrases = [
             "catch me up",
@@ -4899,6 +4929,11 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertFalse(web_app._pwa_casual_status_prompt("Hey hira whats up"))
         self.assertFalse(web_app._pwa_casual_status_prompt("what should I know"))
         self.assertFalse(web_app._pwa_casual_status_prompt("what should I know about DeepSeek"))
+
+    def test_morning_greeting_guard_does_not_steal_briefings(self):
+        self.assertEqual(web_app._pwa_direct_greeting_reply("morning briefing"), ("", ""))
+        self.assertFalse(web_app._pwa_casual_greeting_prompt("morning briefing"))
+        self.assertFalse(asyncio.run(bot.should_route_quick_pwa_chat([], "morning briefing")))
 
     def test_backend_change_feeling_uses_local_checkin_before_model_route(self):
         async def run():

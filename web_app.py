@@ -1296,6 +1296,9 @@ def _pwa_clean_addressed_message(message: str) -> str:
 
 def _pwa_casual_greeting_prompt(message: str) -> bool:
     return _pwa_clean_addressed_message(message) in {
+        "morning",
+        "good morning",
+        "gm",
         "whats up",
         "what's up",
         "sup",
@@ -1312,6 +1315,19 @@ def _pwa_casual_greeting_prompt(message: str) -> bool:
         "whats good",
         "what is good",
     }
+
+
+def _pwa_direct_greeting_reply(message: str) -> tuple[str, str]:
+    if _pwa_clean_addressed_message(message) not in {"morning", "good morning", "gm"}:
+        return "", ""
+    try:
+        carryover_reply = bot.conversation_carryover_greeting_reply(message)
+    except Exception as exc:
+        bot.logger.warning(f"PWA carryover greeting check failed: {exc}")
+        carryover_reply = ""
+    if carryover_reply:
+        return carryover_reply, "carryover_checkin"
+    return "Morning. I'm here.", "greeting"
 
 
 def _pwa_casual_status_prompt(message: str) -> bool:
@@ -4289,6 +4305,16 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             history_key,
             quick_history,
             route_name="model_config_advice",
+        )
+
+    direct_greeting, greeting_route = _pwa_direct_greeting_reply(message)
+    if direct_greeting:
+        quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
+        return _quick_sse_response(
+            direct_greeting,
+            history_key,
+            quick_history,
+            route_name=greeting_route,
         )
 
     if _pwa_casual_status_prompt(message):

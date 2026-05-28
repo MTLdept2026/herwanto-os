@@ -14332,14 +14332,16 @@ def _obvious_quick_chat(text: str) -> bool:
     clean = re.sub(r"[^\w\s']", "", text.lower()).strip()
     if not clean:
         return False
+    addressed = re.sub(r"\b(?:hey|hi|hello|yo|hira)\b", " ", clean)
+    addressed = re.sub(r"\s+", " ", addressed).strip()
     if clean in {
         "ok", "okay", "k", "kk", "yes", "yep", "yeah", "no", "nope", "nah",
         "thanks", "thank you", "thx", "ty", "cool", "great", "nice", "noted",
         "got it", "understood", "sure", "alright", "morning", "hi", "hello", "hey",
-        "whats up", "what's up", "sup", "wassup", "what up", "what is up",
+        "good morning", "gm", "whats up", "what's up", "sup", "wassup", "what up", "what is up",
         "whats good", "what's good", "what is good", "hows it going", "how's it going",
         "how are things",
-    }:
+    } or addressed in {"morning", "good morning", "gm"}:
         return True
     return len(clean.split()) <= 5 and bool(re.search(r"\b(thanks?|ok(?:ay)?|yes|no|hi|hello|hey)\b", clean))
 
