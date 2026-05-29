@@ -42,8 +42,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260527-sync-baseline-67"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v137"
+PWA_APP_VERSION = "20260529-classops-fast-sync-68"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v138"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -51,6 +51,7 @@ except ValueError:
     _HOME_EXECUTOR_WORKERS = 4
 _HOME_EXECUTOR_WORKERS = max(1, min(4, _HOME_EXECUTOR_WORKERS))
 _HOME_EXECUTOR = ThreadPoolExecutor(max_workers=_HOME_EXECUTOR_WORKERS)
+_CLASSOPS_REFRESH_FUTURE = None
 _WEB_SCHEDULER_TASKS: list[asyncio.Task] = []
 _WEB_MEMORY_WATCHDOG_TASK: asyncio.Task | None = None
 _WEB_PUSH_RECOVERY_TASK: asyncio.Task | None = None
@@ -5949,6 +5950,29 @@ def _classops_status_summary() -> dict:
     )
 
 
+def _classops_refresh_running() -> bool:
+    return bool(_CLASSOPS_REFRESH_FUTURE and not _CLASSOPS_REFRESH_FUTURE.done())
+
+
+def _schedule_classops_manifest_refresh() -> bool:
+    global _CLASSOPS_REFRESH_FUTURE
+    if _classops_refresh_running():
+        return False
+
+    future = _HOME_EXECUTOR.submit(dropbox.scan_classops_manifest, True)
+    _CLASSOPS_REFRESH_FUTURE = future
+
+    def _done(done_future):
+        try:
+            done_future.result()
+            bot.logger.info("Background ClassOps Dropbox manifest refresh completed.")
+        except Exception as exc:
+            bot.logger.warning(f"Background ClassOps Dropbox manifest refresh failed: {exc}")
+
+    future.add_done_callback(_done)
+    return True
+
+
 def _classops_extract_lesson_material(lesson: dict) -> dict:
     item = dict(lesson or {})
     path = str(item.get("path") or "").strip()
@@ -5994,18 +6018,34 @@ def classops_dropbox_scan(x_hira_token: Optional[str] = Header(default=None)):
     if not dropbox.configured():
         raise HTTPException(status_code=400, detail="Dropbox ClassOps env vars are not configured.")
     try:
-        return dropbox.scan_classops_manifest()
+        return dropbox.scan_classops_manifest(force_refresh=True)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Dropbox ClassOps scan failed: {exc}") from exc
 
 
 @app.get("/api/classops/dashboard")
-def classops_dashboard(x_hira_token: Optional[str] = Header(default=None)):
+def classops_dashboard(
+    x_hira_token: Optional[str] = Header(default=None),
+    refresh: bool = False,
+    background: bool = False,
+):
     _require_token(x_hira_token)
     if not dropbox.configured():
         raise HTTPException(status_code=400, detail="Dropbox ClassOps env vars are not configured.")
     try:
-        return _classops_enrich_with_students(dropbox.scan_classops_manifest())
+        if background:
+            manifest = dropbox.scan_classops_manifest(allow_stale=True)
+            cache = manifest.get("cache", {}) if isinstance(manifest.get("cache"), dict) else {}
+            should_refresh = bool(cache.get("hit") and (refresh or cache.get("stale")))
+            queued = _schedule_classops_manifest_refresh() if should_refresh else False
+        else:
+            manifest = dropbox.scan_classops_manifest(force_refresh=refresh)
+            queued = False
+        dashboard = _classops_enrich_with_students(manifest)
+        cache = dashboard.setdefault("cache", {})
+        cache["refresh_queued"] = bool(queued)
+        cache["refreshing"] = _classops_refresh_running()
+        return dashboard
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"ClassOps dashboard unavailable: {exc}") from exc
 

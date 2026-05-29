@@ -907,27 +907,44 @@ function renderDashboard(data) {
   setStatus(`Last scan: ${data.generated_at || "unknown"}. Root: ${data.root || "/"}`, "ok");
 }
 
-async function loadDashboard() {
+async function loadDashboard({ refresh = false, background = false, quiet = false } = {}) {
   if (!state.sessionUnlocked && !state.token) {
     setStatus("Unlock this device first.", "warn");
     $("#tokenPanel").hidden = false;
     return;
   }
-  setButtonBusy("#scanBtn", true);
-  setStatus("Scanning Dropbox ClassOps folder...");
-  setTask("Scanning Dropbox ClassOps folder");
+  if (!quiet) {
+    setButtonBusy("#scanBtn", true);
+    setStatus(refresh ? "Starting Dropbox ClassOps sync..." : "Loading ClassOps dashboard...");
+    setTask(refresh ? "Starting ClassOps sync" : "Loading ClassOps");
+  }
   const previousData = state.data;
   try {
-    const data = await api("/api/classops/dashboard");
-    const summary = scanDiffSummary(previousData, data);
+    const params = new URLSearchParams();
+    if (refresh) params.set("refresh", "1");
+    if (background) params.set("background", "1");
+    const data = await api(`/api/classops/dashboard${params.toString() ? `?${params}` : ""}`);
+    const cache = data.cache || {};
+    const summary = refresh && (cache.refreshing || cache.refresh_queued)
+      ? "Sync running in background. Showing latest ClassOps data."
+      : scanDiffSummary(previousData, data);
     renderDashboard(data);
-    setStatus(summary, "ok");
-    settleTask(summary);
+    if (!quiet) {
+      setStatus(summary, "ok");
+      settleTask(summary);
+    } else if (!(cache.refreshing || cache.refresh_queued)) {
+      setStatus("ClassOps background sync complete.", "ok");
+    }
+    if (refresh && cache.refreshing && !quiet) {
+      window.setTimeout(() => loadDashboard({ quiet: true }), 8000);
+    }
   } catch (error) {
-    setStatus(error.message, "error");
-    settleTask("Dropbox scan failed", "error");
+    if (!quiet) {
+      setStatus(error.message, "error");
+      settleTask(refresh ? "ClassOps sync failed" : "ClassOps load failed", "error");
+    }
   } finally {
-    setButtonBusy("#scanBtn", false);
+    if (!quiet) setButtonBusy("#scanBtn", false);
   }
 }
 
@@ -937,7 +954,7 @@ $("#saveTokenBtn").addEventListener("click", async () => {
     await createSession($("#tokenInput").value);
     $("#tokenPanel").hidden = true;
     setStatus("Session unlocked. Ready to scan.", "ok");
-    loadDashboard();
+    loadDashboard({ background: true });
   } catch (error) {
     setStatus(error.message, "error");
   } finally {
@@ -945,7 +962,7 @@ $("#saveTokenBtn").addEventListener("click", async () => {
   }
 });
 
-$("#scanBtn").addEventListener("click", loadDashboard);
+$("#scanBtn").addEventListener("click", () => loadDashboard({ refresh: true, background: true }));
 $("#printBtn").addEventListener("click", () => {
   renderPrintableContents();
   window.print();
@@ -1140,7 +1157,7 @@ async function initClassOpsAuth() {
   if (legacyWebToken) await migrateLegacyToken();
   if (state.sessionUnlocked) {
     $("#tokenPanel").hidden = true;
-    loadDashboard();
+    loadDashboard({ background: true });
   }
 }
 

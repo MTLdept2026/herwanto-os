@@ -3981,6 +3981,84 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertEqual(link["url"], "https://tmp.dropbox/link")
         self.assertEqual(link["kind"], "temporary_link")
 
+    def test_classops_manifest_scan_uses_cache_for_nearby_calls(self):
+        dropbox_service.clear_classops_manifest_cache()
+        entries = [{
+            ".tag": "file",
+            "name": "nota.pdf",
+            "path_display": "/ClassOps/2G3/24:2:26/nota.pdf",
+            "size": 100,
+            "server_modified": "2026-05-01T00:00:00Z",
+            "id": "id:nota",
+        }]
+
+        try:
+            with patch.dict(os.environ, {
+                "DROPBOX_CLASSOPS_ROOT": "/ClassOps",
+                "DROPBOX_CLASSOPS_MANIFEST_CACHE_SECONDS": "600",
+            }, clear=False), patch.object(dropbox_service, "_list_folder", return_value=entries) as list_folder:
+                first = dropbox_service.scan_classops_manifest(force_refresh=True)
+                second = dropbox_service.scan_classops_manifest()
+
+            self.assertFalse(first["cache"]["hit"])
+            self.assertTrue(second["cache"]["hit"])
+            self.assertEqual(list_folder.call_count, 1)
+            self.assertEqual(second["classes"][0]["class"], "2G3")
+        finally:
+            dropbox_service.clear_classops_manifest_cache()
+
+    def test_classops_dashboard_background_refresh_returns_cached_and_queues(self):
+        manifest = {
+            "ok": True,
+            "generated_at": "2026-05-29T22:00:00+08:00",
+            "root": "/ClassOps",
+            "class_count": 0,
+            "folder_count": 0,
+            "file_count": 0,
+            "classes": [],
+            "summary": {"class_count": 0, "file_count": 0},
+            "cache": {"hit": True, "stale": True},
+        }
+
+        with patch.object(web_app, "_require_token"), \
+             patch.object(web_app.dropbox, "configured", return_value=True), \
+             patch.object(web_app.dropbox, "scan_classops_manifest", return_value=manifest) as scan, \
+             patch.object(web_app, "_classops_enrich_with_students", side_effect=lambda data: dict(data)) as enrich, \
+             patch.object(web_app, "_schedule_classops_manifest_refresh", return_value=True) as schedule, \
+             patch.object(web_app, "_classops_refresh_running", return_value=True):
+            data = web_app.classops_dashboard(x_hira_token="test-token", refresh=True, background=True)
+
+        scan.assert_called_once_with(allow_stale=True)
+        enrich.assert_called_once()
+        schedule.assert_called_once()
+        self.assertTrue(data["cache"]["refresh_queued"])
+        self.assertTrue(data["cache"]["refreshing"])
+
+    def test_classops_dashboard_background_load_refreshes_stale_cache(self):
+        manifest = {
+            "ok": True,
+            "generated_at": "2026-05-29T22:00:00+08:00",
+            "root": "/ClassOps",
+            "class_count": 0,
+            "folder_count": 0,
+            "file_count": 0,
+            "classes": [],
+            "summary": {"class_count": 0, "file_count": 0},
+            "cache": {"hit": True, "stale": True},
+        }
+
+        with patch.object(web_app, "_require_token"), \
+             patch.object(web_app.dropbox, "configured", return_value=True), \
+             patch.object(web_app.dropbox, "scan_classops_manifest", return_value=manifest) as scan, \
+             patch.object(web_app, "_classops_enrich_with_students", side_effect=lambda data: dict(data)), \
+             patch.object(web_app, "_schedule_classops_manifest_refresh", return_value=True) as schedule, \
+             patch.object(web_app, "_classops_refresh_running", return_value=True):
+            data = web_app.classops_dashboard(x_hira_token="test-token", background=True)
+
+        scan.assert_called_once_with(allow_stale=True)
+        schedule.assert_called_once()
+        self.assertTrue(data["cache"]["refresh_queued"])
+
     def test_classops_content_override_persists_title_and_hidden_flag(self):
         store = {}
 
@@ -8347,6 +8425,57 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertIn("get_task_brief", [tool["name"] for tool in tools])
         self.assertEqual(bot._forced_tool_for_current_turn([{"role": "user", "content": text}], tools), "get_gmail_brief")
         self.assertFalse(asyncio.run(bot.should_route_quick_pwa_chat([], text)))
+
+    def test_calendar_action_scan_forces_calendar_context_before_tasks(self):
+        text = "Check my schedule last 3 days for stuff I need to act on."
+        tools = bot.pwa_tools_for_message(text)
+
+        self.assertIn("get_assistant_context", [tool["name"] for tool in tools])
+        self.assertEqual(bot._forced_tool_for_current_turn([{"role": "user", "content": text}], tools), "get_assistant_context")
+        self.assertFalse(asyncio.run(bot.should_route_quick_pwa_chat([], text)))
+
+    def test_task_and_reminder_scans_force_task_brief(self):
+        for text in [
+            "Review my tasks for things I need to act on.",
+            "Check my reminders for urgent stuff.",
+        ]:
+            with self.subTest(text=text):
+                tools = bot.pwa_tools_for_message(text)
+
+                self.assertIn("get_task_brief", [tool["name"] for tool in tools])
+                self.assertEqual(bot._forced_tool_for_current_turn([{"role": "user", "content": text}], tools), "get_task_brief")
+                self.assertFalse(asyncio.run(bot.should_route_quick_pwa_chat([], text)))
+
+    def test_direct_work_tool_requests_force_matching_tool(self):
+        cases = [
+            ("show my marking load", "get_marking_brief"),
+            ("create a worksheet for sec 2 malay", "create_document_artifact"),
+            ("make slides for tomorrow lesson", "create_slide_deck_artifact"),
+            ("show my ClassOps dashboard for 2G3", "get_classops_brief"),
+            ("check Dropbox class materials for 2G3", "get_classops_brief"),
+        ]
+        for text, expected in cases:
+            with self.subTest(text=text):
+                tools = bot.pwa_tools_for_message(text)
+                names = [tool["name"] for tool in tools]
+
+                self.assertIn(expected, names)
+                self.assertEqual(bot._forced_tool_for_current_turn([{"role": "user", "content": text}], tools), expected)
+                self.assertFalse(asyncio.run(bot.should_route_quick_pwa_chat([], text)))
+
+    def test_state_changing_work_requests_expose_tools_without_forcing(self):
+        cases = [
+            ("remind me to check my calendar tomorrow", "add_reminder"),
+            ("schedule a meeting tomorrow at 3pm", "create_calendar_event"),
+        ]
+        for text, expected in cases:
+            with self.subTest(text=text):
+                tools = bot.pwa_tools_for_message(text)
+                names = [tool["name"] for tool in tools]
+
+                self.assertIn(expected, names)
+                self.assertIsNone(bot._forced_tool_for_current_turn([{"role": "user", "content": text}], tools))
+                self.assertFalse(asyncio.run(bot.should_route_quick_pwa_chat([], text)))
 
     def test_weather_question_forces_nea_weather_tool(self):
         forced = bot._forced_tool_for_text(

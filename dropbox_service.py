@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import copy
 import json
 import re
+import threading
 import time
 import zipfile
 from datetime import date, datetime
@@ -21,6 +23,8 @@ DROPBOX_CONTENT_API = "https://content.dropboxapi.com/2"
 DROPBOX_TOKEN_URL = "https://api.dropbox.com/oauth2/token"
 _TOKEN_CACHE: dict = {}
 _TITLE_CACHE: dict[str, str] = {}
+_CLASSOPS_MANIFEST_CACHE: dict = {"manifest": None, "stored_at": 0.0}
+_CLASSOPS_MANIFEST_LOCK = threading.Lock()
 CLASSOPS_CLASSES = {"1G2", "2G3", "3G3", "4NT"}
 CONTENT_EXTENSIONS = {
     ".html": "mini-site",
@@ -204,7 +208,74 @@ def get_file_link(path: str) -> dict:
     return {"url": url, "kind": "dropbox_web", "path": path}
 
 
-def _list_folder(path: str, recursive: bool = True, limit: int = 500) -> list[dict]:
+def _classops_manifest_ttl_seconds() -> int:
+    try:
+        return max(0, int(os.environ.get("DROPBOX_CLASSOPS_MANIFEST_CACHE_SECONDS", "600") or 600))
+    except ValueError:
+        return 600
+
+
+def clear_classops_manifest_cache():
+    with _CLASSOPS_MANIFEST_LOCK:
+        _CLASSOPS_MANIFEST_CACHE["manifest"] = None
+        _CLASSOPS_MANIFEST_CACHE["stored_at"] = 0.0
+
+
+def classops_manifest_cache_status() -> dict:
+    with _CLASSOPS_MANIFEST_LOCK:
+        stored_at = float(_CLASSOPS_MANIFEST_CACHE.get("stored_at", 0.0) or 0.0)
+        has_manifest = isinstance(_CLASSOPS_MANIFEST_CACHE.get("manifest"), dict)
+    age = max(0.0, time.time() - stored_at) if stored_at else 0.0
+    ttl = _classops_manifest_ttl_seconds()
+    return {
+        "available": has_manifest,
+        "stored_at": datetime.fromtimestamp(stored_at, SGT).isoformat() if stored_at else "",
+        "age_seconds": round(age),
+        "ttl_seconds": ttl,
+        "fresh": bool(has_manifest and ttl > 0 and age <= ttl),
+    }
+
+
+def _cached_classops_manifest(max_age_seconds: int, allow_stale: bool = False) -> tuple[dict | None, bool]:
+    with _CLASSOPS_MANIFEST_LOCK:
+        manifest = _CLASSOPS_MANIFEST_CACHE.get("manifest")
+        stored_at = float(_CLASSOPS_MANIFEST_CACHE.get("stored_at", 0.0) or 0.0)
+    if not isinstance(manifest, dict) or not stored_at:
+        return None, False
+    age = max(0.0, time.time() - stored_at)
+    fresh = max_age_seconds > 0 and age <= max_age_seconds
+    if not fresh and not allow_stale:
+        return None, False
+    result = copy.deepcopy(manifest)
+    result["cache"] = {
+        "hit": True,
+        "stale": not fresh,
+        "stored_at": datetime.fromtimestamp(stored_at, SGT).isoformat(),
+        "age_seconds": round(age),
+        "ttl_seconds": max_age_seconds,
+    }
+    return result, True
+
+
+def _store_classops_manifest(manifest: dict) -> dict:
+    stored_at = time.time()
+    clean = copy.deepcopy(manifest)
+    clean.pop("cache", None)
+    with _CLASSOPS_MANIFEST_LOCK:
+        _CLASSOPS_MANIFEST_CACHE["manifest"] = clean
+        _CLASSOPS_MANIFEST_CACHE["stored_at"] = stored_at
+    result = copy.deepcopy(clean)
+    result["cache"] = {
+        "hit": False,
+        "stale": False,
+        "stored_at": datetime.fromtimestamp(stored_at, SGT).isoformat(),
+        "age_seconds": 0,
+        "ttl_seconds": _classops_manifest_ttl_seconds(),
+    }
+    return result
+
+
+def _list_folder(path: str, recursive: bool = True, limit: int = 2000) -> list[dict]:
     data = _post(
         "/files/list_folder",
         {
@@ -605,7 +676,7 @@ def enrich_classops_manifest(manifest: dict) -> dict:
     return current
 
 
-def scan_classops_manifest() -> dict:
+def _scan_classops_manifest_uncached() -> dict:
     root = _root_path()
     entries = _list_folder(root, recursive=True)
     folders = [item for item in entries if item.get(".tag") == "folder"]
@@ -671,3 +742,13 @@ def scan_classops_manifest() -> dict:
         "classes": classes,
     }
     return enrich_classops_manifest(manifest)
+
+
+def scan_classops_manifest(force_refresh: bool = False, max_age_seconds: int | None = None, allow_stale: bool = False) -> dict:
+    ttl = _classops_manifest_ttl_seconds() if max_age_seconds is None else max(0, int(max_age_seconds or 0))
+    if not force_refresh:
+        cached, _hit = _cached_classops_manifest(ttl, allow_stale=allow_stale)
+        if cached is not None:
+            return cached
+    manifest = _scan_classops_manifest_uncached()
+    return _store_classops_manifest(manifest)

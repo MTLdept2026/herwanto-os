@@ -24,6 +24,7 @@ from openai import OpenAI, AsyncOpenAI
 
 import google_services as gs
 import classops_intelligence as classops_ai
+import dropbox_service as dropbox
 import timetable as tt
 import search_service as ss
 import sports_service as sports
@@ -3059,10 +3060,11 @@ Rules:
 - Never invent mosque or place locations. If a place location affects the answer and you do not have a verified source/tool result, say what you know and what is unverified. Be especially careful with Singapore masjid names that sound similar.
 - Known mosque correction: Masjid Al-Muttaqin is at 5140 Ang Mo Kio Ave 6, Singapore 569844, not Kovan.
 - For journey-time estimates, use the current device location context when it is provided. If it is not provided, use only explicit user-provided origin/destination or stable stored memory, and label any estimate as rough.
-- You have tools: create_calendar_event, delete_calendar_event_by_text, bulk_delete_duplicate_calendar_events, find_available_training_slots, get_cca_schedule, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_mtl_classlists, analyze_mtl_scores, generate_mtl_score_trend_report, apply_mtl_failure_highlighting, update_mtl_class_score, fill_mtl_percentage_scores, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, create_topic_profile, remember_source_insight, update_project_status, get_nea_weather, get_muis_prayer_times, get_muis_friday_khutbah, get_latest_news, get_liverpool_brief, get_f1_brief, web_search, and fetch_url. Use them proactively.
+- You have tools: create_calendar_event, delete_calendar_event_by_text, bulk_delete_duplicate_calendar_events, find_available_training_slots, get_cca_schedule, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, get_classops_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_mtl_classlists, analyze_mtl_scores, generate_mtl_score_trend_report, apply_mtl_failure_highlighting, update_mtl_class_score, fill_mtl_percentage_scores, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, create_topic_profile, remember_source_insight, update_project_status, get_nea_weather, get_muis_prayer_times, get_muis_friday_khutbah, get_latest_news, get_liverpool_brief, get_f1_brief, web_search, and fetch_url. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
 - When the user mentions marking scripts, papers, compositions, kefahaman, karangan, worksheets, or a marking stack, use marking tools instead of ordinary reminders: add_marking_task for a new stack, update_marking_progress when he says how many scripts are marked, reset_marking_load when he asks to reset/clear the marking load or board, and get_marking_brief when he asks what marking is outstanding. Marking tasks are mission-critical and must persist even at 0 outstanding; only complete one when he explicitly says that marking stack is done, completed, can be closed, reset, or cleared.
+- When the user asks about ClassOps, Dropbox class materials, submission tracking, class follow-up signals, or the ClassOps dashboard, call get_classops_brief. Do not say ClassOps is unavailable unless that tool reports the connected service is not configured or a provider call fails.
 - PWA Web Push can deliver OS notifications to subscribed Android/browser devices through the service worker even when the app is closed. Scheduled nudges, reminders, digests, and briefings should use the app notification/Web Push path. Do not tell Herwanto the PWA must be open or Telegram must be active for OS push if the device is subscribed; if delivery fails, diagnose Web Push delivery/logging instead.
 - When the user asks you to nudge, ping, notify, push a notification, check in, remind him at a specific time, or initiate a chat later — call create_proactive_nudge. Use this for time-specific heads-ups, not ordinary all-day deadlines.
 - If the user asks for a digest/news/briefing to be pushed or notified later ("in 5 mins", "at 6:30", etc.), schedule a proactive nudge containing the digest/news content for that time. Do not return the digest immediately unless he also asks to see it now.
@@ -4898,6 +4900,18 @@ MARKING_BRIEF_TOOL = {
     }
 }
 
+CLASSOPS_BRIEF_TOOL = {
+    "name": "get_classops_brief",
+    "description": "Get ClassOps status, student follow-up signals, tracked assignment/submission state, and optional Dropbox class-material manifest summary.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "class_name": {"type": "string", "description": "Optional class filter such as 2G3, 3G3, 1G2, or 4NT."},
+            "include_dropbox": {"type": "boolean", "description": "Include Dropbox ClassOps manifest counts when configured. Default true."}
+        }
+    }
+}
+
 RESET_MARKING_TOOL = {
     "name": "reset_marking_load",
     "description": "Clear all active marking stacks from the marking-load board. Use when Herwanto asks to reset or clear marking load, outstanding marking, or the marking board.",
@@ -5003,6 +5017,72 @@ def build_classops_status_summary(now: datetime | None = None) -> dict:
             "classes": [],
             "control_centre_url": "/classops",
         }
+
+
+def build_classops_brief(class_name: str = "", include_dropbox: bool = True) -> str:
+    wanted = " ".join(str(class_name or "").upper().split())
+    summary = build_classops_status_summary()
+    lines = ["ClassOps brief:"]
+    if summary.get("connected"):
+        lines.append(
+            "Status: "
+            f"{int(summary.get('class_count') or 0)} classes, "
+            f"{int(summary.get('open_submission_count') or 0)} open submission(s), "
+            f"{int(summary.get('concern_count') or 0)} student concern(s), "
+            f"{int(summary.get('due_today_count') or 0)} due today, "
+            f"{int(summary.get('overdue_count') or 0)} overdue."
+        )
+        classes = summary.get("classes") if isinstance(summary.get("classes"), list) else []
+        if wanted:
+            classes = [item for item in classes if str(item.get("class_name", "")).upper() == wanted]
+        if classes:
+            for item in classes[:4]:
+                parts = []
+                for key, label in [
+                    ("open_submission_count", "open"),
+                    ("concern_count", "concern"),
+                    ("due_today_count", "due today"),
+                    ("overdue_count", "overdue"),
+                ]:
+                    count = int(item.get(key) or 0)
+                    if count:
+                        parts.append(f"{count} {label}")
+                top = item.get("top_insight") if isinstance(item.get("top_insight"), dict) else {}
+                detail = top.get("title") or ", ".join(parts) or "no urgent signal"
+                students = [student.get("name", "") for student in item.get("top_students", []) if student.get("name")]
+                suffix = f" Start with {', '.join(students[:2])}." if students else ""
+                lines.append(f"- {item.get('class_name', 'Class')}: {detail}.{suffix}")
+        else:
+            lines.append(f"- No ClassOps class matched {wanted}." if wanted else "- No active ClassOps class rows found.")
+    else:
+        error_note = f" ({summary.get('error')})" if summary.get("error") else ""
+        lines.append(f"Status: ClassOps ledger unavailable{error_note}.")
+
+    if include_dropbox:
+        if dropbox.configured():
+            try:
+                manifest = dropbox.scan_classops_manifest()
+                classes = manifest.get("classes") if isinstance(manifest.get("classes"), list) else []
+                if wanted:
+                    classes = [item for item in classes if str(item.get("class", "")).upper() == wanted]
+                lines.append(
+                    "Dropbox: "
+                    f"{int(manifest.get('class_count') or 0)} classes, "
+                    f"{int(manifest.get('folder_count') or 0)} folder(s), "
+                    f"{int(manifest.get('file_count') or 0)} file(s)."
+                )
+                for item in classes[:4]:
+                    lines.append(
+                        f"- {item.get('class', 'Class')}: "
+                        f"{int(item.get('folder_count') or 0)} folder(s), "
+                        f"{int(item.get('file_count') or 0)} file(s)."
+                    )
+            except Exception as exc:
+                lines.append(f"Dropbox: configured, but scan failed: {exc}")
+        else:
+            lines.append("Dropbox: ClassOps env vars are not configured.")
+    lines.append("Control centre: /classops")
+    return "\n".join(lines)
 
 
 async def reply(update, text, **kwargs):
@@ -11462,6 +11542,60 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
         return "get_gmail_brief"
     if "get_gmail_brief" in available and "gmail" in semantic_flags and "gmail_draft" not in semantic_flags:
         return "get_gmail_brief"
+
+    if (
+        "get_classops_brief" in available
+        and re.search(
+            r"\b(?:classops|class\s*ops|dropbox\s+class|class\s+materials?|lesson\s+materials?|"
+            r"submission\s+tracking|submissions?|non[-\s]?submissions?|student\s+follow[-\s]?up|control\s+centre|control\s+center)\b",
+            clean,
+        )
+    ):
+        return "get_classops_brief"
+
+    if (
+        "create_document_artifact" in available
+        and re.search(r"\b(?:create|generate|make|build|draft|write)\b", clean)
+        and re.search(r"\b(?:document|docx|worksheet|letter|report|lesson plan|handout|memo|proposal|meeting notes)\b", clean)
+    ):
+        return "create_document_artifact"
+    if (
+        "create_slide_deck_artifact" in available
+        and re.search(r"\b(?:create|generate|make|build|draft)\b", clean)
+        and re.search(r"\b(?:slide|slides|deck|ppt|pptx|powerpoint|presentation)\b", clean)
+    ):
+        return "create_slide_deck_artifact"
+    direct_lookup_intent = bool(re.search(
+        r"\b(?:read|check|pull up|show|review|scan|list|what'?s on|what is on|what do i have|when)\b",
+        clean,
+    ))
+    if (
+        "get_assistant_context" in available
+        and direct_lookup_intent
+        and not re.search(r"\bremind me\b", clean)
+        and has_any(["calendar", "schedule", "agenda", "event", "events", "my day", "my week"])
+    ):
+        return "get_assistant_context"
+    if (
+        "get_task_brief" in available
+        and direct_lookup_intent
+        and has_any(["task", "tasks", "reminder", "reminders", "due", "deadline", "deadlines", "priority", "priorities"])
+        and not re.search(r"\bremind me\b", clean)
+    ):
+        return "get_task_brief"
+    if (
+        "get_marking_brief" in available
+        and direct_lookup_intent
+        and has_any(["marking", "scripts", "script", "papers", "paper", "unmarked", "marked", "marking load"])
+        and not has_any(["reset", "clear", "wipe", "update", "add "])
+    ):
+        return "get_marking_brief"
+    if (
+        "get_assistant_context" in available
+        and direct_lookup_intent
+        and has_any(["project", "projects", "gameplan", "ruh", "rūḥ", "app status", "milestone"])
+    ):
+        return "get_assistant_context"
     if (
         "find_available_training_slots" in available
         and has_any([
@@ -13305,6 +13439,7 @@ def _core_tools():
         UPDATE_MARKING_TOOL,
         RESET_MARKING_TOOL,
         MARKING_BRIEF_TOOL,
+        CLASSOPS_BRIEF_TOOL,
         TASK_BRIEF_TOOL,
         TIMETABLE_TOOL,
         CLASSLIST_TOOL,
@@ -13443,6 +13578,12 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
             add(NUDGE_TOOL)
     if re.search(r"\b(marking|scripts?|papers?|compositions?|kefahaman|karangan|worksheets?|marked|unmarked)\b", effective_text):
         add(ADD_MARKING_TOOL, UPDATE_MARKING_TOOL, RESET_MARKING_TOOL, MARKING_BRIEF_TOOL)
+    if re.search(
+        r"\b(?:classops|class\s*ops|dropbox\s+class|class\s+materials?|lesson\s+materials?|"
+        r"submission\s+tracking|submissions?|non[-\s]?submissions?|student\s+follow[-\s]?up|control\s+centre|control\s+center)\b",
+        effective_text,
+    ):
+        add(CLASSOPS_BRIEF_TOOL)
     if re.search(r"\b(nudge|ping|notify|notification|notifications|push|check[- ]?in|check in|selawat|salawat|istighfar|zikir|zikr|dhikr)\b", effective_text):
         add(NUDGE_TOOL, DAILY_CHECKIN_TOOL, BREAK_AWARE_CHECKIN_TOOL)
     if re.search(r"\b(follow[- ]?up|follow up|owe replies|chase)\b", effective_text) or "followup" in semantic_flags:
@@ -15254,6 +15395,15 @@ async def _execute_tool(name: str, inp: dict) -> str:
             return build_marking_brief()
         except Exception as e:
             return f"Failed to get marking brief: {e}"
+
+    elif name == "get_classops_brief":
+        try:
+            return build_classops_brief(
+                class_name=str(inp.get("class_name", "") or ""),
+                include_dropbox=bool(inp.get("include_dropbox", True)),
+            )
+        except Exception as e:
+            return f"Failed to get ClassOps brief: {e}"
 
     elif name == "create_daily_checkin":
         try:

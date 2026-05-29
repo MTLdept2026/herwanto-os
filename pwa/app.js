@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260527-sync-baseline-67";
-const APP_SCRIPT = "app.js?v=20260527-sync-baseline-67";
-const EXPECTED_SW_CACHE = "hira-os-v137";
+const APP_VERSION = "20260529-classops-fast-sync-68";
+const APP_SCRIPT = "app.js?v=20260529-classops-fast-sync-68";
+const EXPECTED_SW_CACHE = "hira-os-v138";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
@@ -2927,7 +2927,7 @@ function progressTextForTool(name = "") {
       "This is taking longer than it should. I’m still on it.",
     ];
   }
-  if (["get_timetable", "get_assistant_context", "get_task_brief", "get_cca_schedule"].includes(clean)) {
+  if (["get_timetable", "get_assistant_context", "get_task_brief", "get_cca_schedule", "get_classops_brief"].includes(clean)) {
     return [
       "Still checking your current context...",
       "Putting the relevant details together...",
@@ -2965,6 +2965,7 @@ function appendToolStatus(el, name) {
     get_assistant_context: "Checking your day...",
     get_timetable: "Checking the timetable...",
     get_task_brief: "Checking tasks...",
+    get_classops_brief: "Checking ClassOps...",
     get_gmail_brief: "Checking Gmail...",
     create_gmail_draft: "Drafting email...",
     get_nea_weather: "Checking NEA weather...",
