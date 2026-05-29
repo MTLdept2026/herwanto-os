@@ -4158,7 +4158,20 @@ def _pwa_nudge_command_reply(message: str) -> tuple[str, str] | None:
     if not clean:
         return None
     lower = clean.lower()
-    if lower in {"/nudges", "nudges"}:
+    wants_list = (
+        lower in {"/nudges", "nudges"}
+        or (
+            re.search(r"\bnudges?\b", lower)
+            and (
+                re.search(r"\b(?:list|show|view|display|review)\b", lower)
+                or re.search(r"\bgive\s+me\s+(?:a\s+)?list\b", lower)
+                or re.search(r"\b(?:queued|pending|scheduled|open|active)\s+nudges?\b", lower)
+                or re.search(r"\bnudges?\s+(?:still\s+)?(?:in|on)\s+(?:the\s+)?system\b", lower)
+            )
+            and not re.search(r"\b(?:add|create|schedule|set|cancel|clear|delete|remove|done|complete)\b", lower)
+        )
+    )
+    if wants_list:
         try:
             nudges = sorted(bot.gs.get_nudges(), key=lambda n: str(n.get("send_at", "")))
         except Exception as exc:

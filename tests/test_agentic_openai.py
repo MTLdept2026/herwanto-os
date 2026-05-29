@@ -8538,6 +8538,26 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertIn("Sahibba tournament", reply)
         self.assertIn("/cancelnudge <id>", reply)
 
+    def test_pwa_nudges_command_understands_natural_list_request(self):
+        nudges = [
+            {
+                "id": "8",
+                "message": "Check marking sprint",
+                "send_at": "2026-05-29T22:00:00+08:00",
+                "status": "pending",
+            }
+        ]
+
+        with patch.object(bot.gs, "get_nudges", return_value=nudges):
+            reply, tool = web_app._pwa_nudge_command_reply("Give me a list of queued nudges")
+
+        self.assertEqual(tool, "list_nudges")
+        self.assertIn("Pending nudges", reply)
+        self.assertIn("Check marking sprint", reply)
+
+    def test_pwa_nudges_command_does_not_intercept_create_request(self):
+        self.assertIsNone(web_app._pwa_nudge_command_reply("Nudge me to check marking at 10pm"))
+
     def test_pwa_cancelnudge_command_cancels_and_archives_notification(self):
         notifications = [
             {"id": "9", "source": "nudge:7", "archived": False},
