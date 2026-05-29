@@ -1091,6 +1091,50 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertIn("already exists and is marked done", result)
         add_reminder.assert_not_called()
 
+    def test_add_reminder_tool_blocks_completed_near_duplicate(self):
+        completed = {
+            "id": "8",
+            "description": "Submit the remarks form",
+            "due": "2026-05-07",
+            "category": "General",
+            "done": True,
+        }
+
+        with (
+            patch.object(bot.gs, "get_reminders", return_value=[completed]),
+            patch.object(bot.gs, "add_reminder") as add_reminder,
+        ):
+            result = asyncio.run(bot._execute_tool(
+                "add_reminder",
+                {"description": "Submit remarks forms", "due_date": "2026-05-07", "category": "Teaching"},
+            ))
+
+        self.assertIn("already exists and is marked done", result)
+        add_reminder.assert_not_called()
+
+    def test_add_reminder_tool_allows_same_task_on_different_due_date(self):
+        completed = {
+            "id": "8",
+            "description": "Submit the remarks form",
+            "due": "2026-05-07",
+            "category": "Teaching",
+            "done": True,
+        }
+
+        with (
+            patch.object(bot.gs, "get_reminders", return_value=[completed]),
+            patch.object(bot.gs, "add_reminder", return_value="9") as add_reminder,
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "add_action_ledger"),
+        ):
+            result = asyncio.run(bot._execute_tool(
+                "add_reminder",
+                {"description": "Submit remarks form", "due_date": "2026-05-14", "category": "Teaching"},
+            ))
+
+        self.assertIn("Added reminder #9", result)
+        add_reminder.assert_called_once_with("Submit remarks form", "2026-05-14", "Teaching")
+
     def test_web_push_payload_uses_phone_sized_preview(self):
         payloads = []
         fake_pywebpush = ModuleType("pywebpush")

@@ -3062,7 +3062,7 @@ Rules:
 - For journey-time estimates, use the current device location context when it is provided. If it is not provided, use only explicit user-provided origin/destination or stable stored memory, and label any estimate as rough.
 - You have tools: create_calendar_event, delete_calendar_event_by_text, bulk_delete_duplicate_calendar_events, find_available_training_slots, get_cca_schedule, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, get_classops_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_mtl_classlists, analyze_mtl_scores, generate_mtl_score_trend_report, apply_mtl_failure_highlighting, update_mtl_class_score, fill_mtl_percentage_scores, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, create_topic_profile, remember_source_insight, update_project_status, get_nea_weather, get_muis_prayer_times, get_muis_friday_khutbah, get_latest_news, get_liverpool_brief, get_f1_brief, web_search, and fetch_url. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
-- When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking.
+- When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking, but do not recreate tasks that are already in the task brief or recently marked done. If a scanned email/screenshot repeats a completed or already-tracked item, report that it is already handled instead of adding a new reminder.
 - When the user mentions marking scripts, papers, compositions, kefahaman, karangan, worksheets, or a marking stack, use marking tools instead of ordinary reminders: add_marking_task for a new stack, update_marking_progress when he says how many scripts are marked, reset_marking_load when he asks to reset/clear the marking load or board, and get_marking_brief when he asks what marking is outstanding. Marking tasks are mission-critical and must persist even at 0 outstanding; only complete one when he explicitly says that marking stack is done, completed, can be closed, reset, or cleared.
 - When the user asks about ClassOps, Dropbox class materials, submission tracking, class follow-up signals, or the ClassOps dashboard, call get_classops_brief. Do not say ClassOps is unavailable unless that tool reports the connected service is not configured or a provider call fails.
 - PWA Web Push can deliver OS notifications to subscribed Android/browser devices through the service worker even when the app is closed. Scheduled nudges, reminders, digests, and briefings should use the app notification/Web Push path. Do not tell Herwanto the PWA must be open or Telegram must be active for OS push if the device is subscribed; if delivery fails, diagnose Web Push delivery/logging instead.
@@ -4331,7 +4331,7 @@ CCA_SCHEDULE_TOOL = {
 
 REMINDER_TOOL = {
     "name": "add_reminder",
-    "description": "Add a task or deadline reminder. Use this automatically when the user mentions something they need to do, prepare, submit, mark, or complete by a certain date.",
+    "description": "Add a task or deadline reminder. Use this automatically when the user mentions something they need to do, prepare, submit, mark, or complete by a certain date. Do not intentionally recreate an item already listed in the task brief or already marked done; the tool checks active and completed reminders for same-date near-duplicates and will refuse them.",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -9964,29 +9964,65 @@ def _find_matching_reminders(query: str, limit: int = 6) -> list[tuple[dict, flo
         return matches[:limit]
     return [scored[0]] if best_score >= 0.35 else []
 
+_REMINDER_DUPLICATE_STOP_WORDS = {
+    "a", "an", "and", "by", "for", "from", "i", "it", "me", "my", "of",
+    "please", "reminder", "task", "that", "the", "these", "this", "those",
+    "to", "with",
+}
+
 def _normalise_reminder_identity(value: str) -> str:
     return " ".join(str(value or "").casefold().split())
 
-def _find_exact_reminder(description: str, due_date: str, category: str = "") -> dict | None:
+def _reminder_duplicate_terms(value: str) -> set[str]:
+    terms = set()
+    for raw in re.findall(r"[a-z0-9]+", str(value or "").casefold()):
+        if raw in _REMINDER_DUPLICATE_STOP_WORDS or len(raw) < 2:
+            continue
+        terms.add(raw[:-1] if raw.endswith("s") and len(raw) > 3 else raw)
+    return terms
+
+def _reminder_description_similarity(left: str, right: str) -> float:
+    left_norm = _normalise_reminder_identity(left)
+    right_norm = _normalise_reminder_identity(right)
+    if not left_norm or not right_norm:
+        return 0
+    score = SequenceMatcher(None, left_norm, right_norm).ratio()
+    if left_norm in right_norm or right_norm in left_norm:
+        score = max(score, 0.92)
+    left_terms = _reminder_duplicate_terms(left)
+    right_terms = _reminder_duplicate_terms(right)
+    if left_terms and right_terms:
+        overlap = len(left_terms & right_terms)
+        union = len(left_terms | right_terms)
+        shorter = min(len(left_terms), len(right_terms))
+        term_score = overlap / max(1, union)
+        if overlap >= 2:
+            term_score = max(term_score, overlap / max(1, shorter))
+        score = max(score, term_score)
+    return score
+
+def _find_duplicate_reminder(description: str, due_date: str, category: str = "") -> tuple[dict | None, float]:
     desc_key = _normalise_reminder_identity(description)
     due_key = str(due_date or "").strip()
     cat_key = _normalise_reminder_identity(category or "General")
     if not desc_key or not due_key:
-        return None
+        return None, 0
     try:
         reminders = gs.get_reminders(include_done=True)
     except Exception as exc:
         logger.warning(f"Could not check existing reminders before add: {exc}")
-        return None
+        return None, 0
+    best: tuple[dict | None, float] = (None, 0)
     for reminder in reminders:
         if str(reminder.get("due", "") or "").strip() != due_key:
             continue
-        if _normalise_reminder_identity(reminder.get("description", "")) != desc_key:
-            continue
-        if _normalise_reminder_identity(reminder.get("category", "") or "General") != cat_key:
-            continue
-        return reminder
-    return None
+        score = _reminder_description_similarity(description, reminder.get("description", ""))
+        if _normalise_reminder_identity(reminder.get("category", "") or "General") == cat_key:
+            score += 0.03
+        if score > best[1]:
+            best = (reminder, score)
+    threshold = 0.85
+    return best if best[0] and best[1] >= threshold else (None, best[1])
 
 def _find_best_followup(query: str):
     followups = gs.get_followups()
@@ -13490,7 +13526,7 @@ Inspect this screenshot/document carefully. Priority:
 1. Extract schedule/calendar items: duties, meetings, appointments, matches, trainings, reporting times, event timings, venue changes.
 2. Extract tasks/deadlines: things to submit, prepare, mark, complete, or follow up.
 3. If a calendar item has a clear date and start time, call create_calendar_event. Use a sensible one-hour duration if no end time is shown.
-4. If a task has a due date, call add_reminder.
+4. If a task has a due date, call add_reminder unless the task is already tracked or already completed. The reminder tool checks active and completed reminders; do not work around a duplicate refusal by rephrasing the task.
 5. If the date/time is ambiguous, do not invent it. Ask for the exact missing detail.
 6. After tools run, reply with a concise summary: added to calendar, added as reminders, unclear items.
 """
@@ -15405,7 +15441,7 @@ async def _execute_tool(name: str, inp: dict) -> str:
             blocked = _validated_action_failure(name, inp)
             if blocked:
                 return blocked
-            existing = _find_exact_reminder(
+            existing, _duplicate_score = _find_duplicate_reminder(
                 inp["description"],
                 inp["due_date"],
                 inp.get("category", "General"),
