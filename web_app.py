@@ -5020,9 +5020,10 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             yield sse({"type": "saved"})
         except Exception as exc:
             bot.logger.exception(f"PWA chat failed: {exc}")
+            error_detail = _safe_chat_error_detail(exc)
             _merge_chat_trace(trace, {
                 "error_phase": "stream_or_model",
-                "error_detail": _safe_chat_error_detail(exc),
+                "error_detail": error_detail,
             })
             fallback_text = ""
             fallback_result = ""
@@ -5046,7 +5047,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                 yield sse({"type": "trace", "trace": trace})
                 yield sse({"type": "saved"})
             else:
-                reply_text = _pwa_model_failure_reply(message)
+                reply_text = _pwa_model_failure_reply(message, error_detail)
                 history.append({"role": "assistant", "content": reply_text})
                 _save_history_best_effort(history_key, history)
                 _merge_chat_trace(trace, {"confidence_gate": "failed", "final_mode": "model_failure"})
@@ -5135,7 +5136,28 @@ def _safe_chat_error_detail(exc: Exception) -> str:
     return detail[:500]
 
 
-def _pwa_model_failure_reply(message: str) -> str:
+def _pwa_model_failure_reply(message: str, error_detail: str = "") -> str:
+    category = bot.openai_failure_category(error_detail)
+    if category == "auth":
+        return (
+            "I’m still here, but OpenAI rejected this app’s API key. "
+            "This needs a fresh OPENAI_API_KEY in Railway before chat will recover."
+        )
+    if category == "quota":
+        return (
+            "I’m still here, but OpenAI says the account is out of quota or blocked by billing limits. "
+            "Retrying will not help until billing or usage limits are fixed."
+        )
+    if category == "model":
+        return (
+            "I’m still here, but OpenAI rejected the model configured for this app. "
+            "I logged the exact model error in the trace; update the HIRA_*_MODEL or OpenAI fallback model variables in Railway."
+        )
+    if category == "rate_limit":
+        return (
+            "I’m still here, but OpenAI is rate-limiting this app right now. "
+            "Give it a short pause before trying again."
+        )
     return (
         "I’m still here, but the OpenAI chat handoff failed before it returned a real answer. "
         "I’m treating that as a failed pass, not pretending it worked. Send it again once, and I’ll reroute cleanly."

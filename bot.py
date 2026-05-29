@@ -3853,10 +3853,96 @@ def _openai_previous_response_error(exc: Exception | str | None = None) -> bool:
     ))
 
 
+def _openai_exception_status(exc: Exception | str | None = None) -> int | None:
+    for attr in ("status_code", "status"):
+        value = getattr(exc, attr, None)
+        try:
+            if value is not None:
+                return int(value)
+        except (TypeError, ValueError):
+            pass
+    response = getattr(exc, "response", None)
+    value = getattr(response, "status_code", None)
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _openai_exception_code(exc: Exception | str | None = None) -> str:
+    for attr in ("code", "type"):
+        value = getattr(exc, attr, None)
+        if value:
+            return str(value).strip().lower()
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        error = body.get("error") if isinstance(body.get("error"), dict) else body
+        for key in ("code", "type"):
+            value = error.get(key)
+            if value:
+                return str(value).strip().lower()
+    return ""
+
+
+def _openai_model_access_error(exc: Exception | str | None = None) -> bool:
+    message = str(exc or "").lower()
+    code = _openai_exception_code(exc)
+    status = _openai_exception_status(exc)
+    if code == "model_not_found":
+        return True
+    if "model_not_found" in message:
+        return True
+    return bool(
+        status == 404
+        and "model" in message
+        and any(token in message for token in ("not found", "does not exist", "do not have access", "not have access"))
+    )
+
+
+def openai_failure_category(exc: Exception | str | None = None) -> str:
+    message = str(exc or "").lower()
+    code = _openai_exception_code(exc)
+    status = _openai_exception_status(exc)
+    if any(token in code or token in message for token in ("insufficient_quota", "quota_exceeded", "billing_hard_limit")):
+        return "quota"
+    if status == 401 or any(token in code or token in message for token in ("invalid_api_key", "authentication_error", "incorrect api key", "unauthorized")):
+        return "auth"
+    if _openai_model_access_error(exc):
+        return "model"
+    if status == 429 or any(token in code or token in message for token in ("rate_limit", "rate limit", "too many requests")):
+        return "rate_limit"
+    if _openai_previous_response_error(exc):
+        return "state"
+    return "unknown"
+
+
+def _openai_fallback_model_for_request(kwargs: dict, exc: Exception | None = None) -> str:
+    if not _openai_model_access_error(exc):
+        return ""
+    current = str(kwargs.get("model") or "").strip()
+    candidates = [
+        OPENAI_FALLBACK_AGENTIC_MODEL,
+        AGENTIC_MODEL,
+        OPENAI_FALLBACK_QUICK_MODEL,
+        QUICK_MODEL,
+    ]
+    if current in {QUICK_MODEL, ROUTER_MODEL, STRUCTURED_MODEL}:
+        candidates = [OPENAI_FALLBACK_QUICK_MODEL, QUICK_MODEL, OPENAI_FALLBACK_AGENTIC_MODEL, AGENTIC_MODEL]
+    for candidate in candidates:
+        clean = str(candidate or "").strip()
+        if clean and clean != current:
+            return clean
+    return ""
+
+
 def _openai_degraded_request_kwargs(kwargs: dict, exc: Exception | None = None) -> dict:
     message = str(exc or "").lower()
+    category = openai_failure_category(exc)
+    if category in {"auth", "quota", "rate_limit"}:
+        return {}
+    fallback_model = _openai_fallback_model_for_request(kwargs, exc)
     stale_previous_response = _openai_previous_response_error(exc)
-    if not stale_previous_response and not any(token in message for token in (
+    parameter_failure = any(token in message for token in (
         "unsupported",
         "unknown parameter",
         "invalid",
@@ -3871,7 +3957,8 @@ def _openai_degraded_request_kwargs(kwargs: dict, exc: Exception | None = None) 
         "truncation",
         "verbosity",
         "include",
-    )):
+    ))
+    if not fallback_model and not stale_previous_response and not parameter_failure:
         return {}
     degraded = dict(kwargs)
     for key in (
@@ -3884,7 +3971,9 @@ def _openai_degraded_request_kwargs(kwargs: dict, exc: Exception | None = None) 
         "include",
     ):
         degraded.pop(key, None)
-    if stale_previous_response:
+    if fallback_model:
+        degraded["model"] = fallback_model
+    if stale_previous_response or fallback_model:
         degraded.pop("previous_response_id", None)
     if isinstance(degraded.get("text"), dict) and set(degraded["text"].keys()) == {"verbosity"}:
         degraded.pop("text", None)

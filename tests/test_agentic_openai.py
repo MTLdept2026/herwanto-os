@@ -5977,6 +5977,77 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertNotIn("previous_response_id", degraded)
         self.assertEqual(degraded["input"], kwargs["input"])
 
+    def test_openai_degraded_request_falls_back_on_model_not_found(self):
+        class FakeOpenAIError(Exception):
+            status_code = 404
+            code = "model_not_found"
+
+        kwargs = {
+            "model": "deep-model",
+            "input": [{"role": "user", "content": "hi"}],
+            "previous_response_id": "resp_old",
+            "prompt_cache_key": "hira-prompt:test",
+            "safety_identifier": "hira-user:test",
+        }
+
+        with (
+            patch.object(bot, "OPENAI_FALLBACK_AGENTIC_MODEL", "fallback-agentic"),
+            patch.object(bot, "AGENTIC_MODEL", "agentic-model"),
+            patch.object(bot, "OPENAI_FALLBACK_QUICK_MODEL", "fallback-quick"),
+            patch.object(bot, "QUICK_MODEL", "quick-model"),
+        ):
+            degraded = bot._openai_degraded_request_kwargs(
+                kwargs,
+                FakeOpenAIError("The model deep-model does not exist or you do not have access to it."),
+            )
+
+        self.assertEqual(degraded["model"], "fallback-agentic")
+        self.assertNotIn("previous_response_id", degraded)
+        self.assertNotIn("prompt_cache_key", degraded)
+        self.assertNotIn("safety_identifier", degraded)
+
+    def test_openai_degraded_request_does_not_retry_operator_errors(self):
+        class FakeOpenAIError(Exception):
+            def __init__(self, message, status_code, code):
+                super().__init__(message)
+                self.status_code = status_code
+                self.code = code
+
+        kwargs = {
+            "model": "gpt-5.5",
+            "input": [{"role": "user", "content": "hi"}],
+            "prompt_cache_key": "hira-prompt:test",
+        }
+
+        self.assertEqual(
+            bot._openai_degraded_request_kwargs(
+                kwargs,
+                FakeOpenAIError("Incorrect API key provided.", 401, "invalid_api_key"),
+            ),
+            {},
+        )
+        self.assertEqual(
+            bot._openai_degraded_request_kwargs(
+                kwargs,
+                FakeOpenAIError("You exceeded your current quota.", 429, "insufficient_quota"),
+            ),
+            {},
+        )
+
+    def test_pwa_model_failure_reply_names_operator_action(self):
+        self.assertIn(
+            "fresh OPENAI_API_KEY",
+            web_app._pwa_model_failure_reply("hi", "AuthenticationError: invalid_api_key"),
+        )
+        self.assertIn(
+            "billing",
+            web_app._pwa_model_failure_reply("hi", "RateLimitError: insufficient_quota"),
+        )
+        self.assertIn(
+            "HIRA_*_MODEL",
+            web_app._pwa_model_failure_reply("hi", "NotFoundError: model_not_found"),
+        )
+
     def test_source_contracts_from_tool_results_are_structured(self):
         contracts = bot._source_contracts_from_tool_results([{
             "content": (
