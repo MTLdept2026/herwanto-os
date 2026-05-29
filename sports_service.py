@@ -28,32 +28,45 @@ ESPN_LIVERPOOL_LEAGUES = (
 )
 FOTMOB_LIVERPOOL_URL = "https://www.fotmob.com/teams/8650/overview/liverpool"
 F1_2026_CALENDAR_SOURCE = "https://www.formula1.com/en/racing/2026"
+F1_2026_MONACO_TIMETABLE_SOURCE = "https://www.formula1.com/en/latest/article/formula-1-louis-vuitton-grand-prix-de-monaco-2026.5eqj7xSRWW6dylGmncfs6T"
 F1_2026_RACE_WEEKENDS = [
     {"round": 1, "name": "Australian Grand Prix", "short": "Australia", "start": "2026-03-06", "end": "2026-03-08", "location": "Melbourne, Australia"},
     {"round": 2, "name": "Chinese Grand Prix", "short": "China", "start": "2026-03-13", "end": "2026-03-15", "location": "Shanghai, China"},
     {"round": 3, "name": "Japanese Grand Prix", "short": "Japan", "start": "2026-03-27", "end": "2026-03-29", "location": "Suzuka, Japan"},
-    {"round": 4, "name": "Bahrain Grand Prix", "short": "Bahrain", "start": "2026-04-10", "end": "2026-04-12", "location": "Sakhir, Bahrain"},
-    {"round": 5, "name": "Saudi Arabian Grand Prix", "short": "Saudi Arabia", "start": "2026-04-17", "end": "2026-04-19", "location": "Jeddah, Saudi Arabia"},
-    {"round": 6, "name": "Miami Grand Prix", "short": "Miami", "start": "2026-05-01", "end": "2026-05-03", "location": "Miami, United States"},
-    {"round": 7, "name": "Canadian Grand Prix", "short": "Canada", "start": "2026-05-22", "end": "2026-05-24", "location": "Montreal, Canada"},
-    {"round": 8, "name": "Monaco Grand Prix", "short": "Monaco", "start": "2026-06-05", "end": "2026-06-07", "location": "Monaco"},
-    {"round": 9, "name": "Barcelona-Catalunya Grand Prix", "short": "Barcelona-Catalunya", "start": "2026-06-12", "end": "2026-06-14", "location": "Barcelona, Spain"},
-    {"round": 10, "name": "Austrian Grand Prix", "short": "Austria", "start": "2026-06-26", "end": "2026-06-28", "location": "Spielberg, Austria"},
-    {"round": 11, "name": "British Grand Prix", "short": "Great Britain", "start": "2026-07-03", "end": "2026-07-05", "location": "Silverstone, United Kingdom"},
-    {"round": 12, "name": "Belgian Grand Prix", "short": "Belgium", "start": "2026-07-17", "end": "2026-07-19", "location": "Spa-Francorchamps, Belgium"},
-    {"round": 13, "name": "Hungarian Grand Prix", "short": "Hungary", "start": "2026-07-24", "end": "2026-07-26", "location": "Budapest, Hungary"},
-    {"round": 14, "name": "Dutch Grand Prix", "short": "Netherlands", "start": "2026-08-21", "end": "2026-08-23", "location": "Zandvoort, Netherlands"},
-    {"round": 15, "name": "Italian Grand Prix", "short": "Italy", "start": "2026-09-04", "end": "2026-09-06", "location": "Monza, Italy"},
-    {"round": 16, "name": "Spanish Grand Prix", "short": "Spain", "start": "2026-09-11", "end": "2026-09-13", "location": "Madrid, Spain"},
-    {"round": 17, "name": "Azerbaijan Grand Prix", "short": "Azerbaijan", "start": "2026-09-24", "end": "2026-09-26", "location": "Baku, Azerbaijan"},
-    {"round": 18, "name": "Singapore Grand Prix", "short": "Singapore", "start": "2026-10-09", "end": "2026-10-11", "location": "Singapore"},
-    {"round": 19, "name": "United States Grand Prix", "short": "United States", "start": "2026-10-23", "end": "2026-10-25", "location": "Austin, United States"},
-    {"round": 20, "name": "Mexico City Grand Prix", "short": "Mexico", "start": "2026-10-30", "end": "2026-11-01", "location": "Mexico City, Mexico"},
-    {"round": 21, "name": "Sao Paulo Grand Prix", "short": "Brazil", "start": "2026-11-06", "end": "2026-11-08", "location": "Sao Paulo, Brazil"},
-    {"round": 22, "name": "Las Vegas Grand Prix", "short": "Las Vegas", "start": "2026-11-19", "end": "2026-11-21", "location": "Las Vegas, United States"},
-    {"round": 23, "name": "Qatar Grand Prix", "short": "Qatar", "start": "2026-11-27", "end": "2026-11-29", "location": "Lusail, Qatar"},
-    {"round": 24, "name": "Abu Dhabi Grand Prix", "short": "Abu Dhabi", "start": "2026-12-04", "end": "2026-12-06", "location": "Yas Marina, Abu Dhabi"},
+    {"round": 4, "name": "Miami Grand Prix", "short": "Miami", "start": "2026-05-01", "end": "2026-05-03", "location": "Miami, United States"},
+    {"round": 5, "name": "Canadian Grand Prix", "short": "Canada", "start": "2026-05-22", "end": "2026-05-24", "location": "Montreal, Canada"},
+    {"round": 6, "name": "Monaco Grand Prix", "short": "Monaco", "start": "2026-06-05", "end": "2026-06-07", "location": "Monaco"},
+    {"round": 7, "name": "Barcelona-Catalunya Grand Prix", "short": "Barcelona-Catalunya", "start": "2026-06-12", "end": "2026-06-14", "location": "Barcelona, Spain"},
+    {"round": 8, "name": "Austrian Grand Prix", "short": "Austria", "start": "2026-06-26", "end": "2026-06-28", "location": "Spielberg, Austria"},
+    {"round": 9, "name": "British Grand Prix", "short": "Great Britain", "start": "2026-07-03", "end": "2026-07-05", "location": "Silverstone, United Kingdom"},
+    {"round": 10, "name": "Belgian Grand Prix", "short": "Belgium", "start": "2026-07-17", "end": "2026-07-19", "location": "Spa-Francorchamps, Belgium"},
+    {"round": 11, "name": "Hungarian Grand Prix", "short": "Hungary", "start": "2026-07-24", "end": "2026-07-26", "location": "Budapest, Hungary"},
+    {"round": 12, "name": "Dutch Grand Prix", "short": "Netherlands", "start": "2026-08-21", "end": "2026-08-23", "location": "Zandvoort, Netherlands"},
+    {"round": 13, "name": "Italian Grand Prix", "short": "Italy", "start": "2026-09-04", "end": "2026-09-06", "location": "Monza, Italy"},
+    {"round": 14, "name": "Spanish Grand Prix", "short": "Spain", "start": "2026-09-11", "end": "2026-09-13", "location": "Madrid, Spain"},
+    {"round": 15, "name": "Azerbaijan Grand Prix", "short": "Azerbaijan", "start": "2026-09-24", "end": "2026-09-26", "location": "Baku, Azerbaijan"},
+    {"round": 16, "name": "Singapore Grand Prix", "short": "Singapore", "start": "2026-10-09", "end": "2026-10-11", "location": "Singapore"},
+    {"round": 17, "name": "United States Grand Prix", "short": "United States", "start": "2026-10-23", "end": "2026-10-25", "location": "Austin, United States"},
+    {"round": 18, "name": "Mexico City Grand Prix", "short": "Mexico", "start": "2026-10-30", "end": "2026-11-01", "location": "Mexico City, Mexico"},
+    {"round": 19, "name": "Sao Paulo Grand Prix", "short": "Brazil", "start": "2026-11-06", "end": "2026-11-08", "location": "Sao Paulo, Brazil"},
+    {"round": 20, "name": "Las Vegas Grand Prix", "short": "Las Vegas", "start": "2026-11-19", "end": "2026-11-21", "location": "Las Vegas, United States"},
+    {"round": 21, "name": "Qatar Grand Prix", "short": "Qatar", "start": "2026-11-27", "end": "2026-11-29", "location": "Lusail, Qatar"},
+    {"round": 22, "name": "Abu Dhabi Grand Prix", "short": "Abu Dhabi", "start": "2026-12-04", "end": "2026-12-06", "location": "Yas Marina, Abu Dhabi"},
 ]
+
+F1_2026_SESSION_TIMETABLES = {
+    "monaco": {
+        "source": F1_2026_MONACO_TIMETABLE_SOURCE,
+        "note": "Monaco local time is UTC+2; Singapore time is UTC+8.",
+        "sessions": [
+            {"label": "FP1", "local": "Fri 5 Jun 13:30-14:30", "sgt": "Fri 5 Jun 19:30-20:30 SGT"},
+            {"label": "FP2", "local": "Fri 5 Jun 17:00-18:00", "sgt": "Fri 5 Jun 23:00-00:00 SGT"},
+            {"label": "FP3", "local": "Sat 6 Jun 12:30-13:30", "sgt": "Sat 6 Jun 18:30-19:30 SGT"},
+            {"label": "Qualifying", "local": "Sat 6 Jun 16:00-17:00", "sgt": "Sat 6 Jun 22:00-23:00 SGT"},
+            {"label": "Race", "local": "Sun 7 Jun 15:00-17:00", "sgt": "Sun 7 Jun 21:00-23:00 SGT"},
+        ],
+    },
+}
 
 
 def _clamp_items(value: int | None, default: int = 3) -> int:
@@ -112,6 +125,62 @@ def _parse_iso_date(value: str) -> date | None:
         return date.fromisoformat(str(value or "")[:10])
     except (TypeError, ValueError):
         return None
+
+
+def next_f1_race(today: date | None = None) -> tuple[dict, date, date] | None:
+    current = today or date.today()
+    for race in F1_2026_RACE_WEEKENDS:
+        start = _parse_iso_date(race["start"])
+        end = _parse_iso_date(race["end"])
+        if start and end and end >= current:
+            return race, start, end
+    return None
+
+
+def _format_date_window(start: date, end: date) -> str:
+    if start == end:
+        return start.strftime("%a %-d %b %Y")
+    if start.year == end.year:
+        return f"{start.strftime('%a %-d %b')} to {end.strftime('%a %-d %b %Y')}"
+    return f"{start.strftime('%a %-d %b %Y')} to {end.strftime('%a %-d %b %Y')}"
+
+
+def format_next_f1_race_reply(today: date | None = None, include_sessions: bool = False) -> str:
+    current = today or date.today()
+    next_race = next_f1_race(current)
+    if not next_race:
+        return "I could not find another 2026 F1 race weekend in the local official-calendar cache."
+    race, start, end = next_race
+    days_until = (start - current).days
+    if start <= current <= end:
+        timing = "It is this weekend."
+    elif days_until == 1:
+        timing = "It starts tomorrow."
+    else:
+        timing = f"It starts in {days_until} days."
+    lines = [
+        f"Straight answer: the next F1 race is the {race['name']} in {race['location']}, { _format_date_window(start, end) }.",
+        timing,
+    ]
+    sessions = F1_2026_SESSION_TIMETABLES.get(str(race.get("short", "")).strip().lower())
+    if include_sessions and sessions:
+        lines.extend(["", "Singapore time, for actual sofa logistics:", *[
+            f"- {item['label']}: {item['sgt']}"
+            for item in sessions.get("sessions", [])
+        ]])
+        lines.append("")
+        lines.append(f"Source: Formula 1 official timetable. {sessions.get('note', '').strip()}")
+    elif sessions:
+        race_session = next(
+            (item for item in sessions.get("sessions", []) if str(item.get("label", "")).lower() == "race"),
+            None,
+        )
+        if race_session:
+            lines.append(f"For TV planning: race start window is {race_session['sgt']}.")
+        lines.append(f"Source: Formula 1 official calendar ({F1_2026_CALENDAR_SOURCE}); timetable source: {sessions.get('source', F1_2026_MONACO_TIMETABLE_SOURCE)}.")
+    else:
+        lines.append(f"Source: Formula 1 official calendar ({F1_2026_CALENDAR_SOURCE}).")
+    return "\n".join(line for line in lines if line is not None).strip()
 
 
 def _format_f1_calendar_window(focus: str = "", max_items: int = 3, today: date | None = None) -> list[str]:

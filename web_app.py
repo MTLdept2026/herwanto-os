@@ -1295,11 +1295,15 @@ def _pwa_clean_addressed_message(message: str) -> str:
 
 
 def _pwa_casual_greeting_prompt(message: str) -> bool:
-    return _pwa_clean_addressed_message(message) in {
+    phrases = {
         "morning",
         "good morning",
         "gm",
+        "hi",
+        "hello",
+        "hey",
         "whats up",
+        "whatsup",
         "what's up",
         "sup",
         "wassup",
@@ -1307,7 +1311,14 @@ def _pwa_casual_greeting_prompt(message: str) -> bool:
         "what is up",
         "hows it going",
         "how's it going",
+        "how are you",
+        "how are u",
+        "how r you",
+        "how you doing",
+        "how are you doing",
         "how are things",
+        "hows life",
+        "how's life",
         "whats happening",
         "what's happening",
         "what is happening",
@@ -1315,19 +1326,157 @@ def _pwa_casual_greeting_prompt(message: str) -> bool:
         "whats good",
         "what is good",
     }
+    raw = bot._normalise_short_reply(message)
+    addressed = re.sub(r"\bhira\b", " ", raw, flags=re.I)
+    addressed = re.sub(r"\s+", " ", addressed).strip()
+    return _pwa_clean_addressed_message(message) in phrases or raw in phrases or addressed in phrases
 
 
 def _pwa_direct_greeting_reply(message: str) -> tuple[str, str]:
-    if _pwa_clean_addressed_message(message) not in {"morning", "good morning", "gm"}:
+    clean = _pwa_clean_addressed_message(message)
+    if not _pwa_casual_greeting_prompt(message):
         return "", ""
+    if clean in {"morning", "good morning", "gm"}:
+        try:
+            carryover_reply = bot.conversation_carryover_greeting_reply(message)
+        except Exception as exc:
+            bot.logger.warning(f"PWA carryover greeting check failed: {exc}")
+            carryover_reply = ""
+        if carryover_reply:
+            return carryover_reply, "carryover_checkin"
+        return "Morning. I'm here.", "greeting"
+    if clean in {"how are you", "how are u", "how r you", "how you doing", "how are you doing", "how are things", "hows life", "how's life"}:
+        return "I'm here, and sharper now. Give me the thing and I'll move cleanly.", "greeting"
+    return "I'm here. What's the move?", "greeting"
+
+
+def _recent_plain_chat_context(history: list, limit: int = 6) -> str:
+    lines: list[str] = []
+    for item in history[-limit:]:
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content")
+        if not isinstance(content, str):
+            continue
+        role = str(item.get("role", "") or "message").strip() or "message"
+        lines.append(f"{role}: {bot._strip_injected_chat_context(content)[:700]}")
+    return "\n".join(lines)
+
+
+def _pwa_direct_f1_calendar_reply(message: str, history: list, today: date | None = None) -> str:
+    recent_context = _recent_plain_chat_context(history)
+    effective = bot._contextual_followup_effective_text(message, recent_context)
+    lower = " ".join(str(effective or "").lower().split())
+    if not re.search(r"\b(?:f1|formula 1|grand prix|monaco)\b", lower):
+        return ""
+    asks_calendar = bool(re.search(
+        r"\b(?:when|next|coming up|upcoming|calendar|race weekend|grand prix|monaco)\b",
+        lower,
+    ))
+    asks_sessions = bool(re.search(
+        r"\b(?:session timings?|sessions?|practice|fp[123]|qualifying|quali|race time|what time|"
+        r"singapore time|sgt|tv|viewing|watch)\b",
+        lower,
+    ))
+    if not (asks_calendar or asks_sessions):
+        return ""
     try:
-        carryover_reply = bot.conversation_carryover_greeting_reply(message)
+        return bot.sports.format_next_f1_race_reply(
+            today=today or datetime.now(bot.SGT).date(),
+            include_sessions=asks_sessions,
+        )
     except Exception as exc:
-        bot.logger.warning(f"PWA carryover greeting check failed: {exc}")
-        carryover_reply = ""
-    if carryover_reply:
-        return carryover_reply, "carryover_checkin"
-    return "Morning. I'm here.", "greeting"
+        bot.logger.warning(f"PWA direct F1 calendar reply failed: {exc}")
+        return ""
+
+
+def _source_tool_input(tool_name: str, message: str) -> dict:
+    if tool_name in {"get_liverpool_brief", "get_f1_brief"}:
+        return {"focus": message, "max_items": 2}
+    if tool_name == "get_nea_weather":
+        return {"area": "Yishun", "include_24h": True, "include_4day": False}
+    if tool_name in {"get_muis_prayer_times", "get_muis_friday_khutbah"}:
+        return {"date": ""}
+    if tool_name == "web_research":
+        return {"query": message, "max_sources": 3, "fetch_pages": 1, "freshness": "latest"}
+    return {"query": message, "max_items": 3}
+
+
+def _source_tool_label(tool_name: str) -> str:
+    return {
+        "get_liverpool_brief": "Liverpool",
+        "get_f1_brief": "F1",
+        "get_nea_weather": "weather",
+        "get_muis_prayer_times": "MUIS prayer times",
+        "get_muis_friday_khutbah": "MUIS khutbah",
+        "get_latest_news": "news",
+        "web_research": "web research",
+    }.get(tool_name, "source")
+
+
+def _source_tool_for_message(message: str) -> str:
+    discipline = bot.source_discipline_for_text(message)
+    recommended = set(discipline.get("recommended_tools") or [])
+    if "get_liverpool_brief" in recommended:
+        return "get_liverpool_brief"
+    if "get_f1_brief" in recommended:
+        return "get_f1_brief"
+    if "get_nea_weather" in recommended:
+        return "get_nea_weather"
+    if "get_muis_prayer_times" in recommended:
+        return "get_muis_prayer_times"
+    if "get_muis_friday_khutbah" in recommended:
+        return "get_muis_friday_khutbah"
+    if "get_latest_news" in recommended:
+        return "get_latest_news"
+    if "web_research" in recommended:
+        return "web_research"
+    return ""
+
+
+def _should_direct_source_route(tool_name: str, message: str) -> bool:
+    clean = " ".join(str(message or "").lower().split())
+    if not tool_name:
+        return False
+    if tool_name in {"get_nea_weather", "get_muis_prayer_times", "get_muis_friday_khutbah"}:
+        return True
+    if tool_name == "get_f1_brief":
+        return bool(re.search(
+            r"\b(?:next|when|coming up|upcoming|standings?|result|score|qualifying|practice|"
+            r"session timings?|race weekend|grand prix|monaco)\b",
+            clean,
+        ))
+    if tool_name == "get_liverpool_brief":
+        return bool(re.search(r"\b(?:next|when|fixture|result|score|standings?|table|match|game)\b", clean))
+    if tool_name == "get_latest_news":
+        return len(clean.split()) <= 14 and bool(re.search(r"\b(?:latest|news|updates?|headlines?|anything new)\b", clean))
+    return False
+
+
+def _format_direct_source_answer(message: str, label: str, result: str) -> str:
+    if label == "news":
+        return _summarise_news_fallback(message, result)
+    clipped = _summarise_source_fallback(result, limit=1600)
+    return clipped if clipped else str(result or "").strip()
+
+
+async def _pwa_direct_source_reply(message: str, history: list) -> tuple[str, str]:
+    recent_context = _recent_plain_chat_context(history)
+    effective = bot._contextual_followup_effective_text(message, recent_context)
+    tool_name = _source_tool_for_message(effective)
+    if not _should_direct_source_route(tool_name, effective):
+        return "", ""
+    label = _source_tool_label(tool_name)
+    try:
+        result = await bot._execute_tool_offloop(tool_name, _source_tool_input(tool_name, effective))
+    except Exception as exc:
+        bot.logger.warning(f"PWA direct source tool {tool_name} failed: {exc}")
+        return f"I tried the live {label} check and it failed: {exc}", tool_name
+    if not result or str(result).startswith("Failed to fetch"):
+        detail = str(result or "").strip()
+        suffix = f" {detail}" if detail else ""
+        return f"I tried the live {label} check, but it did not return a usable answer.{suffix}", tool_name
+    return _format_direct_source_answer(effective, label, result), tool_name
 
 
 def _pwa_casual_status_prompt(message: str) -> bool:
@@ -1357,7 +1506,7 @@ def _pwa_assistant_feeling_reply(message: str) -> str:
         bot.re.I,
     ))
     mentions_backend_change = bool(bot.re.search(
-        r"\b(?:backend|provider|model|deepseek|openai|api|route|routing|switched|changed|change)\b",
+        r"\b(?:backend|provider|model|openai|api|route|routing|switched|changed|change)\b",
         clean,
         bot.re.I,
     ))
@@ -1368,13 +1517,8 @@ def _pwa_assistant_feeling_reply(message: str) -> str:
     ))
     if not asks_feeling or not (mentions_backend_change or asks_usual_self):
         return ""
-    provider = {
-        "openai": "OpenAI",
-        "deepseek": "DeepSeek",
-        "anthropic": "Anthropic",
-    }.get(bot.LLM_PROVIDER, bot.LLM_PROVIDER.upper())
     return (
-        f"I’m awake. The chat brain is routed through {provider} now, so I’m watching the new path closely. "
+        "I’m awake. The chat brain is routed through OpenAI now, so I’m watching the path closely. "
         "If I sound flat or hit snags, that’s the integration wobbling, not me giving up."
     )
 
@@ -1383,7 +1527,7 @@ def _pwa_model_config_advice_reply(message: str) -> str:
     clean = bot._normalise_short_reply(message)
     if not clean:
         return ""
-    mentions_model_stack = bool(re.search(r"\b(?:deepseek|model|provider|backend|api|v4|pro|flash|thinking)\b", clean))
+    mentions_model_stack = bool(re.search(r"\b(?:model|provider|backend|api|gpt|reasoning)\b", clean))
     asks_for_judgement = bool(re.search(r"\b(?:good idea|bad idea|should i|worth it|set(?:ting)?|everything|all|max)\b", clean))
     pro_max_everything = bool(
         re.search(r"\b(?:everything|all)\b", clean)
@@ -1393,8 +1537,8 @@ def _pwa_model_config_advice_reply(message: str) -> str:
     if not (mentions_model_stack and (asks_for_judgement or pro_max_everything)):
         return ""
     return (
-        "No. Pro-max everything is expensive theatre: impressive smoke, not better command. "
-        "Keep Flash on quick/router/structured/normal agentic turns, Pro only for deep work, and `HIRA_DEEPSEEK_THINKING_MODE=auto`. "
+        "No. Maxing every turn is expensive theatre: impressive smoke, not better command. "
+        "Keep quick/router work on the mini/nano models, and reserve the deep model for work that genuinely needs it. "
         "That gives Hira taste where it matters without making every “yo” arrive in a tuxedo with a bill."
     )
 
@@ -1480,7 +1624,7 @@ _PWA_TOPIC_MATCH_TERMS = {
     ),
     "Android": ("android", "pixel", "google i/o", "google io", "google play", "play store", "material you"),
     "Nothing": ("nothing", "nothing os", "nothing phone", "nothing ear", "cmf", "carl pei"),
-    "AI Tools": ("openai", "chatgpt", "codex", "claude", "anthropic", "kimi", "moonshot", "gemini", "llm"),
+    "AI Tools": ("openai", "chatgpt", "codex", "kimi", "moonshot", "gemini", "llm"),
     "iOS": ("ios", "iphone", "ipad", "app store", "testflight", "wwdc"),
     "macOS": ("macos", "macbook", "apple silicon", "xcode"),
     "Solo Dev": ("react", "vite", "capacitor", "railway", "netlify", "github", "solo developer"),
@@ -3235,7 +3379,7 @@ async def _analyse_image_bytes(data: bytes, mime: str, filename: str, note: str)
     user_note = note or "Extract useful schedule items, actions, dates, and reminders from this image."
     if normalise_note:
         user_note = f"{user_note}\n\nProcessing note: {normalise_note}"
-    reply_text = await bot._run_agentic_claude(
+    reply_text = await bot._run_agentic_chat(
         [{"role": "user", "content": [
             {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": encoded}},
             {"type": "text", "text": f"{bot.MEDIA_SCHEDULE_INSTRUCTION}\n\nUser note: {user_note}"}
@@ -3699,7 +3843,6 @@ def _quick_sse_response(reply: str, history_key: str, history: list, route_name:
             yield sse({"type": "saved"})
         finally:
             _CHAT_SEMAPHORE.release()
-            gc.collect()
             bot._log_memory(f"after pwa {route_name}")
 
     return StreamingResponse(events(), media_type="text/event-stream")
@@ -4398,6 +4541,28 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             route_name=greeting_route,
         )
 
+    f1_calendar_reply = _pwa_direct_f1_calendar_reply(message, history)
+    if f1_calendar_reply:
+        quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
+        return _quick_sse_response(
+            f1_calendar_reply,
+            history_key,
+            quick_history,
+            route_name="direct_source",
+            tool_name="get_f1_brief",
+        )
+
+    direct_source_reply, direct_source_tool = await _pwa_direct_source_reply(message, history)
+    if direct_source_reply:
+        quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
+        return _quick_sse_response(
+            direct_source_reply,
+            history_key,
+            quick_history,
+            route_name="direct_source",
+            tool_name=direct_source_tool,
+        )
+
     if _pwa_casual_status_prompt(message):
         try:
             status_reply = await bot._execute_tool_offloop("get_assistant_context", {"days": 3})
@@ -4569,7 +4734,6 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                 yield sse({"type": "saved"})
             finally:
                 _CHAT_SEMAPHORE.release()
-                gc.collect()
                 bot._log_memory("after pwa quick checkin")
 
         return StreamingResponse(quick_checkin_events(), media_type="text/event-stream")
@@ -4599,7 +4763,6 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                 yield sse({"type": "saved"})
             finally:
                 _CHAT_SEMAPHORE.release()
-                gc.collect()
                 bot._log_memory("after pwa delayed digest schedule")
 
         return StreamingResponse(delayed_digest_events(), media_type="text/event-stream")
@@ -4706,7 +4869,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             stream = (
                 bot.stream_quick_pwa_reply(list(history[:-1]), message)
                 if quick
-                else bot.stream_agentic_claude(
+                else bot.stream_agentic_chat(
                     list(history),
                     max_tokens=_CHAT_MAX_TOKENS,
                     tools=tools,
@@ -4893,7 +5056,6 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                 yield sse({"type": "saved"})
         finally:
             _CHAT_SEMAPHORE.release()
-            gc.collect()
             bot._log_memory("after pwa chat")
 
     return StreamingResponse(events(), media_type="text/event-stream")
@@ -4974,58 +5136,20 @@ def _safe_chat_error_detail(exc: Exception) -> str:
 
 
 def _pwa_model_failure_reply(message: str) -> str:
-    provider = {
-        "openai": "OpenAI",
-        "deepseek": "DeepSeek",
-        "anthropic": "Anthropic",
-    }.get(bot.LLM_PROVIDER, bot.LLM_PROVIDER.upper())
     return (
-        f"I’m still here, but the {provider} chat handoff failed before it returned a real answer. "
+        "I’m still here, but the OpenAI chat handoff failed before it returned a real answer. "
         "I’m treating that as a failed pass, not pretending it worked. Send it again once, and I’ll reroute cleanly."
     )
 
 
 async def _source_check_backend_fallback_payload(message: str) -> tuple[str, str, str]:
-    discipline = bot.source_discipline_for_text(message)
-    recommended = set(discipline.get("recommended_tools") or [])
-    tool_name = ""
-    label = ""
-    if "get_liverpool_brief" in recommended:
-        tool_name = "get_liverpool_brief"
-        label = "Liverpool"
-    elif "get_f1_brief" in recommended:
-        tool_name = "get_f1_brief"
-        label = "F1"
-    elif "get_nea_weather" in recommended:
-        tool_name = "get_nea_weather"
-        label = "weather"
-    elif "get_muis_prayer_times" in recommended:
-        tool_name = "get_muis_prayer_times"
-        label = "MUIS prayer times"
-    elif "get_muis_friday_khutbah" in recommended:
-        tool_name = "get_muis_friday_khutbah"
-        label = "MUIS khutbah"
-    elif "get_latest_news" in recommended:
-        tool_name = "get_latest_news"
-        label = "news"
-    elif "web_research" in recommended:
-        tool_name = "web_research"
-        label = "web research"
+    tool_name = _source_tool_for_message(message)
+    label = _source_tool_label(tool_name)
     if not tool_name:
         return "", "", ""
 
-    if tool_name in {"get_liverpool_brief", "get_f1_brief"}:
-        tool_input = {"focus": message, "max_items": 2}
-    elif tool_name == "get_nea_weather":
-        tool_input = {"area": "Yishun", "include_24h": True, "include_4day": False}
-    elif tool_name in {"get_muis_prayer_times", "get_muis_friday_khutbah"}:
-        tool_input = {"date": ""}
-    elif tool_name == "web_research":
-        tool_input = {"query": message, "max_sources": 3, "fetch_pages": 1, "freshness": "latest"}
-    else:
-        tool_input = {"query": message, "max_items": 3}
     try:
-        result = await bot._execute_tool_offloop(tool_name, tool_input)
+        result = await bot._execute_tool_offloop(tool_name, _source_tool_input(tool_name, message))
     except Exception as exc:
         bot.logger.warning(f"PWA source fallback tool {tool_name} failed: {exc}")
         return (
@@ -5124,6 +5248,10 @@ def _summarise_source_fallback(result: str, limit: int = 2200) -> str:
             or "scoreline candidates" in lower
             or "table note:" in lower
             or "upcoming fixtures:" in lower
+            or lower.startswith("weather:")
+            or lower.startswith("forecast:")
+            or lower.startswith("prayer:")
+            or lower.startswith("khutbah:")
             or "fotmob fetch failed" in lower
             or "scoreboard warnings:" in lower
         ):
@@ -6435,7 +6563,7 @@ async def _process_upload_document(file: UploadFile, note: str = ""):
             text = getattr(transcript, "text", str(transcript)).strip()
             if not text:
                 raise HTTPException(status_code=400, detail="I could not transcribe that voice note")
-            reply_text = await bot._run_agentic_claude(
+            reply_text = await bot._run_agentic_chat(
                 [{"role": "user", "content": text}],
                 max_tokens=1600,
                 direct_user_text=text,
@@ -6484,7 +6612,7 @@ async def _process_upload_path(tmp_path: str, mime: str, filename: str, note: st
             text = getattr(transcript, "text", str(transcript)).strip()
             if not text:
                 raise HTTPException(status_code=400, detail="I could not transcribe that voice note")
-            reply_text = await bot._run_agentic_claude(
+            reply_text = await bot._run_agentic_chat(
                 [{"role": "user", "content": text}],
                 max_tokens=1600,
                 direct_user_text=text,
@@ -6514,7 +6642,7 @@ async def _analyse_document_excerpt(kind: str, index_note: str, excerpt: str, no
         f"Document index: {index_note}\n\n"
         f"Extracted relevant text:\n{excerpt}"
     )
-    reply_text = await bot._run_agentic_claude(
+    reply_text = await bot._run_agentic_chat(
         [{"role": "user", "content": prompt}],
         max_tokens=2500,
         tools=[bot.CONTEXT_TOOL, bot.CALENDAR_TOOL, bot.REMINDER_TOOL, bot.MEMORY_TOOL],

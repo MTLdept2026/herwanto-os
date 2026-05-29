@@ -9,7 +9,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import ANY, patch
 
-os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
+os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
 import bot
 import classops_intelligence as classops_ai
@@ -123,7 +123,7 @@ class FakeSheetsService:
         return self.spreadsheets_api
 
 
-class AgenticClaudeTests(unittest.TestCase):
+class AgenticOpenAITests(unittest.TestCase):
     def setUp(self):
         bot.gs._invalidate_classlist_cache()
         os.environ.setdefault("HIRA_DIGEST_SOCIAL_SEARCH", "0")
@@ -458,6 +458,24 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("get_latest_news", names)
         self.assertEqual(forced, "get_latest_news")
         self.assertFalse(routed_quick)
+
+    def test_forced_tool_ignores_injected_reply_plan_context(self):
+        messages = [{
+            "role": "user",
+            "content": (
+                "how are you?\n\n"
+                "[Pragmatic frame: Use this conversational read before answering: {}]\n\n"
+                "[Reply plan: Use this response shape unless the live turn clearly needs something else: "
+                "{\"structure\":\"draft reply\"}]"
+            ),
+        }]
+
+        forced = bot._forced_tool_for_current_turn(
+            messages,
+            [{"name": "create_gmail_draft"}, {"name": "get_gmail_brief"}],
+        )
+
+        self.assertIsNone(forced)
 
     def test_contextual_followup_inherits_i_should_live_search_offer(self):
         messages = [
@@ -1972,8 +1990,8 @@ class AgenticClaudeTests(unittest.TestCase):
         category, text = add_memory.call_args.args
         self.assertEqual(category, "sports")
         self.assertIn("f1-calendar:2026", text)
-        self.assertIn("R7 Canada 2026-05-22 to 2026-05-24", text)
-        self.assertIn("R24 Abu Dhabi 2026-12-04 to 2026-12-06", text)
+        self.assertIn("R5 Canada 2026-05-22 to 2026-05-24", text)
+        self.assertIn("R22 Abu Dhabi 2026-12-04 to 2026-12-06", text)
         first_call = create_all_day_event.call_args_list[0].args
         self.assertEqual(first_call[0], "F1: Canadian Grand Prix")
         self.assertEqual(first_call[1], "2026-05-22")
@@ -2009,9 +2027,53 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertIn("SOURCE CONTRACT: status=confirmed", text)
         self.assertIn("Monaco Grand Prix", text)
-        self.assertIn("R8 Monaco Grand Prix", text)
+        self.assertIn("R6 Monaco Grand Prix", text)
         self.assertIn("2026-06-05 to 2026-06-07", text)
         self.assertNotIn("No recent Google News items", text)
+
+    def test_next_f1_race_question_uses_local_calendar_without_model(self):
+        reply = web_app._pwa_direct_f1_calendar_reply(
+            "Whens the next f1 race coming up",
+            [],
+            today=date(2026, 5, 29),
+        )
+
+        self.assertIn("Monaco Grand Prix", reply)
+        self.assertIn("Fri 5 Jun to Sun 7 Jun 2026", reply)
+        self.assertIn("starts in 7 days", reply)
+
+    def test_f1_session_followup_resolves_offer_to_singapore_timings(self):
+        history = [{
+            "role": "assistant",
+            "content": "Want me to pull the Monaco session timings in Singapore time so you know exactly when to wear the lucky gear?",
+        }]
+
+        reply = web_app._pwa_direct_f1_calendar_reply(
+            "Yes pls. Need to plan my tv viewing time",
+            history,
+            today=date(2026, 5, 29),
+        )
+
+        self.assertIn("Singapore time", reply)
+        self.assertIn("FP1: Fri 5 Jun 19:30-20:30 SGT", reply)
+        self.assertIn("Qualifying: Sat 6 Jun 22:00-23:00 SGT", reply)
+        self.assertIn("Race: Sun 7 Jun 21:00-23:00 SGT", reply)
+
+    def test_direct_weather_question_uses_source_tool_without_model(self):
+        async def fake_execute_tool(name, inp):
+            self.assertEqual(name, "get_nea_weather")
+            self.assertEqual(inp["area"], "Yishun")
+            return "SOURCE CONTRACT: status=confirmed\nWeather: Yishun, light showers later."
+
+        async def run():
+            return await web_app._pwa_direct_source_reply("weather in yishun later", [])
+
+        with patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool):
+            reply, tool = asyncio.run(run())
+
+        self.assertEqual(tool, "get_nea_weather")
+        self.assertIn("Weather: Yishun", reply)
+        self.assertIn("light showers", reply)
 
     def test_sports_news_sections_surface_google_news_rss_failures(self):
         with patch.object(bot.sports.ss, "_parse_google_news_rss", side_effect=RuntimeError("403 Forbidden")):
@@ -3540,7 +3602,7 @@ class AgenticClaudeTests(unittest.TestCase):
     def test_curated_digest_accepts_ai_tools_radar_items(self):
         def fake_google_news(query, max_items=4):
             return [{
-                "title": "Claude and Kimi ship new coding agent updates",
+                "title": "OpenAI and Kimi ship new coding agent updates",
                 "url": "https://example.com/ai-tools",
                 "source": "Example",
                 "published": "Sun, 10 May 2026 01:00:00 GMT",
@@ -3602,7 +3664,7 @@ class AgenticClaudeTests(unittest.TestCase):
         labels = [label for label, _ in topics]
         self.assertIn("Custom Topic", labels)
         self.assertIn("🤖 Android", labels)
-        self.assertIn("🧠 Codex / Claude / Gemini / Kimi", labels)
+        self.assertIn("🧠 Codex / Gemini / Kimi", labels)
 
     def test_curated_digest_can_include_x_social_lead_for_live_topic(self):
         def fake_tavily_search(query, max_results=5):
@@ -4878,7 +4940,7 @@ class AgenticClaudeTests(unittest.TestCase):
             "Answer guidance: cite sources and distinguish confirmed reports from rumours.",
             "Official 2026 F1 calendar window",
             "SOURCE CONTRACT: status=confirmed; as_of=2026-05-29; source=Formula 1 official calendar; reason=next listed race weekend is Monaco Grand Prix (2026-06-05 to 2026-06-07).",
-            "- Upcoming: R8 Monaco Grand Prix (Monaco) | 2026-06-05 to 2026-06-07 | Monaco | in 7 days",
+            "- Upcoming: R6 Monaco Grand Prix (Monaco) | 2026-06-05 to 2026-06-07 | Monaco | in 7 days",
             "Championship standings",
             "- No recent Google News items found.",
         ])
@@ -4899,11 +4961,6 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertNotIn("No recent Google News items", text)
 
     def test_whats_up_routes_as_quick_chat_not_status_brief(self):
-        async def fake_quick_reply(messages, message):
-            self.assertEqual(message, "Whats up")
-            yield {"type": "text", "text": "Still here. What are we poking at?"}
-            yield {"type": "done", "text": "Still here. What are we poking at?"}
-
         async def run():
             response = await web_app._chat_stream_response("Whats up", None, "phone")
             chunks = []
@@ -4914,26 +4971,21 @@ class AgenticClaudeTests(unittest.TestCase):
         with (
             patch.object(bot, "get_history", return_value=[]),
             patch.object(bot, "save_history"),
-            patch.object(web_app, "_update_working_memory", return_value={}),
+            patch.object(web_app, "_update_working_memory", side_effect=AssertionError("casual greeting should bypass model preflight")),
             patch.object(web_app, "_schedule_background_call"),
             patch.object(bot, "_execute_tool_offloop", side_effect=AssertionError("casual greeting should not pull context")),
-            patch.object(bot, "should_route_quick_pwa_chat", return_value=True),
-            patch.object(bot, "stream_quick_pwa_reply", side_effect=fake_quick_reply),
+            patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("casual greeting should not route to model")),
+            patch.object(bot, "stream_quick_pwa_reply", side_effect=AssertionError("casual greeting should not stream model")),
         ):
             body = asyncio.run(run())
 
-        self.assertIn("Still here", body)
-        self.assertIn('"name": "quick"', body)
+        self.assertIn("I'm here", body)
+        self.assertIn('"name": "greeting"', body)
         self.assertNotIn('"name": "natural_intent"', body)
         self.assertNotIn('"name": "get_assistant_context"', body)
         self.assertNotIn('"final_mode": "backend_error"', body)
 
     def test_whats_up_hira_routes_as_quick_chat_not_status_brief(self):
-        async def fake_quick_reply(messages, message):
-            self.assertEqual(message, "Whats up hira")
-            yield {"type": "text", "text": "Still with you. Low-drama mode."}
-            yield {"type": "done", "text": "Still with you. Low-drama mode."}
-
         async def run():
             response = await web_app._chat_stream_response("Whats up hira", None, "phone")
             chunks = []
@@ -4944,25 +4996,43 @@ class AgenticClaudeTests(unittest.TestCase):
         with (
             patch.object(bot, "get_history", return_value=[]),
             patch.object(bot, "save_history"),
-            patch.object(web_app, "_update_working_memory", return_value={}),
+            patch.object(web_app, "_update_working_memory", side_effect=AssertionError("casual greeting should bypass model preflight")),
             patch.object(web_app, "_schedule_background_call"),
             patch.object(bot, "_execute_tool_offloop", side_effect=AssertionError("casual greeting should not pull context")),
-            patch.object(bot, "should_route_quick_pwa_chat", return_value=True),
-            patch.object(bot, "stream_quick_pwa_reply", side_effect=fake_quick_reply),
+            patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("casual greeting should not route to model")),
+            patch.object(bot, "stream_quick_pwa_reply", side_effect=AssertionError("casual greeting should not stream model")),
         ):
             body = asyncio.run(run())
 
-        self.assertIn("Low-drama mode", body)
-        self.assertIn('"name": "quick"', body)
+        self.assertIn("I'm here", body)
+        self.assertIn('"name": "greeting"', body)
         self.assertNotIn('"name": "natural_intent"', body)
         self.assertNotIn("backend snag", body.lower())
 
-    def test_hey_hira_whats_up_routes_as_quick_chat_not_status_brief(self):
-        async def fake_quick_reply(messages, message):
-            self.assertEqual(message, "Hey hira whats up")
-            yield {"type": "text", "text": "I’m here. Small talk, no briefing dump."}
-            yield {"type": "done", "text": "I’m here. Small talk, no briefing dump."}
+    def test_how_are_you_routes_as_local_hira_greeting(self):
+        async def run():
+            response = await web_app._chat_stream_response("how are you?", None, "phone")
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
 
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(web_app, "_update_working_memory", side_effect=AssertionError("casual check-in should bypass model preflight")),
+            patch.object(web_app, "_schedule_background_call"),
+            patch.object(bot, "_execute_tool_offloop", side_effect=AssertionError("casual check-in should not pull context")),
+            patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("casual check-in should not route to model")),
+            patch.object(bot, "stream_quick_pwa_reply", side_effect=AssertionError("casual check-in should not stream model")),
+            patch.object(bot, "stream_agentic_chat", side_effect=AssertionError("casual check-in should not stream agentic model")),
+        ):
+            body = asyncio.run(run())
+
+        self.assertIn('"name": "greeting"', body)
+        self.assertIn("sharper now", body)
+
+    def test_hey_hira_whats_up_routes_as_quick_chat_not_status_brief(self):
         async def run():
             response = await web_app._chat_stream_response("Hey hira whats up", None, "phone")
             chunks = []
@@ -4973,16 +5043,16 @@ class AgenticClaudeTests(unittest.TestCase):
         with (
             patch.object(bot, "get_history", return_value=[]),
             patch.object(bot, "save_history"),
-            patch.object(web_app, "_update_working_memory", return_value={}),
+            patch.object(web_app, "_update_working_memory", side_effect=AssertionError("casual greeting should bypass model preflight")),
             patch.object(web_app, "_schedule_background_call"),
             patch.object(bot, "_execute_tool_offloop", side_effect=AssertionError("casual greeting should not pull context")),
-            patch.object(bot, "should_route_quick_pwa_chat", return_value=True),
-            patch.object(bot, "stream_quick_pwa_reply", side_effect=fake_quick_reply),
+            patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("casual greeting should not route to model")),
+            patch.object(bot, "stream_quick_pwa_reply", side_effect=AssertionError("casual greeting should not stream model")),
         ):
             body = asyncio.run(run())
 
-        self.assertIn("no briefing dump", body)
-        self.assertIn('"name": "quick"', body)
+        self.assertIn("I'm here", body)
+        self.assertIn('"name": "greeting"', body)
         self.assertNotIn('"name": "natural_intent"', body)
         self.assertNotIn("backend snag", body.lower())
 
@@ -5001,7 +5071,7 @@ class AgenticClaudeTests(unittest.TestCase):
             patch.object(bot, "conversation_carryover_greeting_reply", return_value=""),
             patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("plain greeting should not route to model")),
             patch.object(bot, "stream_quick_pwa_reply", side_effect=AssertionError("plain greeting should not stream model")),
-            patch.object(bot, "stream_agentic_claude", side_effect=AssertionError("plain greeting should not stream agentic model")),
+            patch.object(bot, "stream_agentic_chat", side_effect=AssertionError("plain greeting should not stream agentic model")),
         ):
             body = asyncio.run(run())
 
@@ -5050,7 +5120,7 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertFalse(web_app._pwa_casual_status_prompt("hey HIRA what's good"))
         self.assertFalse(web_app._pwa_casual_status_prompt("Hey hira whats up"))
         self.assertFalse(web_app._pwa_casual_status_prompt("what should I know"))
-        self.assertFalse(web_app._pwa_casual_status_prompt("what should I know about DeepSeek"))
+        self.assertFalse(web_app._pwa_casual_status_prompt("what should I know about OpenAI"))
 
     def test_morning_greeting_guard_does_not_steal_briefings(self):
         self.assertEqual(web_app._pwa_direct_greeting_reply("morning briefing"), ("", ""))
@@ -5072,17 +5142,16 @@ class AgenticClaudeTests(unittest.TestCase):
         with (
             patch.object(bot, "get_history", return_value=[]),
             patch.object(bot, "save_history"),
-            patch.object(bot, "LLM_PROVIDER", "deepseek"),
             patch.object(web_app, "_update_working_memory", side_effect=AssertionError("casual check-in should bypass model preflight")),
             patch.object(web_app, "_schedule_background_call"),
             patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("should not route to model")),
-            patch.object(bot, "stream_agentic_claude", side_effect=AssertionError("should not stream model")),
+            patch.object(bot, "stream_agentic_chat", side_effect=AssertionError("should not stream model")),
         ):
             body = asyncio.run(run())
 
         self.assertIn('"name": "casual_checkin"', body)
         self.assertIn("I’m awake", body)
-        self.assertIn("DeepSeek", body)
+        self.assertIn("OpenAI", body)
         self.assertNotIn("backend snag", body.lower())
 
     def test_usual_self_feeling_uses_local_checkin_before_model_route(self):
@@ -5096,21 +5165,20 @@ class AgenticClaudeTests(unittest.TestCase):
         with (
             patch.object(bot, "get_history", return_value=[]),
             patch.object(bot, "save_history"),
-            patch.object(bot, "LLM_PROVIDER", "deepseek"),
             patch.object(web_app, "_update_working_memory", side_effect=AssertionError("casual self-check should bypass model preflight")),
             patch.object(web_app, "_schedule_background_call"),
             patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("should not route to model")),
-            patch.object(bot, "stream_agentic_claude", side_effect=AssertionError("should not stream model")),
+            patch.object(bot, "stream_agentic_chat", side_effect=AssertionError("should not stream model")),
         ):
             body = asyncio.run(run())
 
         self.assertIn('"name": "casual_checkin"', body)
         self.assertIn("I’m awake", body)
-        self.assertIn("DeepSeek", body)
+        self.assertIn("OpenAI", body)
 
-    def test_deepseek_pro_max_advice_uses_local_reply_before_model_route(self):
+    def test_openai_max_advice_uses_local_reply_before_model_route(self):
         async def run():
-            response = await web_app._chat_stream_response("setting everything to DeepSeek Pro max good idea?", None, "phone")
+            response = await web_app._chat_stream_response("setting everything to max reasoning good idea?", None, "phone")
             chunks = []
             async for chunk in response.body_iterator:
                 chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
@@ -5122,13 +5190,13 @@ class AgenticClaudeTests(unittest.TestCase):
             patch.object(web_app, "_update_working_memory", side_effect=AssertionError("model config advice should bypass model preflight")),
             patch.object(web_app, "_schedule_background_call"),
             patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("should not route to model")),
-            patch.object(bot, "stream_agentic_claude", side_effect=AssertionError("should not stream model")),
+            patch.object(bot, "stream_agentic_chat", side_effect=AssertionError("should not stream model")),
         ):
             body = asyncio.run(run())
 
         self.assertIn('"name": "model_config_advice"', body)
-        self.assertIn("No. Pro-max everything", body)
-        self.assertIn("Flash on quick/router/structured/normal agentic", body)
+        self.assertIn("No. Maxing every turn", body)
+        self.assertIn("mini/nano", body)
 
     def test_agenda_today_uses_local_agenda_before_model_route(self):
         async def run():
@@ -5145,7 +5213,7 @@ class AgenticClaudeTests(unittest.TestCase):
             patch.object(web_app, "_update_working_memory", side_effect=AssertionError("agenda should bypass model preflight")),
             patch.object(web_app, "_schedule_background_call"),
             patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("should not route to model")),
-            patch.object(bot, "stream_agentic_claude", side_effect=AssertionError("should not stream model")),
+            patch.object(bot, "stream_agentic_chat", side_effect=AssertionError("should not stream model")),
         ):
             body = asyncio.run(run())
 
@@ -5170,7 +5238,7 @@ class AgenticClaudeTests(unittest.TestCase):
             patch.object(web_app, "_update_working_memory", side_effect=AssertionError("day check should bypass model preflight")),
             patch.object(web_app, "_schedule_background_call"),
             patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("should not route to model")),
-            patch.object(bot, "stream_agentic_claude", side_effect=AssertionError("should not stream model")),
+            patch.object(bot, "stream_agentic_chat", side_effect=AssertionError("should not stream model")),
         ):
             body = asyncio.run(run())
 
@@ -5202,7 +5270,7 @@ class AgenticClaudeTests(unittest.TestCase):
             patch.object(web_app, "_update_working_memory", side_effect=AssertionError("agenda should bypass model preflight")),
             patch.object(web_app, "_schedule_background_call"),
             patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("should not route to model")),
-            patch.object(bot, "stream_agentic_claude", side_effect=AssertionError("should not stream model")),
+            patch.object(bot, "stream_agentic_chat", side_effect=AssertionError("should not stream model")),
         ):
             for phrase in phrases:
                 with self.subTest(phrase=phrase):
@@ -5226,7 +5294,7 @@ class AgenticClaudeTests(unittest.TestCase):
             patch.object(web_app, "_update_working_memory", side_effect=AssertionError("tasks should bypass model preflight")),
             patch.object(web_app, "_schedule_background_call"),
             patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("should not route to model")),
-            patch.object(bot, "stream_agentic_claude", side_effect=AssertionError("should not stream model")),
+            patch.object(bot, "stream_agentic_chat", side_effect=AssertionError("should not stream model")),
         ):
             body = asyncio.run(run())
 
@@ -5259,7 +5327,7 @@ class AgenticClaudeTests(unittest.TestCase):
             patch.object(web_app, "_update_working_memory", side_effect=AssertionError("tasks should bypass model preflight")),
             patch.object(web_app, "_schedule_background_call"),
             patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("should not route to model")),
-            patch.object(bot, "stream_agentic_claude", side_effect=AssertionError("should not stream model")),
+            patch.object(bot, "stream_agentic_chat", side_effect=AssertionError("should not stream model")),
         ):
             for phrase in phrases:
                 with self.subTest(phrase=phrase):
@@ -5286,7 +5354,7 @@ class AgenticClaudeTests(unittest.TestCase):
             patch.object(web_app, "_update_working_memory", return_value={}),
             patch.object(web_app, "_schedule_background_call"),
             patch.object(bot, "should_route_quick_pwa_chat", return_value=False),
-            patch.object(bot, "stream_agentic_claude", side_effect=broken_stream),
+            patch.object(bot, "stream_agentic_chat", side_effect=broken_stream),
             patch.object(web_app, "_source_check_backend_fallback_payload", return_value=("", "", "")),
         ):
             body = asyncio.run(run())
@@ -5296,343 +5364,6 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("chat handoff failed", body)
         self.assertNotIn('"type": "error"', body)
         self.assertNotIn("backend snag", body.lower())
-
-    def test_deepseek_quick_failure_falls_back_to_openai(self):
-        async def run():
-            return await _collect_async(bot.stream_quick_pwa_reply([], "You there?"))
-
-        with (
-            patch.object(bot, "LLM_PROVIDER", "deepseek"),
-            patch.object(bot, "_deepseek_openai_fallback_enabled", return_value=True),
-            patch.object(bot.async_claude.messages, "stream", side_effect=RuntimeError("stream down")),
-            patch.object(bot, "_llm_text_async", side_effect=RuntimeError("retry down")),
-            patch.object(bot, "_openai_fallback_text_async", return_value="OpenAI fallback reply."),
-        ):
-            events = asyncio.run(run())
-
-        self.assertTrue(any(event.get("patch", {}).get("provider_fallback") == "openai" for event in events))
-        self.assertTrue(any(event.get("text") == "OpenAI fallback reply." for event in events))
-
-    def test_deepseek_agentic_failure_falls_back_to_openai(self):
-        async def fake_openai_stream(*_args, **_kwargs):
-            yield {"type": "text", "text": "OpenAI agentic fallback reply."}
-            yield {"type": "done", "text": "OpenAI agentic fallback reply."}
-
-        async def run():
-            return await _collect_async(bot.stream_agentic_claude_impl(
-                [{"role": "user", "content": "Draft this naturally"}],
-                tools=[{"name": "noop", "description": "noop", "input_schema": {"type": "object", "properties": {}}}],
-            ))
-
-        with (
-            patch.object(bot, "LLM_PROVIDER", "deepseek"),
-            patch.object(bot, "_deepseek_openai_fallback_enabled", return_value=True),
-            patch.object(bot.async_claude.messages, "stream", side_effect=RuntimeError("stream down")),
-            patch.object(bot, "_run_agentic_claude_impl", side_effect=RuntimeError("retry down")),
-            patch.object(bot, "_deepseek_text_only_recovery_reply", side_effect=RuntimeError("text-only down")),
-            patch.object(bot, "stream_agentic_openai", side_effect=fake_openai_stream),
-        ):
-            events = asyncio.run(run())
-
-        self.assertTrue(any(event.get("patch", {}).get("provider_fallback") == "openai" for event in events))
-        self.assertTrue(any(event.get("text") == "OpenAI agentic fallback reply." for event in events))
-
-    def test_deepseek_agentic_stream_uses_text_only_recovery_before_failure(self):
-        async def run():
-            return await _collect_async(bot.stream_agentic_claude_impl(
-                [{"role": "user", "content": "setting everything to DeepSeek Pro max good idea?"}],
-                tools=[{"name": "noop", "description": "noop", "input_schema": {"type": "object", "properties": {}}}],
-            ))
-
-        with (
-            patch.object(bot, "LLM_PROVIDER", "deepseek"),
-            patch.object(bot.async_claude.messages, "stream", side_effect=RuntimeError("stream down")),
-            patch.object(bot, "_run_agentic_claude_impl", side_effect=RuntimeError("retry down")),
-            patch.object(bot, "_deepseek_text_only_recovery_reply", return_value="No. Keep Flash for cheap paths and Pro for deep work."),
-        ):
-            events = asyncio.run(run())
-
-        self.assertTrue(any(event.get("patch", {}).get("deepseek_recovery") == "text_only" for event in events))
-        self.assertTrue(any(event.get("type") == "replace" and "Keep Flash" in event.get("text", "") for event in events))
-        self.assertTrue(any(event.get("type") == "done" for event in events))
-
-    def test_deepseek_openai_fallback_is_opt_in(self):
-        with (
-            patch.object(bot, "LLM_PROVIDER", "deepseek"),
-            patch.object(bot, "OPENAI_API_KEY", "openai-key"),
-            patch.object(bot, "DEEPSEEK_OPENAI_FALLBACK", False),
-        ):
-            self.assertFalse(bot._deepseek_openai_fallback_enabled())
-
-        with (
-            patch.object(bot, "LLM_PROVIDER", "deepseek"),
-            patch.object(bot, "OPENAI_API_KEY", "openai-key"),
-            patch.object(bot, "DEEPSEEK_OPENAI_FALLBACK", True),
-        ):
-            self.assertTrue(bot._deepseek_openai_fallback_enabled())
-
-    def test_deepseek_text_reader_skips_thinking_blocks(self):
-        resp = SimpleNamespace(content=[
-            SimpleNamespace(type="thinking", thinking="private scratchpad"),
-            SimpleNamespace(type="text", text="Final answer."),
-        ])
-
-        self.assertEqual(bot._anthropic_text_from_message(resp), "Final answer.")
-
-    def test_deepseek_text_calls_disable_thinking_in_auto_mode(self):
-        captured = {}
-
-        def fake_create(**kwargs):
-            captured.update(kwargs)
-            return SimpleNamespace(content=[
-                SimpleNamespace(type="thinking", thinking="private scratchpad"),
-                SimpleNamespace(type="text", text="Short reply."),
-            ])
-
-        with (
-            patch.object(bot, "LLM_PROVIDER", "deepseek"),
-            patch.object(bot, "DEEPSEEK_THINKING_MODE", "auto"),
-            patch.object(bot.claude.messages, "create", side_effect=fake_create),
-        ):
-            reply = bot._llm_text(
-                model="deepseek-v4-flash",
-                max_tokens=80,
-                messages=[{"role": "user", "content": "Classify this"}],
-            )
-
-        self.assertEqual(reply, "Short reply.")
-        self.assertEqual(captured["thinking"], {"type": "disabled"})
-        self.assertNotIn("output_config", captured)
-
-    def test_deepseek_agentic_deep_calls_enable_max_thinking_effort(self):
-        captured = {}
-
-        def fake_create(**kwargs):
-            captured.update(kwargs)
-            return SimpleNamespace(
-                stop_reason="end_turn",
-                content=[SimpleNamespace(type="text", text="Reviewed.")],
-            )
-
-        async def run():
-            return await bot._run_agentic_claude_impl(
-                [{"role": "user", "content": "review this architecture and compare tradeoffs"}],
-                max_tokens=400,
-                tools=[{"name": "noop", "description": "noop", "input_schema": {"type": "object", "properties": {}}}],
-            )
-
-        with (
-            patch.object(bot, "LLM_PROVIDER", "deepseek"),
-            patch.object(bot, "DEEPSEEK_THINKING_MODE", "auto"),
-            patch.object(bot, "AGENTIC_MODEL", "deepseek-v4-flash"),
-            patch.object(bot, "DEEP_MODEL", "deepseek-v4-pro"),
-            patch.object(bot, "CACHED_SYSTEM_PROMPT", return_value="System"),
-            patch.object(bot.claude.messages, "create", side_effect=fake_create),
-        ):
-            reply = asyncio.run(run())
-
-        self.assertEqual(reply, "Reviewed.")
-        self.assertEqual(captured["model"], "deepseek-v4-pro")
-        self.assertEqual(captured["thinking"], {"type": "enabled"})
-        self.assertEqual(captured["output_config"], {"effort": "max"})
-
-    def test_deepseek_agentic_retries_without_thinking_on_request_shape_error(self):
-        calls = []
-
-        def fake_create(**kwargs):
-            calls.append(kwargs)
-            if len(calls) == 1:
-                raise RuntimeError("400 unsupported thinking/output_config")
-            return SimpleNamespace(
-                stop_reason="end_turn",
-                content=[SimpleNamespace(type="text", text="Recovered inside DeepSeek.")],
-            )
-
-        async def run():
-            return await bot._run_agentic_claude_impl(
-                [{"role": "user", "content": "Switched things up a bit on ur backend"}],
-                max_tokens=400,
-                tools=[{"name": "noop", "description": "noop", "input_schema": {"type": "object", "properties": {}}}],
-            )
-
-        with (
-            patch.object(bot, "LLM_PROVIDER", "deepseek"),
-            patch.object(bot, "DEEPSEEK_THINKING_MODE", "auto"),
-            patch.object(bot, "CACHED_SYSTEM_PROMPT", return_value="System"),
-            patch.object(bot.claude.messages, "create", side_effect=fake_create),
-        ):
-            reply = asyncio.run(run())
-
-        self.assertEqual(reply, "Recovered inside DeepSeek.")
-        self.assertEqual(calls[0]["thinking"], {"type": "enabled"})
-        self.assertEqual(calls[1]["thinking"], {"type": "disabled"})
-        self.assertIn("tools", calls[1])
-        self.assertNotIn("output_config", calls[1])
-
-    def test_deepseek_agentic_retries_without_tools_after_tool_shape_error(self):
-        calls = []
-
-        def fake_create(**kwargs):
-            calls.append(kwargs)
-            if len(calls) < 3:
-                raise RuntimeError("400 tool schema unsupported")
-            return SimpleNamespace(
-                stop_reason="end_turn",
-                content=[SimpleNamespace(type="text", text="Recovered without tools.")],
-            )
-
-        async def run():
-            return await bot._run_agentic_claude_impl(
-                [{"role": "user", "content": "Say a normal hello"}],
-                max_tokens=400,
-                tools=[{"name": "noop", "description": "noop", "input_schema": {"type": "object", "properties": {}}}],
-            )
-
-        with (
-            patch.object(bot, "LLM_PROVIDER", "deepseek"),
-            patch.object(bot, "DEEPSEEK_THINKING_MODE", "auto"),
-            patch.object(bot, "CACHED_SYSTEM_PROMPT", return_value="System"),
-            patch.object(bot.claude.messages, "create", side_effect=fake_create),
-        ):
-            reply = asyncio.run(run())
-
-        self.assertEqual(reply, "Recovered without tools.")
-        self.assertIn("tools", calls[1])
-        self.assertNotIn("tools", calls[2])
-        self.assertEqual(calls[2]["thinking"], {"type": "disabled"})
-
-    def test_deepseek_blocks_unsupported_image_inputs_honestly(self):
-        async def run():
-            return await bot._run_agentic_claude_impl(
-                [{"role": "user", "content": [
-                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "abc"}},
-                    {"type": "text", "text": "What is in this?"},
-                ]}],
-                tools=[{"name": "noop", "description": "noop", "input_schema": {"type": "object", "properties": {}}}],
-            )
-
-        with (
-            patch.object(bot, "LLM_PROVIDER", "deepseek"),
-            patch.object(bot, "OPENAI_API_KEY", ""),
-            patch.object(bot.claude.messages, "create", side_effect=AssertionError("DeepSeek should not receive image blocks")),
-        ):
-            reply = asyncio.run(run())
-
-        self.assertIn("DeepSeek is active", reply)
-        self.assertIn("does not support image", reply)
-
-    def test_deepseek_stream_blocks_unsupported_image_inputs_honestly(self):
-        async def run():
-            return await _collect_async(bot.stream_agentic_claude_impl(
-                [{"role": "user", "content": [
-                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "abc"}},
-                    {"type": "text", "text": "What is in this?"},
-                ]}],
-                tools=[{"name": "noop", "description": "noop", "input_schema": {"type": "object", "properties": {}}}],
-            ))
-
-        with (
-            patch.object(bot, "LLM_PROVIDER", "deepseek"),
-            patch.object(bot, "OPENAI_API_KEY", ""),
-            patch.object(bot.async_claude.messages, "stream", side_effect=AssertionError("DeepSeek should not receive image blocks")),
-        ):
-            events = asyncio.run(run())
-
-        self.assertTrue(any(event.get("type") == "replace" and "does not support image" in event.get("text", "") for event in events))
-        self.assertTrue(any(event.get("type") == "done" for event in events))
-
-    def test_deepseek_image_inputs_use_openai_vision_handoff_when_available(self):
-        captured = {}
-
-        async def fake_vision(**kwargs):
-            captured["vision"] = kwargs
-            return "Visible text: Staff briefing, 25 May, 10:00 AM."
-
-        def fake_create(**kwargs):
-            captured["deepseek"] = kwargs
-            return SimpleNamespace(
-                stop_reason="end_turn",
-                content=[SimpleNamespace(type="text", text="Scanned and extracted the briefing time.")],
-            )
-
-        async def run():
-            return await bot._run_agentic_claude_impl(
-                [{"role": "user", "content": [
-                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "abc"}},
-                    {"type": "text", "text": "Extract schedule items."},
-                ]}],
-                tools=[{"name": "noop", "description": "noop", "input_schema": {"type": "object", "properties": {}}}],
-            )
-
-        with (
-            patch.object(bot, "LLM_PROVIDER", "deepseek"),
-            patch.object(bot, "OPENAI_API_KEY", "openai-key"),
-            patch.object(bot, "_openai_fallback_text_async", side_effect=fake_vision),
-            patch.object(bot.claude.messages, "create", side_effect=fake_create),
-            patch.object(bot, "CACHED_SYSTEM_PROMPT", return_value="System"),
-        ):
-            reply = asyncio.run(run())
-
-        self.assertEqual(reply, "Scanned and extracted the briefing time.")
-        self.assertEqual(captured["vision"]["model"], bot.OPENAI_VISION_MODEL)
-        deepseek_messages = captured["deepseek"]["messages"]
-        self.assertIsInstance(deepseek_messages[0]["content"], str)
-        self.assertNotIn('"type": "image"', deepseek_messages[0]["content"])
-        self.assertIn("Visible text: Staff briefing", deepseek_messages[0]["content"])
-
-    def test_deepseek_stream_image_inputs_use_openai_vision_handoff_when_available(self):
-        captured = {}
-
-        async def fake_vision(**kwargs):
-            captured["vision"] = kwargs
-            return "Visible text: Duty roster, 26 May, 2:00 PM."
-
-        class FakeStream:
-            def __init__(self, **kwargs):
-                captured["deepseek"] = kwargs
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *_args):
-                return False
-
-            def __aiter__(self):
-                async def iterator():
-                    yield SimpleNamespace(
-                        type="content_block_delta",
-                        delta=SimpleNamespace(type="text_delta", text="Extracted the duty roster."),
-                    )
-                return iterator()
-
-            async def get_final_message(self):
-                return SimpleNamespace(
-                    stop_reason="end_turn",
-                    content=[SimpleNamespace(type="text", text="Extracted the duty roster.")],
-                )
-
-        async def run():
-            return await _collect_async(bot.stream_agentic_claude_impl(
-                [{"role": "user", "content": [
-                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "abc"}},
-                    {"type": "text", "text": "Extract schedule items."},
-                ]}],
-                tools=[{"name": "noop", "description": "noop", "input_schema": {"type": "object", "properties": {}}}],
-            ))
-
-        with (
-            patch.object(bot, "LLM_PROVIDER", "deepseek"),
-            patch.object(bot, "OPENAI_API_KEY", "openai-key"),
-            patch.object(bot, "_openai_fallback_text_async", side_effect=fake_vision),
-            patch.object(bot.async_claude.messages, "stream", side_effect=lambda **kwargs: FakeStream(**kwargs)),
-            patch.object(bot, "CACHED_SYSTEM_PROMPT", return_value="System"),
-        ):
-            events = asyncio.run(run())
-
-        self.assertEqual(captured["vision"]["model"], bot.OPENAI_VISION_MODEL)
-        self.assertIn("Visible text: Duty roster", captured["deepseek"]["messages"][0]["content"])
-        self.assertTrue(any(event.get("patch", {}).get("vision_handoff") == "openai" for event in events))
-        self.assertTrue(any(event.get("type") == "done" for event in events))
 
     def test_pwa_tool_route_keeps_presence_preface_out_of_visible_answer(self):
         async def fake_agentic_stream(*_args, **_kwargs):
@@ -5657,7 +5388,7 @@ class AgenticClaudeTests(unittest.TestCase):
             patch.object(web_app, "_update_working_memory", return_value={}),
             patch.object(web_app, "_schedule_background_call"),
             patch.object(bot, "should_route_quick_pwa_chat", return_value=False),
-            patch.object(bot, "stream_agentic_claude", side_effect=fake_agentic_stream),
+            patch.object(bot, "stream_agentic_chat", side_effect=fake_agentic_stream),
         ):
             body = asyncio.run(run())
 
@@ -5709,7 +5440,7 @@ class AgenticClaudeTests(unittest.TestCase):
             patch.object(bot, "build_context_snapshot", return_value="Assistant context\nFollow-ups:\nNone."),
             patch.object(bot, "build_task_structured", return_value={"items": [task]}),
             patch.object(bot.gs, "get_marking_tasks", return_value=[marking]),
-            patch.object(bot, "stream_agentic_claude", side_effect=AssertionError("triage should not use model")),
+            patch.object(bot, "stream_agentic_chat", side_effect=AssertionError("triage should not use model")),
             patch.object(web_app, "_update_working_memory", side_effect=AssertionError("triage should bypass model preflight")),
         ):
             body = asyncio.run(run())
@@ -7717,27 +7448,6 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIsNotNone(blocked)
         self.assertIn("disabled", blocked)
 
-    def test_forced_tool_does_not_repeat_after_tool_result(self):
-        fake_messages = FakeMessages()
-        fake_claude = SimpleNamespace(messages=fake_messages)
-
-        async def fake_execute_tool(name, inp):
-            return "- Subject | From: sender@example.com | Snippet"
-
-        messages = [{"role": "user", "content": "tell me about my last 5 emails"}]
-        tools = [{"name": "get_gmail_brief"}]
-
-        with (
-            patch.object(bot, "claude", fake_claude),
-            patch.object(bot, "SYSTEM_PROMPT", return_value="system"),
-            patch.object(bot, "_execute_tool", side_effect=fake_execute_tool),
-        ):
-            reply = asyncio.run(bot._run_agentic_claude(messages, tools=tools))
-
-        self.assertIn("last five emails", reply)
-        self.assertEqual(fake_messages.calls[0]["tool_choice"], {"type": "tool", "name": "get_gmail_brief"})
-        self.assertNotIn("tool_choice", fake_messages.calls[1])
-
     def test_forced_tool_ignores_structured_tool_result_turns(self):
         messages = [
             {"role": "user", "content": "tell me about my last 5 emails"},
@@ -7747,87 +7457,7 @@ class AgenticClaudeTests(unittest.TestCase):
 
         self.assertIsNone(bot._forced_tool_for_current_turn(messages, [{"name": "get_gmail_brief"}]))
 
-    def test_agentic_claude_continues_after_max_tokens(self):
-        class MaxTokenMessages:
-            def __init__(self):
-                self.calls = []
-
-            def create(self, **kwargs):
-                self.calls.append(kwargs)
-                if len(self.calls) == 1:
-                    return SimpleNamespace(
-                        stop_reason="max_tokens",
-                        content=[SimpleNamespace(type="text", text="Done. Here's what was written:")],
-                    )
-                return SimpleNamespace(
-                    stop_reason="end_turn",
-                    content=[SimpleNamespace(type="text", text="\n- Filled all FA2 percentages.")],
-                )
-
-        fake_messages = MaxTokenMessages()
-        fake_claude = SimpleNamespace(messages=fake_messages)
-
-        with (
-            patch.object(bot, "claude", fake_claude),
-            patch.object(bot, "SYSTEM_PROMPT", return_value="system"),
-        ):
-            reply = asyncio.run(bot._run_agentic_claude(
-                [{"role": "user", "content": "fill percentages"}],
-                tools=[],
-                max_tokens=10,
-            ))
-
-        self.assertIn("Here's what was written", reply)
-        self.assertIn("Filled all FA2 percentages", reply)
-        self.assertEqual(len(fake_messages.calls), 2)
-
-    def test_agentic_claude_returns_tool_summary_when_followup_call_fails(self):
-        class FollowupFailureMessages:
-            def __init__(self):
-                self.calls = []
-
-            def create(self, **kwargs):
-                self.calls.append(kwargs)
-                if len(self.calls) == 1:
-                    return SimpleNamespace(
-                        stop_reason="tool_use",
-                        content=[
-                            SimpleNamespace(
-                                type="tool_use",
-                                id="tool-1",
-                                name="create_calendar_event",
-                                input={
-                                    "title": "Football Training",
-                                    "date": "2026-05-18",
-                                    "start_time": "15:00",
-                                    "end_time": "16:00",
-                                },
-                            )
-                        ],
-                    )
-                raise ValueError("messages.2: tool_use ids were found without tool_result blocks immediately after")
-
-        fake_messages = FollowupFailureMessages()
-        fake_claude = SimpleNamespace(messages=fake_messages)
-
-        async def fake_execute_tool(name, inp):
-            return "Created: Football Training on 2026-05-18 15:00-16:00"
-
-        with (
-            patch.object(bot, "claude", fake_claude),
-            patch.object(bot, "CACHED_SYSTEM_PROMPT", return_value="system"),
-            patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool),
-        ):
-            reply = asyncio.run(bot._run_agentic_claude(
-                [{"role": "user", "content": "Add this schedule screenshot"}],
-                tools=[{"name": "create_calendar_event"}],
-            ))
-
-        self.assertIn("I added these to your calendar", reply)
-        self.assertIn("Football Training on 2026-05-18 15:00-16:00", reply)
-        self.assertEqual(len(fake_messages.calls), 2)
-
-    def test_openai_provider_runs_tool_loop_without_claude_client(self):
+    def test_openai_provider_runs_tool_loop(self):
         class FakeOpenAIResponses:
             def __init__(self):
                 self.calls = []
@@ -7863,8 +7493,6 @@ class AgenticClaudeTests(unittest.TestCase):
 
         fake_openai = SimpleNamespace(responses=fake_responses)
         fake_async_openai = SimpleNamespace(responses=FakeAsyncOpenAIResponses(fake_responses))
-        fake_claude = SimpleNamespace(messages=SimpleNamespace(create=lambda **_: (_ for _ in ()).throw(AssertionError("Claude should not be called"))))
-
         async def fake_execute_tool(name, inp):
             return "- Subject | From: sender@example.com | Snippet"
 
@@ -7872,14 +7500,12 @@ class AgenticClaudeTests(unittest.TestCase):
         tools = [{"name": "get_gmail_brief", "input_schema": {"type": "object", "properties": {}}}]
 
         with (
-            patch.object(bot, "LLM_PROVIDER", "openai"),
             patch.object(bot, "openai_client", fake_openai),
             patch.object(bot, "async_openai_client", fake_async_openai),
-            patch.object(bot, "claude", fake_claude),
             patch.object(bot, "SYSTEM_PROMPT", return_value="system"),
             patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool),
         ):
-            reply = asyncio.run(bot._run_agentic_claude(messages, tools=tools))
+            reply = asyncio.run(bot._run_agentic_chat(messages, tools=tools))
 
         self.assertIn("last five emails", reply)
         self.assertEqual(fake_responses.calls[0]["tool_choice"], {"type": "function", "name": "get_gmail_brief"})
@@ -7903,7 +7529,7 @@ class AgenticClaudeTests(unittest.TestCase):
             patch.object(bot, "_openai_stream_response", side_effect=fake_stream),
             patch.object(bot, "CACHED_SYSTEM_PROMPT", return_value="system"),
         ):
-            events = asyncio.run(_collect_async(bot.stream_agentic_claude(
+            events = asyncio.run(_collect_async(bot.stream_agentic_chat(
                 [{"role": "user", "content": "hello"}],
                 tools=[],
                 openai_state_key="pwa:test-openai-stream",
@@ -8023,38 +7649,6 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertEqual(status["today"]["cached_input_tokens"], 1000)
         self.assertIn("gpt-5.4-mini", status["models_today"])
         self.assertIn("agentic", status["tiers_today"])
-
-    def test_deepseek_usage_record_updates_dashboard_summary(self):
-        resp = SimpleNamespace(
-            model="deepseek-v4-pro",
-            usage={
-                "input_tokens": 2000,
-                "output_tokens": 300,
-                "cache_read_input_tokens": 1000,
-            },
-        )
-        with (
-            patch.object(bot, "LLM_PROVIDER", "deepseek"),
-            patch.object(bot, "DEEPSEEK_USAGE_TRACKING", True),
-            patch.object(bot, "DEEPSEEK_USAGE_PERSIST", False),
-            patch.object(bot, "DEEPSEEK_USAGE_SGD_PER_USD", 1.35),
-            patch.object(bot, "_DEEPSEEK_USAGE_SUMMARY", {"version": 1, "days": {}}),
-            patch.object(bot, "_DEEPSEEK_USAGE_SUMMARY_LOADED", True),
-        ):
-            record = bot._record_deepseek_usage(resp, model="deepseek-v4-pro", tier="deep")
-            status = bot.deepseek_usage_status()
-            active = bot.api_usage_status()
-
-        self.assertEqual(record["provider"], "deepseek")
-        self.assertEqual(record["model"], "deepseek-v4-pro")
-        self.assertIn("estimated_sgd", record)
-        self.assertNotIn("prompt", record)
-        self.assertEqual(status["provider"], "deepseek")
-        self.assertEqual(status["today"]["requests"], 1)
-        self.assertEqual(status["today"]["cached_input_tokens"], 1000)
-        self.assertIn("deepseek-v4-pro", status["models_today"])
-        self.assertIn("deep", status["tiers_today"])
-        self.assertEqual(active["provider"], "deepseek")
 
     def test_openai_native_web_search_is_added_for_live_questions(self):
         with (
@@ -8231,7 +7825,7 @@ class AgenticClaudeTests(unittest.TestCase):
             patch.object(bot, "_openai_stream_response", side_effect=fake_stream),
             patch.object(bot, "CACHED_SYSTEM_PROMPT", return_value="system"),
         ):
-            events = asyncio.run(_collect_async(bot.stream_agentic_claude(
+            events = asyncio.run(_collect_async(bot.stream_agentic_chat(
                 [{"role": "user", "content": "latest Android news"}],
                 tools=[],
                 openai_state_key="pwa:native-trace",
@@ -8306,21 +7900,13 @@ class AgenticClaudeTests(unittest.TestCase):
                 create=lambda **_: (_ for _ in ()).throw(AssertionError("OpenAI should not be called"))
             )
         )
-        fake_claude = SimpleNamespace(
-            messages=SimpleNamespace(
-                create=lambda **_: (_ for _ in ()).throw(AssertionError("Claude should not be called"))
-            )
-        )
-
         with (
-            patch.object(bot, "LLM_PROVIDER", "openai"),
             patch.object(bot, "AGENTIC_MODEL", "gpt-test"),
             patch.object(bot, "DEEP_MODEL", "gpt-test"),
             patch.object(bot, "openai_client", fake_openai),
-            patch.object(bot, "claude", fake_claude),
         ):
-            reply = asyncio.run(bot._run_agentic_claude([
-                {"role": "user", "content": "is it anthropic or openai?"}
+            reply = asyncio.run(bot._run_agentic_chat([
+                {"role": "user", "content": "what provider are you using?"}
             ]))
 
         self.assertIn("OpenAI", reply)
@@ -8330,7 +7916,6 @@ class AgenticClaudeTests(unittest.TestCase):
 
     def test_provider_status_handles_casual_current_provider_model_wording(self):
         with (
-            patch.object(bot, "LLM_PROVIDER", "openai"),
             patch.object(bot, "AGENTIC_MODEL", "gpt-test"),
             patch.object(bot, "DEEP_MODEL", "gpt-test"),
         ):
@@ -8340,114 +7925,13 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("HIRA_LLM_PROVIDER=openai", reply)
         self.assertIn("gpt-test", reply)
 
-    def test_deepseek_provider_status_uses_deepseek_label(self):
-        with (
-            patch.object(bot, "LLM_PROVIDER", "deepseek"),
-            patch.object(bot, "AGENTIC_MODEL", "deepseek-v4-flash"),
-            patch.object(bot, "DEEP_MODEL", "deepseek-v4-pro"),
-        ):
-            reply = bot._llm_provider_status_reply([{"role": "user", "content": "which deepseek api are you using?"}])
-
-        self.assertIn("DeepSeek", reply)
-        self.assertIn("HIRA_LLM_PROVIDER=deepseek", reply)
-        self.assertIn("deepseek-v4", reply)
-        self.assertIn("Thinking mode:", reply)
-        self.assertIn("OpenAI fallback: disabled", reply)
-
     def test_backend_change_feeling_prompt_does_not_force_provider_status(self):
-        with patch.object(bot, "LLM_PROVIDER", "deepseek"):
-            reply = bot._llm_provider_status_reply([{
-                "role": "user",
-                "content": "Hey hira. Did another backend change. How are u feeling",
-            }])
+        reply = bot._llm_provider_status_reply([{
+            "role": "user",
+            "content": "Hey hira. Did another backend change. How are u feeling",
+        }])
 
         self.assertIsNone(reply)
-
-    def test_deepseek_provider_uses_dedicated_anthropic_compatible_config(self):
-        with (
-            patch.object(bot, "LLM_PROVIDER", "deepseek"),
-            patch.object(bot, "DEEPSEEK_API_KEY", "deepseek-key"),
-            patch.object(bot, "DEEPSEEK_BASE_URL", "https://api.deepseek.com/anthropic"),
-        ):
-            kwargs = bot._anthropic_compatible_client_kwargs()
-
-        self.assertEqual(kwargs["api_key"], "deepseek-key")
-        self.assertEqual(kwargs["base_url"], "https://api.deepseek.com/anthropic")
-
-    def test_deepseek_model_env_rejects_unknown_deepseek_ids(self):
-        with (
-            patch.object(bot, "LLM_PROVIDER", "deepseek"),
-            patch.dict(os.environ, {"HIRA_AGENTIC_MODEL": "deepseek-v4-prod"}),
-        ):
-            model = bot._model_from_env("HIRA_AGENTIC_MODEL", "deepseek-v4-flash")
-
-        self.assertEqual(model, "deepseek-v4-flash")
-
-    def test_deepseek_model_env_accepts_official_model_ids(self):
-        with (
-            patch.object(bot, "LLM_PROVIDER", "deepseek"),
-            patch.dict(os.environ, {"HIRA_AGENTIC_MODEL": "deepseek-v4-pro"}),
-        ):
-            model = bot._model_from_env("HIRA_AGENTIC_MODEL", "deepseek-v4-flash")
-
-        self.assertEqual(model, "deepseek-v4-pro")
-
-    def test_openai_provider_rejects_deepseek_model_env_overrides(self):
-        with (
-            patch.object(bot, "LLM_PROVIDER", "openai"),
-            patch.dict(os.environ, {"HIRA_AGENTIC_MODEL": "deepseek-v4-flash"}),
-        ):
-            model = bot._model_from_env("HIRA_AGENTIC_MODEL", "gpt-5.4")
-
-        self.assertEqual(model, "gpt-5.4")
-
-    def test_deepseek_tool_loop_preserves_thinking_blocks_for_followup(self):
-        class ThinkingToolMessages:
-            def __init__(self):
-                self.calls = []
-
-            def create(self, **kwargs):
-                self.calls.append(kwargs)
-                if len(self.calls) == 1:
-                    return SimpleNamespace(
-                        stop_reason="tool_use",
-                        content=[
-                            SimpleNamespace(type="thinking", thinking="need the mailbox first"),
-                            SimpleNamespace(type="text", text="Let me check that."),
-                            SimpleNamespace(
-                                type="tool_use",
-                                id="tool-1",
-                                name="get_gmail_brief",
-                                input={"query": "", "max_items": 5},
-                            ),
-                        ],
-                    )
-                return SimpleNamespace(
-                    stop_reason="end_turn",
-                    content=[SimpleNamespace(type="text", text="One relevant email came in.")],
-                )
-
-        fake_messages = ThinkingToolMessages()
-
-        async def fake_execute_tool(name, inp):
-            return "SOURCE CONTRACT: status=confirmed\n- Email result"
-
-        with (
-            patch.object(bot, "LLM_PROVIDER", "deepseek"),
-            patch.object(bot, "DEEPSEEK_THINKING_MODE", "auto"),
-            patch.object(bot, "claude", SimpleNamespace(messages=fake_messages)),
-            patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool),
-            patch.object(bot, "CACHED_SYSTEM_PROMPT", return_value="System"),
-        ):
-            reply = asyncio.run(bot._run_agentic_claude_impl(
-                [{"role": "user", "content": "check my latest email"}],
-                tools=[{"name": "get_gmail_brief", "description": "read gmail", "input_schema": {"type": "object", "properties": {}}}],
-            ))
-
-        self.assertIn("One relevant email", reply)
-        assistant_turn = fake_messages.calls[1]["messages"][1]
-        self.assertEqual(assistant_turn["role"], "assistant")
-        self.assertTrue(any(getattr(block, "type", "") == "thinking" for block in assistant_turn["content"]))
 
     def test_provider_status_ignores_injected_grounding_context(self):
         message = (

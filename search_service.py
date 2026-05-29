@@ -62,8 +62,8 @@ class _PublicAddress:
 DIGEST_TOPICS = [
     ("⚽ Liverpool / EPL",  "Liverpool FC latest result match report fixture line-up injury transfer"),
     ("🏎️ F1 / Mercedes",    "Mercedes F1 George Russell Kimi Antonelli Lewis Hamilton latest result qualifying upgrade"),
-    ("🤖 AI Tools",         "OpenAI Codex Claude Anthropic Kimi Moonshot Gemini AI tools latest model release agent"),
-    ("🧠 Codex / Claude / Gemini / Kimi", "OpenAI Codex Claude Anthropic Gemini Kimi Moonshot coding agent model update"),
+    ("🤖 AI Tools",         "OpenAI Codex Kimi Moonshot Gemini AI tools latest model release agent"),
+    ("🧠 Codex / Gemini / Kimi", "OpenAI Codex Gemini Kimi Moonshot coding agent model update"),
     ("🎛️ Teenage Engineering", "Teenage Engineering OP-XY OP-1 Field Pocket Operator product review firmware update"),
     ("🤖 Android",          "Android 17 Android OS Google Pixel Google Play app ecosystem security update beta features"),
     ("🍎 iOS",              "iOS 20 iPhone Apple developer App Store TestFlight policy update beta features"),
@@ -641,7 +641,7 @@ def _source_rank(result: dict) -> int:
     score = 0
     if any(domain.endswith(suffix) for suffix in (".gov", ".edu", ".int")):
         score += 20
-    if any(term in domain for term in ("gov.sg", "moe.gov.sg", "data.gov.sg", "formula1.com", "fia.com", "premierleague.com", "openai.com", "anthropic.com", "apple.com", "google.com", "muis.gov.sg")):
+    if any(term in domain for term in ("gov.sg", "moe.gov.sg", "data.gov.sg", "formula1.com", "fia.com", "premierleague.com", "openai.com", "apple.com", "google.com", "muis.gov.sg")):
         score += 18
     if any(term in title for term in ("official", "documentation", "calendar", "schedule", "results", "release notes")):
         score += 8
@@ -653,8 +653,8 @@ def _source_rank(result: dict) -> int:
 TRUSTED_PRIMARY_DOMAINS = (
     "gov.sg", "moe.gov.sg", "data.gov.sg", "muis.gov.sg",
     "formula1.com", "fia.com", "premierleague.com",
-    "openai.com", "platform.openai.com", "docs.anthropic.com",
-    "anthropic.com", "apple.com", "developer.apple.com",
+    "openai.com", "platform.openai.com",
+    "apple.com", "developer.apple.com",
     "google.com", "developers.google.com", "android.com",
 )
 REPUTABLE_NEWS_DOMAINS = (

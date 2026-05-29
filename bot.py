@@ -20,7 +20,6 @@ from email.utils import parsedate_to_datetime
 from types import SimpleNamespace
 import pytz
 
-from anthropic import Anthropic, AsyncAnthropic
 from openai import OpenAI, AsyncOpenAI
 
 import google_services as gs
@@ -82,35 +81,13 @@ except ValueError:
     logger.warning("Invalid HIRA_MORNING_DIGEST_ITEM_LIMIT; using 16 items")
     MORNING_DIGEST_ITEM_LIMIT = 16
 
-LLM_PROVIDER = os.environ.get("HIRA_LLM_PROVIDER", "anthropic").strip().lower() or "anthropic"
-if LLM_PROVIDER not in {"anthropic", "openai", "deepseek"}:
-    logger.warning("Invalid HIRA_LLM_PROVIDER=%r; using anthropic", LLM_PROVIDER)
-    LLM_PROVIDER = "anthropic"
-
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-if LLM_PROVIDER == "anthropic" and not ANTHROPIC_API_KEY:
-    logger.warning("ANTHROPIC_API_KEY is not set; Claude calls will fail until it is configured.")
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
-DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/anthropic").strip() or "https://api.deepseek.com/anthropic"
-if LLM_PROVIDER == "deepseek" and not DEEPSEEK_API_KEY:
-    logger.warning("DEEPSEEK_API_KEY is not set; DeepSeek calls will fail until it is configured.")
-
-
-def _anthropic_compatible_client_kwargs() -> dict:
-    if LLM_PROVIDER == "deepseek":
-        return {"api_key": DEEPSEEK_API_KEY or "missing-key", "base_url": DEEPSEEK_BASE_URL}
-    kwargs = {"api_key": ANTHROPIC_API_KEY or "missing-key"}
-    anthropic_base_url = os.environ.get("ANTHROPIC_BASE_URL", "").strip()
-    if anthropic_base_url:
-        kwargs["base_url"] = anthropic_base_url
-    return kwargs
-
-
-claude = Anthropic(**_anthropic_compatible_client_kwargs())
-async_claude = AsyncAnthropic(**_anthropic_compatible_client_kwargs())
+_LLM_PROVIDER_ENV = os.environ.get("HIRA_LLM_PROVIDER", "").strip().lower()
+if _LLM_PROVIDER_ENV and _LLM_PROVIDER_ENV != "openai":
+    logger.warning("Ignoring HIRA_LLM_PROVIDER=%r; H.I.R.A runtime is OpenAI-only.", _LLM_PROVIDER_ENV)
+LLM_PROVIDER = "openai"
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
-if LLM_PROVIDER == "openai" and not OPENAI_API_KEY:
+if not OPENAI_API_KEY:
     logger.warning("OPENAI_API_KEY is not set; OpenAI calls will fail until it is configured.")
 openai_client = OpenAI(api_key=OPENAI_API_KEY or "missing-key")
 async_openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY or "missing-key")
@@ -191,23 +168,8 @@ async def _is_authorized(update) -> bool:
     except Exception:
         pass
     return False
-_DEEPSEEK_SUPPORTED_MODELS = {"deepseek-v4-flash", "deepseek-v4-pro"}
-
-
 def _model_from_env(key: str, default: str) -> str:
     raw = os.environ.get(key, "").strip()
-    if LLM_PROVIDER == "openai" and raw.lower().startswith(("claude", "deepseek-")):
-        logger.warning("%s=%r is not an OpenAI model while HIRA_LLM_PROVIDER=openai; using %s", key, raw, default)
-        return default
-    if LLM_PROVIDER == "deepseek" and raw and raw not in _DEEPSEEK_SUPPORTED_MODELS:
-        logger.warning(
-            "%s=%r is not a supported DeepSeek API model while HIRA_LLM_PROVIDER=deepseek; using %s. "
-            "DeepSeek's Anthropic API may silently map unsupported names to deepseek-v4-flash.",
-            key,
-            raw,
-            default,
-        )
-        return default
     return raw or default
 
 
@@ -226,25 +188,20 @@ def _env_int_setting(name: str, default: int, minimum: int = 1, maximum: int | N
     return min(value, maximum) if maximum is not None else value
 
 
-_DEFAULT_AGENTIC_MODEL = "gpt-5.4" if LLM_PROVIDER == "openai" else "deepseek-v4-flash" if LLM_PROVIDER == "deepseek" else "claude-sonnet-4-6"
-_DEFAULT_DEEP_MODEL = "gpt-5.5" if LLM_PROVIDER == "openai" else "deepseek-v4-pro" if LLM_PROVIDER == "deepseek" else _DEFAULT_AGENTIC_MODEL
-_DEFAULT_QUICK_MODEL = "gpt-5.4-mini" if LLM_PROVIDER == "openai" else "deepseek-v4-flash" if LLM_PROVIDER == "deepseek" else "claude-haiku-4-5-20251001"
-_DEFAULT_ROUTER_MODEL = "gpt-5.4-nano" if LLM_PROVIDER == "openai" else _DEFAULT_QUICK_MODEL
-_DEFAULT_STRUCTURED_MODEL = "gpt-5.4-mini" if LLM_PROVIDER == "openai" else _DEFAULT_QUICK_MODEL
+_DEFAULT_AGENTIC_MODEL = "gpt-5.4"
+_DEFAULT_DEEP_MODEL = "gpt-5.5"
+_DEFAULT_QUICK_MODEL = "gpt-5.4-mini"
+_DEFAULT_ROUTER_MODEL = "gpt-5.4-nano"
+_DEFAULT_STRUCTURED_MODEL = "gpt-5.4-mini"
 AGENTIC_MODEL = _model_from_env("HIRA_AGENTIC_MODEL", _DEFAULT_AGENTIC_MODEL)
 DEEP_MODEL = _model_from_env("HIRA_DEEP_MODEL", _DEFAULT_DEEP_MODEL)
 QUICK_MODEL = _model_from_env("HIRA_QUICK_MODEL", _DEFAULT_QUICK_MODEL)
 ROUTER_MODEL = _model_from_env("HIRA_ROUTER_MODEL", _DEFAULT_ROUTER_MODEL)
 STRUCTURED_MODEL = _model_from_env("HIRA_STRUCTURED_MODEL", _DEFAULT_STRUCTURED_MODEL)
-DEEPSEEK_OPENAI_FALLBACK = _env_flag("HIRA_DEEPSEEK_OPENAI_FALLBACK", False)
-DEEPSEEK_THINKING_MODE = os.environ.get("HIRA_DEEPSEEK_THINKING_MODE", "auto").strip().lower() or "auto"
-if DEEPSEEK_THINKING_MODE not in {"auto", "enabled", "disabled"}:
-    logger.warning("Invalid HIRA_DEEPSEEK_THINKING_MODE=%r; using auto", DEEPSEEK_THINKING_MODE)
-    DEEPSEEK_THINKING_MODE = "auto"
 OPENAI_FALLBACK_QUICK_MODEL = os.environ.get("HIRA_OPENAI_FALLBACK_QUICK_MODEL", "gpt-5.4-mini").strip() or "gpt-5.4-mini"
 OPENAI_FALLBACK_AGENTIC_MODEL = os.environ.get("HIRA_OPENAI_FALLBACK_AGENTIC_MODEL", "gpt-5.4").strip() or "gpt-5.4"
 OPENAI_VISION_MODEL = os.environ.get("HIRA_OPENAI_VISION_MODEL", OPENAI_FALLBACK_AGENTIC_MODEL).strip() or OPENAI_FALLBACK_AGENTIC_MODEL
-OPENAI_FULL_POWER_MODE = _env_flag("HIRA_OPENAI_FULL_POWER_MODE", LLM_PROVIDER == "openai")
+OPENAI_FULL_POWER_MODE = _env_flag("HIRA_OPENAI_FULL_POWER_MODE", True)
 FAST_CHAT_MODE = _env_flag("HIRA_FAST_CHAT_MODE", True)
 OPENAI_STORE_RESPONSES = _env_flag("HIRA_OPENAI_STORE_RESPONSES", True)
 OPENAI_USE_PREVIOUS_RESPONSE_ID = _env_flag("HIRA_OPENAI_USE_PREVIOUS_RESPONSE_ID", True)
@@ -271,23 +228,16 @@ OPENAI_MEMORY_VECTOR_STORE_ID = os.environ.get("HIRA_OPENAI_MEMORY_VECTOR_STORE_
 OPENAI_VECTOR_SYNC_ENABLED = _env_flag("HIRA_OPENAI_VECTOR_SYNC_ENABLED", False)
 OPENAI_VECTOR_SYNC_MEMORY = _env_flag("HIRA_OPENAI_VECTOR_SYNC_MEMORY", True)
 OPENAI_VECTOR_SYNC_UPLOADS = _env_flag("HIRA_OPENAI_VECTOR_SYNC_UPLOADS", True)
-OPENAI_ACTION_PLANNER_ENABLED = _env_flag("HIRA_OPENAI_ACTION_PLANNER", LLM_PROVIDER == "openai")
+OPENAI_ACTION_PLANNER_ENABLED = _env_flag("HIRA_OPENAI_ACTION_PLANNER", True)
 OPENAI_PROMPT_CACHE_RETENTION = os.environ.get("HIRA_OPENAI_PROMPT_CACHE_RETENTION", "24h").strip()
 OPENAI_SERVICE_TIER = os.environ.get("HIRA_OPENAI_SERVICE_TIER", "").strip()
-OPENAI_USAGE_TRACKING = _env_flag("HIRA_OPENAI_USAGE_TRACKING", LLM_PROVIDER == "openai")
-DEEPSEEK_USAGE_TRACKING = _env_flag("HIRA_DEEPSEEK_USAGE_TRACKING", LLM_PROVIDER == "deepseek")
+OPENAI_USAGE_TRACKING = _env_flag("HIRA_OPENAI_USAGE_TRACKING", True)
 OPENAI_USAGE_PERSIST = _env_flag("HIRA_OPENAI_USAGE_PERSIST", True)
-DEEPSEEK_USAGE_PERSIST = _env_flag("HIRA_DEEPSEEK_USAGE_PERSIST", True)
 OPENAI_USAGE_PERSIST_INTERVAL_SECONDS = _env_int_setting("HIRA_OPENAI_USAGE_PERSIST_INTERVAL_SECONDS", 60, minimum=0, maximum=3600)
-DEEPSEEK_USAGE_PERSIST_INTERVAL_SECONDS = _env_int_setting("HIRA_DEEPSEEK_USAGE_PERSIST_INTERVAL_SECONDS", OPENAI_USAGE_PERSIST_INTERVAL_SECONDS, minimum=0, maximum=3600)
 try:
     OPENAI_USAGE_SGD_PER_USD = max(0.01, float(os.environ.get("HIRA_OPENAI_USAGE_SGD_PER_USD", "1.35") or 1.35))
 except ValueError:
     OPENAI_USAGE_SGD_PER_USD = 1.35
-try:
-    DEEPSEEK_USAGE_SGD_PER_USD = max(0.01, float(os.environ.get("HIRA_DEEPSEEK_USAGE_SGD_PER_USD", str(OPENAI_USAGE_SGD_PER_USD)) or OPENAI_USAGE_SGD_PER_USD))
-except ValueError:
-    DEEPSEEK_USAGE_SGD_PER_USD = OPENAI_USAGE_SGD_PER_USD
 QUICK_ROUTE_MAX_CHARS = _env_int_setting("HIRA_QUICK_ROUTE_MAX_CHARS", 220, minimum=40, maximum=800)
 QUICK_REPLY_MAX_TOKENS = _env_int_setting("HIRA_QUICK_REPLY_MAX_TOKENS", 160, minimum=60, maximum=400)
 NEWS_MAX_AGE_HOURS = _env_int_setting("HIRA_NEWS_MAX_AGE_HOURS", 24, minimum=1, maximum=336)
@@ -404,7 +354,7 @@ def model_policy_for_text(text: str = "") -> dict:
     clean = str(text or "")
     lowered = clean.lower()
     source_policy = source_discipline_for_text(clean)
-    full_power = bool(OPENAI_FULL_POWER_MODE and LLM_PROVIDER == "openai")
+    full_power = bool(OPENAI_FULL_POWER_MODE)
     deep_reason = ""
     if re.search(
         r"\b(code|debug|architecture|refactor|proposal|strategy|analyse|analyze|"
@@ -673,21 +623,21 @@ def build_runtime_status() -> dict:
             "structured": STRUCTURED_MODEL,
         },
         "openai_upgrade": {
-            "full_power_mode": "enabled" if OPENAI_FULL_POWER_MODE and LLM_PROVIDER == "openai" else "disabled",
+            "full_power_mode": "enabled" if OPENAI_FULL_POWER_MODE else "disabled",
             "thread_state_resolver": "enabled",
             "model_policy_router": "enabled",
-            "responses_streaming": "enabled" if LLM_PROVIDER == "openai" else "provider_disabled",
+            "responses_streaming": "enabled",
             "responses_state": "enabled" if OPENAI_STORE_RESPONSES and OPENAI_USE_PREVIOUS_RESPONSE_ID else "disabled",
-            "strict_structured_outputs": "enabled" if LLM_PROVIDER == "openai" else "provider_disabled",
+            "strict_structured_outputs": "enabled",
             "native_web_search": "enabled" if OPENAI_NATIVE_WEB_SEARCH else "disabled",
             "native_file_search": "enabled" if _openai_file_search_vector_store_ids() else "not_configured",
             "vector_memory_sync": "enabled" if _openai_vector_sync_ready("memory") else "not_configured",
             "vector_upload_sync": "enabled" if _openai_vector_sync_ready("upload") else "not_configured",
             "native_code_interpreter": "enabled" if OPENAI_NATIVE_CODE_INTERPRETER else "disabled",
             "fast_chat_mode": "enabled" if FAST_CHAT_MODE else "disabled",
-            "structured_action_planner": "enabled" if OPENAI_ACTION_PLANNER_ENABLED and LLM_PROVIDER == "openai" else "disabled",
-            "reasoning_default": "medium, escalates for deep work" if FAST_CHAT_MODE and OPENAI_FULL_POWER_MODE and LLM_PROVIDER == "openai" else "high/xhigh" if OPENAI_FULL_POWER_MODE and LLM_PROVIDER == "openai" else "standard",
-            "max_tool_calls": 16 if OPENAI_FULL_POWER_MODE and LLM_PROVIDER == "openai" else 8,
+            "structured_action_planner": "enabled" if OPENAI_ACTION_PLANNER_ENABLED else "disabled",
+            "reasoning_default": "medium, escalates for deep work" if FAST_CHAT_MODE and OPENAI_FULL_POWER_MODE else "high/xhigh" if OPENAI_FULL_POWER_MODE else "standard",
+            "max_tool_calls": 16 if OPENAI_FULL_POWER_MODE else 8,
             "news_freshness_gate_hours": NEWS_MAX_AGE_HOURS,
             "prompt_cache": "enabled" if OPENAI_PROMPT_CACHE_RETENTION else "disabled",
             "source_contract_trace": "enabled",
@@ -697,7 +647,6 @@ def build_runtime_status() -> dict:
             "specialist_agents": "enabled_via_policy",
         },
         "openai_usage": openai_usage_status(),
-        "deepseek_usage": deepseek_usage_status(),
         "api_usage": api_usage_status(),
         "memory_buckets": memory_counts,
         "memory_error": memory_error,
@@ -1389,7 +1338,11 @@ def source_discipline_for_text(text: str) -> dict:
         and re.search(r"\b(liverpool|lfc|epl|premier league|anfield|salah|wirtz|isak|transfer|rumou?r|lineup|starting xi)\b", lowered)
     ):
         tools.append("get_liverpool_brief")
-    if re.search(r"\b(f1|formula 1|grand prix|mercedes|russell|antonelli|hamilton|qualifying|driver standings|constructor standings)\b", lowered):
+    if re.search(
+        r"\b(f1|formula 1|grand prix|monaco|mercedes|russell|antonelli|hamilton|"
+        r"qualifying|practice|session timings?|race weekend|driver standings|constructor standings)\b",
+        lowered,
+    ):
         tools.append("get_f1_brief")
     if re.search(r"\b(weather|forecast|rain|temperature|haze|psi|pm2\.5)\b", lowered):
         tools.append("get_nea_weather")
@@ -3211,7 +3164,7 @@ def _openai_input_from_messages(messages: list[dict]) -> list[dict]:
     return items
 
 
-def _openai_tools_from_anthropic(tools: list[dict] | None) -> list[dict] | None:
+def _openai_tools_from_hira_tools(tools: list[dict] | None) -> list[dict] | None:
     converted = []
     for tool in tools or []:
         converted.append({
@@ -3271,7 +3224,7 @@ def _openai_include_for_policy(policy: dict | None = None) -> list[str]:
 
 def _openai_tools_for_request(tools: list[dict] | None, policy: dict | None = None) -> list[dict] | None:
     merged = []
-    converted = _openai_tools_from_anthropic(tools) or []
+    converted = _openai_tools_from_hira_tools(tools) or []
     merged.extend(converted)
     merged.extend(_openai_native_tools_for_policy(policy))
     return merged or None
@@ -3499,15 +3452,10 @@ def _openai_value_to_plain(value, depth: int = 3):
 
 
 OPENAI_USAGE_CONFIG_KEY = "openai_usage_summary_v1"
-DEEPSEEK_USAGE_CONFIG_KEY = "deepseek_usage_summary_v1"
 _OPENAI_USAGE_SUMMARY = {"version": 1, "days": {}}
 _OPENAI_USAGE_SUMMARY_LOADED = False
 _OPENAI_USAGE_LAST_PERSISTED_AT = 0.0
 _OPENAI_USAGE_LOCK = threading.Lock()
-_DEEPSEEK_USAGE_SUMMARY = {"version": 1, "days": {}}
-_DEEPSEEK_USAGE_SUMMARY_LOADED = False
-_DEEPSEEK_USAGE_LAST_PERSISTED_AT = 0.0
-_DEEPSEEK_USAGE_LOCK = threading.Lock()
 
 _OPENAI_TEXT_PRICE_PER_MILLION = [
     ("gpt-5.5", {"input": 5.00, "cached_input": 0.50, "output": 30.00}),
@@ -3520,23 +3468,11 @@ _OPENAI_NATIVE_TOOL_ESTIMATES = {
     "file_search": 0.0025,
     "code_interpreter": 0.0300,
 }
-_DEEPSEEK_TEXT_PRICE_PER_MILLION = [
-    ("deepseek-v4-pro", {"input": 0.435, "cached_input": 0.003625, "output": 0.87}),
-    ("deepseek-v4-flash", {"input": 0.14, "cached_input": 0.0028, "output": 0.28}),
-]
 
 
 def _openai_price_for_model(model: str = "") -> dict:
     clean = str(model or "").lower()
     for prefix, price in _OPENAI_TEXT_PRICE_PER_MILLION:
-        if clean.startswith(prefix):
-            return price
-    return {"input": 0.0, "cached_input": 0.0, "output": 0.0}
-
-
-def _deepseek_price_for_model(model: str = "") -> dict:
-    clean = str(model or "").lower()
-    for prefix, price in _DEEPSEEK_TEXT_PRICE_PER_MILLION:
         if clean.startswith(prefix):
             return price
     return {"input": 0.0, "cached_input": 0.0, "output": 0.0}
@@ -3628,24 +3564,6 @@ def _openai_usd_to_sgd(amount: float) -> float:
     return round(float(amount or 0.0) * OPENAI_USAGE_SGD_PER_USD, 8)
 
 
-def _deepseek_estimated_cost_usd(model: str, usage: dict) -> float:
-    price = _deepseek_price_for_model(model)
-    cached = int(usage.get("cached_input_tokens", 0) or 0)
-    input_tokens = int(usage.get("input_tokens", 0) or 0)
-    billable_input = max(0, input_tokens - cached)
-    output_tokens = int(usage.get("output_tokens", 0) or 0)
-    estimate = (
-        billable_input * price["input"]
-        + cached * price["cached_input"]
-        + output_tokens * price["output"]
-    ) / 1_000_000
-    return round(estimate, 8)
-
-
-def _deepseek_usd_to_sgd(amount: float) -> float:
-    return round(float(amount or 0.0) * DEEPSEEK_USAGE_SGD_PER_USD, 8)
-
-
 def _openai_usage_empty_bucket() -> dict:
     return {
         "requests": 0,
@@ -3712,33 +3630,6 @@ def _openai_persist_usage_summary_locked(now_ts: float) -> None:
         logger.debug("OpenAI usage summary persist skipped: %s", exc)
 
 
-def _deepseek_load_usage_summary_locked() -> None:
-    global _DEEPSEEK_USAGE_SUMMARY, _DEEPSEEK_USAGE_SUMMARY_LOADED
-    if _DEEPSEEK_USAGE_SUMMARY_LOADED:
-        return
-    _DEEPSEEK_USAGE_SUMMARY_LOADED = True
-    try:
-        raw = gs.get_config(DEEPSEEK_USAGE_CONFIG_KEY) or ""
-        parsed = json.loads(raw) if raw else {}
-        if isinstance(parsed, dict) and isinstance(parsed.get("days"), dict):
-            _DEEPSEEK_USAGE_SUMMARY = {"version": 1, "days": parsed.get("days") or {}}
-    except Exception as exc:
-        logger.debug("DeepSeek usage summary load skipped: %s", exc)
-
-
-def _deepseek_persist_usage_summary_locked(now_ts: float) -> None:
-    global _DEEPSEEK_USAGE_LAST_PERSISTED_AT
-    if not (DEEPSEEK_USAGE_PERSIST and google_ok()):
-        return
-    if DEEPSEEK_USAGE_PERSIST_INTERVAL_SECONDS and now_ts - _DEEPSEEK_USAGE_LAST_PERSISTED_AT < DEEPSEEK_USAGE_PERSIST_INTERVAL_SECONDS:
-        return
-    try:
-        gs.set_config(DEEPSEEK_USAGE_CONFIG_KEY, json.dumps(_DEEPSEEK_USAGE_SUMMARY, ensure_ascii=False))
-        _DEEPSEEK_USAGE_LAST_PERSISTED_AT = now_ts
-    except Exception as exc:
-        logger.debug("DeepSeek usage summary persist skipped: %s", exc)
-
-
 def _record_openai_usage(resp, kwargs: dict, stream: bool = False) -> dict:
     if not OPENAI_USAGE_TRACKING:
         return {}
@@ -3784,60 +3675,6 @@ def _record_openai_usage(resp, kwargs: dict, stream: bool = False) -> dict:
         _openai_persist_usage_summary_locked(now.timestamp())
     logger.info(
         "OpenAI usage tracked: model=%s tier=%s input=%s cached=%s output=%s est=S$%.5f",
-        model,
-        tier,
-        usage.get("input_tokens", 0),
-        usage.get("cached_input_tokens", 0),
-        usage.get("output_tokens", 0),
-        estimated_sgd,
-    )
-    return record
-
-
-def _record_deepseek_usage(resp, model: str = "", tier: str = "unknown", stream: bool = False) -> dict:
-    if not (LLM_PROVIDER == "deepseek" and DEEPSEEK_USAGE_TRACKING):
-        return {}
-    usage = _openai_usage_from_response(resp)
-    if not any(usage.get(key, 0) for key in ("input_tokens", "output_tokens", "total_tokens")):
-        return {}
-    model = str(model or getattr(resp, "model", "") or "unknown")
-    tier = str(tier or "unknown")
-    estimated_usd = _deepseek_estimated_cost_usd(model, usage)
-    estimated_sgd = _deepseek_usd_to_sgd(estimated_usd)
-    now = datetime.now(SGT)
-    day_key = now.strftime("%Y-%m-%d")
-    record = {
-        "at": now.isoformat(),
-        "provider": "deepseek",
-        "model": model,
-        "tier": tier,
-        "stream": bool(stream),
-        "estimated_sgd": estimated_sgd,
-        "sgd_per_usd": DEEPSEEK_USAGE_SGD_PER_USD,
-        "usage": usage,
-        "native_tools": {},
-    }
-    with _DEEPSEEK_USAGE_LOCK:
-        _deepseek_load_usage_summary_locked()
-        days = _DEEPSEEK_USAGE_SUMMARY.setdefault("days", {})
-        day = days.setdefault(day_key, _openai_usage_empty_bucket())
-        _openai_usage_add_metrics(day, usage, estimated_sgd)
-        models = day.setdefault("models", {})
-        model_bucket = models.setdefault(model, _openai_usage_empty_bucket())
-        _openai_usage_add_metrics(model_bucket, usage, estimated_sgd)
-        tiers = day.setdefault("tiers", {})
-        tier_bucket = tiers.setdefault(tier, _openai_usage_empty_bucket())
-        _openai_usage_add_metrics(tier_bucket, usage, estimated_sgd)
-
-        keep_after = (now - timedelta(days=45)).strftime("%Y-%m-%d")
-        for key in list(days.keys()):
-            if str(key) < keep_after:
-                days.pop(key, None)
-        _DEEPSEEK_USAGE_SUMMARY["updated_at"] = record["at"]
-        _DEEPSEEK_USAGE_SUMMARY["last_request"] = record
-        _deepseek_persist_usage_summary_locked(now.timestamp())
-    logger.info(
-        "DeepSeek usage tracked: model=%s tier=%s input=%s cached=%s output=%s est=S$%.5f",
         model,
         tier,
         usage.get("input_tokens", 0),
@@ -3903,37 +3740,7 @@ def openai_usage_status(days: int = 7) -> dict:
     }
 
 
-def deepseek_usage_status(days: int = 7) -> dict:
-    current = datetime.now(SGT)
-    with _DEEPSEEK_USAGE_LOCK:
-        _deepseek_load_usage_summary_locked()
-        all_days = dict(_DEEPSEEK_USAGE_SUMMARY.get("days") or {})
-        last_request = dict(_DEEPSEEK_USAGE_SUMMARY.get("last_request") or {})
-    today_key = current.strftime("%Y-%m-%d")
-    aggregate = _openai_usage_empty_bucket()
-    for offset in range(max(1, int(days or 7))):
-        day = (current - timedelta(days=offset)).strftime("%Y-%m-%d")
-        bucket = all_days.get(day) or {}
-        _openai_usage_merge_bucket(aggregate, bucket)
-    return {
-        "provider": "deepseek",
-        "tracking": "enabled" if DEEPSEEK_USAGE_TRACKING else "disabled",
-        "persist": "enabled" if DEEPSEEK_USAGE_PERSIST else "disabled",
-        "currency": "SGD",
-        "sgd_per_usd": DEEPSEEK_USAGE_SGD_PER_USD,
-        "window_days": max(1, int(days or 7)),
-        "today": _openai_bucket_public(all_days.get(today_key)),
-        "last_7d": _openai_bucket_public(aggregate),
-        "models_today": _openai_top_buckets((all_days.get(today_key) or {}).get("models") or {}),
-        "tiers_today": _openai_top_buckets((all_days.get(today_key) or {}).get("tiers") or {}),
-        "last_request": last_request,
-        "note": "Estimated in SGD from DeepSeek API usage fields and current official DeepSeek public token pricing; check DeepSeek billing for the source of truth.",
-    }
-
-
 def api_usage_status(days: int = 7) -> dict:
-    if LLM_PROVIDER == "deepseek":
-        return deepseek_usage_status(days=days)
     usage = openai_usage_status(days=days)
     usage["provider"] = "openai"
     return usage
@@ -4168,172 +3975,6 @@ async def _openai_create_response_async(
     return await _openai_create_with_retry_async(kwargs)
 
 
-def _deepseek_openai_fallback_enabled() -> bool:
-    return bool(LLM_PROVIDER == "deepseek" and DEEPSEEK_OPENAI_FALLBACK and OPENAI_API_KEY)
-
-
-def _anthropic_compatible_provider_label() -> str:
-    return "DeepSeek" if LLM_PROVIDER == "deepseek" else "Claude"
-
-
-def _deepseek_uses_thinking(tier: str = "", policy: dict | None = None) -> bool:
-    if LLM_PROVIDER != "deepseek":
-        return False
-    if DEEPSEEK_THINKING_MODE == "enabled":
-        return True
-    if DEEPSEEK_THINKING_MODE == "disabled":
-        return False
-    effective_tier = str(tier or (policy or {}).get("tier") or "").lower()
-    return effective_tier not in {"quick", "router", "structured", "text"}
-
-
-def _deepseek_effort_for_policy(policy: dict | None = None) -> str:
-    policy = policy or {}
-    effort = str(policy.get("reasoning_effort") or "").lower()
-    if str(policy.get("tier") or "").lower() == "deep" or effort in {"xhigh", "max"}:
-        return "max"
-    return "high"
-
-
-def _deepseek_anthropic_request_options(policy: dict | None = None, tier: str = "") -> dict:
-    if LLM_PROVIDER != "deepseek":
-        return {}
-    if not _deepseek_uses_thinking(tier=tier, policy=policy):
-        return {"thinking": {"type": "disabled"}}
-    return {
-        "thinking": {"type": "enabled"},
-        "output_config": {"effort": _deepseek_effort_for_policy(policy)},
-    }
-
-
-def _deepseek_request_shape_error(exc: Exception) -> bool:
-    status = getattr(exc, "status_code", None)
-    if status in {400, 422}:
-        return True
-    message = str(exc or "").lower()
-    return any(token in message for token in (
-        "400",
-        "422",
-        "bad request",
-        "invalid",
-        "unsupported",
-        "unknown parameter",
-        "unexpected keyword",
-        "thinking",
-        "output_config",
-        "tool",
-        "schema",
-    ))
-
-
-def _anthropic_text_from_message(resp) -> str:
-    for block in getattr(resp, "content", []) or []:
-        if getattr(block, "type", None) == "text":
-            return str(getattr(block, "text", "") or "")
-    first = next(iter(getattr(resp, "content", []) or []), None)
-    return str(getattr(first, "text", "") or "")
-
-
-_DEEPSEEK_UNSUPPORTED_MESSAGE_BLOCKS = {
-    "image",
-    "document",
-    "search_result",
-    "redacted_thinking",
-    "server_tool_use",
-    "web_search_tool_result",
-    "code_execution_tool_result",
-    "mcp_tool_use",
-    "mcp_tool_result",
-    "container_upload",
-}
-
-
-def _deepseek_unsupported_message_blocks(messages: list[dict]) -> list[str]:
-    if LLM_PROVIDER != "deepseek":
-        return []
-    seen: list[str] = []
-    for message in messages or []:
-        content = message.get("content", "") if isinstance(message, dict) else ""
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            block_type = getattr(block, "type", None) if not isinstance(block, dict) else block.get("type")
-            if block_type in _DEEPSEEK_UNSUPPORTED_MESSAGE_BLOCKS and block_type not in seen:
-                seen.append(str(block_type))
-    return seen
-
-
-def _deepseek_unsupported_message_reply(blocks: list[str]) -> str:
-    label = ", ".join(blocks[:3]) or "non-text"
-    return (
-        f"DeepSeek is active, but its Anthropic-compatible API path in H.I.R.A does not support {label} message blocks. "
-        "Send the extracted text/OCR, or switch this upload/vision turn to a vision-capable provider. I'm not going to make DeepSeek look broken by feeding it an input it cannot accept."
-    )
-
-
-async def _openai_extract_image_message_for_deepseek(content: list[dict]) -> str:
-    text_parts = [
-        str(block.get("text", "") or "").strip()
-        for block in content
-        if isinstance(block, dict) and block.get("type") == "text" and str(block.get("text", "") or "").strip()
-    ]
-    prompt = (
-        "Extract the useful information from this uploaded image for H.I.R.A. "
-        "Prioritise visible text/OCR, tables, dates, times, names, locations, deadlines, action items, and schedule entries. "
-        "Do not guess hidden or unreadable details; mark uncertainty clearly."
-    )
-    if text_parts:
-        prompt = f"{prompt}\n\nUser note and surrounding instructions:\n" + "\n\n".join(text_parts)
-    image_blocks = [
-        block
-        for block in content
-        if isinstance(block, dict) and block.get("type") == "image"
-    ]
-    resp = await _openai_fallback_text_async(
-        model=OPENAI_VISION_MODEL,
-        max_tokens=1800,
-        system="You are a precise vision/OCR extraction pass. Return concise, structured observations only.",
-        messages=[{"role": "user", "content": image_blocks + [{"type": "text", "text": prompt}]}],
-    )
-    return resp.strip()
-
-
-async def _deepseek_messages_with_openai_vision(messages: list[dict]) -> list[dict]:
-    if LLM_PROVIDER != "deepseek" or not OPENAI_API_KEY:
-        return messages
-    transformed: list[dict] = []
-    changed = False
-    for message in messages or []:
-        if not isinstance(message, dict):
-            transformed.append(message)
-            continue
-        content = message.get("content", "")
-        if not (
-            isinstance(content, list)
-            and any(isinstance(block, dict) and block.get("type") == "image" for block in content)
-        ):
-            transformed.append(message)
-            continue
-        vision_text = await _openai_extract_image_message_for_deepseek(content)
-        text_parts = [
-            str(block.get("text", "") or "").strip()
-            for block in content
-            if isinstance(block, dict) and block.get("type") == "text" and str(block.get("text", "") or "").strip()
-        ]
-        original_text = "\n".join(text_parts) if text_parts else "(none)"
-        replacement = (
-            "Image upload was extracted by the configured OpenAI vision handoff because DeepSeek's "
-            "Anthropic-compatible API does not accept raw image blocks in H.I.R.A.\n\n"
-            f"Original user text:\n{original_text}\n\n"
-            f"Vision/OCR extraction:\n{vision_text or '(no readable content extracted)'}"
-        )
-        updated = dict(message)
-        updated["content"] = replacement
-        transformed.append(updated)
-        changed = True
-    return transformed if changed else messages
-
-
 async def _openai_fallback_text_async(
     model: str,
     max_tokens: int,
@@ -4349,66 +3990,16 @@ async def _openai_fallback_text_async(
     return _openai_text_from_response(resp)
 
 
-async def _deepseek_text_only_recovery_reply(messages: list[dict], max_tokens: int = 650) -> str:
-    policy = model_policy_for_messages(messages)
-    model = str(policy.get("model") or _agentic_model_for_messages(messages))
-    clean_messages = []
-    for message in (messages or [])[-6:]:
-        if not isinstance(message, dict):
-            continue
-        content = message.get("content", "")
-        if isinstance(content, list):
-            content = _message_text_for_routing([message])
-        clean_messages.append({"role": message.get("role", "user"), "content": str(content or "")})
-    return await _llm_text_async(
-        model=model,
-        max_tokens=min(max_tokens, 900),
-        system=(
-            f"{CACHED_SYSTEM_PROMPT()}\n\n"
-            "Recovery mode: the richer DeepSeek tool/stream path failed before any action happened. "
-            "Answer this turn directly from the visible text only. Keep H.I.R.A's discerning chief-of-staff voice: "
-            "be concise, candid, and useful; do not claim tool access or live checks."
-        ),
-        messages=clean_messages or [{"role": "user", "content": _message_text_for_routing(messages)}],
-    )
-
-
 def _llm_text(model: str, max_tokens: int, messages: list[dict], system: str | None = None) -> str:
-    if LLM_PROVIDER == "openai":
-        resp = _openai_create_response(model=model, max_tokens=max_tokens, messages=messages, system=system)
-        return _openai_text_from_response(resp)
-    policy = model_policy_for_messages(messages)
-    kwargs = dict(
-        model=model,
-        max_tokens=max_tokens,
-        messages=messages,
-    )
-    if system:
-        kwargs["system"] = system
-    kwargs.update(_deepseek_anthropic_request_options(policy, tier="text"))
-    resp = claude.messages.create(**kwargs)
-    _record_deepseek_usage(resp, model=model, tier="text", stream=False)
-    return _anthropic_text_from_message(resp)
+    resp = _openai_create_response(model=model, max_tokens=max_tokens, messages=messages, system=system)
+    return _openai_text_from_response(resp)
 
 
 async def _llm_text_async(model: str, max_tokens: int, messages: list[dict], system: str | None = None) -> str:
-    if LLM_PROVIDER == "openai":
-        resp = await _openai_create_response_async(model=model, max_tokens=max_tokens, messages=messages, system=system)
-        return _openai_text_from_response(resp)
-    policy = model_policy_for_messages(messages)
-    kwargs = dict(
-        model=model,
-        max_tokens=max_tokens,
-        messages=messages,
-    )
-    if system:
-        kwargs["system"] = system
-    kwargs.update(_deepseek_anthropic_request_options(policy, tier="text"))
-    resp = await async_claude.messages.create(**kwargs)
-    _record_deepseek_usage(resp, model=model, tier="text", stream=False)
-    return _anthropic_text_from_message(resp)
+    resp = await _openai_create_response_async(model=model, max_tokens=max_tokens, messages=messages, system=system)
+    return _openai_text_from_response(resp)
 
-# Claude tool definition for web search
+# Tool definition for web search
 SEARCH_TOOL = {
     "name": "web_search",
     "description": "Search the web for current information — news, prices, events, recent developments. Use when the question needs up-to-date information.",
@@ -4917,7 +4508,7 @@ LIVERPOOL_BRIEF_TOOL = {
 
 F1_BRIEF_TOOL = {
     "name": "get_f1_brief",
-    "description": "Fetch a structured current Formula 1 brief: standings, latest race results, Mercedes/Russell/Antonelli focus, Hamilton watch, and team news/upgrades. Use for F1, Formula 1, Grand Prix, Mercedes, Kimi Antonelli, George Russell, Lewis Hamilton, qualifying, race results, and championship questions.",
+    "description": "Fetch a structured current Formula 1 brief: official calendar window, standings, latest race results, Mercedes/Russell/Antonelli focus, Hamilton watch, session timings, and team news/upgrades. Use for F1, Formula 1, Grand Prix, Monaco, Mercedes, Kimi Antonelli, George Russell, Lewis Hamilton, practice, qualifying, race results, race weekend timings, and championship questions.",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -7855,8 +7446,6 @@ DIGEST_TOPIC_RULES = {
             "chatgpt",
             "agent",
             "codex",
-            "claude",
-            "anthropic",
             "kimi",
             "moonshot",
             "gemini",
@@ -7989,14 +7578,12 @@ FAVOURITE_NEWS_TOPIC_RULES = [
     {
         "key": "ai",
         "label": "AI Tools",
-        "query": "OpenAI Codex Claude Anthropic Kimi Moonshot Gemini AI tools latest model release agent",
+        "query": "OpenAI Codex Kimi Moonshot Gemini AI tools latest model release agent",
         "patterns": (
             r"\bai tools?\b",
             r"\bopenai\b",
             r"\bchatgpt\b",
             r"\bcodex\b",
-            r"\bclaude\b",
-            r"\banthropic\b",
             r"\bkimi\b",
             r"\bmoonshot\b",
             r"\bllm\b",
@@ -8194,8 +7781,6 @@ DIGEST_SOCIAL_TOPIC_TERMS = (
     "ai",
     "openai",
     "codex",
-    "claude",
-    "anthropic",
     "gemini",
     "android",
     "ios",
@@ -8256,11 +7841,6 @@ FREE_DIGEST_FEEDS = [
         "match": ("openai", "ai tools", "codex", "chatgpt"),
         "source": "OpenAI News",
         "url": "https://openai.com/news/rss.xml",
-    },
-    {
-        "match": ("anthropic", "claude", "ai tools"),
-        "source": "Anthropic News",
-        "url": "https://www.anthropic.com/news/rss.xml",
     },
     {
         "match": ("ai", "llm", "local llm", "model", "gemini", "kimi"),
@@ -8407,7 +7987,7 @@ def _digest_topic_rule(label: str) -> dict:
         return DIGEST_TOPIC_RULES["education"]
     if "design" in clean or "ui/ux" in clean or "ux" in clean:
         return DIGEST_TOPIC_RULES["design"]
-    if "ai" in clean or "codex" in clean or "claude" in clean or "kimi" in clean:
+    if "ai" in clean or "codex" in clean or "kimi" in clean:
         return DIGEST_TOPIC_RULES["ai"]
     return {}
 
@@ -10997,7 +10577,7 @@ def _due_break_aware_checkins(now: datetime) -> list[dict]:
                 break
     return due
 
-def _json_from_claude_text(raw: str):
+def _json_from_llm_text(raw: str):
     clean = raw.strip().replace("```json", "").replace("```", "").strip()
     start = min((clean.find(c) for c in ["{", "["] if c in clean), default=0)
     return json.loads(clean[start:])
@@ -11011,21 +10591,19 @@ def _llm_json_schema(
     messages: list[dict],
     system: str | None = None,
 ) -> dict:
-    if LLM_PROVIDER == "openai":
-        resp = _openai_create_response(
-            model=model,
-            max_tokens=max_tokens,
-            messages=messages,
-            system=system,
-            text_format={
-                "type": "json_schema",
-                "name": name,
-                "schema": schema,
-                "strict": True,
-            },
-        )
-        return json.loads(_openai_text_from_response(resp))
-    return _json_from_claude_text(_llm_text(model=model, max_tokens=max_tokens, messages=messages, system=system))
+    resp = _openai_create_response(
+        model=model,
+        max_tokens=max_tokens,
+        messages=messages,
+        system=system,
+        text_format={
+            "type": "json_schema",
+            "name": name,
+            "schema": schema,
+            "strict": True,
+        },
+    )
+    return json.loads(_openai_text_from_response(resp))
 
 
 DOCUMENT_SPEC_SCHEMA = {
@@ -11831,7 +11409,8 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
         "f1", "formula 1", "grand prix", "qualifying", "race result",
         "standings", "driver standings", "constructor standings", "lineup",
         "line-up", "teams", "drivers", "mercedes", "ferrari", "mclaren",
-        "red bull", "kimi", "antonelli", "russell", "hamilton"
+        "red bull", "kimi", "antonelli", "russell", "hamilton", "monaco",
+        "practice", "session timing", "session timings", "race weekend"
     ]):
         return "get_f1_brief"
 
@@ -11945,9 +11524,10 @@ def _forced_tool_for_current_turn(messages: list[dict], tools: list[dict]) -> st
     if not isinstance(content, str):
         return None
     available = {tool["name"] for tool in tools}
+    content = _strip_injected_chat_context(content)
     clean = " ".join(content.lower().split())
     recent_context = "\n".join(
-        str(item.get("content", ""))[:600]
+        _strip_injected_chat_context(str(item.get("content", "")))[:600]
         for item in messages[-6:-1]
         if isinstance(item.get("content"), str)
     ).lower()
@@ -13476,7 +13056,7 @@ Rules: the current year is 2026 — ALWAYS use 2026 if no year is mentioned, 24h
         start = min((raw.find(c) for c in ["{","["] if c in raw), default=0)
         raw = raw[start:]
         event_data = json.loads(raw)
-        # Handle if Claude returned a list instead of a dict
+        # Handle if the model returned a list instead of a dict.
         if isinstance(event_data, list):
             event_data = event_data[0]
         start_dt = SGT.localize(datetime.strptime(f"{event_data['date']} {event_data['start_time']}", "%Y-%m-%d %H:%M"))
@@ -13977,43 +13557,32 @@ def _llm_provider_status_reply(messages: list[dict]) -> str | None:
         return None
     asks_feeling = bool(re.search(r"\b(?:how\s+(?:are|r)\s+(?:you|u)|how'?s\s+it\s+feeling|feel(?:ing)?|vibe)\b", text))
     asks_provider = bool(re.search(r"\b(provider|llm|model|engine|backend|api)\b", text))
-    asks_openai_anthropic = bool(re.search(r"\b(openai|anthropic|claude|gpt|deepseek)\b", text))
+    asks_openai_stack = bool(re.search(r"\b(openai|gpt)\b", text))
     asks_identity = bool(re.search(r"\b(is|are|what|what'?s|whats|which|who|using|running|powered|backing|underneath|behind|current)\b", text))
     explicit_status_question = bool(
         re.search(r"\b(?:what|what'?s|whats|which)\s+(?:u|you|ur|your|is|are|current|the|this|h\.?i\.?r\.?a\.?)?\s*(?:current\s+)?(?:provider|llm|model|engine|backend|api)(?:\s*/\s*(?:provider|llm|model|engine|backend|api))?\b", text)
         or re.search(r"\b(?:current|active)\s+(?:provider|llm|model|engine|backend|api)(?:\s*/\s*(?:provider|llm|model|engine|backend|api))?\b", text)
         or re.search(r"\b(?:provider|llm|model|engine|backend|api)\s+(?:are|r|is)\s+(?:you|u|it|h\.?i\.?r\.?a\.?)\s+(?:using|running|on|routed|backed)", text)
-        or re.search(r"\b(?:are|r|is)\s+(?:you|u|it|h\.?i\.?r\.?a\.?)\s+(?:using|running|on|routed|backed).*?\b(?:openai|anthropic|claude|gpt|deepseek)\b", text)
-        or re.search(r"\bis\s+it\s+(?:openai|anthropic|claude|gpt|deepseek)\b", text)
+        or re.search(r"\b(?:are|r|is)\s+(?:you|u|it|h\.?i\.?r\.?a\.?)\s+(?:using|running|on|routed|backed).*?\b(?:openai|gpt)\b", text)
+        or re.search(r"\bis\s+it\s+(?:openai|gpt)\b", text)
     )
     if asks_feeling and not explicit_status_question:
         return None
-    if not (asks_identity and (asks_provider or asks_openai_anthropic)):
+    if not (asks_identity and (asks_provider or asks_openai_stack)):
         return None
 
-    provider_label = {
-        "openai": "OpenAI",
-        "deepseek": "DeepSeek",
-    }.get(LLM_PROVIDER, "Anthropic")
+    provider_label = "OpenAI"
     model = _agentic_model_for_messages(messages)
     vector_ids = _openai_file_search_vector_store_ids()
-    native_file_search = "enabled" if vector_ids and LLM_PROVIDER == "openai" else "not configured"
+    native_file_search = "enabled" if vector_ids else "not configured"
     vector_memory = "enabled" if _openai_vector_sync_ready("memory") else "not configured"
     vector_uploads = "enabled" if _openai_vector_sync_ready("upload") else "not configured"
-    action_planner = "enabled" if OPENAI_ACTION_PLANNER_ENABLED and LLM_PROVIDER == "openai" else "disabled"
-    deepseek_runtime = ""
-    if LLM_PROVIDER == "deepseek":
-        thinking = "auto" if DEEPSEEK_THINKING_MODE == "auto" else DEEPSEEK_THINKING_MODE
-        fallback = "enabled" if _deepseek_openai_fallback_enabled() else "disabled"
-        deepseek_runtime = (
-            f" DeepSeek endpoint: `{DEEPSEEK_BASE_URL}`. "
-            f"Thinking mode: {thinking}. OpenAI fallback: {fallback}."
-        )
+    action_planner = "enabled" if OPENAI_ACTION_PLANNER_ENABLED else "disabled"
     return (
         f"I'm currently routed through {provider_label} "
         f"(`HIRA_LLM_PROVIDER={LLM_PROVIDER}`), using `{model}` for this turn.\n\n"
         f"OpenAI vector memory: {vector_memory}. Native file search: {native_file_search}. "
-        f"Uploaded-file vector sync: {vector_uploads}. Action planner: {action_planner}.{deepseek_runtime}"
+        f"Uploaded-file vector sync: {vector_uploads}. Action planner: {action_planner}."
     )
 
 
@@ -14165,7 +13734,7 @@ async def _run_agentic_openai(messages, max_tokens=2048, tools=None, openai_stat
     return strip_ai_citation_markers(_correct_weekday_date_mismatches(guarded_reply))
 
 
-async def _run_agentic_claude(
+async def _run_agentic_chat(
     messages,
     max_tokens=2048,
     tools=None,
@@ -14174,130 +13743,12 @@ async def _run_agentic_claude(
 ):
     token = _TOOL_DIRECT_USER_TEXT.set(_tool_direct_user_text_from_messages(messages, direct_user_text))
     try:
-        return await _run_agentic_claude_impl(
-            messages,
-            max_tokens=max_tokens,
-            tools=tools,
-            openai_state_key=openai_state_key,
-        )
+        provider_status = _llm_provider_status_reply(messages)
+        if provider_status:
+            return provider_status
+        return await _run_agentic_openai(messages, max_tokens=max_tokens, tools=tools, openai_state_key=openai_state_key)
     finally:
         _TOOL_DIRECT_USER_TEXT.reset(token)
-
-
-async def _run_agentic_claude_impl(messages, max_tokens=2048, tools=None, openai_state_key: str | None = None):
-    provider_status = _llm_provider_status_reply(messages)
-    if provider_status:
-        return provider_status
-
-    if LLM_PROVIDER == "openai":
-        return await _run_agentic_openai(messages, max_tokens=max_tokens, tools=tools, openai_state_key=openai_state_key)
-
-    unsupported_blocks = _deepseek_unsupported_message_blocks(messages)
-    if "image" in unsupported_blocks and OPENAI_API_KEY:
-        try:
-            messages = await _deepseek_messages_with_openai_vision(messages)
-            unsupported_blocks = _deepseek_unsupported_message_blocks(messages)
-        except Exception as exc:
-            logger.warning("OpenAI vision handoff for DeepSeek failed: %s", exc)
-    if unsupported_blocks:
-        return _deepseek_unsupported_message_reply(unsupported_blocks)
-
-    tools = tools or _core_tools()
-    reply_text = ""
-    max_iterations = 8
-    all_tool_results: list[dict] = []
-
-    for _ in range(max_iterations):
-        policy = model_policy_for_messages(messages)
-        forced_tool = _forced_tool_for_current_turn(messages, tools)
-        tool_choice = {"type": "tool", "name": forced_tool} if forced_tool else None
-        base_kwargs = {}
-        if tool_choice:
-            base_kwargs["tool_choice"] = tool_choice
-        base_kwargs.update(_deepseek_anthropic_request_options(policy, tier=str(policy.get("tier") or "agentic")))
-        model = str(policy.get("model") or _agentic_model_for_messages(messages))
-
-        def create_message(request_tools, request_kwargs):
-            payload = dict(
-                model=model,
-                max_tokens=max_tokens,
-                system=CACHED_SYSTEM_PROMPT(),
-                messages=messages,
-            )
-            if request_tools:
-                payload["tools"] = request_tools
-            payload.update(request_kwargs)
-            return claude.messages.create(**payload)
-
-        try:
-            resp = create_message(tools, base_kwargs)
-            _record_deepseek_usage(resp, model=model, tier=policy.get("tier", "agentic"), stream=False)
-        except Exception as exc:
-            fallback = _tool_action_fallback_reply(all_tool_results)
-            if fallback:
-                logger.warning("%s follow-up failed after tool actions; returning tool-result fallback: %s", _anthropic_compatible_provider_label(), exc)
-                guarded = _memory_tool_failure_guardrail(fallback, all_tool_results)
-                guarded = _backend_claim_guardrail(guarded, all_tool_results)
-                guarded = _cca_sheet_user_burden_guardrail(guarded, all_tool_results)
-                return _correct_weekday_date_mismatches(guarded)
-            if not (LLM_PROVIDER == "deepseek" and _deepseek_request_shape_error(exc)):
-                raise
-            degraded_attempts = [
-                ("no_thinking", tools, {"thinking": {"type": "disabled"}}),
-                ("no_tools", None, {"thinking": {"type": "disabled"}}),
-            ]
-            for reason, attempt_tools, attempt_kwargs in degraded_attempts:
-                if reason == "no_tools" and forced_tool:
-                    continue
-                try:
-                    logger.warning("DeepSeek agentic request failed; retrying with %s request shape: %s", reason, exc)
-                    resp = create_message(attempt_tools, attempt_kwargs)
-                    _record_deepseek_usage(resp, model=model, tier=policy.get("tier", "agentic"), stream=False)
-                    break
-                except Exception as retry_exc:
-                    exc = retry_exc
-            else:
-                raise exc
-
-        if resp.stop_reason != "tool_use":
-            segment = await _run_forced_weather_fallback(forced_tool)
-            if not segment:
-                segment = next((b.text for b in resp.content if b.type == "text"), "")
-            reply_text = f"{reply_text}{segment}"
-            if resp.stop_reason == "max_tokens":
-                messages.append({"role": "assistant", "content": resp.content})
-                messages.append({
-                    "role": "user",
-                    "content": "Continue exactly where you stopped. Finish the response completely without restarting or summarising earlier text.",
-                })
-                logger.warning("%s hit max_tokens in non-streaming chat; requesting continuation.", _anthropic_compatible_provider_label())
-                continue
-            break
-
-        messages.append({"role": "assistant", "content": resp.content})
-        tool_blocks = [block for block in resp.content if block.type == "tool_use"]
-
-        async def run_tool(block):
-            tool_input = _normalise_memory_tool_input(block.input, messages) if block.name == "remember_user_info" else block.input
-            logger.info("Tool call: %s %s", block.name, _tool_log_input_summary(tool_input))
-            result = await _execute_tool_offloop(block.name, tool_input)
-            return {
-                "type": "tool_result",
-                "tool_use_id": block.id,
-                "content": result
-            }
-
-        tool_results = await asyncio.gather(*(run_tool(block) for block in tool_blocks))
-        all_tool_results.extend(tool_results)
-        messages.append({"role": "user", "content": tool_results})
-        guarded = _source_contract_guardrail(messages, tool_results)
-        if guarded:
-            return guarded
-
-    guarded_reply = _memory_tool_failure_guardrail(reply_text or "Done.", all_tool_results)
-    guarded_reply = _backend_claim_guardrail(guarded_reply, all_tool_results)
-    guarded_reply = _cca_sheet_user_burden_guardrail(guarded_reply, all_tool_results)
-    return _correct_weekday_date_mismatches(guarded_reply)
 
 def _looks_tool_heavy(text: str) -> bool:
     if _is_casual_sports_lifestyle_text(text):
@@ -14337,8 +13788,9 @@ def _obvious_quick_chat(text: str) -> bool:
         "got it", "understood", "sure", "alright", "morning", "hi", "hello", "hey",
         "good morning", "gm", "whats up", "what's up", "sup", "wassup", "what up", "what is up",
         "whats good", "what's good", "what is good", "hows it going", "how's it going",
-        "how are things",
-    } or addressed in {"morning", "good morning", "gm"}:
+        "how are things", "how are you", "how are u", "how r you", "how you doing",
+        "how are you doing", "hows life", "how's life",
+    } or addressed in {"morning", "good morning", "gm", "how are you", "how are u", "how r you"}:
         return True
     return len(clean.split()) <= 5 and bool(re.search(r"\b(thanks?|ok(?:ay)?|yes|no|hi|hello|hey)\b", clean))
 
@@ -14412,6 +13864,8 @@ def _is_contextual_followup_reply(text: str) -> bool:
     if clean in _CONTEXTUAL_FOLLOWUP_REPLIES:
         return True
     words = clean.split()
+    if len(words) <= 12 and re.match(r"^(?:yes|yep|yeah|sure|ok(?:ay)?|please|pls|go ahead)\b", clean):
+        return True
     return len(words) <= 5 and bool(re.search(r"\b(?:yes|ok(?:ay)?|sure|please|pls|that|this|same|again|proceed|settle|sort|handle|run)\b", clean))
 
 def _latest_contextual_offer(recent_context: str = "") -> str:
@@ -14546,7 +14000,7 @@ def _contextual_followup_tool_from_context(
 
     checks = [
         ("get_liverpool_brief", (r"\b(?:liverpool|lfc|epl|premier league|champions league|qualification|qualify|standings?|table|odds|probabilit(?:y|ies)|chance|chances)\b",)),
-        ("get_f1_brief", (r"\b(?:f1|formula 1|grand prix|driver standings|constructor standings|qualifying|race result|mercedes|ferrari|mclaren|red bull)\b",)),
+        ("get_f1_brief", (r"\b(?:f1|formula 1|grand prix|monaco|driver standings|constructor standings|qualifying|practice|session timings?|race weekend|race result|mercedes|ferrari|mclaren|red bull)\b",)),
         ("get_nea_weather", (r"\b(?:weather|forecast|temperature|temp|rain|raining|showers?|haze|psi|pm2\.5|air quality|nea|mss)\b",)),
         ("get_muis_prayer_times", (r"\b(?:prayer|prayers|pray|solat|salah|subuh|fajr|zohor|zuhur|zuhr|dhuhr|asar|asr|maghrib|isyak|isha|muis)\b",)),
         ("get_muis_friday_khutbah", (r"\b(?:khutbah|sermon|friday sermon|jumu'?ah|jumaat)\b",)),
@@ -14683,74 +14137,32 @@ async def stream_quick_pwa_reply(messages: list[dict], message: str):
         f"{lens}"
     )
     try:
-        if LLM_PROVIDER == "openai":
-            policy = model_policy_for_messages(prompt_messages)
-            kwargs = _openai_request_options(
-                QUICK_MODEL,
-                QUICK_REPLY_MAX_TOKENS,
-                prompt_messages,
-                policy=policy,
-            )
-            kwargs["input"] = _openai_input_from_messages(prompt_messages)
-            kwargs["instructions"] = system
-            text_parts: list[str] = []
-            async for event in _openai_stream_response(kwargs):
-                if getattr(event, "type", "") == "hira.final_response":
-                    continue
-                delta = _openai_text_delta_from_event(event)
-                if delta:
-                    text_parts.append(delta)
-                    yield {"type": "text", "text": delta}
-            if not text_parts:
-                text = await _llm_text_async(
-                    model=QUICK_MODEL,
-                    max_tokens=QUICK_REPLY_MAX_TOKENS,
-                    system=system,
-                    messages=prompt_messages,
-                )
-                yield {"type": "text", "text": text}
-            return
-        kwargs = _deepseek_anthropic_request_options(
-            model_policy_for_messages(prompt_messages),
-            tier="quick",
+        policy = model_policy_for_messages(prompt_messages)
+        kwargs = _openai_request_options(
+            QUICK_MODEL,
+            QUICK_REPLY_MAX_TOKENS,
+            prompt_messages,
+            policy=policy,
         )
-        async with async_claude.messages.stream(
-            model=QUICK_MODEL,
-            max_tokens=QUICK_REPLY_MAX_TOKENS,
-            system=system,
-            messages=prompt_messages,
-            **kwargs,
-        ) as stream:
-            async for event in stream:
-                if event.type == "content_block_delta" and getattr(event.delta, "type", None) == "text_delta":
-                    yield {"type": "text", "text": event.delta.text}
-            resp = await stream.get_final_message()
-        _record_deepseek_usage(resp, model=QUICK_MODEL, tier="quick", stream=True)
+        kwargs["input"] = _openai_input_from_messages(prompt_messages)
+        kwargs["instructions"] = system
+        text_parts: list[str] = []
+        async for event in _openai_stream_response(kwargs):
+            if getattr(event, "type", "") == "hira.final_response":
+                continue
+            delta = _openai_text_delta_from_event(event)
+            if delta:
+                text_parts.append(delta)
+                yield {"type": "text", "text": delta}
+        if not text_parts:
+            text = await _llm_text_async(
+                model=QUICK_MODEL,
+                max_tokens=QUICK_REPLY_MAX_TOKENS,
+                system=system,
+                messages=prompt_messages,
+            )
+            yield {"type": "text", "text": text}
     except Exception as exc:
-        if LLM_PROVIDER == "deepseek":
-            logger.warning("DeepSeek quick stream failed; retrying with non-streaming request: %s", exc)
-            try:
-                text = await _llm_text_async(
-                    model=QUICK_MODEL,
-                    max_tokens=QUICK_REPLY_MAX_TOKENS,
-                    system=system,
-                    messages=prompt_messages,
-                )
-                yield {"type": "text", "text": text}
-                return
-            except Exception as retry_exc:
-                if _deepseek_openai_fallback_enabled():
-                    logger.warning("DeepSeek quick retry failed; falling back to OpenAI: %s", retry_exc)
-                    yield {"type": "trace", "patch": {"provider_fallback": "openai", "provider_fallback_reason": "deepseek_quick_failed"}}
-                    text = await _openai_fallback_text_async(
-                        model=OPENAI_FALLBACK_QUICK_MODEL,
-                        max_tokens=QUICK_REPLY_MAX_TOKENS,
-                        system=system,
-                        messages=prompt_messages,
-                    )
-                    yield {"type": "text", "text": text}
-                    return
-                raise retry_exc
         logger.error(f"Quick PWA reply failed: {exc}")
         raise
 
@@ -14759,7 +14171,6 @@ async def stream_agentic_openai(
     max_tokens=650,
     tools=None,
     openai_state_key: str | None = None,
-    model_override: str | None = None,
 ):
     tools = tools or _core_tools()
     reply_text = ""
@@ -14767,9 +14178,7 @@ async def stream_agentic_openai(
     all_tool_results: list[dict] = []
     native_tool_events_seen: set[str] = set()
     policy = model_policy_for_messages(messages)
-    model = str(model_override or policy.get("model") or _agentic_model_for_messages(messages))
-    if model_override:
-        policy = {**policy, "provider": "openai_fallback", "model": model, "reason": "deepseek_failed_openai_fallback"}
+    model = str(policy.get("model") or _agentic_model_for_messages(messages))
     previous_response_id = _openai_previous_response_id(openai_state_key)
     openai_input = _openai_latest_input(messages) if previous_response_id else _openai_input_from_messages(messages)
     yield {"type": "trace", "patch": {"model_policy": policy, "openai_stateful": bool(previous_response_id)}}
@@ -14927,7 +14336,7 @@ async def stream_agentic_openai(
     yield {"type": "done", "text": corrected}
 
 
-async def stream_agentic_claude(
+async def stream_agentic_chat(
     messages,
     max_tokens=650,
     tools=None,
@@ -14936,181 +14345,15 @@ async def stream_agentic_claude(
 ):
     token = _TOOL_DIRECT_USER_TEXT.set(_tool_direct_user_text_from_messages(messages, direct_user_text))
     try:
-        async for event in stream_agentic_claude_impl(
-            messages,
-            max_tokens=max_tokens,
-            tools=tools,
-            openai_state_key=openai_state_key,
-        ):
+        provider_status = _llm_provider_status_reply(messages)
+        if provider_status:
+            yield {"type": "text", "text": provider_status}
+            yield {"type": "done", "text": provider_status}
+            return
+        async for event in stream_agentic_openai(messages, max_tokens=max_tokens, tools=tools, openai_state_key=openai_state_key):
             yield event
     finally:
         _TOOL_DIRECT_USER_TEXT.reset(token)
-
-
-async def stream_agentic_claude_impl(messages, max_tokens=650, tools=None, openai_state_key: str | None = None):
-    provider_status = _llm_provider_status_reply(messages)
-    if provider_status:
-        yield {"type": "text", "text": provider_status}
-        yield {"type": "done", "text": provider_status}
-        return
-
-    if LLM_PROVIDER == "openai":
-        async for event in stream_agentic_openai(messages, max_tokens=max_tokens, tools=tools, openai_state_key=openai_state_key):
-            yield event
-        return
-
-    unsupported_blocks = _deepseek_unsupported_message_blocks(messages)
-    if "image" in unsupported_blocks and OPENAI_API_KEY:
-        try:
-            messages = await _deepseek_messages_with_openai_vision(messages)
-            unsupported_blocks = _deepseek_unsupported_message_blocks(messages)
-            if "image" not in unsupported_blocks:
-                yield {"type": "trace", "patch": {"vision_handoff": "openai"}}
-        except Exception as exc:
-            logger.warning("OpenAI vision handoff for DeepSeek stream failed: %s", exc)
-    if unsupported_blocks:
-        reply = _deepseek_unsupported_message_reply(unsupported_blocks)
-        yield {"type": "replace", "text": reply}
-        yield {"type": "done", "text": reply}
-        return
-
-    tools = tools or _core_tools()
-    reply_text = ""
-    max_iterations = 8
-    all_tool_results: list[dict] = []
-
-    for _ in range(max_iterations):
-        policy = model_policy_for_messages(messages)
-        forced_tool = _forced_tool_for_current_turn(messages, tools)
-        tool_choice = {"type": "tool", "name": forced_tool} if forced_tool else None
-        kwargs = {}
-        if tool_choice:
-            kwargs["tool_choice"] = tool_choice
-        kwargs.update(_deepseek_anthropic_request_options(policy, tier=str(policy.get("tier") or "agentic")))
-        model = str(policy.get("model") or _agentic_model_for_messages(messages))
-        resp = None
-        text_parts = []
-        try:
-            async with async_claude.messages.stream(
-                model=model,
-                max_tokens=max_tokens,
-                system=CACHED_SYSTEM_PROMPT(),
-                tools=tools,
-                messages=messages,
-                **kwargs,
-            ) as stream:
-                async for event in stream:
-                    if event.type == "content_block_delta" and getattr(event.delta, "type", None) == "text_delta":
-                        text = event.delta.text
-                        text_parts.append(text)
-                        yield {"type": "text", "text": text}
-                resp = await stream.get_final_message()
-            _record_deepseek_usage(resp, model=model, tier=policy.get("tier", "agentic"), stream=True)
-        except Exception as exc:
-            if LLM_PROVIDER == "deepseek" and not all_tool_results:
-                logger.warning("DeepSeek agentic stream failed; retrying with non-streaming request: %s", exc)
-                try:
-                    reply = await _run_agentic_claude_impl(
-                        list(messages),
-                        max_tokens=max_tokens,
-                        tools=tools,
-                        openai_state_key=openai_state_key,
-                    )
-                    yield {"type": "replace", "text": reply}
-                    yield {"type": "done", "text": reply}
-                    return
-                except Exception as retry_exc:
-                    try:
-                        text = await _deepseek_text_only_recovery_reply(list(messages), max_tokens=max_tokens)
-                        yield {"type": "trace", "patch": {"deepseek_recovery": "text_only"}}
-                        yield {"type": "replace", "text": text}
-                        yield {"type": "done", "text": text}
-                        return
-                    except Exception as text_retry_exc:
-                        retry_exc = text_retry_exc
-                    if _deepseek_openai_fallback_enabled():
-                        logger.warning("DeepSeek agentic retry failed; falling back to OpenAI: %s", retry_exc)
-                        yield {"type": "trace", "patch": {
-                            "provider_fallback": "openai",
-                            "provider_fallback_reason": "deepseek_agentic_failed",
-                        }}
-                        async for event in stream_agentic_openai(
-                            list(messages),
-                            max_tokens=max_tokens,
-                            tools=tools,
-                            openai_state_key=openai_state_key,
-                            model_override=OPENAI_FALLBACK_AGENTIC_MODEL,
-                        ):
-                            yield event
-                        return
-                    raise retry_exc
-            fallback = _tool_action_fallback_reply(all_tool_results)
-            if fallback:
-                logger.warning("%s stream follow-up failed after tool actions; returning tool-result fallback: %s", _anthropic_compatible_provider_label(), exc)
-                guarded = _memory_tool_failure_guardrail(fallback, all_tool_results)
-                guarded = _backend_claim_guardrail(guarded, all_tool_results)
-                guarded = _cca_sheet_user_burden_guardrail(guarded, all_tool_results)
-                corrected = _correct_weekday_date_mismatches(guarded)
-                yield {"type": "replace", "text": corrected}
-                yield {"type": "done", "text": corrected}
-                return
-            raise
-
-        if resp.stop_reason != "tool_use":
-            fallback_text = await _run_forced_weather_fallback(forced_tool)
-            if fallback_text:
-                reply_text = f"{reply_text}{fallback_text}"
-                yield {"type": "replace", "text": reply_text}
-            else:
-                segment = "".join(text_parts) or next((b.text for b in resp.content if b.type == "text"), "")
-                reply_text = f"{reply_text}{segment}"
-            if resp.stop_reason == "max_tokens":
-                messages.append({"role": "assistant", "content": resp.content})
-                messages.append({
-                    "role": "user",
-                    "content": "Continue exactly where you stopped. Finish the response completely without restarting or summarising earlier text.",
-                })
-                logger.warning("%s hit max_tokens in streaming chat; requesting continuation.", _anthropic_compatible_provider_label())
-                yield {"type": "continuation", "reason": "max_tokens"}
-                continue
-            break
-
-        messages.append({"role": "assistant", "content": resp.content})
-        tool_blocks = [block for block in resp.content if block.type == "tool_use"]
-        for block in tool_blocks:
-            yield {"type": "tool", "name": block.name}
-
-        async def run_tool(block):
-            tool_input = _normalise_memory_tool_input(block.input, messages) if block.name == "remember_user_info" else block.input
-            logger.info("Tool call: %s %s", block.name, _tool_log_input_summary(tool_input))
-            result = await _execute_tool_offloop(block.name, tool_input)
-            return {
-                "type": "tool_result",
-                "tool_use_id": block.id,
-                "content": result,
-            }
-
-        tool_results = await asyncio.gather(*(run_tool(block) for block in tool_blocks))
-        all_tool_results.extend(tool_results)
-        messages.append({"role": "user", "content": tool_results})
-        contracts = _source_contracts_from_tool_results(tool_results)
-        if contracts:
-            yield {"type": "trace", "patch": {"source_contracts_seen": contracts, "confidence_gate": "passed"}}
-        guarded = _source_contract_guardrail(messages, tool_results)
-        if guarded:
-            reply_text = f"{reply_text}{guarded}"
-            yield {"type": "trace", "patch": {"confidence_gate": "blocked", "final_mode": "refused_to_guess"}}
-            yield {"type": "replace", "text": reply_text}
-            yield {"type": "done", "text": reply_text}
-            return
-
-    guarded_reply = _memory_tool_failure_guardrail(reply_text or "Done.", all_tool_results)
-    guarded_reply = _backend_claim_guardrail(guarded_reply, all_tool_results)
-    guarded_reply = _cca_sheet_user_burden_guardrail(guarded_reply, all_tool_results)
-    corrected = _correct_weekday_date_mismatches(guarded_reply)
-    if corrected != (reply_text or "Done."):
-        yield {"type": "replace", "text": corrected}
-    yield {"type": "done", "text": corrected}
 
 async def handle_photo(update, context):
     """Extract schedule data from photos/screenshots and send to the active vision-capable chat provider."""
@@ -15122,7 +14365,7 @@ async def handle_photo(update, context):
         await file.download_to_memory(buf)
         image_data = base64.b64encode(buf.getvalue()).decode()
         caption = update.message.caption or "Extract any schedule items, calendar events, reminders, and useful context from this screenshot/photo."
-        reply_text = await _run_agentic_claude(
+        reply_text = await _run_agentic_chat(
             [{"role": "user", "content": [
                 {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_data}},
                 {"type": "text", "text": f"{MEDIA_SCHEDULE_INSTRUCTION}\n\nUser note: {caption}"}
@@ -15191,7 +14434,7 @@ async def _process_office_document(update, doc, file_bytes: bytes, caption: str)
         f"Extracted relevant text:\n{excerpt}"
     )
     try:
-        reply_text = await _run_agentic_claude(
+        reply_text = await _run_agentic_chat(
             [{"role": "user", "content": prompt}],
             max_tokens=3000,
             tools=[CONTEXT_TOOL, CALENDAR_TOOL, REMINDER_TOOL, MEMORY_TOOL],
@@ -15249,7 +14492,7 @@ async def handle_document(update, context):
                 parse_mode="Markdown")
             return
 
-        reply_text = await _run_agentic_claude(
+        reply_text = await _run_agentic_chat(
             [{"role": "user", "content": [
                 content_block,
                 {"type": "text", "text": f"{MEDIA_SCHEDULE_INSTRUCTION}\n\nUser note: {caption}"}
@@ -16064,7 +15307,7 @@ async def _process_user_text(update, context, text: str):
 
     try:
         messages = list(history)
-        reply_text = await _run_agentic_claude(messages, max_tokens=1024, direct_user_text=text)
+        reply_text = await _run_agentic_chat(messages, max_tokens=1024, direct_user_text=text)
         reply_text, _repair_meta = await maybe_self_repair_reply(
             text,
             reply_text,
@@ -16083,7 +15326,7 @@ async def _process_user_text(update, context, text: str):
         await reply(update, reply_text)
 
     except Exception as e:
-        logger.error(f"{_anthropic_compatible_provider_label()} chat error: {e}")
+        logger.error(f"OpenAI chat error: {e}")
         await update.message.reply_text("Error. Try again.")
 
 def _openai_ok() -> bool:
@@ -17347,7 +16590,7 @@ Rules: be conservative — only promote genuinely durable rules. Return ONLY JSO
             max_tokens=800,
             messages=[{"role": "user", "content": prompt}],
         )
-        result = _json_from_claude_text(raw)
+        result = _json_from_llm_text(raw)
         promoted = result.get("promote") or []
         growth_note = result.get("growth_note", "")
 

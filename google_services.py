@@ -4984,7 +4984,7 @@ def clear_memory() -> dict:
 DEFAULT_NEWS_TOPICS = [
     {"label": "Liverpool / EPL", "query": "Liverpool FC latest result match report fixture line-up injury transfer"},
     {"label": "F1 / Mercedes", "query": "Mercedes F1 George Russell Kimi Antonelli Lewis Hamilton latest result qualifying upgrade"},
-    {"label": "AI Tools", "query": "OpenAI Codex Claude Anthropic Kimi Moonshot Gemini AI tools latest model release"},
+    {"label": "AI Tools", "query": "OpenAI Codex Kimi Moonshot Gemini AI tools latest model release"},
     {"label": "Teenage Engineering", "query": "Teenage Engineering OP-XY OP-1 Field Pocket Operator product review firmware update"},
     {"label": "Android", "query": "Android OS Google Pixel Google Play app ecosystem security update"},
     {"label": "iOS", "query": "iOS iPhone Apple developer App Store TestFlight policy update"},
