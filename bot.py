@@ -9969,6 +9969,15 @@ _REMINDER_DUPLICATE_STOP_WORDS = {
     "please", "reminder", "task", "that", "the", "these", "this", "those",
     "to", "with",
 }
+_COMPLETED_TASK_SUPPRESSIONS_KEY = "completed_task_suppressions"
+_MAX_COMPLETED_TASK_SUPPRESSIONS = 180
+_REMINDER_ANCHOR_STOP_WORDS = _REMINDER_DUPLICATE_STOP_WORDS | {
+    "add", "added", "after", "already", "before", "check", "checking",
+    "complete", "completed", "confirm", "confirmed", "done", "due", "email",
+    "emails", "finish", "finished", "form", "forms", "gmail", "key", "mark",
+    "marked", "need", "needs", "read", "reading", "review", "said", "says",
+    "send", "sent", "submit", "submitted", "update", "updated",
+}
 
 def _normalise_reminder_identity(value: str) -> str:
     return " ".join(str(value or "").casefold().split())
@@ -10001,6 +10010,14 @@ def _reminder_description_similarity(left: str, right: str) -> float:
         score = max(score, term_score)
     return score
 
+def _reminder_anchor_terms(value: str) -> set[str]:
+    anchors = set()
+    for term in _reminder_duplicate_terms(value):
+        if term in _REMINDER_ANCHOR_STOP_WORDS or len(term) < 4:
+            continue
+        anchors.add(term)
+    return anchors
+
 def _find_duplicate_reminder(description: str, due_date: str, category: str = "") -> tuple[dict | None, float]:
     desc_key = _normalise_reminder_identity(description)
     due_key = str(due_date or "").strip()
@@ -10023,6 +10040,139 @@ def _find_duplicate_reminder(description: str, due_date: str, category: str = ""
             best = (reminder, score)
     threshold = 0.85
     return best if best[0] and best[1] >= threshold else (None, best[1])
+
+def _load_completed_task_suppressions() -> list[dict]:
+    raw = ""
+    try:
+        raw = gs.get_config(_COMPLETED_TASK_SUPPRESSIONS_KEY) or ""
+    except Exception as exc:
+        logger.warning(f"Could not load completed task suppressions: {exc}")
+        return []
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return []
+    return [item for item in parsed if isinstance(item, dict)]
+
+def _save_completed_task_suppressions(entries: list[dict]) -> None:
+    clean = []
+    seen = set()
+    for entry in reversed(entries):
+        due = str(entry.get("due", "") or "").strip()
+        description = str(entry.get("description", "") or "").strip()
+        if not due or not description:
+            continue
+        key = (
+            due,
+            _normalise_reminder_identity(description),
+            _normalise_reminder_identity(entry.get("category", "") or "General"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        clean.append({
+            "id": str(entry.get("id", "") or "").strip(),
+            "description": description[:220],
+            "due": due,
+            "category": str(entry.get("category", "") or "").strip()[:80],
+            "completed_at": str(entry.get("completed_at", "") or "").strip()[:40],
+            "anchors": sorted(_reminder_anchor_terms(description))[:12],
+        })
+        if len(clean) >= _MAX_COMPLETED_TASK_SUPPRESSIONS:
+            break
+    clean.reverse()
+    gs.set_config(_COMPLETED_TASK_SUPPRESSIONS_KEY, json.dumps(clean, ensure_ascii=False))
+
+def record_completed_task_suppression(reminder: dict) -> None:
+    if not reminder:
+        return
+    entry = {
+        "id": str(reminder.get("id", "") or ""),
+        "description": str(reminder.get("description", "") or ""),
+        "due": str(reminder.get("due", "") or ""),
+        "category": str(reminder.get("category", "") or ""),
+        "completed_at": datetime.now(SGT).strftime("%Y-%m-%d"),
+    }
+    if not entry["description"] or not entry["due"]:
+        return
+    try:
+        suppressions = _load_completed_task_suppressions()
+        suppressions.append(entry)
+        _save_completed_task_suppressions(suppressions)
+    except Exception as exc:
+        logger.warning(f"Could not record completed task suppression: {exc}")
+
+def _completed_task_suppression_entries() -> list[dict]:
+    entries = list(_load_completed_task_suppressions())
+    try:
+        reminders = gs.get_reminders(include_done=True)
+    except Exception as exc:
+        logger.warning(f"Could not load completed reminders for suppression check: {exc}")
+        return entries
+    for reminder in reminders:
+        if not reminder.get("done"):
+            continue
+        entries.append({
+            "id": str(reminder.get("id", "") or ""),
+            "description": str(reminder.get("description", "") or ""),
+            "due": str(reminder.get("due", "") or ""),
+            "category": str(reminder.get("category", "") or ""),
+        })
+    return entries
+
+def _categories_compatible(left: str, right: str) -> bool:
+    left_clean = _normalise_reminder_identity(left or "General")
+    right_clean = _normalise_reminder_identity(right or "General")
+    return not left_clean or not right_clean or "general" in {left_clean, right_clean} or left_clean == right_clean
+
+def _find_completed_task_suppression(description: str, due_date: str, category: str = "") -> tuple[dict | None, float]:
+    due_key = str(due_date or "").strip()
+    if not due_key or not str(description or "").strip():
+        return None, 0
+    new_anchors = _reminder_anchor_terms(description)
+    best: tuple[dict | None, float] = (None, 0)
+    for entry in _completed_task_suppression_entries():
+        if str(entry.get("due", "") or "").strip() != due_key:
+            continue
+        if not _categories_compatible(category, str(entry.get("category", "") or "")):
+            continue
+        existing_description = str(entry.get("description", "") or "")
+        score = _reminder_description_similarity(description, existing_description)
+        stored_anchors = entry.get("anchors") or []
+        old_anchors = set()
+        for anchor in stored_anchors:
+            old_anchors.update(_reminder_anchor_terms(anchor))
+        if not old_anchors:
+            old_anchors = _reminder_anchor_terms(existing_description)
+        if new_anchors and old_anchors:
+            shared = len(new_anchors & old_anchors)
+            if shared:
+                score = max(score, 0.58 + min(0.22, shared * 0.08))
+        if score > best[1]:
+            best = (entry, score)
+    threshold = 0.65
+    return best if best[0] and best[1] >= threshold else (None, best[1])
+
+def _reminder_add_block_reason(description: str, due_date: str, category: str = "") -> str:
+    existing, _duplicate_score = _find_duplicate_reminder(description, due_date, category)
+    if existing:
+        if existing.get("done"):
+            return (
+                f"Reminder #{existing['id']} already exists and is marked done: "
+                f"{existing['description']} by {existing['due']}. I will not recreate it."
+            )
+        return f"Reminder #{existing['id']} already exists: {existing['description']} by {existing['due']}."
+
+    completed, _suppression_score = _find_completed_task_suppression(description, due_date, category)
+    if completed:
+        prefix = f"Reminder #{completed['id']}" if completed.get("id") else "A matching reminder"
+        return (
+            f"{prefix} was already completed: {completed['description']} by {completed['due']}. "
+            "I will not recreate it."
+        )
+    return ""
 
 def _find_best_followup(query: str):
     followups = gs.get_followups()
@@ -10340,6 +10490,7 @@ def complete_reminder_by_id(reminder_id: str) -> tuple[bool, dict | None]:
     ok = gs.mark_done(reminder_id)
     synced_marking = None
     if ok:
+        record_completed_task_suppression(reminder)
         _archive_task_reminder_notifications(reminder_id)
     if ok and reminder and _is_marking_reminder(reminder):
         query = f"{reminder.get('description', '')} {reminder.get('category', '')}"
@@ -12679,7 +12830,12 @@ async def remind_cmd(update, context):
         await reply(update, "Usage: `/remind Description | YYYY-MM-DD | Category`", parse_mode="Markdown")
         return
     try:
-        rid = gs.add_reminder(parts[0], parts[1], parts[2] if len(parts) > 2 else "General")
+        category = parts[2] if len(parts) > 2 else "General"
+        blocked = _reminder_add_block_reason(parts[0], parts[1], category)
+        if blocked:
+            await update.message.reply_text(blocked)
+            return
+        rid = gs.add_reminder(parts[0], parts[1], category)
         await update.message.reply_text(f"Reminder #{rid} added: {parts[0]} by {parts[1]}")
     except Exception as e:
         await update.message.reply_text(f"Error: {e}")
@@ -12693,7 +12849,7 @@ async def done_cmd(update, context):
         return
     try:
         rid = context.args[0]
-        ok = gs.mark_done(rid)
+        ok, _synced_marking = complete_reminder_by_id(rid)
         await update.message.reply_text(f"#{rid} done!" if ok else f"#{rid} not found.")
     except Exception as e:
         await update.message.reply_text(f"Error: {e}")
@@ -13071,7 +13227,7 @@ async def done_text_cmd(update, context):
         if not reminder or score < 0.35:
             await update.message.reply_text("I could not confidently match that to an active reminder.")
             return
-        gs.mark_done(reminder["id"])
+        complete_reminder_by_id(reminder["id"])
         await update.message.reply_text(f"Marked done: [{reminder['id']}] {reminder['description']}")
     except Exception as e:
         await update.message.reply_text(f"Could not mark task done: {e}")
@@ -15441,18 +15597,13 @@ async def _execute_tool(name: str, inp: dict) -> str:
             blocked = _validated_action_failure(name, inp)
             if blocked:
                 return blocked
-            existing, _duplicate_score = _find_duplicate_reminder(
+            blocked = _reminder_add_block_reason(
                 inp["description"],
                 inp["due_date"],
                 inp.get("category", "General"),
             )
-            if existing:
-                if existing.get("done"):
-                    return (
-                        f"Reminder #{existing['id']} already exists and is marked done: "
-                        f"{existing['description']} by {existing['due']}. I will not recreate it."
-                    )
-                return f"Reminder #{existing['id']} already exists: {existing['description']} by {existing['due']}."
+            if blocked:
+                return blocked
             rid = gs.add_reminder(inp["description"], inp["due_date"], inp.get("category", "General"))
             result = f"Added reminder #{rid}: {inp['description']} by {inp['due_date']}"
             return f"{result}\n\n{_action_audit_text(name, inp, result, metadata={'reminder_id': str(rid)})}"

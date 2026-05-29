@@ -1123,6 +1123,7 @@ class AgenticOpenAITests(unittest.TestCase):
 
         with (
             patch.object(bot.gs, "get_reminders", return_value=[completed]),
+            patch.object(bot.gs, "get_config", return_value=""),
             patch.object(bot.gs, "add_reminder", return_value="9") as add_reminder,
             patch.object(bot, "google_ok", return_value=True),
             patch.object(bot.gs, "add_action_ledger"),
@@ -1134,6 +1135,92 @@ class AgenticOpenAITests(unittest.TestCase):
 
         self.assertIn("Added reminder #9", result)
         add_reminder.assert_called_once_with("Submit remarks form", "2026-05-14", "Teaching")
+
+    def test_add_reminder_tool_blocks_completed_suppression_rewording(self):
+        completed_suppressions = [{
+            "id": "8",
+            "description": "Submit the remarks form",
+            "due": "2026-05-07",
+            "category": "Teaching",
+            "anchors": ["remarks"],
+        }]
+
+        with (
+            patch.object(bot.gs, "get_reminders", return_value=[]),
+            patch.object(bot.gs, "get_config", return_value=json.dumps(completed_suppressions)),
+            patch.object(bot.gs, "add_reminder") as add_reminder,
+        ):
+            result = asyncio.run(bot._execute_tool(
+                "add_reminder",
+                {
+                    "description": "Gmail says key in remarks after reading the email",
+                    "due_date": "2026-05-07",
+                    "category": "Teaching",
+                },
+            ))
+
+        self.assertIn("was already completed", result)
+        self.assertIn("I will not recreate it", result)
+        add_reminder.assert_not_called()
+
+    def test_add_reminder_tool_blocks_reworded_existing_completed_reminder(self):
+        completed = {
+            "id": "8",
+            "description": "Submit the remarks form",
+            "due": "2026-05-07",
+            "category": "Teaching",
+            "done": True,
+        }
+
+        with (
+            patch.object(bot.gs, "get_reminders", return_value=[completed]),
+            patch.object(bot.gs, "get_config", return_value=""),
+            patch.object(bot.gs, "add_reminder") as add_reminder,
+        ):
+            result = asyncio.run(bot._execute_tool(
+                "add_reminder",
+                {
+                    "description": "Gmail says key in remarks after reading the email",
+                    "due_date": "2026-05-07",
+                    "category": "Teaching",
+                },
+            ))
+
+        self.assertIn("was already completed", result)
+        self.assertIn("I will not recreate it", result)
+        add_reminder.assert_not_called()
+
+    def test_add_reminder_tool_allows_completed_suppression_on_different_due_date(self):
+        completed_suppressions = [{
+            "id": "8",
+            "description": "Submit the remarks form",
+            "due": "2026-05-07",
+            "category": "Teaching",
+            "anchors": ["remarks"],
+        }]
+
+        with (
+            patch.object(bot.gs, "get_reminders", return_value=[]),
+            patch.object(bot.gs, "get_config", return_value=json.dumps(completed_suppressions)),
+            patch.object(bot.gs, "add_reminder", return_value="10") as add_reminder,
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "add_action_ledger"),
+        ):
+            result = asyncio.run(bot._execute_tool(
+                "add_reminder",
+                {
+                    "description": "Gmail says key in remarks after reading the email",
+                    "due_date": "2026-05-14",
+                    "category": "Teaching",
+                },
+            ))
+
+        self.assertIn("Added reminder #10", result)
+        add_reminder.assert_called_once_with(
+            "Gmail says key in remarks after reading the email",
+            "2026-05-14",
+            "Teaching",
+        )
 
     def test_web_push_payload_uses_phone_sized_preview(self):
         payloads = []
@@ -8879,6 +8966,8 @@ class AgenticOpenAITests(unittest.TestCase):
         with (
             patch.object(bot.gs, "get_reminders", return_value=reminders),
             patch.object(bot.gs, "mark_done", return_value=True),
+            patch.object(bot.gs, "get_config", return_value="[]"),
+            patch.object(bot.gs, "set_config"),
             patch.object(bot.gs, "get_marking_tasks", return_value=marking_tasks),
             patch.object(bot.gs, "update_marking_progress", return_value={**marking_tasks[0], "done": True}) as update_marking,
         ):
@@ -8908,6 +8997,8 @@ class AgenticOpenAITests(unittest.TestCase):
             patch.object(bot, "google_ok", return_value=True),
             patch.object(bot.gs, "get_reminders", return_value=reminders),
             patch.object(bot.gs, "mark_done", return_value=True),
+            patch.object(bot.gs, "get_config", return_value="[]"),
+            patch.object(bot.gs, "set_config"),
             patch.object(bot.gs, "get_app_notifications", return_value=notifications),
             patch.object(bot.gs, "archive_app_notifications", return_value=1) as archive,
         ):
@@ -8916,6 +9007,37 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIsNone(synced)
         archive.assert_called_once_with(["n1"])
+
+    def test_completing_reminder_records_completed_suppression(self):
+        reminders = [
+            {
+                "id": "31",
+                "description": "Submit the remarks form",
+                "due": "2026-05-07",
+                "category": "Teaching",
+                "done": False,
+            }
+        ]
+
+        with (
+            patch.object(bot, "google_ok", return_value=False),
+            patch.object(bot.gs, "get_reminders", return_value=reminders),
+            patch.object(bot.gs, "mark_done", return_value=True),
+            patch.object(bot.gs, "get_config", return_value="[]"),
+            patch.object(bot.gs, "set_config") as set_config,
+        ):
+            ok, synced = bot.complete_reminder_by_id("31")
+
+        self.assertTrue(ok)
+        self.assertIsNone(synced)
+        set_config.assert_called_once()
+        key, raw = set_config.call_args.args
+        self.assertEqual(key, bot._COMPLETED_TASK_SUPPRESSIONS_KEY)
+        saved = json.loads(raw)
+        self.assertEqual(saved[0]["id"], "31")
+        self.assertEqual(saved[0]["description"], "Submit the remarks form")
+        self.assertEqual(saved[0]["due"], "2026-05-07")
+        self.assertIn("remark", saved[0]["anchors"])
 
     def test_complete_task_tool_marks_plural_matching_reminders(self):
         reminders = [
@@ -8945,6 +9067,8 @@ class AgenticOpenAITests(unittest.TestCase):
         with (
             patch.object(bot.gs, "get_reminders", return_value=reminders),
             patch.object(bot.gs, "mark_done", return_value=True) as mark_done,
+            patch.object(bot.gs, "get_config", return_value="[]"),
+            patch.object(bot.gs, "set_config"),
         ):
             result = asyncio.run(bot._execute_tool(
                 "complete_task_by_text",
