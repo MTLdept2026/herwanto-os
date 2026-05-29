@@ -4037,9 +4037,19 @@ def _openai_native_event_tool_name(event) -> str:
     return ""
 
 
+def _openai_previous_response_error(exc: Exception | str | None = None) -> bool:
+    message = str(exc or "").lower()
+    return bool(re.search(
+        r"previous[_ -]?response|response[_ -]?id|no such response|response .*not found|"
+        r"response .*does not exist|response .*expired",
+        message,
+    ))
+
+
 def _openai_degraded_request_kwargs(kwargs: dict, exc: Exception | None = None) -> dict:
     message = str(exc or "").lower()
-    if not any(token in message for token in (
+    stale_previous_response = _openai_previous_response_error(exc)
+    if not stale_previous_response and not any(token in message for token in (
         "unsupported",
         "unknown parameter",
         "invalid",
@@ -4067,6 +4077,8 @@ def _openai_degraded_request_kwargs(kwargs: dict, exc: Exception | None = None) 
         "include",
     ):
         degraded.pop(key, None)
+    if stale_previous_response:
+        degraded.pop("previous_response_id", None)
     if isinstance(degraded.get("text"), dict) and set(degraded["text"].keys()) == {"verbosity"}:
         degraded.pop("text", None)
     tools = degraded.get("tools")
@@ -7264,6 +7276,10 @@ def build_proactive_v2_queue(now: datetime | None = None, days: int = 7, familie
     if google_ok():
         try:
             if allow("nudge"):
+                if hasattr(gs, "expire_stale_nudges"):
+                    expired = gs.expire_stale_nudges(current)
+                    if expired:
+                        logger.info("Expired %s stale proactive nudge(s)", expired)
                 for nudge in gs.due_nudges(current):
                     candidates.append(_make_proactive_candidate(
                         "nudge",
@@ -9555,27 +9571,8 @@ def _visible_lessons_for_date(target: date, lessons: list) -> list:
     return [] if school_day_cleared_memory_for_date(target) else list(lessons or [])
 
 
-F1_2026_CALENDAR_SOURCE = "https://www.formula1.com/en/racing/2026"
-F1_2026_RACE_WEEKENDS = [
-    {"round": 5, "name": "Canadian Grand Prix", "short": "Canada", "start": "2026-05-22", "end": "2026-05-24", "location": "Montreal, Canada", "sprint": True},
-    {"round": 6, "name": "Monaco Grand Prix", "short": "Monaco", "start": "2026-06-05", "end": "2026-06-07", "location": "Monaco", "sprint": False},
-    {"round": 7, "name": "Barcelona-Catalunya Grand Prix", "short": "Barcelona-Catalunya", "start": "2026-06-12", "end": "2026-06-14", "location": "Barcelona, Spain", "sprint": False},
-    {"round": 8, "name": "Austrian Grand Prix", "short": "Austria", "start": "2026-06-26", "end": "2026-06-28", "location": "Spielberg, Austria", "sprint": False},
-    {"round": 9, "name": "British Grand Prix", "short": "Great Britain", "start": "2026-07-03", "end": "2026-07-05", "location": "Silverstone, United Kingdom", "sprint": True},
-    {"round": 10, "name": "Belgian Grand Prix", "short": "Belgium", "start": "2026-07-17", "end": "2026-07-19", "location": "Spa-Francorchamps, Belgium", "sprint": False},
-    {"round": 11, "name": "Hungarian Grand Prix", "short": "Hungary", "start": "2026-07-24", "end": "2026-07-26", "location": "Budapest, Hungary", "sprint": False},
-    {"round": 12, "name": "Dutch Grand Prix", "short": "Netherlands", "start": "2026-08-21", "end": "2026-08-23", "location": "Zandvoort, Netherlands", "sprint": True},
-    {"round": 13, "name": "Italian Grand Prix", "short": "Italy", "start": "2026-09-04", "end": "2026-09-06", "location": "Monza, Italy", "sprint": False},
-    {"round": 14, "name": "Spanish Grand Prix", "short": "Spain", "start": "2026-09-11", "end": "2026-09-13", "location": "Madrid, Spain", "sprint": False},
-    {"round": 15, "name": "Azerbaijan Grand Prix", "short": "Azerbaijan", "start": "2026-09-24", "end": "2026-09-26", "location": "Baku, Azerbaijan", "sprint": False},
-    {"round": 16, "name": "Singapore Grand Prix", "short": "Singapore", "start": "2026-10-09", "end": "2026-10-11", "location": "Singapore", "sprint": True},
-    {"round": 17, "name": "United States Grand Prix", "short": "United States", "start": "2026-10-23", "end": "2026-10-25", "location": "Austin, United States", "sprint": False},
-    {"round": 18, "name": "Mexico City Grand Prix", "short": "Mexico", "start": "2026-10-30", "end": "2026-11-01", "location": "Mexico City, Mexico", "sprint": False},
-    {"round": 19, "name": "Sao Paulo Grand Prix", "short": "Brazil", "start": "2026-11-06", "end": "2026-11-08", "location": "Sao Paulo, Brazil", "sprint": False},
-    {"round": 20, "name": "Las Vegas Grand Prix", "short": "Las Vegas", "start": "2026-11-19", "end": "2026-11-21", "location": "Las Vegas, United States", "sprint": False},
-    {"round": 21, "name": "Qatar Grand Prix", "short": "Qatar", "start": "2026-11-27", "end": "2026-11-29", "location": "Lusail, Qatar", "sprint": False},
-    {"round": 22, "name": "Abu Dhabi Grand Prix", "short": "Abu Dhabi", "start": "2026-12-04", "end": "2026-12-06", "location": "Yas Marina, Abu Dhabi", "sprint": False},
-]
+F1_2026_CALENDAR_SOURCE = sports.F1_2026_CALENDAR_SOURCE
+F1_2026_RACE_WEEKENDS = sports.F1_2026_RACE_WEEKENDS
 
 
 def is_f1_calendar_sync_request(text: str) -> bool:

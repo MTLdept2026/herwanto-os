@@ -33,6 +33,8 @@ GOOGLE_NEWS_TIMEOUT = 8
 RSS_FEED_TIMEOUT = 4
 WEB_SEARCH_TIMEOUT = 8
 RESEARCH_WORKERS = 4
+_GOOGLE_NEWS_LAST_ERROR = ""
+_GOOGLE_NEWS_ERRORS_BY_QUERY: dict[str, str] = {}
 
 
 def _env_int(name: str, default: int, minimum: int = 1, maximum: int | None = None) -> int:
@@ -86,6 +88,35 @@ def _tavily_api_key() -> str:
 
 def tavily_configured() -> bool:
     return bool(_tavily_api_key())
+
+
+def _news_error_key(query: str) -> str:
+    return " ".join(str(query or "").lower().split())[:240]
+
+
+def _record_google_news_error(query: str, exc: Exception) -> None:
+    global _GOOGLE_NEWS_LAST_ERROR
+    message = " ".join(str(exc or "unknown error").split())[:260]
+    _GOOGLE_NEWS_LAST_ERROR = message
+    key = _news_error_key(query)
+    if key:
+        _GOOGLE_NEWS_ERRORS_BY_QUERY[key] = message
+        if len(_GOOGLE_NEWS_ERRORS_BY_QUERY) > 80:
+            oldest = next(iter(_GOOGLE_NEWS_ERRORS_BY_QUERY))
+            _GOOGLE_NEWS_ERRORS_BY_QUERY.pop(oldest, None)
+
+
+def _clear_google_news_error(query: str) -> None:
+    key = _news_error_key(query)
+    if key:
+        _GOOGLE_NEWS_ERRORS_BY_QUERY.pop(key, None)
+
+
+def google_news_last_error(query: str = "") -> str:
+    key = _news_error_key(query)
+    if key and key in _GOOGLE_NEWS_ERRORS_BY_QUERY:
+        return _GOOGLE_NEWS_ERRORS_BY_QUERY[key]
+    return _GOOGLE_NEWS_LAST_ERROR
 
 
 class _ReadableHTMLParser(HTMLParser):
@@ -911,9 +942,11 @@ def _parse_google_news_rss(query: str):
 def _google_news_headline(query, max_items=1):
     """Fetch latest headline(s) from Google News RSS for a given query."""
     try:
+        _clear_google_news_error(query)
         feed = _parse_google_news_rss(query)
         return [e.title for e in feed.entries[:max_items] if hasattr(e, "title")]
     except Exception as e:
+        _record_google_news_error(query, e)
         logger.warning(f"RSS error for '{query}': {e}")
         return []
 
@@ -921,6 +954,7 @@ def _google_news_headline(query, max_items=1):
 def google_news(query, max_items=5, max_age_hours: int | None = None):
     """Fetch latest Google News RSS items for a query."""
     try:
+        _clear_google_news_error(query)
         feed = _parse_google_news_rss(query)
         items = []
         for entry in feed.entries[: max_items * 4]:
@@ -943,6 +977,7 @@ def google_news(query, max_items=5, max_age_hours: int | None = None):
             ]
         return ranked[:max_items]
     except Exception as e:
+        _record_google_news_error(query, e)
         logger.warning(f"RSS error for '{query}': {e}")
         return []
 

@@ -3901,9 +3901,29 @@ def _parse_checkin_ids(raw: str) -> list[str]:
     return ids
 
 
+def _parse_followup_ids(raw: str) -> list[str]:
+    ids: list[str] = []
+    seen: set[str] = set()
+    for part in re.split(r"[\s,]+", str(raw or "").strip()):
+        followup_id = part.strip().lstrip("#")
+        if not re.fullmatch(r"\w[\w-]*", followup_id):
+            continue
+        if followup_id not in seen:
+            seen.add(followup_id)
+            ids.append(followup_id)
+    return ids
+
+
 def _archive_checkin_notifications(checkin_id: str) -> int:
     source = f"checkin:{str(checkin_id or '').strip()}"
     if source == "checkin:":
+        return 0
+    return len(_archive_notifications_by_source(source))
+
+
+def _archive_followup_notifications(followup_id: str) -> int:
+    source = f"followup:{str(followup_id or '').strip()}"
+    if source == "followup:":
         return 0
     return len(_archive_notifications_by_source(source))
 
@@ -4049,6 +4069,67 @@ def _pwa_nudge_command_reply(message: str) -> tuple[str, str] | None:
     if errors:
         lines.append(f"Could not cancel: {'; '.join(errors)}.")
     return "\n".join(lines) if lines else "No matching nudges found.", "cancel_nudge"
+
+
+def _pwa_followup_command_reply(message: str) -> tuple[str, str] | None:
+    clean = str(message or "").strip()
+    if not clean:
+        return None
+    lower = clean.lower()
+    if lower in {"/followups", "followups"}:
+        try:
+            followups = sorted(bot.gs.get_followups(), key=lambda item: str(item.get("due_date", "")))
+        except Exception as exc:
+            return f"Follow-ups unavailable: {exc}", "list_followups"
+        if not followups:
+            return "No open follow-ups.", "list_followups"
+        lines = ["Open follow-ups"]
+        for followup in followups:
+            lines.append(bot._format_followup(followup))
+        lines.append("\nTap Done on a follow-up notification, or use `/donefollowup <id>`.")
+        return "\n".join(lines), "list_followups"
+
+    match = re.match(r"^/(?:donefollowup|done_followup|completefollowup|complete_followup)\s+(.+?)\s*$", clean, re.I)
+    if not match:
+        return None
+    followup_ids = _parse_followup_ids(match.group(1))
+    if not followup_ids:
+        return "Send `/donefollowup 7` or `/donefollowup 7, 8` to clear open follow-ups.", "complete_followup"
+
+    completed: list[str] = []
+    missing: list[str] = []
+    errors: list[str] = []
+    archived = 0
+    for followup_id in followup_ids:
+        try:
+            ok = bot.gs.complete_followup(followup_id)
+            if ok:
+                completed.append(followup_id)
+                archived += _archive_followup_notifications(followup_id)
+            else:
+                missing.append(followup_id)
+        except Exception as exc:
+            errors.append(f"#{followup_id}: {exc}")
+
+    if len(followup_ids) == 1:
+        followup_id = followup_ids[0]
+        if errors:
+            return f"Could not complete follow-up #{followup_id}: {errors[0].split(': ', 1)[-1]}", "complete_followup"
+        if missing:
+            return f"Follow-up #{followup_id} was not found, or it was already done.", "complete_followup"
+        extra = f" I also removed {archived} matching app notification{'s' if archived != 1 else ''} from H.I.R.A." if archived else ""
+        return f"Follow-up #{followup_id} marked done.{extra}", "complete_followup"
+
+    lines: list[str] = []
+    if completed:
+        lines.append(f"Marked follow-ups done: {', '.join(f'#{item}' for item in completed)}.")
+    if archived:
+        lines.append(f"Removed {archived} matching app notification{'s' if archived != 1 else ''}.")
+    if missing:
+        lines.append(f"Already done or not found: {', '.join(f'#{item}' for item in missing)}.")
+    if errors:
+        lines.append(f"Could not complete: {'; '.join(errors)}.")
+    return "\n".join(lines) if lines else "No matching follow-ups found.", "complete_followup"
 
 
 def _is_pwa_triage_prompt(message: str) -> bool:
@@ -4451,6 +4532,11 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
         reply, tool_name = nudge_command
         return _quick_sse_response(reply, history_key, history, route_name="nudge_admin", tool_name=tool_name)
 
+    followup_command = _pwa_followup_command_reply(message)
+    if followup_command:
+        reply, tool_name = followup_command
+        return _quick_sse_response(reply, history_key, history, route_name="followup_admin", tool_name=tool_name)
+
     topic_news_reply = await _pwa_topic_news_reply(message, recent_context_for_followup)
     if topic_news_reply:
         return _quick_sse_response(
@@ -4771,7 +4857,10 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             yield sse({"type": "saved"})
         except Exception as exc:
             bot.logger.exception(f"PWA chat failed: {exc}")
-            _merge_chat_trace(trace, {"error_phase": "stream_or_model"})
+            _merge_chat_trace(trace, {
+                "error_phase": "stream_or_model",
+                "error_detail": _safe_chat_error_detail(exc),
+            })
             fallback_text = ""
             fallback_result = ""
             fallback_tool = ""
@@ -4869,6 +4958,19 @@ async def _recover_leaked_action_payload(text: str) -> str:
 def _empty_chat_reply(text: str) -> bool:
     clean = " ".join(str(text or "").strip().split()).lower()
     return clean in {"", "done", "done."}
+
+
+def _safe_chat_error_detail(exc: Exception) -> str:
+    detail = f"{exc.__class__.__name__}: {' '.join(str(exc or '').split())}".strip()
+    if not detail:
+        return exc.__class__.__name__
+    detail = re.sub(
+        r"(?i)\b(api[_ -]?key|authorization|bearer|token|secret|password)\b\s*[:=]\s*[^\s,;]+",
+        r"\1=<redacted>",
+        detail,
+    )
+    detail = re.sub(r"sk-[A-Za-z0-9_-]{8,}", "sk-<redacted>", detail)
+    return detail[:500]
 
 
 def _pwa_model_failure_reply(message: str) -> str:
@@ -5006,9 +5108,18 @@ def _summarise_source_fallback(result: str, limit: int = 2200) -> str:
         if re.search(r"https?://", line):
             continue
         if (
+            lower.endswith("structured live brief")
+            or lower.startswith("answer guidance:")
+            or lower in {"- no recent google news items found.", "- no tavily results found."}
+            or lower.startswith("- disabled: set tavily_api_key")
+        ):
+            continue
+        if (
             line.startswith("SOURCE CONTRACT:")
             or line.startswith("*News:")
             or "latest completed:" in lower
+            or line.startswith("- Upcoming:")
+            or lower.startswith("official calendar source:")
             or "recent results from fotmob" in lower
             or "scoreline candidates" in lower
             or "table note:" in lower
@@ -5018,7 +5129,16 @@ def _summarise_source_fallback(result: str, limit: int = 2200) -> str:
         ):
             picked.append(line)
     if not picked:
-        picked = [line for line in lines if not re.search(r"https?://", line)][:12]
+        picked = [
+            line for line in lines
+            if not re.search(r"https?://", line)
+            and not line.lower().endswith("structured live brief")
+            and not line.lower().startswith("answer guidance:")
+            and line.lower() not in {"- no recent google news items found.", "- no tavily results found."}
+            and not line.lower().startswith("- disabled: set tavily_api_key")
+        ][:12]
+    if not picked:
+        return "No usable current source lines came back."
     summary = "\n".join(picked)
     if len(summary) > limit:
         summary = summary[:limit].rsplit("\n", 1)[0].rstrip()

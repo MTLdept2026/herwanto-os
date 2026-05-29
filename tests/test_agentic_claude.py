@@ -1972,10 +1972,10 @@ class AgenticClaudeTests(unittest.TestCase):
         category, text = add_memory.call_args.args
         self.assertEqual(category, "sports")
         self.assertIn("f1-calendar:2026", text)
-        self.assertIn("R5 Canada 2026-05-22 to 2026-05-24", text)
-        self.assertIn("R22 Abu Dhabi 2026-12-04 to 2026-12-06", text)
+        self.assertIn("R7 Canada 2026-05-22 to 2026-05-24", text)
+        self.assertIn("R24 Abu Dhabi 2026-12-04 to 2026-12-06", text)
         first_call = create_all_day_event.call_args_list[0].args
-        self.assertEqual(first_call[0], "F1: Canadian Grand Prix (Sprint weekend)")
+        self.assertEqual(first_call[0], "F1: Canadian Grand Prix")
         self.assertEqual(first_call[1], "2026-05-22")
         self.assertEqual(first_call[2], "2026-05-24")
 
@@ -1998,6 +1998,29 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("Saved the season list to sports memory", reply)
         self.assertIn("Calendar: created 2 event", reply)
         self.assertNotIn("No recent Google News items", reply)
+
+    def test_f1_brief_includes_official_upcoming_calendar_window(self):
+        lines = bot.sports._format_f1_calendar_window(
+            "Anything to look forward to for F1 in the coming days?",
+            max_items=2,
+            today=date(2026, 5, 29),
+        )
+        text = "\n".join(lines)
+
+        self.assertIn("SOURCE CONTRACT: status=confirmed", text)
+        self.assertIn("Monaco Grand Prix", text)
+        self.assertIn("R8 Monaco Grand Prix", text)
+        self.assertIn("2026-06-05 to 2026-06-07", text)
+        self.assertNotIn("No recent Google News items", text)
+
+    def test_sports_news_sections_surface_google_news_rss_failures(self):
+        with patch.object(bot.sports.ss, "_parse_google_news_rss", side_effect=RuntimeError("403 Forbidden")):
+            lines = bot.sports._format_items("Mercedes focus", "Mercedes F1 latest", 2)
+
+        text = "\n".join(lines)
+        self.assertIn("Google News RSS failed", text)
+        self.assertIn("403 Forbidden", text)
+        self.assertNotIn("No recent Google News items found", text)
 
     def test_cca_schedule_selects_current_week_tab_and_blocks_when_name_absent(self):
         book = {
@@ -2957,6 +2980,79 @@ class AgenticClaudeTests(unittest.TestCase):
             queue = bot.build_proactive_v2_queue(now=now, days=2, families={"task"})
 
         self.assertEqual(queue, [])
+
+    def test_due_nudges_skip_stale_pending_one_shots(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 29, 20, 0))
+        nudges = [
+            {
+                "id": "old",
+                "message": "Old thing",
+                "send_at": (now - bot.timedelta(days=3)).isoformat(),
+                "status": "pending",
+            },
+            {
+                "id": "fresh",
+                "message": "Fresh thing",
+                "send_at": (now - bot.timedelta(minutes=5)).isoformat(),
+                "status": "pending",
+            },
+        ]
+
+        with patch.object(bot.gs, "get_nudges", return_value=nudges):
+            due = bot.gs.due_nudges(now)
+
+        self.assertEqual([item["id"] for item in due], ["fresh"])
+
+    def test_expire_stale_nudges_marks_old_pending_nudges_expired(self):
+        now = bot.SGT.localize(bot.datetime(2026, 5, 29, 20, 0))
+        old = {
+            "id": "7",
+            "message": "Old thing",
+            "send_at": (now - bot.timedelta(days=3)).isoformat(),
+            "status": "pending",
+        }
+        fresh = {
+            "id": "8",
+            "message": "Fresh thing",
+            "send_at": (now - bot.timedelta(minutes=5)).isoformat(),
+            "status": "pending",
+        }
+
+        with (
+            patch.object(bot.gs, "get_nudges", return_value=[old, fresh]),
+            patch.object(bot.gs, "set_nudges") as set_nudges,
+            patch.object(bot.gs, "_set_redis_nudges") as set_redis,
+        ):
+            expired = bot.gs.expire_stale_nudges(now=now)
+
+        self.assertEqual(expired, 1)
+        self.assertEqual(old["status"], "expired")
+        self.assertEqual(fresh["status"], "pending")
+        set_nudges.assert_called_once()
+        set_redis.assert_not_called()
+
+    def test_due_followups_skip_items_stale_for_more_than_grace_window(self):
+        followups = [
+            {
+                "id": "1",
+                "person": "A",
+                "topic": "Very old follow-up",
+                "due_date": "2026-04-01",
+                "last_prompted": "",
+            },
+            {
+                "id": "2",
+                "person": "B",
+                "topic": "Recent follow-up",
+                "due_date": "2026-05-28",
+                "last_prompted": "",
+            },
+        ]
+
+        with patch.object(bot.gs, "get_followups", return_value=followups):
+            due = bot.gs.due_followups("2026-05-29")
+
+        self.assertEqual([item["id"] for item in due], ["2"])
 
     def test_dispatch_marks_action_reminder_after_confirmed_push(self):
         future_start = (bot.datetime.now(bot.SGT) + bot.timedelta(minutes=30)).isoformat()
@@ -4776,6 +4872,32 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("not going to guess from memory", reply)
         self.assertIn("FotMob team-page probe", reply)
 
+    def test_backend_f1_fallback_uses_calendar_and_hides_tool_scaffold(self):
+        result = "\n".join([
+            "Formula 1 structured live brief",
+            "Answer guidance: cite sources and distinguish confirmed reports from rumours.",
+            "Official 2026 F1 calendar window",
+            "SOURCE CONTRACT: status=confirmed; as_of=2026-05-29; source=Formula 1 official calendar; reason=next listed race weekend is Monaco Grand Prix (2026-06-05 to 2026-06-07).",
+            "- Upcoming: R8 Monaco Grand Prix (Monaco) | 2026-06-05 to 2026-06-07 | Monaco | in 7 days",
+            "Championship standings",
+            "- No recent Google News items found.",
+        ])
+
+        async def fake_execute_tool(name, inp):
+            self.assertEqual(name, "get_f1_brief")
+            return result
+
+        with patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool):
+            text, tool, _result = asyncio.run(web_app._source_check_backend_fallback_payload(
+                "Anything to look forward to for F1 in the coming days Hira?"
+            ))
+
+        self.assertEqual(tool, "get_f1_brief")
+        self.assertIn("live F1 source check", text)
+        self.assertIn("Monaco Grand Prix", text)
+        self.assertNotIn("Answer guidance", text)
+        self.assertNotIn("No recent Google News items", text)
+
     def test_whats_up_routes_as_quick_chat_not_status_brief(self):
         async def fake_quick_reply(messages, message):
             self.assertEqual(message, "Whats up")
@@ -5170,6 +5292,7 @@ class AgenticClaudeTests(unittest.TestCase):
             body = asyncio.run(run())
 
         self.assertIn('"final_mode": "model_failure"', body)
+        self.assertIn('"error_detail": "RuntimeError: model down"', body)
         self.assertIn("chat handoff failed", body)
         self.assertNotIn('"type": "error"', body)
         self.assertNotIn("backend snag", body.lower())
@@ -6105,6 +6228,23 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertNotIn("include", degraded)
         self.assertNotIn("text", degraded)
         self.assertEqual(degraded["tools"], [{"type": "function", "name": "get_latest_news", "parameters": {"type": "object"}}])
+
+    def test_openai_degraded_request_drops_stale_previous_response_id(self):
+        kwargs = {
+            "model": "gpt-5.5",
+            "input": [{"role": "user", "content": "hi"}],
+            "previous_response_id": "resp_stale",
+            "prompt_cache_key": "hira-prompt:test",
+            "safety_identifier": "hira-user:test",
+        }
+
+        degraded = bot._openai_degraded_request_kwargs(
+            kwargs,
+            ValueError("Invalid previous_response_id: response resp_stale does not exist"),
+        )
+
+        self.assertNotIn("previous_response_id", degraded)
+        self.assertEqual(degraded["input"], kwargs["input"])
 
     def test_source_contracts_from_tool_results_are_structured(self):
         contracts = bot._source_contracts_from_tool_results([{
@@ -8880,6 +9020,44 @@ class AgenticClaudeTests(unittest.TestCase):
         self.assertIn("Removed 3 matching app notifications.", reply)
         self.assertEqual([call.args[0] for call in cancel.call_args_list], ["78", "79", "80"])
         self.assertEqual([call.args[0] for call in archive.call_args_list], [["91"], ["92"], ["93"]])
+
+    def test_pwa_followups_command_lists_open_followups(self):
+        followups = [
+            {
+                "id": "7",
+                "person": "Aisyah",
+                "topic": "check on forms",
+                "due_date": "2026-05-29",
+                "channel": "WhatsApp",
+                "notes": "",
+            }
+        ]
+
+        with patch.object(bot.gs, "get_followups", return_value=followups):
+            reply, tool = web_app._pwa_followup_command_reply("/followups")
+
+        self.assertEqual(tool, "list_followups")
+        self.assertIn("Open follow-ups", reply)
+        self.assertIn("check on forms", reply)
+        self.assertIn("/donefollowup <id>", reply)
+
+    def test_pwa_donefollowup_command_completes_and_archives_notification(self):
+        notifications = [
+            {"id": "9", "source": "followup:7", "archived": False},
+            {"id": "10", "source": "followup:8", "archived": False},
+        ]
+
+        with (
+            patch.object(bot.gs, "complete_followup", return_value=True) as complete,
+            patch.object(bot.gs, "get_app_notifications", return_value=notifications),
+            patch.object(bot.gs, "archive_app_notifications", return_value=1) as archive,
+        ):
+            reply, tool = web_app._pwa_followup_command_reply("/donefollowup 7")
+
+        self.assertEqual(tool, "complete_followup")
+        self.assertIn("Follow-up #7 marked done", reply)
+        complete.assert_called_once_with("7")
+        archive.assert_called_once_with(["9"])
 
     def test_pwa_natural_request_removes_devotional_reminders(self):
         with patch.object(bot, "remove_devotional_reminders", return_value={

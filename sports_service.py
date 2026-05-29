@@ -27,6 +27,33 @@ ESPN_LIVERPOOL_LEAGUES = (
     ("eng.league_cup", "Carabao Cup"),
 )
 FOTMOB_LIVERPOOL_URL = "https://www.fotmob.com/teams/8650/overview/liverpool"
+F1_2026_CALENDAR_SOURCE = "https://www.formula1.com/en/racing/2026"
+F1_2026_RACE_WEEKENDS = [
+    {"round": 1, "name": "Australian Grand Prix", "short": "Australia", "start": "2026-03-06", "end": "2026-03-08", "location": "Melbourne, Australia"},
+    {"round": 2, "name": "Chinese Grand Prix", "short": "China", "start": "2026-03-13", "end": "2026-03-15", "location": "Shanghai, China"},
+    {"round": 3, "name": "Japanese Grand Prix", "short": "Japan", "start": "2026-03-27", "end": "2026-03-29", "location": "Suzuka, Japan"},
+    {"round": 4, "name": "Bahrain Grand Prix", "short": "Bahrain", "start": "2026-04-10", "end": "2026-04-12", "location": "Sakhir, Bahrain"},
+    {"round": 5, "name": "Saudi Arabian Grand Prix", "short": "Saudi Arabia", "start": "2026-04-17", "end": "2026-04-19", "location": "Jeddah, Saudi Arabia"},
+    {"round": 6, "name": "Miami Grand Prix", "short": "Miami", "start": "2026-05-01", "end": "2026-05-03", "location": "Miami, United States"},
+    {"round": 7, "name": "Canadian Grand Prix", "short": "Canada", "start": "2026-05-22", "end": "2026-05-24", "location": "Montreal, Canada"},
+    {"round": 8, "name": "Monaco Grand Prix", "short": "Monaco", "start": "2026-06-05", "end": "2026-06-07", "location": "Monaco"},
+    {"round": 9, "name": "Barcelona-Catalunya Grand Prix", "short": "Barcelona-Catalunya", "start": "2026-06-12", "end": "2026-06-14", "location": "Barcelona, Spain"},
+    {"round": 10, "name": "Austrian Grand Prix", "short": "Austria", "start": "2026-06-26", "end": "2026-06-28", "location": "Spielberg, Austria"},
+    {"round": 11, "name": "British Grand Prix", "short": "Great Britain", "start": "2026-07-03", "end": "2026-07-05", "location": "Silverstone, United Kingdom"},
+    {"round": 12, "name": "Belgian Grand Prix", "short": "Belgium", "start": "2026-07-17", "end": "2026-07-19", "location": "Spa-Francorchamps, Belgium"},
+    {"round": 13, "name": "Hungarian Grand Prix", "short": "Hungary", "start": "2026-07-24", "end": "2026-07-26", "location": "Budapest, Hungary"},
+    {"round": 14, "name": "Dutch Grand Prix", "short": "Netherlands", "start": "2026-08-21", "end": "2026-08-23", "location": "Zandvoort, Netherlands"},
+    {"round": 15, "name": "Italian Grand Prix", "short": "Italy", "start": "2026-09-04", "end": "2026-09-06", "location": "Monza, Italy"},
+    {"round": 16, "name": "Spanish Grand Prix", "short": "Spain", "start": "2026-09-11", "end": "2026-09-13", "location": "Madrid, Spain"},
+    {"round": 17, "name": "Azerbaijan Grand Prix", "short": "Azerbaijan", "start": "2026-09-24", "end": "2026-09-26", "location": "Baku, Azerbaijan"},
+    {"round": 18, "name": "Singapore Grand Prix", "short": "Singapore", "start": "2026-10-09", "end": "2026-10-11", "location": "Singapore"},
+    {"round": 19, "name": "United States Grand Prix", "short": "United States", "start": "2026-10-23", "end": "2026-10-25", "location": "Austin, United States"},
+    {"round": 20, "name": "Mexico City Grand Prix", "short": "Mexico", "start": "2026-10-30", "end": "2026-11-01", "location": "Mexico City, Mexico"},
+    {"round": 21, "name": "Sao Paulo Grand Prix", "short": "Brazil", "start": "2026-11-06", "end": "2026-11-08", "location": "Sao Paulo, Brazil"},
+    {"round": 22, "name": "Las Vegas Grand Prix", "short": "Las Vegas", "start": "2026-11-19", "end": "2026-11-21", "location": "Las Vegas, United States"},
+    {"round": 23, "name": "Qatar Grand Prix", "short": "Qatar", "start": "2026-11-27", "end": "2026-11-29", "location": "Lusail, Qatar"},
+    {"round": 24, "name": "Abu Dhabi Grand Prix", "short": "Abu Dhabi", "start": "2026-12-04", "end": "2026-12-06", "location": "Yas Marina, Abu Dhabi"},
+]
 
 
 def _clamp_items(value: int | None, default: int = 3) -> int:
@@ -40,7 +67,11 @@ def _format_items(label: str, query: str, max_items: int) -> list[str]:
     lines = [f"{label}"]
     items = ss.google_news(query, max_items=max_items)
     if not items:
-        lines.append("- No recent Google News items found.")
+        error = ss.google_news_last_error(query) if hasattr(ss, "google_news_last_error") else ""
+        if error:
+            lines.append(f"- Google News RSS failed: {error}")
+        else:
+            lines.append("- No recent Google News items found.")
     for item in items:
         meta = []
         if item.get("source"):
@@ -58,11 +89,14 @@ def _format_search(query: str, max_items: int) -> list[str]:
     if not ss.search_enabled():
         return [
             "Targeted web search",
-            "- Disabled: set TAVILY_API_KEY for broader live web results beyond Google News RSS.",
+            "- Disabled: HIRA_DISABLE_WEB_SEARCH is on.",
         ]
     results = ss.web_search(query, max_results=max_items)
     if not results:
-        return ["Targeted web search", "- No Tavily results found."]
+        note = "- No secondary web results found."
+        if not ss.tavily_configured():
+            note += " Tavily is not configured; no-key fallbacks also returned nothing."
+        return ["Targeted web search", note]
     lines = ["Targeted web search"]
     for result in results:
         lines.append(f"- {result.get('title', '')}")
@@ -70,6 +104,50 @@ def _format_search(query: str, max_items: int) -> list[str]:
             lines.append(f"  {result['description']}")
         if result.get("url"):
             lines.append(f"  {result['url']}")
+    return lines
+
+
+def _parse_iso_date(value: str) -> date | None:
+    try:
+        return date.fromisoformat(str(value or "")[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_f1_calendar_window(focus: str = "", max_items: int = 3, today: date | None = None) -> list[str]:
+    current = today or date.today()
+    count = _clamp_items(max_items)
+    horizon_days = 21 if re.search(r"\b(?:coming|next|upcoming|soon|days?|weekend)\b", focus or "", re.I) else 45
+    horizon = current + timedelta(days=horizon_days)
+    upcoming = []
+    for race in F1_2026_RACE_WEEKENDS:
+        start = _parse_iso_date(race["start"])
+        end = _parse_iso_date(race["end"])
+        if start and end and end >= current:
+            upcoming.append((race, start, end))
+    window = [item for item in upcoming if item[1] <= horizon] or upcoming[:count]
+    lines = ["Official 2026 F1 calendar window"]
+    if not window:
+        lines.append(
+            f"SOURCE CONTRACT: status=unconfirmed; as_of={current.isoformat()}; "
+            f"source=Formula 1 official calendar; reason=no remaining 2026 race weekend in local calendar data."
+        )
+        return lines
+    first_race, _first_start, _first_end = window[0]
+    lines.append(
+        f"SOURCE CONTRACT: status=confirmed; as_of={current.isoformat()}; "
+        f"source=Formula 1 official calendar; reason=next listed race weekend is "
+        f"{first_race['name']} ({first_race['start']} to {first_race['end']})."
+    )
+    for race, start, end in window[:count]:
+        days_until = (start - current).days
+        when = "now" if start <= current <= end else f"in {days_until} day{'s' if days_until != 1 else ''}"
+        sprint = " sprint weekend" if race.get("sprint") else ""
+        lines.append(
+            f"- Upcoming: R{race['round']} {race['name']} ({race['short']}) | "
+            f"{race['start']} to {race['end']} | {race['location']} | {when}{sprint}"
+        )
+    lines.append(f"Official calendar source: {F1_2026_CALENDAR_SOURCE}")
     return lines
 
 
@@ -524,6 +602,8 @@ def build_f1_brief(focus: str = "", max_items: int = 3) -> str:
         "Answer guidance: cite sources, prioritise Mercedes/Russell/Antonelli while keeping Hamilton context, and distinguish confirmed reports from rumours.",
         "",
     ]
+    lines.extend(_format_f1_calendar_window(focus_text, count))
+    lines.append("")
     lines.extend(_format_sections(sections, count))
     lines.extend(_format_search(f"Formula 1 {focus_text}", count))
     return "\n".join(lines).strip()

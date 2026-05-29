@@ -39,6 +39,8 @@ except Exception:  # pragma: no cover - import failure is reported at use-site
 
 SGT = pytz.timezone('Asia/Singapore')
 logger = logging.getLogger(__name__)
+NUDGE_STALE_HOURS = 24
+FOLLOWUP_STALE_DAYS = 30
 
 SCOPES = [
     'https://www.googleapis.com/auth/calendar',
@@ -5094,8 +5096,8 @@ def _normalise_nudges(nudges: list, include_sent=False) -> list:
     for nudge in nudges:
         if not isinstance(nudge, dict):
             continue
-        status = nudge.get("status", "pending")
-        if status == "sent" and not include_sent:
+        status = str(nudge.get("status", "pending")).strip().lower() or "pending"
+        if status != "pending" and not include_sent:
             continue
         clean.append({
             "id": str(nudge.get("id", "")),
@@ -5243,20 +5245,67 @@ def cancel_nudge(nudge_id: str) -> bool:
         return changed
 
 
+def _parse_nudge_send_at(value: str) -> datetime | None:
+    try:
+        send_at = datetime.fromisoformat(str(value or "").strip())
+    except Exception:
+        return None
+    if send_at.tzinfo is None:
+        return SGT.localize(send_at)
+    return send_at.astimezone(SGT)
+
+
+def expire_stale_nudges(now: datetime | None = None, max_age_hours: int = NUDGE_STALE_HOURS) -> int:
+    current = now or datetime.now(SGT)
+    if current.tzinfo is None:
+        current = SGT.localize(current)
+    else:
+        current = current.astimezone(SGT)
+    cutoff = current - timedelta(hours=max(1, int(max_age_hours or NUDGE_STALE_HOURS)))
+    with _storage_mutation_lock("proactive_nudges", _nudges_mutation_lock):
+        nudges = get_nudges(include_sent=True)
+        expired = 0
+        for nudge in nudges:
+            if str(nudge.get("status", "")).strip().lower() != "pending":
+                continue
+            send_at = _parse_nudge_send_at(nudge.get("send_at", ""))
+            if not send_at or send_at >= cutoff:
+                continue
+            nudge["status"] = "expired"
+            nudge["sent_at"] = current.isoformat()
+            expired += 1
+        if not expired:
+            return 0
+        sheet_items = [n for n in nudges if not str(n.get("id", "")).startswith("r-")]
+        redis_items = [n for n in nudges if str(n.get("id", "")).startswith("r-")]
+        try:
+            set_nudges(sheet_items)
+        except Exception as exc:
+            logger.warning(f"Could not expire stale Sheets nudges; preserving state in Redis fallback: {exc}")
+            _set_redis_nudges(nudges)
+            return expired
+        if redis_items:
+            _set_redis_nudges(redis_items)
+        return expired
+
+
 def due_nudges(now: datetime) -> list:
+    current = now
+    if current.tzinfo is None:
+        current = SGT.localize(current)
+    else:
+        current = current.astimezone(SGT)
+    cutoff = current - timedelta(hours=NUDGE_STALE_HOURS)
     due = []
     for nudge in get_nudges(include_sent=True):
         if nudge.get("status") != "pending":
             continue
-        try:
-            send_at = datetime.fromisoformat(nudge["send_at"])
-            if send_at.tzinfo is None:
-                send_at = SGT.localize(send_at)
-            else:
-                send_at = send_at.astimezone(SGT)
-        except Exception:
+        send_at = _parse_nudge_send_at(nudge.get("send_at", ""))
+        if not send_at:
             continue
-        if send_at <= now:
+        if send_at < cutoff:
+            continue
+        if send_at <= current:
             due.append(nudge)
     return due
 
@@ -5517,9 +5566,20 @@ def add_followup(person: str, topic: str, due_date: str, channel: str = "", note
 
 
 def due_followups(today: str) -> list:
+    try:
+        current = date.fromisoformat(str(today or "")[:10])
+    except Exception:
+        return []
+    stale_before = current - timedelta(days=FOLLOWUP_STALE_DAYS)
     due = []
     for followup in get_followups():
-        if followup["due_date"] <= today and followup.get("last_prompted") != today:
+        try:
+            due_date = date.fromisoformat(str(followup.get("due_date", ""))[:10])
+        except Exception:
+            continue
+        if due_date < stale_before:
+            continue
+        if due_date <= current and followup.get("last_prompted") != today:
             due.append(followup)
     return due
 
