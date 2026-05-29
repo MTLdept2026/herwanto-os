@@ -13812,11 +13812,22 @@ def _openai_text_delta_from_event(event) -> str:
 
 
 async def _openai_stream_response(kwargs: dict):
+    text_parts: list[str] = []
     try:
         async with async_openai_client.responses.stream(**kwargs) as stream:
             async for event in stream:
+                delta = _openai_text_delta_from_event(event)
+                if delta:
+                    text_parts.append(delta)
                 yield event
-            final_response = await stream.get_final_response()
+            try:
+                final_response = await stream.get_final_response()
+            except RuntimeError as exc:
+                incomplete = _openai_incomplete_stream_response(kwargs, text_parts, exc)
+                if incomplete:
+                    yield incomplete
+                    return
+                raise
         _record_openai_usage(final_response, kwargs, stream=True)
         yield SimpleNamespace(type="hira.final_response", response=final_response, request_kwargs=kwargs)
     except Exception as exc:
@@ -13824,12 +13835,43 @@ async def _openai_stream_response(kwargs: dict):
         if not degraded:
             raise
         logger.warning("OpenAI Responses stream failed; retrying with conservative options: %s", exc)
+        text_parts = []
         async with async_openai_client.responses.stream(**degraded) as stream:
             async for event in stream:
+                delta = _openai_text_delta_from_event(event)
+                if delta:
+                    text_parts.append(delta)
                 yield event
-            final_response = await stream.get_final_response()
+            try:
+                final_response = await stream.get_final_response()
+            except RuntimeError as retry_exc:
+                incomplete = _openai_incomplete_stream_response(degraded, text_parts, retry_exc)
+                if incomplete:
+                    yield incomplete
+                    return
+                raise
         _record_openai_usage(final_response, degraded, stream=True)
         yield SimpleNamespace(type="hira.final_response", response=final_response, request_kwargs=degraded)
+
+
+def _openai_incomplete_stream_response(kwargs: dict, text_parts: list[str], exc: RuntimeError):
+    if "response.completed" not in str(exc) or not text_parts:
+        return None
+    text = "".join(text_parts)
+    logger.warning("OpenAI stream ended without response.completed; using streamed text fallback.")
+    response = SimpleNamespace(
+        id="",
+        model=str(kwargs.get("model") or ""),
+        status="incomplete",
+        output_text=text,
+        output=[],
+    )
+    return SimpleNamespace(
+        type="hira.final_response",
+        response=response,
+        request_kwargs=kwargs,
+        incomplete=True,
+    )
 
 
 def _openai_effective_response_model(resp, request_kwargs: dict | None = None) -> str:

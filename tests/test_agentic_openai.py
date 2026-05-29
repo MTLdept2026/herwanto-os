@@ -7709,6 +7709,48 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertEqual(events[-1], {"type": "done", "text": "Hello there"})
         self.assertEqual(bot._OPENAI_RESPONSE_STATE["pwa:test-openai-stream"], "resp-stream-1")
 
+    def test_openai_stream_response_keeps_text_when_completed_event_is_missing(self):
+        class FakeStream:
+            def __init__(self):
+                self.events = [
+                    SimpleNamespace(type="response.output_text.delta", delta="Still "),
+                    SimpleNamespace(type="response.output_text.delta", delta="usable."),
+                ]
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if not self.events:
+                    raise StopAsyncIteration
+                return self.events.pop(0)
+
+            async def get_final_response(self):
+                raise RuntimeError("Didn't receive a `response.completed` event.")
+
+        class FakeResponses:
+            def stream(self, **kwargs):
+                return FakeStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        with patch.object(bot, "async_openai_client", fake_client):
+            events = asyncio.run(_collect_async(bot._openai_stream_response({
+                "model": "gpt-5.4-mini",
+                "input": [{"role": "user", "content": "hi"}],
+            })))
+
+        self.assertEqual("".join(bot._openai_text_delta_from_event(event) for event in events), "Still usable.")
+        final = events[-1]
+        self.assertEqual(final.type, "hira.final_response")
+        self.assertEqual(final.response.status, "incomplete")
+        self.assertEqual(final.response.output_text, "Still usable.")
+
     def test_openai_streaming_carries_fallback_model_into_tool_followup(self):
         calls = []
 
