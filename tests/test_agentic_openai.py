@@ -8576,6 +8576,32 @@ class AgenticOpenAITests(unittest.TestCase):
         cancel.assert_called_once_with("7")
         archive.assert_called_once_with(["9"])
 
+    def test_pwa_cancelnudge_command_understands_natural_delete_with_ids(self):
+        notifications = [
+            {"id": "31", "source": "nudge:7", "archived": False},
+            {"id": "32", "source": "nudge:8", "archived": False},
+        ]
+
+        with (
+            patch.object(bot.gs, "cancel_nudge", return_value=True) as cancel,
+            patch.object(bot.gs, "get_app_notifications", return_value=notifications),
+            patch.object(bot.gs, "archive_app_notifications", return_value=2) as archive,
+        ):
+            reply, tool = web_app._pwa_nudge_command_reply("Delete nudges 7 and 8")
+
+        self.assertEqual(tool, "cancel_nudge")
+        self.assertIn("Cancelled nudges: #7, #8.", reply)
+        self.assertEqual([call.args[0] for call in cancel.call_args_list], ["7", "8"])
+        self.assertEqual([call.args[0] for call in archive.call_args_list], [["31"], ["32"]])
+
+    def test_pwa_cancelnudge_command_requires_ids_for_vague_delete(self):
+        with patch.object(bot.gs, "cancel_nudge") as cancel:
+            reply, tool = web_app._pwa_nudge_command_reply("Delete all queued nudges")
+
+        self.assertEqual(tool, "cancel_nudge")
+        self.assertIn("exact nudge ID", reply)
+        cancel.assert_not_called()
+
     def test_pwa_cancelnudge_command_accepts_comma_separated_ids(self):
         notifications = [
             {"id": "91", "source": "nudge:78", "archived": False},

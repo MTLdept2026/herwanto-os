@@ -4185,9 +4185,21 @@ def _pwa_nudge_command_reply(message: str) -> tuple[str, str] | None:
         return "\n".join(lines), "list_nudges"
 
     match = re.match(r"^/(?:cancelnudge|cancel_nudge)\s+(.+?)\s*$", clean, re.I)
+    target_text = match.group(1) if match else ""
     if not match:
-        return None
-    nudge_ids = _parse_nudge_ids(match.group(1))
+        wants_cancel = (
+            re.search(r"\bnudges?\b", lower)
+            and re.search(r"\b(?:cancel|clear|delete|remove|dismiss|kill|stop)\b", lower)
+            and not re.search(r"\b(?:add|create|schedule|set)\b", lower)
+        )
+        if not wants_cancel:
+            return None
+        after_nudge = re.search(r"\bnudges?\b\s*(.+?)\s*$", clean, re.I)
+        target_text = after_nudge.group(1) if after_nudge else clean
+        if not _parse_nudge_ids(target_text):
+            return "Tell me the exact nudge ID(s) to cancel, e.g. `/cancelnudge 78` or `clear nudges 78, 79`.", "cancel_nudge"
+
+    nudge_ids = _parse_nudge_ids(target_text)
     if not nudge_ids:
         return "Send `/cancelnudge 78` or `/cancelnudge 78, 79, 80` to clear pending nudges.", "cancel_nudge"
 
