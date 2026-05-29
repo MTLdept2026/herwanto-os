@@ -8337,6 +8337,17 @@ class AgenticOpenAITests(unittest.TestCase):
 
         self.assertEqual(bot._forced_tool_for_current_turn(messages, tools), "get_gmail_brief")
 
+    def test_work_email_action_scan_forces_gmail_before_tasks(self):
+        text = (
+            "Hey check my work email last 3 days for stuff i need to act on.\n\n"
+            "[Email account hint: use account=\"work\" for Gmail tools.]"
+        )
+        tools = bot.pwa_tools_for_message(text)
+
+        self.assertIn("get_task_brief", [tool["name"] for tool in tools])
+        self.assertEqual(bot._forced_tool_for_current_turn([{"role": "user", "content": text}], tools), "get_gmail_brief")
+        self.assertFalse(asyncio.run(bot.should_route_quick_pwa_chat([], text)))
+
     def test_weather_question_forces_nea_weather_tool(self):
         forced = bot._forced_tool_for_text(
             "Will it rain in Yishun later?",

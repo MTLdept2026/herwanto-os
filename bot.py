@@ -11450,7 +11450,13 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     if (
         "get_gmail_brief" in available
         and (gmail_intent or "gmail" in semantic_flags)
-        and has_any(["follow up", "follow-up", "chase", "note", "remember", "remind", "settle", "sort", "handle"])
+        and has_any([
+            "read", "check", "pull up", "show", "review", "scan", "triage",
+            "latest", "recent", "last ", "follow up", "follow-up", "chase",
+            "note", "remember", "remind", "settle", "sort", "handle",
+            "act on", "needs action", "need action", "needs my attention",
+            "immediate attention",
+        ])
         and not has_any(["draft", "write", "compose", "reply", "send "])
     ):
         return "get_gmail_brief"
