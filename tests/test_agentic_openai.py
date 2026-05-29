@@ -3703,6 +3703,7 @@ class AgenticOpenAITests(unittest.TestCase):
             patch("search_service.tavily_configured", return_value=False),
             patch("search_service.tavily_search") as tavily_search,
             patch("search_service.web_search") as web_search,
+            patch.object(bot.logger, "info") as logger_info,
             patch.dict(os.environ, {
                 "HIRA_DIGEST_SOCIAL_SEARCH": "1",
                 "HIRA_DIGEST_SOCIAL_DOMAINS": "x.com,twitter.com",
@@ -3713,6 +3714,7 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertEqual(items, [])
         tavily_search.assert_not_called()
         web_search.assert_not_called()
+        logger_info.assert_not_called()
 
     def test_free_source_digest_adds_rss_items_without_paid_search(self):
         def fake_rss_feed_items(url, source_label="", max_items=3):

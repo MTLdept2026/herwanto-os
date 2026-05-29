@@ -8105,7 +8105,6 @@ def _digest_social_items(label: str, query: str, max_items: int = 1) -> list[dic
     if not _digest_social_enabled() or not ss.search_enabled() or not _digest_social_topic_allowed(label, query):
         return []
     if not ss.tavily_configured():
-        logger.info("Skipping social digest search for %s: TAVILY_API_KEY is not configured", label)
         return []
     limit = max(1, min(int(max_items or 1), 2))
     items: list[dict] = []
