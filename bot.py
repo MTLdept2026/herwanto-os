@@ -414,6 +414,11 @@ def _agentic_model_for_messages(messages: list[dict]) -> str:
 
 def specialist_policy_for_text(text: str = "") -> dict:
     clean = str(text or "").lower()
+    if _is_conversational_self_read_text(clean):
+        return {"specialist": "general", "reason": "conversational_self_read"}
+    sports_entity = bool(SPORTS_FANDOM_ENTITY_PATTERN.search(clean))
+    if sports_entity and not _is_casual_sports_lifestyle_text(clean) and LIVE_SPORTS_FACT_PATTERN.search(clean):
+        return {"specialist": "sports_live", "reason": "matched_sports_live_fact"}
     checks = [
         ("calendar_actions", r"\b(?:calendar|schedule|appointment|meeting|reminder|nudge|task|deadline|done|delete|cancel|book)\b"),
         ("teaching", r"\b(?:classlist|class list|students?|marks?|scores?|lesson plan|worksheet|rubric|marking|mtl|oral|exam)\b"),
@@ -690,6 +695,29 @@ CASUAL_SPORTS_LIFESTYLE_PATTERN = re.compile(
     r"\b(?:distraction|hobby|watch|play|fill|void|bored|something new)\b.*\b(?:epl|premier league|football|season|weekend)\b",
     re.I,
 )
+SPORTS_FANDOM_ENTITY_PATTERN = re.compile(
+    r"\b(?:liverpool|lfc|anfield|ynwa|epl|premier league|football|f1|formula 1|grand prix|"
+    r"mercedes|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike)\b",
+    re.I,
+)
+SPORTS_FANDOM_SELF_READ_PATTERN = re.compile(
+    r"\b(?:fan|support(?:er|ing|ed)?|follow(?:ed|ing)?|long[- ]suffering|lifelong|loyal)\b"
+    r".{0,160}\b(?:what kind of|what type of|what does (?:that|this|it) say|say(?:s)? about me|"
+    r"make(?:s)? me|who am i|do you think i am|am i cooked|am i broken|diagnose|personality|"
+    r"character|vibe|read)\b|"
+    r"\b(?:what kind of|what type of|what does (?:that|this|it) say|say(?:s)? about me|"
+    r"make(?:s)? me|who am i|do you think i am|am i cooked|am i broken|diagnose|personality|"
+    r"character|vibe|read)\b.{0,160}\b(?:fan|support(?:er|ing|ed)?|follow(?:ed|ing)?|"
+    r"long[- ]suffering|lifelong|loyal)\b",
+    re.I,
+)
+SELF_READ_QUERY_PATTERN = re.compile(
+    r"\b(?:what kind of|what type of|what does (?:that|this|it) say about me|"
+    r"what'?s that say about me|say(?:s)? about my taste|say(?:s)? about me|"
+    r"am i cooked|am i broken|diagnose me|diagnose my taste|read me|read my taste|"
+    r"what am i|who am i)\b",
+    re.I,
+)
 
 
 def _is_casual_sports_lifestyle_text(text: str) -> bool:
@@ -698,7 +726,43 @@ def _is_casual_sports_lifestyle_text(text: str) -> bool:
         return False
     if LIVE_SPORTS_FACT_PATTERN.search(clean):
         return False
+    if SPORTS_FANDOM_ENTITY_PATTERN.search(clean) and SPORTS_FANDOM_SELF_READ_PATTERN.search(clean):
+        return True
     return bool(CASUAL_SPORTS_LIFESTYLE_PATTERN.search(clean))
+
+
+def _is_conversational_self_read_text(text: str) -> bool:
+    clean = " ".join(str(text or "").lower().split())
+    if not clean:
+        return False
+    if re.search(
+        r"\b(?:latest|current|live|today|tomorrow|result|results|score|scores|standings?|table|"
+        r"line-?up|starting xi|fixtures?|schedule|injur(?:y|ies)|transfers?|rumou?rs?|"
+        r"weather|forecast|price|prices|rollout|release date|news|headlines?|source|sources|"
+        r"look up|search|verify|fact[- ]?check)\b",
+        clean,
+    ):
+        return False
+    if SELF_READ_QUERY_PATTERN.search(clean):
+        return True
+    return bool(
+        re.search(r"\b(?:taste|personality|vibe|aesthetic|character)\b", clean)
+        and re.search(r"\b(?:what|who|am i|kind of|type of|diagnose|read|say about)\b", clean)
+    )
+
+
+def _sports_live_lookup_requested(text: str) -> bool:
+    clean = " ".join(str(text or "").lower().split())
+    if not clean or not SPORTS_FANDOM_ENTITY_PATTERN.search(clean):
+        return False
+    if LIVE_SPORTS_FACT_PATTERN.search(clean):
+        return True
+    return bool(re.search(
+        r"\b(?:what'?s up with|whats up with|anything (?:on|about)|what happened(?: with| to)?|"
+        r"how (?:are|is|did|has|have)|look forward to|coming days?|coming weeks?|upcoming|"
+        r"this weekend|weekend|yesterday|host(?:ed)?|facts? straight|correct|latest|current|news|updates?)\b",
+        clean,
+    ))
 
 DAY_REFERENCE_PATTERN = re.compile(
     r"\b(today|tomorrow|tonight|this\s+week|next\s+week|"
@@ -974,6 +1038,7 @@ _CONVERSATION_ADVICE_RE = re.compile(
     r"\b(?:should i|do you think|what do you think|worth it|would you|what do i do|how do i|any idea if)\b",
     re.I,
 )
+_CONVERSATION_SELF_READ_RE = SELF_READ_QUERY_PATTERN
 _CONVERSATION_ANALYSIS_RE = re.compile(
     r"\b(?:analyse|analyze|analysis|deep dive|compare|comparison|trade[- ]?off|pros and cons|"
     r"break down|walk me through|review|audit|evaluate|architecture|strategy|plan this out)\b",
@@ -1057,7 +1122,7 @@ def conversation_pragmatic_frame(
     subject = _conversation_subject_hint(clean)
     negative_tone = bool(_CONVERSATION_NEGATIVE_TONE_RE.search(clean))
     playful_tone = bool(_CONVERSATION_PLAYFUL_TONE_RE.search(clean))
-    advice_ask = bool(_CONVERSATION_ADVICE_RE.search(clean))
+    advice_ask = bool(_CONVERSATION_ADVICE_RE.search(clean) or _CONVERSATION_SELF_READ_RE.search(clean))
     analysis_ask = bool(_CONVERSATION_ANALYSIS_RE.search(clean))
     factual_query = bool(explicit_ask and _CONVERSATION_FACTUAL_RE.search(clean)) or (
         "?" in clean and not advice_ask and not analysis_ask
@@ -1327,6 +1392,9 @@ def source_discipline_for_text(text: str) -> dict:
     tools: list[str] = []
     semantic_flags = _semantic_intent_flags(clean)
     casual_sports_lifestyle = _is_casual_sports_lifestyle_text(clean)
+    conversational_self_read = _is_conversational_self_read_text(clean)
+    sports_entity_mentioned = bool(SPORTS_FANDOM_ENTITY_PATTERN.search(clean))
+    sports_live_lookup = _sports_live_lookup_requested(clean)
     if re.search(r"https?://\S+", clean):
         tools.append("fetch_url")
     if _is_timetable_verification_query(clean):
@@ -1335,13 +1403,20 @@ def source_discipline_for_text(text: str) -> dict:
         tools.append("get_cca_schedule")
     if (
         not casual_sports_lifestyle
+        and not conversational_self_read
+        and sports_live_lookup
         and re.search(r"\b(liverpool|lfc|epl|premier league|anfield|salah|wirtz|isak|transfer|rumou?r|lineup|starting xi)\b", lowered)
     ):
         tools.append("get_liverpool_brief")
-    if re.search(
-        r"\b(f1|formula 1|grand prix|monaco|mercedes|russell|antonelli|hamilton|"
-        r"qualifying|practice|session timings?|race weekend|driver standings|constructor standings)\b",
-        lowered,
+    if (
+        not casual_sports_lifestyle
+        and not conversational_self_read
+        and sports_live_lookup
+        and re.search(
+            r"\b(f1|formula 1|grand prix|monaco|mercedes|russell|antonelli|hamilton|"
+            r"qualifying|practice|session timings?|race weekend|driver standings|constructor standings)\b",
+            lowered,
+        )
     ):
         tools.append("get_f1_brief")
     if re.search(r"\b(weather|forecast|rain|temperature|haze|psi|pm2\.5)\b", lowered):
@@ -1355,20 +1430,36 @@ def source_discipline_for_text(text: str) -> dict:
         lowered,
     ))
     if (
-        (VOLATILE_FACT_PATTERN.search(clean) and not casual_sports_lifestyle)
+        (
+            VOLATILE_FACT_PATTERN.search(clean)
+            and not casual_sports_lifestyle
+            and not conversational_self_read
+            and (not sports_entity_mentioned or sports_live_lookup)
+        )
         or current_source_sensitive
-        or re.search(r"\b(ai|apple|android|ios|macos|singapore education|moe)\b", lowered)
-        or favourite_news_topic_queries(clean)
+        or (not conversational_self_read and re.search(r"\b(ai|apple|android|ios|macos|singapore education|moe)\b", lowered))
+        or (not conversational_self_read and favourite_news_topic_queries(clean))
         or "news" in semantic_flags
     ):
         tools.append("get_latest_news")
-    if re.search(r"\b(research|deep dive|investigate|compare|comparison|find out|look up|source|sources|official|policy|documentation|docs|evidence)\b", lowered) or "research" in semantic_flags:
+    if not conversational_self_read and (
+        re.search(r"\b(research|deep dive|investigate|compare|comparison|find out|look up|source|sources|official|policy|documentation|docs|evidence)\b", lowered)
+        or "research" in semantic_flags
+    ):
         tools.append("web_research")
-    if re.search(r"\b(search|web|website|article|page|latest|news|headline|rumou?r|digest|shortlist|shortlisted|preferred topics)\b", lowered) or current_source_sensitive:
+    if not conversational_self_read and (
+        re.search(r"\b(search|web|website|article|page|latest|news|headline|rumou?r|digest|shortlist|shortlisted|preferred topics)\b", lowered)
+        or current_source_sensitive
+    ):
         tools.append("web_search")
 
     deduped_tools = list(dict.fromkeys(tools))
-    volatile_fact = bool(VOLATILE_FACT_PATTERN.search(clean)) and not casual_sports_lifestyle
+    volatile_fact = (
+        bool(VOLATILE_FACT_PATTERN.search(clean))
+        and not casual_sports_lifestyle
+        and not conversational_self_read
+        and (not sports_entity_mentioned or sports_live_lookup)
+    )
     needs_live = bool(deduped_tools) or volatile_fact or current_source_sensitive
     confidence = "needs_live_source" if needs_live else "memory_ok"
     reason = (
@@ -11301,13 +11392,15 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
         return None
     mark_reference_action = bool(re.search(r"\bmark\s+(?:it|this|that)\b", clean))
     semantic_flags = _semantic_intent_flags(clean)
+    sports_live_lookup = _sports_live_lookup_requested(clean)
 
     def has_any(words):
         return any(word in clean for word in words)
 
     gmail_intent = has_any([
         "email", "emails", "gmail", "inbox", "unread mail", "unread email",
-        "last mail", "latest mail", "recent mail", "message"
+        "last mail", "latest mail", "recent mail", "work mail", "personal mail",
+        " mail", "message"
     ])
 
     action_intent = has_any([
@@ -11441,7 +11534,7 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     ]):
         return "update_mtl_class_score"
 
-    if "get_mtl_classlists" in available and not mark_reference_action and has_any([
+    if "get_mtl_classlists" in available and not sports_live_lookup and not mark_reference_action and has_any([
         "classlist", "class list", "student", "students", "names", "name list",
         "my classes", "mtl group", "grouping", "1 flagship", "2g3", "3g3", "4nt",
         "score", "scores", "marks", "results", "result", "wa1", "wa2", "exam", "assessment",
@@ -13229,6 +13322,7 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
     effective_text = _contextual_followup_effective_text(text, context).lower()
     combined = f"{context}\n{effective_text}"
     favourite_topic_matches = favourite_news_topic_queries(effective_text, context)
+    conversational_self_read = _is_conversational_self_read_text(effective_text)
     current_source_sensitive = bool(re.search(
         r"\bcurrent\s+(?:events?|news|headlines?|affairs|standings?|table|score|scores|result|results|"
         r"fixture|fixtures|lineup|line-up|weather|forecast|price|prices|cost|rollout|release|"
@@ -13240,6 +13334,22 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
     implicit_task_request = _is_implicit_task_request(effective_text)
     semantic_flags = _semantic_intent_flags(effective_text)
     reference_only_message = _is_reference_only_message(effective_text)
+    sports_entity_mentioned = bool(SPORTS_FANDOM_ENTITY_PATTERN.search(combined))
+    sports_live_lookup = _sports_live_lookup_requested(effective_text)
+    sports_live_factish = bool(sports_entity_mentioned and (sports_live_lookup or LIVE_SPORTS_FACT_PATTERN.search(effective_text)))
+    sports_table_where_query = bool(
+        sports_entity_mentioned
+        and re.search(r"\bwhere\s+(?:are|is)\b.{0,90}\b(?:table|standings?|league|epl|premier league)\b", effective_text)
+    )
+    sports_followup = (
+        re.search(r"\b(match|result|results|recap|details?|score|home|away|host(?:ed)?|fixture|game|what was it like)\b", effective_text)
+        and re.search(r"\b(football|f1|formula 1|liverpool|lfc|man utd|man united|manchester united|premier league|epl|grand prix|mercedes|ferrari|mclaren|red bull)\b", combined)
+    )
+    correction_followup = _looks_like_correction(effective_text) and re.search(
+        r"\b(football|f1|formula 1|liverpool|lfc|man utd|man united|manchester united|premier league|epl|grand prix|mercedes|ferrari|mclaren|red bull)\b",
+        combined,
+    )
+    cca_schedule_query = _is_cca_schedule_query_text(text, context)
     classlist_followup = (
         re.search(r"\b(?:try again|retry|again|nothing filled|not filled|didn'?t fill|did not fill|still blank|same permission|permissions?)\b", text)
         and re.search(r"\b(?:classlist|class list|2g3|3g3|1g2|wa1|wa2|fa1|fa2|percentage|percent|%)\b", context)
@@ -13263,8 +13373,17 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         add(CONTEXT_TOOL, MEMORY_TOOL)
         return tools
 
+    if conversational_self_read:
+        add(CONTEXT_TOOL, MEMORY_TOOL)
+        return tools
+
     if casual_sports_lifestyle:
         add(CONTEXT_TOOL, MEMORY_TOOL)
+        return tools
+
+    if sports_entity_mentioned and not sports_live_lookup and not sports_followup and not correction_followup and not cca_schedule_query:
+        add(CONTEXT_TOOL, MEMORY_TOOL)
+        return tools
 
     if re.search(r"\b(gmail|email|emails|mail|inbox|unread|draft|reply)\b", effective_text) or "gmail" in semantic_flags:
         add(GMAIL_BRIEF_TOOL, GMAIL_DRAFT_TOOL)
@@ -13273,19 +13392,22 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         or _is_timetable_verification_query(text, context)
     ):
         add(TIMETABLE_TOOL, WEEK_TYPE_TOOL)
-    if classlist_followup or re.search(r"\b(classlist|class list|students?|names?|my classes|mtl group|grouping|1 flagship|2g3|3g3|4nt|4nt bml|scores?|marks|results?|wa1|wa2|fa1|fa2|prelim|eoy|weighted assessment|formative assessment|exam|assessment|percentage|percent|%|analyse|analyze|analysis|graph|graphs|chart|charts|trend|mean|median|average|pass rate|underperforming|watchlist|most improved|progress|drop|dropped|colour|color|highlight|red|failures?|failed|below 50|less than 50)\b", effective_text):
+    if classlist_followup or (
+        not sports_live_factish
+        and re.search(r"\b(classlist|class list|students?|names?|my classes|mtl group|grouping|1 flagship|2g3|3g3|4nt|4nt bml|scores?|marks|results?|wa1|wa2|fa1|fa2|prelim|eoy|weighted assessment|formative assessment|exam|assessment|percentage|percent|%|analyse|analyze|analysis|graph|graphs|chart|charts|trend|mean|median|average|pass rate|underperforming|watchlist|most improved|progress|drop|dropped|colour|color|highlight|red|failures?|failed|below 50|less than 50)\b", effective_text)
+    ):
         add(CLASSLIST_TOOL, ANALYZE_MTL_SCORES_TOOL, GENERATE_MTL_TREND_REPORT_TOOL, APPLY_MTL_FAILURE_HIGHLIGHTING_TOOL, UPDATE_CLASS_SCORE_TOOL, FILL_PERCENTAGE_SCORES_TOOL, TIMETABLE_TOOL)
     if (
         re.search(r"\b(calendar|schedule|agenda|today|tomorrow|week|meeting|event|appointment|duty|training|match|cca|what'?s on)\b", effective_text)
         or re.search(r"\b(duplicate|duplicates|duplicated|replicate|replicated|copies|copied|thrice|three times|bulk delete|bulk remove)\b", effective_text)
         or _contextual_followup_tool_from_context(text, context, {"get_assistant_context"}) == "get_assistant_context"
         or _is_day_planning_query(text)
-        or _is_cca_schedule_query_text(text, context)
+        or cca_schedule_query
         or dated_absence_calendar_intent
         or "calendar" in semantic_flags
     ):
         add(CONTEXT_TOOL, CALENDAR_TOOL, DELETE_CALENDAR_TOOL, BULK_DELETE_DUPLICATE_CALENDAR_TOOL, AVAILABILITY_SLOT_TOOL, REMINDER_TOOL, TIMETABLE_TOOL)
-        if _is_cca_schedule_query_text(text, context):
+        if cca_schedule_query:
             add(CCA_SCHEDULE_TOOL)
     if not reference_only_message and (
         re.search(r"\b(task|tasks|due|deadline|remind|reminder|prepare|submit|complete|done|priority|prioritise|prioritize|focus|settle|sort|handle|application|paperwork|form)\b", effective_text)
@@ -13313,18 +13435,12 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         add(WEB_RESEARCH_TOOL, FETCH_URL_TOOL, SOURCE_NOTE_TOOL)
         if ss.search_enabled():
             add(SEARCH_TOOL)
-    sports_followup = (
-        re.search(r"\b(match|result|results|recap|details?|score|home|away|host(?:ed)?|fixture|game|what was it like)\b", effective_text)
-        and re.search(r"\b(football|f1|formula 1|liverpool|lfc|man utd|man united|manchester united|premier league|epl|grand prix|mercedes|ferrari|mclaren|red bull)\b", combined)
-    )
-    correction_followup = _looks_like_correction(effective_text) and re.search(
-        r"\b(football|f1|formula 1|liverpool|lfc|man utd|man united|manchester united|premier league|epl|grand prix|mercedes|ferrari|mclaren|red bull)\b",
-        combined,
-    )
+    sports_tool_context = bool(sports_live_lookup or sports_followup or correction_followup)
     if (
         (
             re.search(r"\b(digest|briefing|news|latest|headline|headlines|search|web|shortlist|shortlisted|preferred topics|football|f1|liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|android|android 17|google i/o|google io|gemini|pixel|apple|ios|ai|singapore education)\b", effective_text)
             and not casual_sports_lifestyle
+            and (not sports_entity_mentioned or sports_live_lookup)
         )
         or current_source_sensitive
         or favourite_topic_matches
@@ -13333,9 +13449,9 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         or "news" in semantic_flags
     ):
         add(NEWS_TOOL, WEB_RESEARCH_TOOL, SOURCE_NOTE_TOOL)
-        if re.search(r"\b(liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|man utd|man united|manchester united)\b", combined):
+        if sports_tool_context and re.search(r"\b(liverpool|lfc|anfield|ynwa|premier league|epl|champions league|fa cup|carabao|transfer|rumou?r|salah|van dijk|alisson|isak|wirtz|mac allister|szoboszlai|gakpo|chiesa|ekitike|man utd|man united|manchester united)\b", combined):
             add(LIVERPOOL_BRIEF_TOOL)
-        if re.search(r"\b(f1|formula 1|grand prix|qualifying|driver standings|constructor standings|mercedes|ferrari|mclaren|red bull|kimi|antonelli|russell|hamilton)\b", combined):
+        if sports_tool_context and re.search(r"\b(f1|formula 1|grand prix|qualifying|driver standings|constructor standings|mercedes|ferrari|mclaren|red bull|kimi|antonelli|russell|hamilton)\b", combined):
             add(F1_BRIEF_TOOL)
         if ss.search_enabled():
             add(SEARCH_TOOL)
@@ -13351,7 +13467,10 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
             add(SEARCH_TOOL)
     if re.search(r"\b(khutbah|sermon|friday sermon|jumu'?ah sermon|jumaah sermon|jumaat sermon)\b", effective_text):
         add(KHUTBAH_TOOL, CONTEXT_TOOL)
-    if re.search(r"\b(location|where|journey|travel|route|directions|commute|drive|driving|mrt|bus|walk|walking|masjid|mosque)\b", effective_text):
+    if (
+        re.search(r"\b(location|where|journey|travel|route|directions|commute|drive|driving|mrt|bus|walk|walking|masjid|mosque)\b", effective_text)
+        and not sports_table_where_query
+    ):
         add(CONTEXT_TOOL, WEATHER_TOOL)
         if ss.search_enabled():
             add(SEARCH_TOOL)
@@ -13699,7 +13818,7 @@ async def _openai_stream_response(kwargs: dict):
                 yield event
             final_response = await stream.get_final_response()
         _record_openai_usage(final_response, kwargs, stream=True)
-        yield SimpleNamespace(type="hira.final_response", response=final_response)
+        yield SimpleNamespace(type="hira.final_response", response=final_response, request_kwargs=kwargs)
     except Exception as exc:
         degraded = _openai_degraded_request_kwargs(kwargs, exc)
         if not degraded:
@@ -13710,7 +13829,14 @@ async def _openai_stream_response(kwargs: dict):
                 yield event
             final_response = await stream.get_final_response()
         _record_openai_usage(final_response, degraded, stream=True)
-        yield SimpleNamespace(type="hira.final_response", response=final_response)
+        yield SimpleNamespace(type="hira.final_response", response=final_response, request_kwargs=degraded)
+
+
+def _openai_effective_response_model(resp, request_kwargs: dict | None = None) -> str:
+    model = str(getattr(resp, "model", "") or "").strip()
+    if model:
+        return model
+    return str((request_kwargs or {}).get("model") or "").strip()
 
 
 async def _run_agentic_openai(messages, max_tokens=2048, tools=None, openai_state_key: str | None = None):
@@ -13754,6 +13880,9 @@ async def _run_agentic_openai(messages, max_tokens=2048, tools=None, openai_stat
             if tool_choice:
                 kwargs["tool_choice"] = tool_choice
             resp = await _openai_create_with_retry_async(kwargs)
+            actual_model = _openai_effective_response_model(resp)
+            if actual_model and actual_model != model:
+                model = actual_model
             response_id = _openai_response_id(resp)
             if response_id:
                 _remember_openai_response_id(openai_state_key, response_id)
@@ -13840,7 +13969,7 @@ async def _run_agentic_chat(
         _TOOL_DIRECT_USER_TEXT.reset(token)
 
 def _looks_tool_heavy(text: str) -> bool:
-    if _is_casual_sports_lifestyle_text(text):
+    if _is_casual_sports_lifestyle_text(text) or _is_conversational_self_read_text(text):
         return False
     return bool(re.search(
         r"\b(calendar|schedule|meeting|event|duty|roster|rostered|nsg|n2a?|c\s*div|b\s*div|remind|nudge|notify|notification|notifications|push|task|due|marking|scripts?|"
@@ -14158,7 +14287,11 @@ async def should_route_quick_pwa_chat(messages: list[dict], message: str) -> boo
         if (
             frame.get("should_route_quick")
             and frame.get("speech_act") == "ask_advice"
-            and (frame.get("subject") or frame.get("tone_read") in {"wry", "stressed", "playful"})
+            and (
+                frame.get("subject")
+                or frame.get("tone_read") in {"wry", "stressed", "playful"}
+                or _CONVERSATION_SELF_READ_RE.search(text)
+            )
         ):
             return True
         return _safe_short_quick_chat(text, recent_context)
@@ -14307,11 +14440,13 @@ async def stream_agentic_openai(
             kwargs["tool_choice"] = tool_choice
 
         resp = None
+        response_request_kwargs = {}
         segment_parts: list[str] = []
         try:
             async for event in _openai_stream_response(kwargs):
                 if getattr(event, "type", "") == "hira.final_response":
                     resp = getattr(event, "response", None)
+                    response_request_kwargs = getattr(event, "request_kwargs", {}) or {}
                     continue
                 native_tool = _openai_native_event_tool_name(event)
                 if native_tool and native_tool not in native_tool_events_seen:
@@ -14341,6 +14476,10 @@ async def stream_agentic_openai(
             break
 
         response_id = _openai_response_id(resp)
+        actual_model = _openai_effective_response_model(resp, response_request_kwargs)
+        if actual_model and actual_model != model:
+            model = actual_model
+            yield {"type": "trace", "patch": {"openai_actual_model": actual_model}}
         if response_id:
             _remember_openai_response_id(openai_state_key, response_id)
             previous_response_id = response_id

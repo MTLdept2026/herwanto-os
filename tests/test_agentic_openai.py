@@ -4926,13 +4926,20 @@ class AgenticOpenAITests(unittest.TestCase):
         async def fake_execute_tool(name, inp):
             self.assertEqual(name, "get_liverpool_brief")
             self.assertEqual(inp["focus"], "what's up with lfc")
-            return "Liverpool FC structured live brief\nFotMob team-page probe"
+            return "\n".join([
+                "Liverpool FC structured live brief",
+                "SOURCE CONTRACT: status=confirmed; as_of=2026-05-09; source=ESPN; reason=latest completed",
+                "Priority result probe",
+                "- Latest completed: Liverpool 1-1 Chelsea | 2026-05-09 | Premier League | Full Time",
+            ])
 
         with patch.object(bot, "_execute_tool", side_effect=fake_execute_tool):
             reply = asyncio.run(web_app._source_check_backend_fallback("what's up with lfc"))
 
-        self.assertIn("not going to guess from memory", reply)
-        self.assertIn("FotMob team-page probe", reply)
+        self.assertIn("live Liverpool source check", reply)
+        self.assertIn("Liverpool 1-1 Chelsea", reply)
+        self.assertNotIn("SOURCE CONTRACT", reply)
+        self.assertNotIn("Priority result probe", reply)
 
     def test_backend_f1_fallback_uses_calendar_and_hides_tool_scaffold(self):
         result = "\n".join([
@@ -5521,6 +5528,53 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertNotIn("get_liverpool_brief", names)
         self.assertEqual(bot.specialist_policy_for_text(text)["specialist"], "general")
 
+    def test_sports_fandom_self_read_is_banter_not_live_source(self):
+        cases = [
+            "As a fan of mercedes and a long suffering lfc supporter over 3 decades, what kind of man do you think i am",
+            "What does it say about me that I support Liverpool and Mercedes?",
+            "Am I cooked for being an LFC and Mercedes fan?",
+        ]
+
+        for text in cases:
+            with self.subTest(text=text):
+                discipline = bot.source_discipline_for_text(text)
+                names = {tool["name"] for tool in bot.pwa_tools_for_message(text)}
+                frame = bot.conversation_pragmatic_frame(text)
+
+                self.assertTrue(bot._is_casual_sports_lifestyle_text(text))
+                self.assertFalse(discipline["needs_live_check"])
+                self.assertEqual(discipline["recommended_tools"], [])
+                self.assertNotIn("get_liverpool_brief", names)
+                self.assertNotIn("get_f1_brief", names)
+                self.assertEqual(web_app._source_tool_for_message(text), "")
+                self.assertEqual(bot.specialist_policy_for_text(text)["specialist"], "general")
+                self.assertEqual(frame["speech_act"], "ask_advice")
+                self.assertEqual(frame["response_mode"], "converse")
+                self.assertTrue(asyncio.run(bot.should_route_quick_pwa_chat([], text)))
+
+    def test_self_read_questions_treat_volatile_entities_as_context(self):
+        cases = [
+            "As a Nothing Phone and Teenage Engineering guy, what does that say about my taste?",
+            "As an Android and iOS tinkerer, what kind of person am I?",
+            "Diagnose my taste: Nothing OS, OP-XY, and old Macs.",
+        ]
+
+        for text in cases:
+            with self.subTest(text=text):
+                discipline = bot.source_discipline_for_text(text)
+                names = {tool["name"] for tool in bot.pwa_tools_for_message(text)}
+                frame = bot.conversation_pragmatic_frame(text)
+
+                self.assertTrue(bot._is_conversational_self_read_text(text))
+                self.assertFalse(discipline["needs_live_check"])
+                self.assertEqual(discipline["recommended_tools"], [])
+                self.assertNotIn("get_latest_news", names)
+                self.assertNotIn("web_search", names)
+                self.assertEqual(web_app._source_tool_for_message(text), "")
+                self.assertEqual(bot.specialist_policy_for_text(text)["specialist"], "general")
+                self.assertEqual(frame["speech_act"], "ask_advice")
+                self.assertEqual(frame["response_mode"], "converse")
+
     def test_current_epl_table_still_requires_live_sources(self):
         text = "Where are Liverpool in the current EPL table?"
 
@@ -5531,6 +5585,35 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertIn("get_liverpool_brief", discipline["recommended_tools"])
         self.assertIn("get_latest_news", discipline["recommended_tools"])
         self.assertIn("get_liverpool_brief", names)
+        self.assertNotIn("get_nea_weather", names)
+
+    def test_sports_live_queries_do_not_pick_classlist_tools_from_score_word(self):
+        text = "latest Mercedes qualifying result and Liverpool score"
+
+        discipline = bot.source_discipline_for_text(text)
+        names = {tool["name"] for tool in bot.pwa_tools_for_message(text)}
+
+        self.assertTrue(discipline["needs_live_check"])
+        self.assertIn("get_liverpool_brief", names)
+        self.assertIn("get_f1_brief", names)
+        self.assertNotIn("get_mtl_classlists", names)
+        self.assertNotIn("analyze_mtl_scores", names)
+
+    def test_sports_entity_only_vent_does_not_trigger_live_tools(self):
+        cases = [
+            "Liverpool stress me out sometimes.",
+            "Mercedes fandom is character building lah.",
+        ]
+
+        for text in cases:
+            with self.subTest(text=text):
+                discipline = bot.source_discipline_for_text(text)
+                names = {tool["name"] for tool in bot.pwa_tools_for_message(text)}
+
+                self.assertFalse(discipline["needs_live_check"])
+                self.assertNotIn("get_liverpool_brief", names)
+                self.assertNotIn("get_f1_brief", names)
+                self.assertEqual(web_app._source_tool_for_message(text), "")
 
     def test_model_policy_ignores_injected_pwa_context_for_triage(self):
         message = (
@@ -5870,6 +5953,7 @@ class AgenticOpenAITests(unittest.TestCase):
         raw = "\n".join([
             "SOURCE CONTRACT: status=confirmed; as_of=2026-05-09; source=ESPN; reason=latest completed",
             "Priority result probe",
+            "Answer rule: answer with the full-time score first.",
             "- filler",
             "- Latest completed: Liverpool 1-1 Chelsea | 2026-05-09 | Premier League | Full Time",
             "Table note: Liverpool currently sits in 4th place",
@@ -5877,8 +5961,11 @@ class AgenticOpenAITests(unittest.TestCase):
 
         summary = web_app._summarise_source_fallback(raw)
 
-        self.assertIn("SOURCE CONTRACT: status=confirmed", summary)
         self.assertIn("Latest completed: Liverpool 1-1 Chelsea", summary)
+        self.assertIn("Table note: Liverpool currently sits in 4th place", summary)
+        self.assertNotIn("SOURCE CONTRACT", summary)
+        self.assertNotIn("Priority result probe", summary)
+        self.assertNotIn("Answer rule", summary)
         self.assertNotIn("filler", summary)
 
     def test_backend_news_fallback_does_not_dump_rss_urls(self):
@@ -6047,6 +6134,17 @@ class AgenticOpenAITests(unittest.TestCase):
             "HIRA_*_MODEL",
             web_app._pwa_model_failure_reply("hi", "NotFoundError: model_not_found"),
         )
+
+    def test_pwa_model_failure_keeps_banter_out_of_source_fallback_language(self):
+        reply = web_app._pwa_model_failure_reply(
+            "As a fan of Mercedes and a long suffering LFC supporter, what kind of man am I?",
+            "RuntimeError: model down",
+        )
+
+        self.assertIn("not a live lookup", reply)
+        self.assertIn("chat engine failed", reply)
+        self.assertNotIn("SOURCE CONTRACT", reply)
+        self.assertNotIn("Liverpool source check", reply)
 
     def test_source_contracts_from_tool_results_are_structured(self):
         contracts = bot._source_contracts_from_tool_results([{
@@ -7610,6 +7708,71 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertEqual(text, "Hello there")
         self.assertEqual(events[-1], {"type": "done", "text": "Hello there"})
         self.assertEqual(bot._OPENAI_RESPONSE_STATE["pwa:test-openai-stream"], "resp-stream-1")
+
+    def test_openai_streaming_carries_fallback_model_into_tool_followup(self):
+        calls = []
+
+        async def fake_stream(kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                yield SimpleNamespace(
+                    type="hira.final_response",
+                    response=SimpleNamespace(
+                        id="resp-tool-call",
+                        model="fallback-agentic",
+                        status="completed",
+                        output_text="",
+                        output=[
+                            SimpleNamespace(
+                                type="function_call",
+                                call_id="call-1",
+                                name="get_gmail_brief",
+                                arguments=json.dumps({"query": "", "max_items": 5}),
+                            )
+                        ],
+                    ),
+                    request_kwargs={**kwargs, "model": "fallback-agentic"},
+                )
+                return
+            self.assertEqual(kwargs["model"], "fallback-agentic")
+            self.assertEqual(kwargs["previous_response_id"], "resp-tool-call")
+            self.assertEqual(kwargs["input"][0]["type"], "function_call_output")
+            yield SimpleNamespace(type="response.output_text.delta", delta="Handled on fallback.")
+            yield SimpleNamespace(
+                type="hira.final_response",
+                response=SimpleNamespace(
+                    id="resp-final",
+                    model="fallback-agentic",
+                    status="completed",
+                    output_text="Handled on fallback.",
+                    output=[],
+                ),
+                request_kwargs=kwargs,
+            )
+
+        async def fake_execute_tool(name, inp):
+            return "Gmail result"
+
+        bot._OPENAI_RESPONSE_STATE.clear()
+        with (
+            patch.object(bot, "AGENTIC_MODEL", "deepseek-v4-flash"),
+            patch.object(bot, "LLM_PROVIDER", "openai"),
+            patch.object(bot, "OPENAI_STORE_RESPONSES", True),
+            patch.object(bot, "OPENAI_USE_PREVIOUS_RESPONSE_ID", True),
+            patch.object(bot, "_openai_stream_response", side_effect=fake_stream),
+            patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool),
+            patch.object(bot, "CACHED_SYSTEM_PROMPT", return_value="system"),
+        ):
+            events = asyncio.run(_collect_async(bot.stream_agentic_chat(
+                [{"role": "user", "content": "tell me about my last emails"}],
+                tools=[{"name": "get_gmail_brief", "input_schema": {"type": "object", "properties": {}}}],
+                openai_state_key="pwa:test-fallback-tool-followup",
+            )))
+
+        text = "".join(event.get("text", "") for event in events if event.get("type") == "text")
+        self.assertEqual(text, "Handled on fallback.")
+        self.assertEqual(calls[0]["model"], "deepseek-v4-flash")
+        self.assertEqual(calls[1]["model"], "fallback-agentic")
 
     def test_openai_request_options_use_previous_response_and_reasoning(self):
         bot._OPENAI_RESPONSE_STATE.clear()

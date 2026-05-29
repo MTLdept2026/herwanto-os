@@ -5163,6 +5163,12 @@ def _safe_chat_error_detail(exc: Exception) -> str:
 
 def _pwa_model_failure_reply(message: str, error_detail: str = "") -> str:
     category = bot.openai_failure_category(error_detail)
+    if bot._is_conversational_self_read_text(message) or bot._is_casual_sports_lifestyle_text(message):
+        return (
+            "I can tell that was a read-the-room question, not a live lookup. "
+            "The chat engine failed before I could answer it properly, so I’m not going to fake the personality bit from regex. "
+            "Try once more after the model is back."
+        )
     if category == "auth":
         return (
             "I’m still here, but OpenAI rejected this app’s API key. "
@@ -5215,11 +5221,31 @@ def _format_source_fallback_answer(message: str, label: str, result: str) -> str
     if label == "news":
         return _summarise_news_fallback(message, result)
     clipped = _summarise_source_fallback(result, limit=1600)
-    return (
-        f"I couldn’t complete the normal answer, so I’m not going to guess from memory. "
-        f"I did run the live {label} source check.\n\n"
-        f"{clipped}"
-    )
+    contract_note = _source_contract_user_note(label, result)
+    parts = [
+        f"I hit the backup path, but I did run the live {label} source check.",
+        contract_note,
+        clipped,
+    ]
+    return "\n\n".join(part for part in parts if part).strip()
+
+
+def _source_contract_user_note(label: str, result: str) -> str:
+    contracts = bot._source_contracts_from_text(result)
+    if not contracts:
+        return ""
+    contract = contracts[0]
+    status = str(contract.get("status", "") or "").strip().lower()
+    as_of = str(contract.get("as_of", "") or "").strip()
+    source = str(contract.get("source", "") or "").strip()
+    reason = str(contract.get("reason", "") or "").strip().rstrip(".")
+    source_bit = f" via {source}" if source else ""
+    as_of_bit = f" as of {as_of}" if as_of else ""
+    if status == "confirmed":
+        return f"Live {label} check confirmed{source_bit}{as_of_bit}."
+    if reason:
+        return f"Live {label} check did not confirm it{source_bit}{as_of_bit}: {reason}."
+    return f"Live {label} check did not confirm it{source_bit}{as_of_bit}."
 
 
 def _fallback_news_items(result: str, limit: int = 3) -> list[str]:
@@ -5276,23 +5302,22 @@ def _summarise_source_fallback(result: str, limit: int = 2200) -> str:
     picked: list[str] = []
     for line in lines:
         lower = line.lower()
+        if _is_source_fallback_scaffold_line(line):
+            continue
         if re.search(r"https?://", line):
             continue
         if (
             lower.endswith("structured live brief")
-            or lower.startswith("answer guidance:")
             or lower in {"- no recent google news items found.", "- no tavily results found."}
             or lower.startswith("- disabled: set tavily_api_key")
         ):
             continue
         if (
-            line.startswith("SOURCE CONTRACT:")
-            or line.startswith("*News:")
+            line.startswith("*News:")
             or "latest completed:" in lower
+            or "next listed fixture:" in lower
             or line.startswith("- Upcoming:")
-            or lower.startswith("official calendar source:")
             or "recent results from fotmob" in lower
-            or "scoreline candidates" in lower
             or "table note:" in lower
             or "upcoming fixtures:" in lower
             or lower.startswith("weather:")
@@ -5307,8 +5332,8 @@ def _summarise_source_fallback(result: str, limit: int = 2200) -> str:
         picked = [
             line for line in lines
             if not re.search(r"https?://", line)
+            and not _is_source_fallback_scaffold_line(line)
             and not line.lower().endswith("structured live brief")
-            and not line.lower().startswith("answer guidance:")
             and line.lower() not in {"- no recent google news items found.", "- no tavily results found."}
             and not line.lower().startswith("- disabled: set tavily_api_key")
         ][:12]
@@ -5319,6 +5344,36 @@ def _summarise_source_fallback(result: str, limit: int = 2200) -> str:
         summary = summary[:limit].rsplit("\n", 1)[0].rstrip()
         summary = f"{summary}\n[Source brief truncated.]"
     return summary
+
+
+def _is_source_fallback_scaffold_line(line: str) -> bool:
+    clean = str(line or "").strip()
+    lower = clean.lower()
+    if not clean:
+        return True
+    return bool(
+        clean.startswith("SOURCE CONTRACT:")
+        or lower.startswith("answer guidance:")
+        or lower.startswith("answer rule:")
+        or lower.startswith("staleness gate:")
+        or lower in {
+            "priority result probe",
+            "authoritative scoreboard probe",
+            "targeted web search",
+            "official 2026 f1 calendar window",
+            "result-source leads:",
+            "demoted stale result/news leads:",
+            "detected scoreline candidates:",
+            "scoreline candidates found on fotmob page:",
+            "recent results from fotmob:",
+            "fotmob team-page probe",
+        }
+        or "scoreline candidates" in lower
+        or lower.endswith("structured live brief")
+        or lower.startswith("- no recent google news items found.")
+        or lower.startswith("- no tavily results found.")
+        or lower.startswith("- disabled: set tavily_api_key")
+    )
 
 
 @app.post("/api/chat/reset")
