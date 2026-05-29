@@ -1030,6 +1030,27 @@ class AgenticOpenAITests(unittest.TestCase):
             self.assertTrue(bot._should_suppress_notification("task_reminder:2026-05-06:31", "reminder", now=now))
             self.assertFalse(bot._should_suppress_notification("task_reminder:2026-05-06:32", "reminder", now=now))
 
+    def test_completed_task_notification_cleanup_archives_done_reminders(self):
+        reminders = [
+            {"id": "31", "description": "Done thing", "due": "2026-05-05", "category": "Teaching", "done": True},
+            {"id": "32", "description": "Open thing", "due": "2026-05-05", "category": "Teaching", "done": False},
+        ]
+        notifications = [
+            {"id": "n1", "source": "task_reminder:2026-05-05:31", "archived": False},
+            {"id": "n2", "source": "task_reminder:2026-05-05:32", "archived": False},
+        ]
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "get_reminders", return_value=reminders),
+            patch.object(bot.gs, "get_app_notifications", return_value=notifications),
+            patch.object(bot.gs, "archive_app_notifications", return_value=1) as archive,
+        ):
+            archived = bot.archive_completed_task_reminder_notifications()
+
+        self.assertEqual(archived, ["n1"])
+        archive.assert_called_once_with(["n1"])
+
     def test_quiet_hours_supports_daytime_windows(self):
         during = bot.SGT.localize(bot.datetime(2026, 5, 6, 14, 0))
         before = bot.SGT.localize(bot.datetime(2026, 5, 6, 10, 0))
@@ -1048,6 +1069,27 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertEqual(reminder_id, 4)
         appended = fake_sheets.spreadsheets_api.values_api.appends[0][3]["values"][0]
         self.assertEqual(appended[0], "4")
+
+    def test_add_reminder_tool_does_not_recreate_completed_exact_match(self):
+        completed = {
+            "id": "4",
+            "description": "Submit remarks",
+            "due": "2026-05-07",
+            "category": "Teaching",
+            "done": True,
+        }
+
+        with (
+            patch.object(bot.gs, "get_reminders", return_value=[completed]),
+            patch.object(bot.gs, "add_reminder") as add_reminder,
+        ):
+            result = asyncio.run(bot._execute_tool(
+                "add_reminder",
+                {"description": "Submit remarks", "due_date": "2026-05-07", "category": "Teaching"},
+            ))
+
+        self.assertIn("already exists and is marked done", result)
+        add_reminder.assert_not_called()
 
     def test_web_push_payload_uses_phone_sized_preview(self):
         payloads = []
@@ -5551,6 +5593,29 @@ class AgenticOpenAITests(unittest.TestCase):
         )
         self.assertEqual(web_app._pwa_topic_news_queries("I asked only about Teenage Engineering and Nothing"), [])
 
+    def test_task_removal_confirmation_does_not_route_to_topic_news(self):
+        context = (
+            "Latest from your shortlist: no fresh item.\n\n"
+            "I found these stale tasks: `[31]` Old Android query, `[32]` Old Nothing query, `[33]` Old OP-XY query. "
+            "Do you want me to remove those 3 tasks?"
+        )
+
+        self.assertEqual(web_app._pwa_topic_news_queries("yes remove those", context), [])
+
+    def test_task_removal_confirmation_marks_previous_task_ids_done(self):
+        context = (
+            "I found these stale tasks: `[31]` Old Android query, `[32]` Old Nothing query, `[33]` Old OP-XY query. "
+            "Do you want me to remove those 3 tasks?"
+        )
+
+        with patch.object(bot, "complete_reminder_by_id", return_value=(True, None)) as complete:
+            reply = web_app._pwa_task_removal_confirmation_reply("yes remove those", context)
+
+        self.assertIsNotNone(reply)
+        self.assertEqual(reply[1], "complete_task_by_text")
+        self.assertIn("Removed 3 tasks", reply[0])
+        self.assertEqual([call.args[0] for call in complete.call_args_list], ["31", "32", "33"])
+
     def test_favourite_topic_news_semantics_ignore_plain_nothing_due(self):
         self.assertEqual(bot.favourite_news_topic_queries("Nothing much to handle."), [])
         discipline = bot.source_discipline_for_text("Nothing much to handle.")
@@ -8778,6 +8843,35 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(synced["title"], "Kefahaman 2G3")
         update_marking.assert_called_once_with("1", done=True)
+
+    def test_completing_reminder_archives_matching_task_notifications(self):
+        reminders = [
+            {
+                "id": "31",
+                "description": "Submit Sec 2 marks",
+                "due": "2026-05-05",
+                "category": "Teaching",
+                "done": False,
+            }
+        ]
+        notifications = [
+            {"id": "n1", "source": "task_reminder:2026-05-05:31", "archived": False},
+            {"id": "n2", "source": "task_reminder:2026-05-05:32", "archived": False},
+            {"id": "n3", "source": "calendar_reminder:2026-05-05:31", "archived": False},
+        ]
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "get_reminders", return_value=reminders),
+            patch.object(bot.gs, "mark_done", return_value=True),
+            patch.object(bot.gs, "get_app_notifications", return_value=notifications),
+            patch.object(bot.gs, "archive_app_notifications", return_value=1) as archive,
+        ):
+            ok, synced = bot.complete_reminder_by_id("31")
+
+        self.assertTrue(ok)
+        self.assertIsNone(synced)
+        archive.assert_called_once_with(["n1"])
 
     def test_complete_task_tool_marks_plural_matching_reminders(self):
         reminders = [

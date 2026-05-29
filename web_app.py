@@ -432,10 +432,15 @@ def _mark_recovered_nudge(source: str):
 
 def _archive_low_value_notifications() -> int:
     try:
+        archived_completed = len(bot.archive_completed_task_reminder_notifications())
+    except Exception as exc:
+        bot.logger.warning(f"Could not archive completed task notifications: {exc}")
+        archived_completed = 0
+    try:
         queued = bot.gs.get_app_notifications(include_archived=False)
     except Exception as exc:
         bot.logger.warning(f"Could not scan low-value notifications: {exc}")
-        return 0
+        return archived_completed
     ids = [
         str(item.get("id", "") or "").strip()
         for item in queued
@@ -447,19 +452,19 @@ def _archive_low_value_notifications() -> int:
     ]
     ids = [item_id for item_id in ids if item_id]
     if not ids:
-        return 0
+        return archived_completed
     try:
         archived = bot.gs.archive_app_notifications(ids)
     except Exception as exc:
         bot.logger.warning(f"Could not archive low-value notifications: {exc}")
-        return 0
+        return archived_completed
     for item_id in ids:
         bot._record_notification_outcome(
             "blocked_classops_empty_assignment_state",
             notification_id=item_id,
             kind="update",
         )
-    return archived
+    return archived + archived_completed
 
 
 def recover_missed_push_notifications(limit: int | None = None) -> dict:
@@ -4300,6 +4305,67 @@ def _pwa_followup_command_reply(message: str) -> tuple[str, str] | None:
         lines.append(f"Could not complete: {'; '.join(errors)}.")
     return "\n".join(lines) if lines else "No matching follow-ups found.", "complete_followup"
 
+def _pwa_task_ids_from_context(text: str) -> list[str]:
+    ids: list[str] = []
+    seen: set[str] = set()
+    patterns = (
+        r"`?\[(\d{1,5})\]`?",
+        r"#(\d{1,5})\b",
+        r"\b(?:task|reminder)\s*#?\s*(\d{1,5})\b",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, str(text or ""), re.I):
+            task_id = match.group(1)
+            if task_id not in seen:
+                seen.add(task_id)
+                ids.append(task_id)
+    return ids
+
+def _pwa_task_removal_confirmation_reply(message: str, recent_context: str = "") -> tuple[str, str] | None:
+    clean = " ".join(str(message or "").lower().split())
+    if not clean:
+        return None
+    confirmation = bool(
+        re.match(r"^(?:yes|yep|yeah|sure|ok(?:ay)?|please|pls|go ahead|do it|proceed)\b", clean)
+        or re.search(r"\b(?:remove|delete|clear|dismiss|archive)\s+(?:those|them|these|the\s+tasks?)\b", clean)
+    )
+    if not confirmation:
+        return None
+    context = str(recent_context or "")
+    context_lower = context.lower()
+    latest_offer = bot._latest_contextual_offer(context)
+    task_removal_offer = bool(
+        re.search(r"\b(?:remove|delete|clear|dismiss|archive|mark(?:\s+as)?\s+done)\b", latest_offer or context_lower)
+        and re.search(r"\b(?:tasks?|reminders?|items?)\b", latest_offer or context_lower)
+    )
+    if not task_removal_offer:
+        return None
+    task_ids = _pwa_task_ids_from_context(context)
+    if not task_ids:
+        return "I’m ready to remove them, but I no longer have the task IDs in this chat turn. Open Tasks or send the IDs and I’ll clear them.", "complete_task_by_text"
+
+    completed: list[str] = []
+    missing: list[str] = []
+    errors: list[str] = []
+    for task_id in task_ids[:10]:
+        try:
+            ok, _synced_marking = bot.complete_reminder_by_id(task_id)
+            if ok:
+                completed.append(task_id)
+            else:
+                missing.append(task_id)
+        except Exception as exc:
+            errors.append(f"#{task_id}: {exc}")
+
+    lines: list[str] = []
+    if completed:
+        lines.append(f"Removed {len(completed)} task{'s' if len(completed) != 1 else ''} from the active list: {', '.join(f'#{item}' for item in completed)}.")
+    if missing:
+        lines.append(f"Already done or not found: {', '.join(f'#{item}' for item in missing)}.")
+    if errors:
+        lines.append(f"Could not remove: {'; '.join(errors)}.")
+    return "\n".join(lines) if lines else "No matching task IDs were found to remove.", "complete_task_by_text"
+
 
 def _is_pwa_triage_prompt(message: str) -> bool:
     clean = " ".join(str(message or "").lower().split())
@@ -4727,6 +4793,11 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
     if followup_command:
         reply, tool_name = followup_command
         return _quick_sse_response(reply, history_key, history, route_name="followup_admin", tool_name=tool_name)
+
+    task_removal_confirmation = _pwa_task_removal_confirmation_reply(message, recent_context_for_followup)
+    if task_removal_confirmation:
+        reply, tool_name = task_removal_confirmation
+        return _quick_sse_response(reply, history_key, history, route_name="task_admin", tool_name=tool_name)
 
     topic_news_reply = await _pwa_topic_news_reply(message, recent_context_for_followup)
     if topic_news_reply:

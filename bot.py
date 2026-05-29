@@ -7990,6 +7990,12 @@ def favourite_news_topic_queries(text: str = "", recent_context: str = "") -> li
     context = " ".join(str(recent_context or "").lower().split())
     if not clean:
         return []
+    if (
+        _is_contextual_followup_reply(clean)
+        and re.search(r"\b(?:remove|delete|clear|dismiss|archive|cancel|mark|done|complete)\b", clean)
+        and re.search(r"\b(?:tasks?|reminders?|items?)\b", context)
+    ):
+        return []
     prompt_cue = bool(FAVOURITE_NEWS_PROMPT_CUE_RE.search(clean))
     inherited_news_context = bool(FAVOURITE_NEWS_CONTEXT_RE.search(context))
     asks_all_topics = bool(FAVOURITE_NEWS_ALL_TOPICS_RE.search(clean)) and bool(
@@ -9958,6 +9964,30 @@ def _find_matching_reminders(query: str, limit: int = 6) -> list[tuple[dict, flo
         return matches[:limit]
     return [scored[0]] if best_score >= 0.35 else []
 
+def _normalise_reminder_identity(value: str) -> str:
+    return " ".join(str(value or "").casefold().split())
+
+def _find_exact_reminder(description: str, due_date: str, category: str = "") -> dict | None:
+    desc_key = _normalise_reminder_identity(description)
+    due_key = str(due_date or "").strip()
+    cat_key = _normalise_reminder_identity(category or "General")
+    if not desc_key or not due_key:
+        return None
+    try:
+        reminders = gs.get_reminders(include_done=True)
+    except Exception as exc:
+        logger.warning(f"Could not check existing reminders before add: {exc}")
+        return None
+    for reminder in reminders:
+        if str(reminder.get("due", "") or "").strip() != due_key:
+            continue
+        if _normalise_reminder_identity(reminder.get("description", "")) != desc_key:
+            continue
+        if _normalise_reminder_identity(reminder.get("category", "") or "General") != cat_key:
+            continue
+        return reminder
+    return None
+
 def _find_best_followup(query: str):
     followups = gs.get_followups()
     if not followups:
@@ -10221,11 +10251,60 @@ def _is_marking_reminder(reminder: dict) -> bool:
         text,
     ))
 
+def _task_reminder_source_id(source: str) -> str:
+    match = re.match(r"^task_reminder:\d{4}-\d{2}-\d{2}:([\w-]+)$", str(source or "").strip())
+    return match.group(1) if match else ""
+
+def _archive_task_reminder_notifications_for_ids(reminder_ids: set[str]) -> list[str]:
+    clean_ids = {str(reminder_id or "").strip() for reminder_id in reminder_ids}
+    clean_ids = {reminder_id for reminder_id in clean_ids if reminder_id}
+    if not clean_ids:
+        return []
+    if not google_ok():
+        return []
+    try:
+        notifications = gs.get_app_notifications(include_archived=False)
+    except Exception as exc:
+        logger.warning(f"Could not scan task reminder notifications for {sorted(clean_ids)}: {exc}")
+        return []
+    ids = []
+    for item in notifications:
+        if _task_reminder_source_id(item.get("source", "")) in clean_ids and item.get("id"):
+            ids.append(str(item["id"]))
+    if not ids:
+        return []
+    try:
+        archived = gs.archive_app_notifications(ids)
+    except Exception as exc:
+        logger.warning(f"Could not archive task reminder notifications for {sorted(clean_ids)}: {exc}")
+        return []
+    return ids if archived else []
+
+def _archive_task_reminder_notifications(reminder_id: str) -> list[str]:
+    return _archive_task_reminder_notifications_for_ids({str(reminder_id or "").strip()})
+
+def archive_completed_task_reminder_notifications() -> list[str]:
+    if not google_ok():
+        return []
+    try:
+        reminders = gs.get_reminders(include_done=True)
+    except Exception as exc:
+        logger.warning(f"Could not scan completed reminders for notification cleanup: {exc}")
+        return []
+    completed_ids = {
+        str(reminder.get("id", "") or "").strip()
+        for reminder in reminders
+        if reminder.get("done")
+    }
+    return _archive_task_reminder_notifications_for_ids(completed_ids)
+
 def complete_reminder_by_id(reminder_id: str) -> tuple[bool, dict | None]:
     reminders = gs.get_reminders(include_done=True)
     reminder = next((item for item in reminders if str(item.get("id")) == str(reminder_id)), None)
     ok = gs.mark_done(reminder_id)
     synced_marking = None
+    if ok:
+        _archive_task_reminder_notifications(reminder_id)
     if ok and reminder and _is_marking_reminder(reminder):
         query = f"{reminder.get('description', '')} {reminder.get('category', '')}"
         marking, score = _find_best_marking_task(query)
@@ -15326,6 +15405,18 @@ async def _execute_tool(name: str, inp: dict) -> str:
             blocked = _validated_action_failure(name, inp)
             if blocked:
                 return blocked
+            existing = _find_exact_reminder(
+                inp["description"],
+                inp["due_date"],
+                inp.get("category", "General"),
+            )
+            if existing:
+                if existing.get("done"):
+                    return (
+                        f"Reminder #{existing['id']} already exists and is marked done: "
+                        f"{existing['description']} by {existing['due']}. I will not recreate it."
+                    )
+                return f"Reminder #{existing['id']} already exists: {existing['description']} by {existing['due']}."
             rid = gs.add_reminder(inp["description"], inp["due_date"], inp.get("category", "General"))
             result = f"Added reminder #{rid}: {inp['description']} by {inp['due_date']}"
             return f"{result}\n\n{_action_audit_text(name, inp, result, metadata={'reminder_id': str(rid)})}"
