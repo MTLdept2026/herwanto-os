@@ -6064,6 +6064,22 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertNotIn("previous_response_id", degraded)
         self.assertEqual(degraded["input"], kwargs["input"])
 
+    def test_openai_degraded_request_drops_state_when_tool_output_is_missing(self):
+        kwargs = {
+            "model": "gpt-5.4-mini",
+            "input": [{"role": "user", "content": "expand"}],
+            "previous_response_id": "resp_bad_tool_chain",
+            "prompt_cache_key": "hira-prompt:test",
+        }
+
+        degraded = bot._openai_degraded_request_kwargs(
+            kwargs,
+            ValueError("No tool output found for function call call_sXQ7Tbd2ePylu3Vy0zGLcUG4."),
+        )
+
+        self.assertNotIn("previous_response_id", degraded)
+        self.assertEqual(degraded["input"], kwargs["input"])
+
     def test_openai_degraded_request_falls_back_on_model_not_found(self):
         class FakeOpenAIError(Exception):
             status_code = 404
@@ -7751,6 +7767,47 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertEqual(final.response.status, "incomplete")
         self.assertEqual(final.response.output_text, "Still usable.")
 
+    def test_streaming_incomplete_response_clears_openai_state(self):
+        async def fake_stream(kwargs):
+            yield SimpleNamespace(type="response.output_text.delta", delta="Partial answer")
+            yield SimpleNamespace(
+                type="hira.final_response",
+                response=SimpleNamespace(
+                    id="",
+                    model=kwargs["model"],
+                    status="incomplete",
+                    output_text="Partial answer",
+                    output=[],
+                ),
+                request_kwargs=kwargs,
+                incomplete=True,
+            )
+
+        bot._OPENAI_RESPONSE_STATE.clear()
+        bot._OPENAI_RESPONSE_STATE["pwa:test-incomplete-state"] = "resp_stale"
+        with (
+            patch.object(bot, "LLM_PROVIDER", "openai"),
+            patch.object(bot, "OPENAI_STORE_RESPONSES", True),
+            patch.object(bot, "OPENAI_USE_PREVIOUS_RESPONSE_ID", True),
+            patch.object(bot, "_get_redis", return_value=None),
+            patch.object(bot, "_openai_stream_response", side_effect=fake_stream),
+            patch.object(bot, "CACHED_SYSTEM_PROMPT", return_value="system"),
+        ):
+            events = asyncio.run(_collect_async(bot.stream_agentic_chat(
+                [{"role": "user", "content": "expand your response"}],
+                tools=[],
+                openai_state_key="pwa:test-incomplete-state",
+            )))
+
+        text = "".join(event.get("text", "") for event in events if event.get("type") == "text")
+        self.assertEqual(text, "Partial answer")
+        self.assertEqual(bot._openai_previous_response_id("pwa:test-incomplete-state"), "")
+        self.assertTrue(any(
+            event.get("type") == "trace"
+            and event.get("patch", {}).get("openai_state_reset") == "incomplete_stream"
+            for event in events
+        ))
+
     def test_openai_streaming_carries_fallback_model_into_tool_followup(self):
         calls = []
 
@@ -7815,6 +7872,36 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertEqual(text, "Handled on fallback.")
         self.assertEqual(calls[0]["model"], "deepseek-v4-flash")
         self.assertEqual(calls[1]["model"], "fallback-agentic")
+
+    def test_self_read_quick_reply_gets_roomier_guidance(self):
+        captured = {}
+
+        async def fake_stream(kwargs):
+            captured.update(kwargs)
+            yield SimpleNamespace(type="response.output_text.delta", delta="A fuller read.")
+            yield SimpleNamespace(
+                type="hira.final_response",
+                response=SimpleNamespace(
+                    id="resp-self-read",
+                    model=kwargs["model"],
+                    status="completed",
+                    output_text="A fuller read.",
+                    output=[],
+                ),
+                request_kwargs=kwargs,
+            )
+
+        text = "As a fan of Mercedes and a long suffering LFC supporter, what kind of man am I?"
+        with (
+            patch.object(bot, "LLM_PROVIDER", "openai"),
+            patch.object(bot, "_openai_stream_response", side_effect=fake_stream),
+            patch.object(bot, "CACHED_SYSTEM_PROMPT", return_value="system"),
+        ):
+            events = asyncio.run(_collect_async(bot.stream_quick_pwa_reply([], text)))
+
+        self.assertEqual("".join(event.get("text", "") for event in events), "A fuller read.")
+        self.assertGreaterEqual(captured["max_output_tokens"], 280)
+        self.assertIn("4 to 6 short sentences", captured["instructions"])
 
     def test_openai_request_options_use_previous_response_and_reasoning(self):
         bot._OPENAI_RESPONSE_STATE.clear()

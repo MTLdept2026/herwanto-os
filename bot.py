@@ -2604,6 +2604,16 @@ def response_plan_system_hint(plan: dict) -> str:
     return "Reply plan: " + " ".join(parts)
 
 
+def self_read_reply_guidance(text: str = "") -> str:
+    if not _is_conversational_self_read_text(text):
+        return ""
+    return (
+        "For self-read, taste, or personality banter, do not answer with a tiny one-liner. "
+        "Give a compact but satisfying read in 4 to 6 short sentences: name the core trait, "
+        "make the affectionate jab, explain the tension, and land a clear final judgement. "
+    )
+
+
 def personal_operator_state_for_turn(
     text: str,
     recent_context: str = "",
@@ -3939,7 +3949,8 @@ def _openai_previous_response_error(exc: Exception | str | None = None) -> bool:
     message = str(exc or "").lower()
     return bool(re.search(
         r"previous[_ -]?response|response[_ -]?id|no such response|response .*not found|"
-        r"response .*does not exist|response .*expired",
+        r"response .*does not exist|response .*expired|"
+        r"no tool output found for function call|no tool call found for function call output",
         message,
     ))
 
@@ -14371,6 +14382,8 @@ async def stream_quick_pwa_reply(messages: list[dict], message: str):
     context = messages[-6:]
     prompt_messages = context + [{"role": "user", "content": message}]
     lens = intent_lens_hint(message)
+    self_read_guidance = self_read_reply_guidance(message)
+    max_tokens = max(QUICK_REPLY_MAX_TOKENS, 280) if self_read_guidance else QUICK_REPLY_MAX_TOKENS
     recent_context = "\n".join(
         str(item.get("content", ""))[:500]
         for item in context
@@ -14393,6 +14406,7 @@ async def stream_quick_pwa_reply(messages: list[dict], message: str):
         "Stay attentive to tone without over-reading it. "
         "Keep discernment and taste even in small talk; do not merely agree or produce generic assistant filler. "
         "Do not use tools or pretend to have checked live data. "
+        f"{self_read_guidance}"
         f"{hira_wit_style_brief()}"
         f"{interaction_style_system_hint(style_profile)} "
         f"{personal_operator_system_hint(operator_state)} "
@@ -14404,7 +14418,7 @@ async def stream_quick_pwa_reply(messages: list[dict], message: str):
         policy = model_policy_for_messages(prompt_messages)
         kwargs = _openai_request_options(
             QUICK_MODEL,
-            QUICK_REPLY_MAX_TOKENS,
+            max_tokens,
             prompt_messages,
             policy=policy,
         )
@@ -14421,7 +14435,7 @@ async def stream_quick_pwa_reply(messages: list[dict], message: str):
         if not text_parts:
             text = await _llm_text_async(
                 model=QUICK_MODEL,
-                max_tokens=QUICK_REPLY_MAX_TOKENS,
+                max_tokens=max_tokens,
                 system=system,
                 messages=prompt_messages,
             )
@@ -14483,12 +14497,14 @@ async def stream_agentic_openai(
 
         resp = None
         response_request_kwargs = {}
+        stream_incomplete = False
         segment_parts: list[str] = []
         try:
             async for event in _openai_stream_response(kwargs):
                 if getattr(event, "type", "") == "hira.final_response":
                     resp = getattr(event, "response", None)
                     response_request_kwargs = getattr(event, "request_kwargs", {}) or {}
+                    stream_incomplete = bool(getattr(event, "incomplete", False))
                     continue
                 native_tool = _openai_native_event_tool_name(event)
                 if native_tool and native_tool not in native_tool_events_seen:
@@ -14500,6 +14516,12 @@ async def stream_agentic_openai(
                     segment_parts.append(delta)
                     yield {"type": "text", "text": delta}
         except Exception as exc:
+            if _openai_previous_response_error(exc) and openai_state_key and kwargs.get("previous_response_id"):
+                clear_openai_response_state(openai_state_key)
+                previous_response_id = ""
+                openai_input = _openai_input_from_messages(messages)
+                yield {"type": "trace", "patch": {"openai_state_reset": "stale_previous_response"}}
+                continue
             fallback = _tool_action_fallback_reply(all_tool_results)
             if fallback:
                 logger.warning("OpenAI stream follow-up failed after tool actions; returning tool-result fallback: %s", exc)
@@ -14518,6 +14540,10 @@ async def stream_agentic_openai(
             break
 
         response_id = _openai_response_id(resp)
+        if stream_incomplete and openai_state_key:
+            clear_openai_response_state(openai_state_key)
+            previous_response_id = ""
+            yield {"type": "trace", "patch": {"openai_state_reset": "incomplete_stream"}}
         actual_model = _openai_effective_response_model(resp, response_request_kwargs)
         if actual_model and actual_model != model:
             model = actual_model
