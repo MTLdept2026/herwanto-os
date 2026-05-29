@@ -4037,6 +4037,60 @@ def _nudge_id_from_source(source: str) -> str:
     return match.group(1) if match else ""
 
 
+def _pwa_nudge_ids_from_context(text: str) -> list[str]:
+    ids: list[str] = []
+    seen: set[str] = set()
+    patterns = (
+        r"`?\[((?:r-)?\d{1,5})\]`?",
+        r"\bnudge[:#\s]+((?:r-)?\d{1,5})\b",
+        r"#((?:r-)?\d{1,5})\b",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, str(text or ""), re.I):
+            nudge_id = match.group(1)
+            if nudge_id not in seen:
+                seen.add(nudge_id)
+                ids.append(nudge_id)
+    return ids
+
+
+def _pwa_cancel_nudge_ids(nudge_ids: list[str]) -> tuple[str, str]:
+    cancelled: list[str] = []
+    missing: list[str] = []
+    errors: list[str] = []
+    archived = 0
+    for nudge_id in nudge_ids:
+        try:
+            ok = bot.gs.cancel_nudge(nudge_id)
+            if ok:
+                cancelled.append(nudge_id)
+                archived += _archive_nudge_notifications(nudge_id)
+            else:
+                missing.append(nudge_id)
+        except Exception as exc:
+            errors.append(f"#{nudge_id}: {exc}")
+
+    if len(nudge_ids) == 1:
+        nudge_id = nudge_ids[0]
+        if errors:
+            return f"Could not cancel nudge #{nudge_id}: {errors[0].split(': ', 1)[-1]}", "cancel_nudge"
+        if missing:
+            return f"Nudge #{nudge_id} was not found, or it was already sent.", "cancel_nudge"
+        extra = f" I also removed {archived} matching app notification{'s' if archived != 1 else ''} from H.I.R.A." if archived else ""
+        return f"Nudge #{nudge_id} cancelled.{extra}", "cancel_nudge"
+
+    lines: list[str] = []
+    if cancelled:
+        lines.append(f"Cancelled nudges: {', '.join(f'#{item}' for item in cancelled)}.")
+    if archived:
+        lines.append(f"Removed {archived} matching app notification{'s' if archived != 1 else ''}.")
+    if missing:
+        lines.append(f"Already sent or not found: {', '.join(f'#{item}' for item in missing)}.")
+    if errors:
+        lines.append(f"Could not cancel: {'; '.join(errors)}.")
+    return "\n".join(lines) if lines else "No matching nudges found.", "cancel_nudge"
+
+
 def _parse_checkin_ids(raw: str) -> list[str]:
     ids: list[str] = []
     seen: set[str] = set()
@@ -4209,40 +4263,33 @@ def _pwa_nudge_command_reply(message: str) -> tuple[str, str] | None:
     if not nudge_ids:
         return "Send `/cancelnudge 78` or `/cancelnudge 78, 79, 80` to clear pending nudges.", "cancel_nudge"
 
-    cancelled: list[str] = []
-    missing: list[str] = []
-    errors: list[str] = []
-    archived = 0
-    for nudge_id in nudge_ids:
-        try:
-            ok = bot.gs.cancel_nudge(nudge_id)
-            if ok:
-                cancelled.append(nudge_id)
-                archived += _archive_nudge_notifications(nudge_id)
-            else:
-                missing.append(nudge_id)
-        except Exception as exc:
-            errors.append(f"#{nudge_id}: {exc}")
+    return _pwa_cancel_nudge_ids(nudge_ids)
 
-    if len(nudge_ids) == 1:
-        nudge_id = nudge_ids[0]
-        if errors:
-            return f"Could not cancel nudge #{nudge_id}: {errors[0].split(': ', 1)[-1]}", "cancel_nudge"
-        if missing:
-            return f"Nudge #{nudge_id} was not found, or it was already sent.", "cancel_nudge"
-        extra = f" I also removed {archived} matching app notification{'s' if archived != 1 else ''} from H.I.R.A." if archived else ""
-        return f"Nudge #{nudge_id} cancelled.{extra}", "cancel_nudge"
 
-    lines: list[str] = []
-    if cancelled:
-        lines.append(f"Cancelled nudges: {', '.join(f'#{item}' for item in cancelled)}.")
-    if archived:
-        lines.append(f"Removed {archived} matching app notification{'s' if archived != 1 else ''}.")
-    if missing:
-        lines.append(f"Already sent or not found: {', '.join(f'#{item}' for item in missing)}.")
-    if errors:
-        lines.append(f"Could not cancel: {'; '.join(errors)}.")
-    return "\n".join(lines) if lines else "No matching nudges found.", "cancel_nudge"
+def _pwa_nudge_removal_confirmation_reply(message: str, recent_context: str = "") -> tuple[str, str] | None:
+    clean = " ".join(str(message or "").lower().split())
+    if not clean:
+        return None
+    confirmation = bool(
+        re.match(r"^(?:yes|yep|yeah|sure|ok(?:ay)?|please|pls|go ahead|do it|proceed)\b", clean)
+        or re.search(r"\b(?:remove|delete|clear|dismiss|cancel|stop)\s+(?:those|them|these|the\s+nudges?)\b", clean)
+    )
+    if not confirmation:
+        return None
+    context = str(recent_context or "")
+    context_lower = context.lower()
+    latest_offer = bot._latest_contextual_offer(context)
+    offer_text = latest_offer or context_lower
+    nudge_removal_offer = bool(
+        re.search(r"\b(?:cancel|clear|delete|remove|dismiss|stop)\b", offer_text)
+        and re.search(r"\bnudges?\b", offer_text)
+    )
+    if not nudge_removal_offer:
+        return None
+    nudge_ids = _pwa_nudge_ids_from_context(context)
+    if not nudge_ids:
+        return "I’m ready to cancel them, but I no longer have the nudge IDs in this chat turn. Send the nudge IDs and I’ll clear them.", "cancel_nudge"
+    return _pwa_cancel_nudge_ids(nudge_ids[:10])
 
 
 def _pwa_followup_command_reply(message: str) -> tuple[str, str] | None:
@@ -4787,6 +4834,11 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
     nudge_command = _pwa_nudge_command_reply(message)
     if nudge_command:
         reply, tool_name = nudge_command
+        return _quick_sse_response(reply, history_key, history, route_name="nudge_admin", tool_name=tool_name)
+
+    nudge_removal_confirmation = _pwa_nudge_removal_confirmation_reply(message, recent_context_for_followup)
+    if nudge_removal_confirmation:
+        reply, tool_name = nudge_removal_confirmation
         return _quick_sse_response(reply, history_key, history, route_name="nudge_admin", tool_name=tool_name)
 
     followup_command = _pwa_followup_command_reply(message)

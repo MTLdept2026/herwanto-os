@@ -9318,6 +9318,31 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertEqual([call.args[0] for call in cancel.call_args_list], ["78", "79", "80"])
         self.assertEqual([call.args[0] for call in archive.call_args_list], [["91"], ["92"], ["93"]])
 
+    def test_pwa_nudge_removal_confirmation_cancels_previous_nudge_ids(self):
+        context = (
+            "H: Pending nudges\n"
+            "`[78]` *2026-05-30 21:00* - Check marking sprint\n"
+            "`[79]` *2026-05-30 22:00* - Prep tomorrow\n\n"
+            "Use `/cancelnudge <id>` to cancel nudges."
+        )
+        notifications = [
+            {"id": "91", "source": "nudge:78", "archived": False},
+            {"id": "92", "source": "nudge:79", "archived": False},
+        ]
+
+        with (
+            patch.object(bot.gs, "cancel_nudge", return_value=True) as cancel,
+            patch.object(bot.gs, "get_app_notifications", return_value=notifications),
+            patch.object(bot.gs, "archive_app_notifications", side_effect=lambda ids: len(ids)) as archive,
+        ):
+            reply, tool = web_app._pwa_nudge_removal_confirmation_reply("yes remove those", context)
+
+        self.assertEqual(tool, "cancel_nudge")
+        self.assertIn("Cancelled nudges: #78, #79.", reply)
+        self.assertIn("Removed 2 matching app notifications.", reply)
+        self.assertEqual([call.args[0] for call in cancel.call_args_list], ["78", "79"])
+        self.assertEqual([call.args[0] for call in archive.call_args_list], [["91"], ["92"]])
+
     def test_pwa_followups_command_lists_open_followups(self):
         followups = [
             {
