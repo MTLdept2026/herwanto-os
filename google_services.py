@@ -2701,9 +2701,15 @@ def add_reminder(description: str, due_date: str, category: str = "General") -> 
 
 def mark_done(reminder_id: str) -> bool:
     rows = _raw_reminders()
+    first_match_row_num = None
     for i, row in enumerate(rows):
         if row and str(row[0]) == str(reminder_id):
             row_num = i + 2
+            if first_match_row_num is None:
+                first_match_row_num = row_num
+            is_done = len(row) > 4 and str(row[4]).strip().upper() == "TRUE"
+            if is_done:
+                continue
             _sheets().spreadsheets().values().update(
                 spreadsheetId=SHEET_ID,
                 range=f"Reminders!E{row_num}",
@@ -2711,6 +2717,14 @@ def mark_done(reminder_id: str) -> bool:
                 body={"values": [["TRUE"]]},
             ).execute()
             return True
+    if first_match_row_num is not None:
+        _sheets().spreadsheets().values().update(
+            spreadsheetId=SHEET_ID,
+            range=f"Reminders!E{first_match_row_num}",
+            valueInputOption="RAW",
+            body={"values": [["TRUE"]]},
+        ).execute()
+        return True
     return False
 
 

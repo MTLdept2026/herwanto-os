@@ -923,6 +923,8 @@ def _semantic_intent_flags(text: str) -> set[str]:
     flags: set[str] = set()
     if not clean:
         return flags
+    if is_hira_capability_feedback(clean):
+        return flags
     soft = bool(SOFT_REQUEST_PATTERN.search(clean))
     if SEMANTIC_LOW_PRIORITY_PATTERN.search(clean):
         flags.add("low_priority")
@@ -1294,9 +1296,25 @@ def _is_dated_absence_calendar_intent(text: str) -> bool:
     )
 
 
+def is_hira_capability_feedback(text: str) -> bool:
+    clean = " ".join(str(text or "").lower().split())
+    if not clean:
+        return False
+    target = bool(re.search(r"\b(?:hira|you|youre|you're|u|your|ur|assistant|bot|app|system)\b", clean))
+    criticism = bool(re.search(
+        r"\b(?:can'?t|cannot|couldn'?t|doesn'?t|don'?t|won'?t|fail(?:ed|ing)?|"
+        r"useless|dumb(?:er)?|stupid|worse|broken|basic|smarter|undermin(?:e|ing)|"
+        r"misread|literal|nuance|understand|listening|ignored?)\b",
+        clean,
+    ))
+    return target and criticism
+
+
 def _is_implicit_task_request(text: str) -> bool:
     clean = " ".join(str(text or "").lower().split())
     if not clean:
+        return False
+    if is_hira_capability_feedback(clean):
         return False
     if re.search(r"\b(?:what|how|why|when|where|who)\b", clean) and not re.search(r"\b(?:should i|do i need|need to)\b", clean):
         return False
@@ -9941,8 +9959,15 @@ def _find_matching_reminders(query: str, limit: int = 6) -> list[tuple[dict, flo
     reminders = gs.get_reminders()
     if not reminders:
         return []
-    if str(query).strip().isdigit():
-        return [(r, 1.0) for r in reminders if str(r.get("id")) == str(query).strip()]
+    clean_query = str(query).strip()
+    if clean_query.isdigit():
+        return [(r, 1.0) for r in reminders if str(r.get("id")) == clean_query]
+    id_tokens = re.findall(r"\d{1,5}", clean_query)
+    if id_tokens and re.fullmatch(r"#?\d{1,5}(?:\s*(?:,|and|&|\s)\s*#?\d{1,5})*", clean_query, re.I):
+        requested_ids = set(id_tokens)
+        matches = [(r, 1.0) for r in reminders if str(r.get("id")) in requested_ids]
+        if matches:
+            return matches[:limit]
     terms = _completion_query_terms(query)
     scored = sorted(
         (
@@ -10486,7 +10511,8 @@ def archive_completed_task_reminder_notifications() -> list[str]:
 
 def complete_reminder_by_id(reminder_id: str) -> tuple[bool, dict | None]:
     reminders = gs.get_reminders(include_done=True)
-    reminder = next((item for item in reminders if str(item.get("id")) == str(reminder_id)), None)
+    matching = [item for item in reminders if str(item.get("id")) == str(reminder_id)]
+    reminder = next((item for item in matching if not item.get("done")), matching[0] if matching else None)
     ok = gs.mark_done(reminder_id)
     synced_marking = None
     if ok:
@@ -11428,7 +11454,11 @@ def _direct_user_intent_allows_tool(name: str, direct_user_text: str | None) -> 
         return has(r"\b(check[- ]?in|daily|every day|once per day|habit|ping|remind)\b")
     if name == "create_followup":
         return has(r"\b(follow[- ]?up|chase|owe.*reply|track.*reply)\b")
-    if name in {"complete_task_by_text", "complete_followup_by_text"}:
+    if name == "complete_task_by_text":
+        if re.fullmatch(r"#?\d{1,5}(?:\s*(?:,|and|&|\s)\s*#?\d{1,5})*", clean, re.I):
+            return True
+        return has(r"\b(done|complete|completed|settled?|mark|delete|remove|clear|dismiss|archive)\b")
+    if name == "complete_followup_by_text":
         return has(r"\b(done|complete|completed|settled?|mark)\b")
     if name in {"add_marking_task", "update_marking_progress", "reset_marking_load"}:
         return has(r"\b(marking|scripts?|papers?|worksheets?|karangan|kefahaman|stack|marked|unmarked)\b") and has(r"\b(add|update|mark|marked|done|complete|reset|clear|close)\b")
@@ -11745,6 +11775,8 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     available = {tool["name"] for tool in tools}
     clean = " ".join((text or "").lower().split())
     if not clean:
+        return None
+    if is_hira_capability_feedback(clean):
         return None
     mark_reference_action = bool(re.search(r"\bmark\s+(?:it|this|that)\b", clean))
     semantic_flags = _semantic_intent_flags(clean)
@@ -13783,6 +13815,10 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
             if item not in tools:
                 tools.append(item)
 
+    if is_hira_capability_feedback(effective_text):
+        add(CONTEXT_TOOL, MEMORY_TOOL)
+        return tools
+
     blocked_action = _latest_blocked_action_from_context(context)
     if (
         blocked_action.get("action") == "update_project_status"
@@ -14440,6 +14476,8 @@ async def _run_agentic_chat(
 
 def _looks_tool_heavy(text: str) -> bool:
     if _is_casual_sports_lifestyle_text(text) or _is_conversational_self_read_text(text):
+        return False
+    if is_hira_capability_feedback(text):
         return False
     return bool(re.search(
         r"\b(calendar|schedule|meeting|event|duty|roster|rostered|nsg|n2a?|c\s*div|b\s*div|remind|nudge|notify|notification|notifications|push|task|due|marking|scripts?|"

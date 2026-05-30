@@ -5596,6 +5596,45 @@ class AgenticOpenAITests(unittest.TestCase):
                     self.assertIn("local task stack", body)
                     self.assertNotIn("backend snag", body.lower())
 
+    def test_hira_capability_feedback_does_not_route_to_task_brief(self):
+        text = "Doesnt feel like youre getting any smarter hira. You cant even carry out basic tasks"
+        tools = [{"name": "get_task_brief"}, {"name": "get_assistant_context"}, {"name": "remember_user_info"}]
+
+        self.assertTrue(bot.is_hira_capability_feedback(text))
+        self.assertEqual(web_app._pwa_direct_task_days(text), 0)
+        self.assertIsNone(bot._forced_tool_for_text(text, tools))
+        self.assertIsNone(bot._forced_tool_for_current_turn([{"role": "user", "content": text}], tools))
+        self.assertFalse(bot._looks_tool_heavy(text))
+        self.assertNotIn("task", bot._semantic_intent_flags(text))
+        self.assertNotIn("get_task_brief", [tool["name"] for tool in bot.pwa_tools_for_message(text)])
+
+    def test_hira_capability_feedback_chat_uses_conversation_path_not_local_tasks(self):
+        text = "Doesnt feel like youre getting any smarter hira. You cant even carry out basic tasks"
+
+        async def fake_stream(*_args, **_kwargs):
+            yield {"type": "done", "text": "I hear the criticism instead of opening tasks."}
+
+        async def run():
+            response = await web_app._chat_stream_response(text, None, "phone")
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(bot, "build_task_brief", side_effect=AssertionError("feedback should not fetch task brief")),
+            patch.object(web_app, "_update_working_memory", return_value={}),
+            patch.object(web_app, "_schedule_background_call"),
+            patch.object(bot, "stream_agentic_chat", side_effect=fake_stream) as stream,
+        ):
+            body = asyncio.run(run())
+
+        self.assertIn("I hear the criticism", body)
+        self.assertNotIn('"name": "local_tasks"', body)
+        stream.assert_called_once()
+
     def test_chat_model_failure_returns_conversational_failure_not_backend_snag(self):
         async def broken_stream(*_args, **_kwargs):
             raise RuntimeError("model down")
@@ -5746,6 +5785,98 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertEqual(reply[1], "complete_task_by_text")
         self.assertIn("Removed 3 tasks", reply[0])
         self.assertEqual([call.args[0] for call in complete.call_args_list], ["31", "32", "33"])
+
+    def test_task_removal_confirmation_accepts_requested_confirm_phrase_and_repeated_ids(self):
+        context = (
+            "I found the 3 tasks you mean. Confirm this exact action:\n"
+            "- mark done `[47]` SPTC (28 May) - whole day commitment\n"
+            "- mark done `[48]` SPTC whole day on 28 May - prepare for parent-teacher consultation sessions\n"
+            "- mark done `[47]` End of Term II - 29 May 2026 (HBL)\n"
+            "Just reply: Confirm mark those 3 done"
+        )
+
+        with patch.object(bot, "complete_reminder_by_id", return_value=(True, None)) as complete:
+            reply = web_app._pwa_task_removal_confirmation_reply("Confirm mark those 3 done", context)
+
+        self.assertIsNotNone(reply)
+        self.assertIn("Removed 3 tasks", reply[0])
+        self.assertEqual([call.args[0] for call in complete.call_args_list], ["47", "48", "47"])
+
+    def test_direct_task_delete_by_repeated_ids_marks_each_requested_entry(self):
+        with patch.object(bot, "complete_reminder_by_id", return_value=(True, None)) as complete:
+            reply = web_app._pwa_task_removal_confirmation_reply("Delete tasks 47, 47 and 48 now")
+
+        self.assertIsNotNone(reply)
+        self.assertIn("Removed 3 tasks", reply[0])
+        self.assertEqual([call.args[0] for call in complete.call_args_list], ["47", "47", "48"])
+
+    def test_task_id_list_reply_uses_pending_task_removal_context(self):
+        context = (
+            "I found the tasks:\n"
+            "- `[47]` SPTC (28 May) - whole day commitment\n"
+            "- `[48]` SPTC whole day on 28 May\n"
+            "- `[47]` End of Term II - 29 May 2026 (HBL)\n"
+            "Which 3 tasks should I mark as done?"
+        )
+
+        with patch.object(bot, "complete_reminder_by_id", return_value=(True, None)) as complete:
+            reply = web_app._pwa_task_removal_confirmation_reply("47, 47, 48", context)
+
+        self.assertIsNotNone(reply)
+        self.assertIn("Removed 3 tasks", reply[0])
+        self.assertEqual([call.args[0] for call in complete.call_args_list], ["47", "47", "48"])
+
+    def test_complete_task_validation_accepts_delete_task_language(self):
+        self.assertTrue(
+            bot._direct_user_intent_allows_tool(
+                "complete_task_by_text",
+                "Delete tasks 47, 47 and 48 now",
+            )
+        )
+
+    def test_complete_task_validation_accepts_bare_id_confirmation(self):
+        self.assertTrue(
+            bot._direct_user_intent_allows_tool(
+                "complete_task_by_text",
+                "47, 47, 48",
+            )
+        )
+
+    def test_find_matching_reminders_accepts_numeric_id_list(self):
+        reminders = [
+            {"id": "47", "description": "SPTC whole day commitment", "due": "2026-05-27", "category": "Teaching"},
+            {"id": "48", "description": "SPTC parent-teacher consultation", "due": "2026-05-27", "category": "Teaching"},
+            {"id": "47", "description": "End of Term II HBL", "due": "2026-05-29", "category": "Teaching"},
+            {"id": "65", "description": "Schedule online SPTC session", "due": "2026-05-29", "category": "Teaching"},
+        ]
+
+        with patch.object(bot.gs, "get_reminders", return_value=reminders):
+            matches = bot._find_matching_reminders("47, 47, 48")
+
+        self.assertEqual([item[0]["description"] for item in matches], [
+            "SPTC whole day commitment",
+            "SPTC parent-teacher consultation",
+            "End of Term II HBL",
+        ])
+
+    def test_recent_turn_grounding_handles_those_confirmation(self):
+        history = [
+            {"role": "user", "content": "Delete tasks 47, 47 and 48 now"},
+            {
+                "role": "assistant",
+                "content": (
+                    "Confirm this exact action:\n"
+                    "- mark done `[47]` SPTC (28 May) - whole day commitment\n"
+                    "- mark done `[48]` SPTC whole day on 28 May\n"
+                    "- mark done `[47]` End of Term II - 29 May 2026 (HBL)"
+                ),
+            },
+        ]
+
+        grounding = web_app._recent_turn_grounding_context(history, "Confirm mark those 3 done")
+
+        self.assertIn("[47]", grounding)
+        self.assertIn("[48]", grounding)
 
     def test_favourite_topic_news_semantics_ignore_plain_nothing_due(self):
         self.assertEqual(bot.favourite_news_topic_queries("Nothing much to handle."), [])
@@ -8939,6 +9070,23 @@ class AgenticOpenAITests(unittest.TestCase):
             self.assertEqual(result["cleared_count"], 2)
             self.assertEqual(bot.gs.get_marking_tasks(), [])
             self.assertEqual(len(bot.gs.get_marking_tasks(include_done=True)), 2)
+
+    def test_mark_done_prefers_active_duplicate_reminder_row(self):
+        fake_sheets = FakeSheetsService({}, ranges={})
+        rows = [
+            ["47", "Old completed copy", "2026-05-27", "Teaching", "TRUE"],
+            ["47", "Still active copy", "2026-05-29", "Teaching", "FALSE"],
+        ]
+
+        with (
+            patch.object(bot.gs, "_raw_reminders", return_value=rows),
+            patch.object(bot.gs, "_sheets", return_value=fake_sheets),
+        ):
+            self.assertTrue(bot.gs.mark_done("47"))
+
+        updates = fake_sheets.spreadsheets_api.values_api.updates
+        self.assertEqual(len(updates), 1)
+        self.assertEqual(updates[0][1], "Reminders!E3")
 
     def test_completing_marking_reminder_closes_matching_marking_stack(self):
         reminders = [

@@ -1097,7 +1097,7 @@ def _device_location_context(location: DeviceLocation | None) -> str:
 
 _FOLLOWUP_GROUNDING_RE = re.compile(
     r"\b("
-    r"this|that|it|its|they|them|there|then|again|earlier|"
+    r"this|that|these|those|it|its|they|them|there|then|again|earlier|confirm|"
     r"that day|the day|for the day|for that day|"
     r"i meant|you meant|not regular|not coursework|"
     r"remind me|reminder|during the morning briefing|morning briefing"
@@ -1127,7 +1127,7 @@ def _recent_turn_grounding_context(history: list, message: str, max_turns: int =
         return ""
     return (
         "\n\n[Recent-turn grounding for follow-up resolution: The current user message may contain "
-        "pronouns or vague references. Resolve words like this/that/it/again/that day against the newest "
+        "pronouns or vague references. Resolve words like this/that/these/those/it/again/that day against the newest "
         "relevant turns below. Give newer user corrections and clarifications priority over older assistant "
         "guesses. Do not switch back to an older named event unless the user explicitly names it.\n"
         + "\n".join(turns)
@@ -1586,6 +1586,8 @@ def _pwa_direct_agenda_days(message: str) -> int:
 def _pwa_direct_task_days(message: str) -> int:
     clean = _pwa_clean_addressed_message(message)
     if not clean:
+        return 0
+    if bot.is_hira_capability_feedback(clean):
         return 0
     if re.search(r"\b(?:add|create|remind me|delete|remove|cancel|complete|done|finish|mark)\b", clean):
         return 0
@@ -4353,41 +4355,88 @@ def _pwa_followup_command_reply(message: str) -> tuple[str, str] | None:
     return "\n".join(lines) if lines else "No matching follow-ups found.", "complete_followup"
 
 def _pwa_task_ids_from_context(text: str) -> list[str]:
+    raw = str(text or "")
+    bracket_ids = [
+        match.group(1)
+        for match in re.finditer(r"`?\[(\d{1,5})\]`?", raw, re.I)
+    ]
+    if bracket_ids:
+        return bracket_ids
+
     ids: list[str] = []
     seen: set[str] = set()
     patterns = (
-        r"`?\[(\d{1,5})\]`?",
         r"#(\d{1,5})\b",
         r"\b(?:task|reminder)\s*#?\s*(\d{1,5})\b",
     )
     for pattern in patterns:
-        for match in re.finditer(pattern, str(text or ""), re.I):
+        for match in re.finditer(pattern, raw, re.I):
             task_id = match.group(1)
             if task_id not in seen:
                 seen.add(task_id)
                 ids.append(task_id)
     return ids
 
+def _pwa_task_ids_from_id_list_reply(text: str) -> list[str]:
+    clean = " ".join(str(text or "").lower().split())
+    if not re.fullmatch(r"#?\d{1,5}(?:\s*(?:,|and|&)\s*#?\d{1,5})*", clean):
+        return []
+    return re.findall(r"#?(\d{1,5})", clean)
+
+def _pwa_task_ids_from_direct_request(text: str) -> list[str]:
+    raw = str(text or "")
+    clean = " ".join(raw.lower().split())
+    if not clean:
+        return []
+    has_action = bool(re.search(r"\b(?:delete|remove|clear|dismiss|archive|complete|finish|mark|done)\b", clean))
+    has_task_word = bool(re.search(r"\b(?:tasks?|reminders?|items?)\b", clean))
+    if not has_action or not has_task_word:
+        return []
+
+    explicit_refs = [
+        match.group(1) or match.group(2)
+        for match in re.finditer(r"`?\[(\d{1,5})\]`?|#(\d{1,5})\b", raw, re.I)
+    ]
+    if explicit_refs:
+        return explicit_refs
+
+    ids: list[str] = []
+    for match in re.finditer(
+        r"\b(?:tasks?|reminders?|items?)\s+(#?\d{1,5}(?:\s*(?:,|and|&)\s*#?\d{1,5})*)",
+        clean,
+        re.I,
+    ):
+        ids.extend(re.findall(r"#?(\d{1,5})", match.group(1)))
+    return ids
+
 def _pwa_task_removal_confirmation_reply(message: str, recent_context: str = "") -> tuple[str, str] | None:
     clean = " ".join(str(message or "").lower().split())
     if not clean:
         return None
+    direct_task_ids = _pwa_task_ids_from_direct_request(message)
+    id_list_task_ids = _pwa_task_ids_from_id_list_reply(message)
     confirmation = bool(
         re.match(r"^(?:yes|yep|yeah|sure|ok(?:ay)?|please|pls|go ahead|do it|proceed)\b", clean)
         or re.search(r"\b(?:remove|delete|clear|dismiss|archive)\s+(?:those|them|these|the\s+tasks?)\b", clean)
+        or re.match(r"^confirm\b", clean)
+        or re.search(r"\bmark\s+(?:those|them|these|the\s+tasks?)(?:\s+\d+)?\s+(?:as\s+)?done\b", clean)
+        or bool(direct_task_ids)
+        or bool(id_list_task_ids)
     )
     if not confirmation:
         return None
     context = str(recent_context or "")
     context_lower = context.lower()
     latest_offer = bot._latest_contextual_offer(context)
-    task_removal_offer = bool(
-        re.search(r"\b(?:remove|delete|clear|dismiss|archive|mark(?:\s+as)?\s+done)\b", latest_offer or context_lower)
-        and re.search(r"\b(?:tasks?|reminders?|items?)\b", latest_offer or context_lower)
+    action_pattern = r"\b(?:remove|delete|clear|dismiss|archive|complete|mark(?:\s+as)?\s+done)\b"
+    task_pattern = r"\b(?:tasks?|reminders?|items?)\b"
+    task_removal_offer = any(
+        source and re.search(action_pattern, source) and re.search(task_pattern, source)
+        for source in (latest_offer, context_lower)
     )
-    if not task_removal_offer:
+    if not task_removal_offer and not direct_task_ids:
         return None
-    task_ids = _pwa_task_ids_from_context(context)
+    task_ids = direct_task_ids or id_list_task_ids or _pwa_task_ids_from_context(context)
     if not task_ids:
         return "I’m ready to remove them, but I no longer have the task IDs in this chat turn. Open Tasks or send the IDs and I’ll clear them.", "complete_task_by_text"
 
