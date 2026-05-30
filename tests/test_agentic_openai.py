@@ -3491,6 +3491,8 @@ class AgenticOpenAITests(unittest.TestCase):
 
         with patch("bot._news_topics", return_value=fake_topics), \
              patch("bot._recent_news_digest_keys", return_value=set()), \
+             patch("bot._digest_free_source_items", return_value=[]), \
+             patch("bot._digest_social_items", return_value=[]), \
              patch("search_service.google_news", side_effect=fake_google_news):
             entries = bot.build_curated_digest_entries(limit=4, fetch_limit=2, record=False)
 
@@ -3513,6 +3515,8 @@ class AgenticOpenAITests(unittest.TestCase):
 
         with patch("bot._news_topics", return_value=[("SG Education", "edu"), ("AI", "ai"), ("🏎️ F1", "f1")]), \
              patch("bot._recent_news_digest_keys", return_value={seen_key}), \
+             patch("bot._digest_free_source_items", return_value=[]), \
+             patch("bot._digest_social_items", return_value=[]), \
              patch("search_service.google_news", side_effect=fake_google_news):
             entries = bot.build_curated_digest_entries(limit=3, fetch_limit=2, record=False)
 
@@ -3521,6 +3525,8 @@ class AgenticOpenAITests(unittest.TestCase):
     def test_curated_digest_skips_topic_when_feed_returns_no_items(self):
         with patch("bot._news_topics", return_value=[("SG Education", "edu"), ("🏎️ F1", "f1")]), \
              patch("bot._recent_news_digest_keys", return_value=set()), \
+             patch("bot._digest_free_source_items", return_value=[]), \
+             patch("bot._digest_social_items", return_value=[]), \
              patch("search_service.google_news", side_effect=lambda query, max_items=4: [] if query == "f1" else [{
                  "title": "MOE policy update today",
                  "url": "https://example.com/edu",
@@ -3655,6 +3661,8 @@ class AgenticOpenAITests(unittest.TestCase):
 
         with patch("bot._news_topics", return_value=[("SG Education", "edu"), ("⚽ Liverpool / EPL", "lfc")]), \
              patch("bot._recent_news_digest_keys", return_value=set()), \
+             patch("bot._digest_free_source_items", return_value=[]), \
+             patch("bot._digest_social_items", return_value=[]), \
              patch("search_service.google_news", side_effect=fake_google_news):
             entries = bot.build_curated_digest_entries(
                 now=bot.SGT.localize(datetime(2026, 5, 10, 8, 0)),
