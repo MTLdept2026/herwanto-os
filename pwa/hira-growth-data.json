@@ -1,29 +1,29 @@
 {
-  "updated": "2026-05-26",
+  "updated": "2026-05-30",
   "name": "H.I.R.A Growth Log",
-  "subtitle": "How Herwanto Intelligent Response Agent grew from an installable assistant into a more reliable, visually coherent personal operating system.",
+  "subtitle": "How Herwanto Intelligent Response Agent grew from an installable assistant into a more reliable, anticipatory, voice-capable, self-auditing personal operating system.",
   "summary": {
     "start": "2026-04-28",
-    "current": "2026-05-26",
-    "commitsTracked": 358,
-    "majorPhases": 37,
-    "currentStage": "Long-horizon conversational memory with operator-state continuity and self-repair"
+    "current": "2026-05-30",
+    "commitsTracked": 399,
+    "majorPhases": 38,
+    "currentStage": "Anticipatory, voice-ready personal OS with reversible self-audit"
   },
   "metrics": [
     {
       "label": "Days of build acceleration",
-      "value": "28",
-      "note": "From first installable PWA commit to a sharper Nothing-style app identity with explicit trust rails, ClassOps intelligence, Postgres-backed operational memory, OpenAI full-power routing, vector memory, wordsmith-grade semantic intent, and a more human conversational operator layer."
+      "value": "32",
+      "note": "From first installable PWA commit to a sharper Nothing-style app identity with explicit trust rails, ClassOps intelligence, Postgres-backed operational memory, OpenAI full-power routing, vector memory, wordsmith-grade semantic intent, situation awareness, voice plumbing, anticipation, and metacognition."
     },
     {
       "label": "Tracked upgrade commits",
-      "value": "358",
+      "value": "399",
       "note": "Grouped from git history through the growth-log minisite."
     },
     {
       "label": "Memory buckets",
-      "value": "16",
-      "note": "Profile, preferences, teaching, business, sports, topic profiles, corrections, reflections, source notes, and more, now Postgres-backed with priority-weighted prompt injection."
+      "value": "18",
+      "note": "Profile, preferences, learned preferences, teaching, business, sports, topic profiles, corrections, reflections, source notes, conversation episodes, and more, now Postgres-backed with priority-weighted prompt injection."
     },
     {
       "label": "Specialist live domains",
@@ -35,17 +35,17 @@
     {
       "name": "Interface",
       "score": 98,
-      "description": "Installable PWA, minimal Nothing-style home-screen icon, restored cockpit home, sharper glyph surfaces, mobile dashboard, always-visible chat composer, files, quick command deck, OS Intelligence panel, action-enabled push notifications, action ledger review, ClassOps dashboard, recovery health, and notification controls."
+      "description": "Installable PWA, minimal Nothing-style home-screen icon, restored cockpit home, sharper glyph surfaces, Right Now strip, mobile dashboard, always-visible chat composer, voice controls, files, quick command deck, OS Intelligence panel, action-enabled push notifications, action ledger review, ClassOps dashboard, recovery health, and notification controls."
     },
     {
       "name": "Security",
       "score": 95,
-      "description": "Telegram fail-closed allowlist, web API token throttling, constant-time auth checks, safer rate-limit keys, /forget confirmation, file size guards, Redis job locks, and clearer saved/not-saved storage failure states."
+      "description": "Telegram fail-closed allowlist, web API token throttling, constant-time auth checks, safer rate-limit keys, atomic Redis limiter checks, streamed upload caps, /forget confirmation, HSTS/CSP hardening, Redis job locks, and clearer saved/not-saved storage failure states."
     },
     {
       "name": "Context",
       "score": 100,
-      "description": "Timetable, Google Calendar, reminder-worthy events, rough travel buffers, MTL classlists and marks fields, Dropbox lesson folders, checked availability slots, Drive references, file memory, Postgres-backed long-term memory, OpenAI vector memory, uploaded-file semantic recall, topic profiles, conversation summaries, conversation episodes, relationship arcs, relevant-memory retrieval, intent lensing, wordsmith semantic profiling, short-lived working memory, operator-state continuity, and home intelligence synthesis."
+      "description": "Timetable, Google Calendar, reminder-worthy events, rough travel buffers, MTL classlists and marks fields, Dropbox lesson folders, next-lesson context, read-only situation model, checked availability slots, Drive references, file memory, Postgres-backed long-term memory, OpenAI vector memory, uploaded-file semantic recall, topic profiles, conversation summaries, conversation episodes, relationship arcs, relevant-memory retrieval, intent lensing, wordsmith semantic profiling, short-lived working memory, operator-state continuity, and home intelligence synthesis."
     },
     {
       "name": "Live Knowledge",
@@ -55,7 +55,7 @@
     {
       "name": "Self-Improvement",
       "score": 100,
-      "description": "Postgres-backed memory commits, priority-weighted memory prompt, relevant recall, working memory, conversation-continuation guardrails, OpenAI response-state continuity, vector-store sync, structured action preflight, semantic corpus tests, action validation/audits, persistent action ledger, source/memory/native-tool trace visibility, ClassOps blind-spot checks, intent lens, proactive workload insights, OS readiness scoring, forecast radar, adaptive planning, 7-day trial loop, notification feedback learning, implicit correction detection, weekly consolidation, conversation summarisation, reply self-repair, and a personal operator layer that keeps continuity and open loops in view."
+      "description": "Postgres-backed memory commits, priority-weighted memory prompt, learned preferences, relevant recall, working memory, conversation-continuation guardrails, OpenAI response-state continuity, vector-store sync, structured action preflight, semantic corpus tests, action validation/audits, persistent action ledger, source/memory/native-tool trace visibility, ClassOps blind-spot checks, intent lens, proactive workload insights, OS readiness scoring, forecast radar, adaptive planning, 7-day trial loop, notification feedback learning, implicit correction detection, weekly consolidation, weekly self-audit with reversible mutes, conversation summarisation, reply self-repair, and a personal operator layer that keeps continuity and open loops in view."
     }
   ],
   "chapters": [
@@ -648,11 +648,31 @@
         "Transcript-style tests now cover recurring-issue recall, self-repair, operator-state triage, structured advice mode, and continuity across older open loops."
       ],
       "impact": "H.I.R.A should now feel less like a smart classifier and more like a real chief-of-staff with memory: it can remember the shape of a situation, carry it forward, and stop flimsy replies before they hit the chat."
+    },
+    {
+      "date": "2026-05-30",
+      "era": "North Star Foundation",
+      "title": "Hira learns to anticipate, speak, and audit itself",
+      "commit": "ebe0188 + 0c694e8 + 6cc45d6 + 7314e41 + add05d5",
+      "tag": "Anticipation + Metacognition",
+      "summary": "A hardening pass turned H.I.R.A's foundations into a safer platform, then the next stages added situation awareness, voice Tier A, broader anticipation, and a reversible self-audit loop.",
+      "details": [
+        "The code-review tranches hardened core reliability: real Postgres pooling, streamed upload caps, atomic Redis rate limiting, validated service-account credentials, proxy-gated headers, HSTS/CSP fixes, write-amplification cleanup, parallel weather, locked token refresh, and bounded caches.",
+        "The situation model now assembles lesson, agenda, task, ClassOps, prayer, weather, and flag context in parallel with per-section degradation, plus a read-only next-lesson companion and /api/lesson/now endpoint.",
+        "The PWA gained a cache-first Right Now strip that refreshes on unlock, home entry, visibility changes, initial load, and a visible-home poll.",
+        "Voice Tier A added authenticated text-to-speech and transcription endpoints, rate limits, upload caps, microphone lifecycle cleanup, microphone permissions, and a media-src CSP fix so blob audio can actually play.",
+        "The anticipation catalog expanded proactive candidates with prep_gap, stale_data, calendar_conflict, marking_crunch, and submission_risk, all routed through the existing cooldown, suppression, dedupe, and dispatch restraint layer.",
+        "The weekly self-audit loop now reads notification feedback, writes transparent learned_preferences, applies only strong learned mutes, exempts critical families, exposes runtime status, and reverses old auto-memory when signals change.",
+        "Dedicated regression tests now cover anticipation, situation modeling, voice, and self-audit behavior, with the critical dev-check gate updated for the new surfaces.",
+        "A hidden North Star easter egg now lives behind six quick taps on the topbar glyph: client-only, no persistence, just a brief quiet-observation pulse."
+      ],
+      "impact": "H.I.R.A crossed from reactive intelligence into restrained agency: it can understand the current situation, speak and listen through safe endpoints, notice more classes of risk before being asked, learn from its own notification record, and show or unwind those learned choices instead of silently becoming bossier."
     }
   ],
   "currentCapabilities": [
-    "Installable private PWA with minimal Nothing-style home-screen icon, sharper glyph surfaces, always-visible chat composer, chat, agenda, tasks, dual personal Gmail options, experimental Work Gmail, Work Gmail action monitoring, files, uploads, notifications, and dashboard views.",
+    "Installable private PWA with minimal Nothing-style home-screen icon, sharper glyph surfaces, Right Now strip, voice controls, always-visible chat composer, chat, agenda, tasks, dual personal Gmail options, experimental Work Gmail, Work Gmail action monitoring, files, uploads, notifications, dashboard views, and a hidden North Star glyph pulse.",
     "Home OS Intelligence that synthesizes agenda, workload, tasks, marking load, proactive signals, service health, and file memory into a readiness score, operating mode, next best move, risks, openings, and one-tap actions.",
+    "Read-only situation model that assembles lesson, agenda, task, ClassOps, prayer, weather, and flag context with per-section degradation, exposed through the Right Now strip and /api/lesson/now.",
     "Persistent action ledger with review and selected undo support for assistant/PWA writes, plus chat trace visibility for relevant memory sources.",
     "Postgres-backed durable storage for assistant memory, memory logs, app config, push subscriptions, push delivery logs, and notification state, with Sheets demoted to fallback and read-only external sources.",
     "Conversation-continuation guardrails that route short replies like yes pls, do it, go ahead, same, and that one through the newest relevant assistant offer instead of stale shortcuts.",
@@ -666,10 +686,11 @@
     "Telegram-compatible tool brain with calendar, reminders, marking, MTL classlists, dual personal Gmail brief/draft support, experimental Work Gmail brief/draft support, work-email action monitoring, artifacts, weather, MUIS prayer/khutbah, live selected-topic news, social-search digest leads, web search, and URL reading.",
     "Structured sports intelligence for Liverpool and F1.",
     "Railway Hobby runtime profile with upload queue, memory guardrails, worker split, Redis production option, admin status, /memcheck, /storagecheck, and /digestcheck.",
-    "Postgres-backed long-term memory buckets, OpenAI vector-store memory snapshots, uploaded-file semantic sync, topic profiles for new interests, correction ledger, self-reflection notes, source-backed research notes, and conversation summaries.",
+    "Postgres-backed long-term memory buckets, OpenAI vector-store memory snapshots, uploaded-file semantic sync, topic profiles for new interests, learned preferences, correction ledger, self-reflection notes, source-backed research notes, and conversation summaries.",
     "Intent lens with relevant-memory retrieval before answers, including quick PWA replies.",
     "Proactive intelligence scanner for workload pinch points, marking pressure, follow-ups, quiet windows, and upcoming packed days.",
     "Unified Proactive Intelligence v2 queue that ranks nudges, check-ins, follow-ups, prayers, tasks, digest picks, and internal intelligence with suppression and feedback learning.",
+    "Anticipation catalog that adds prep gaps, stale data warnings, calendar conflicts, marking crunch, and submission risks without bypassing cooldowns, quiet windows, or learned suppression.",
     "Short-lived PWA working memory that tracks the current subject, latest correction, pending action, and older competing subjects during follow-up chats.",
     "Long-horizon conversation memory that rolls recurring episodes into relationship arcs with actors, stakes, desired outcomes, recurrence count, reopen tracking, and more specific next-day follow-up prompts.",
     "Clarification memory that keeps blocked Action audit context alive so short replies like all day can continue the original calendar/reminder action instead of restarting the conversation.",
@@ -683,10 +704,10 @@
     "Curated live digest that merges configured watch topics with built-in radar topics, gathers Google News plus bounded X/Twitter-style social leads, ranks candidates for quality and relevance, and adds a short why-it-matters layer.",
     "Checked availability planner for after-school training slots that combines timetable lessons, calendar conflicts, and CCA-day avoidance.",
     "Priority-weighted memory prompt: corrections and constraints always visible; low-signal buckets trimmed.",
-    "Closed learning loop: implicit + explicit correction capture → weekly consolidation job → promoted to preferences/constraints.",
-    "Security: Telegram fail-closed allowlist, web API fail-closed auth, invalid-token throttling, safer notification rendering, /forget confirmation gate, and file upload size guards.",
+    "Closed learning loop: implicit + explicit correction capture → weekly consolidation job → promoted to preferences/constraints, plus weekly self-audit that writes transparent learned preferences and reversible learned mutes.",
+    "Security: Telegram fail-closed allowlist, web API fail-closed auth, invalid-token throttling, safer notification rendering, /forget confirmation gate, streamed file upload caps, atomic Redis rate limits, HSTS, and CSP media rules for voice playback.",
     "OpenAI-first model routing via the Responses API for quick replies, structured parsing, agentic work, and deep work, with Anthropic retained only as an optional fallback.",
-    "OpenAI full-power mode with response-state continuity, prompt caching, reasoning controls, specialist instruction modes, native web/file/code evidence, strict structured outputs, vector memory sync, and realtime voice session groundwork.",
+    "OpenAI full-power mode with response-state continuity, prompt caching, reasoning controls, specialist instruction modes, native web/file/code evidence, strict structured outputs, vector memory sync, authenticated TTS/transcription endpoints, and realtime voice session groundwork.",
     "Structured OpenAI action planner that asks for missing safety-critical details before state-changing calendar, reminder, Gmail, memory, nudge, classlist, and artifact actions.",
     "Istighfar and selawat reminder suppression that removes matching check-ins, archives queued notifications where storage allows, and blocks future creation/delivery."
   ],
