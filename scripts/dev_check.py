@@ -42,6 +42,7 @@ CRITICAL_UNIT_TESTS = [
     "tests.test_agentic_openai.AgenticOpenAITests.test_fill_mtl_percentage_scores_updates_blank_fa2_percentages",
     "tests.test_agentic_openai.AgenticOpenAITests.test_fill_mtl_percentage_scores_reuses_blank_column_after_raw_score",
     "tests.test_code_review_fixes",
+    "tests.test_situation_model",
 ]
 
 

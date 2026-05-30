@@ -14,6 +14,7 @@ import resource
 import tempfile
 import threading
 from collections import OrderedDict, defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, time as dt_time, date
 from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
@@ -6239,6 +6240,224 @@ def _event_to_agenda_item(event: dict) -> dict:
         "kind": "event",
     }
 
+
+_LESSON_CLASS_RE = re.compile(r"\b(?:Sec(?:ondary)?\s*)?(1G2|2G3|3G3|4BML|4NT)\b", re.I)
+_CLASSOPS_FILE_PURPOSES = {"lesson_page", "worksheet", "submission_task"}
+
+
+def _lesson_dt(target: date, value: str) -> datetime:
+    hour_text, minute_text = str(value or "").split(":", 1)
+    return SGT.localize(datetime(target.year, target.month, target.day, int(hour_text), int(minute_text)))
+
+
+def _lesson_class_name(lesson: dict) -> str:
+    text = " ".join(str(lesson.get(key, "") or "") for key in ("description", "subject", "code"))
+    match = _LESSON_CLASS_RE.search(text)
+    return match.group(1).upper() if match else ""
+
+
+def _classops_match_class(class_name: str) -> str:
+    clean = str(class_name or "").strip().upper()
+    return "4NT" if clean == "4BML" else clean
+
+
+def _lesson_payload(lesson: dict | None, target: date, current: datetime, include_countdown: bool = False) -> dict | None:
+    if not lesson:
+        return None
+    try:
+        start_dt = _lesson_dt(target, lesson.get("start", ""))
+        _lesson_dt(target, lesson.get("end", ""))
+    except Exception:
+        return None
+    payload = {
+        "class": _lesson_class_name(lesson),
+        "subject": str(lesson.get("subject", "") or ""),
+        "title": str(lesson.get("description", "") or ""),
+        "room": "" if str(lesson.get("room", "") or "") == "-" else str(lesson.get("room", "") or ""),
+        "start": str(lesson.get("start", "") or ""),
+        "end": str(lesson.get("end", "") or ""),
+    }
+    if include_countdown:
+        seconds = max(0, int((start_dt - current).total_seconds()))
+        payload["minutes_until"] = int((seconds + 59) // 60)
+    return payload
+
+
+def _lesson_file_url(path: str) -> str:
+    if not path:
+        return ""
+    try:
+        link = dropbox.get_file_link(path)
+        return str(link.get("url", "") or "") if isinstance(link, dict) else ""
+    except Exception as exc:
+        logger.warning(f"ClassOps lesson file link failed for {path}: {exc}")
+        return ""
+
+
+def _manifest_class_item(manifest: dict, class_name: str) -> dict:
+    wanted = _classops_match_class(class_name)
+    for item in manifest.get("classes", []) if isinstance(manifest, dict) else []:
+        if str(item.get("class", "") or "").strip().upper() == wanted:
+            return item
+    return {}
+
+
+def _classops_folder_from_path(path: str) -> str:
+    parts = [part for part in str(path or "").strip("/").split("/") if part]
+    return parts[1] if len(parts) >= 3 else ""
+
+
+def _lesson_classops_files(class_name: str) -> tuple[list[dict], list[dict], bool]:
+    if not class_name or not dropbox.configured():
+        return [], [], False
+    manifest = dropbox.scan_classops_manifest(allow_stale=True)
+    class_item = _manifest_class_item(manifest, class_name)
+    if not class_item:
+        return [], [], False
+    latest = class_item.get("latest_lesson") if isinstance(class_item.get("latest_lesson"), dict) else {}
+    latest_date = str(latest.get("date", "") or "")
+    latest_folder = str(latest.get("folder", "") or "")
+    files = []
+    for item in class_item.get("content_items", []) or []:
+        purpose = item.get("purpose") if isinstance(item.get("purpose"), dict) else {}
+        purpose_id = str(item.get("purpose_id") or purpose.get("id", "")).strip()
+        if purpose_id not in _CLASSOPS_FILE_PURPOSES:
+            continue
+        if latest_date and str(item.get("date", "") or "") != latest_date:
+            continue
+        path = str(item.get("path", "") or "")
+        files.append({
+            "title": str(item.get("title", "") or ""),
+            "kind": str(item.get("kind", "") or ""),
+            "path": path,
+            "url": _lesson_file_url(path),
+            "purpose": purpose_id,
+            "purpose_label": str(item.get("purpose_label", "") or ""),
+        })
+    collection_candidates = []
+    for item in class_item.get("collection_candidates", []) or []:
+        path = str(item.get("path", "") or "")
+        if latest_folder and _classops_folder_from_path(path) != latest_folder:
+            continue
+        collection = item.get("collection") if isinstance(item.get("collection"), dict) else {}
+        purpose = item.get("purpose") if isinstance(item.get("purpose"), dict) else {}
+        collection_candidates.append({
+            "title": str(item.get("filing_title") or item.get("name") or ""),
+            "path": path,
+            "url": _lesson_file_url(path),
+            "due": "next_lesson",
+            "purpose": str(purpose.get("id", "") or "submission_task"),
+            "hint": str(collection.get("hint", "") or ""),
+        })
+    return files[:6], collection_candidates[:4], True
+
+
+def build_next_lesson_companion(now: datetime | None = None) -> dict:
+    current = _coerce_sgt_datetime(now)
+    target = current.date()
+    lessons, wt_label = _lessons_for_date(target)
+    visible_lessons = _visible_lessons_for_date(target, lessons)
+    current_lesson = None
+    next_lesson = None
+
+    for lesson in visible_lessons:
+        try:
+            start_dt = _lesson_dt(target, lesson.get("start", ""))
+            end_dt = _lesson_dt(target, lesson.get("end", ""))
+        except Exception:
+            continue
+        if current_lesson is None and start_dt <= current <= end_dt:
+            current_lesson = lesson
+        if next_lesson is None and start_dt > current:
+            next_lesson = lesson
+        if current_lesson is not None and next_lesson is not None:
+            break
+
+    current_payload = _lesson_payload(current_lesson, target, current)
+    next_payload = _lesson_payload(next_lesson, target, current, include_countdown=True)
+    relevant = current_lesson or next_lesson
+    files: list[dict] = []
+    collection_candidates: list[dict] = []
+    classops_joined = False
+    if relevant:
+        try:
+            files, collection_candidates, classops_joined = _lesson_classops_files(_lesson_class_name(relevant))
+        except Exception as exc:
+            logger.warning(f"ClassOps lesson companion lookup failed: {exc}")
+
+    return {
+        "now": current.isoformat(),
+        "current_lesson": current_payload,
+        "next_lesson": next_payload,
+        "files": files,
+        "collection_candidates": collection_candidates,
+        "week": _week_display(wt_label, target) if wt_label else _agenda_week_display(target),
+        "source": "timetable+classops" if classops_joined else "timetable",
+    }
+
+
+def _jsonable_prayer_item(item: dict | None) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+    converted = dict(item)
+    if isinstance(converted.get("datetime"), datetime):
+        converted["datetime"] = converted["datetime"].isoformat()
+    return converted
+
+
+def _build_prayer_situation(current: datetime) -> dict:
+    schedule = [_jsonable_prayer_item(item) for item in isl.prayer_schedule(current.date())]
+    return {
+        "schedule": [item for item in schedule if item],
+        "next": _jsonable_prayer_item(isl.next_prayer(current)),
+    }
+
+
+def _build_situation_flags() -> dict:
+    return {
+        "google": google_ok(),
+        "redis": redis_guardrail_status(),
+        "classops_manifest": dropbox.classops_manifest_cache_status(),
+    }
+
+
+def _situation_section(name: str, builder, fallback: dict | None = None) -> tuple[str, dict]:
+    try:
+        value = builder()
+        if isinstance(value, dict):
+            return name, {"ok": True, **value}
+        return name, {"ok": True, "value": value}
+    except Exception as exc:
+        logger.warning(f"Situation model {name} failed: {exc}")
+        return name, {"ok": False, "error": str(exc), **dict(fallback or {})}
+
+
+def build_situation_model(now: datetime | None = None) -> dict:
+    current = _coerce_sgt_datetime(now)
+    tasks = {
+        "lesson": (lambda: build_next_lesson_companion(current), {"current_lesson": None, "next_lesson": None, "files": [], "collection_candidates": []}),
+        "agenda": (lambda: build_agenda_structured(2), {"days": []}),
+        "tasks": (lambda: build_task_structured(7), {"items": []}),
+        "classops": (lambda: build_classops_status_summary(now=current), {"classes": []}),
+        "prayer": (lambda: _build_prayer_situation(current), {"schedule": [], "next": None}),
+        "weather": (lambda: {"brief": ws.build_weather_brief(include_24h=True, include_4day=False)}, {"brief": ""}),
+        "flags": (_build_situation_flags, {"google": False, "redis": {}, "classops_manifest": {}}),
+    }
+    sections: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=min(4, len(tasks))) as executor:
+        futures = {
+            executor.submit(_situation_section, name, builder, fallback): name
+            for name, (builder, fallback) in tasks.items()
+        }
+        for future in as_completed(futures):
+            name, value = future.result()
+            sections[name] = value
+    return {
+        "generated_at": current.isoformat(),
+        **sections,
+    }
+
+
 def build_agenda_structured(days: int = 7) -> dict:
     days = max(1, min(int(days or 7), 14))
     now = datetime.now(SGT)
@@ -7144,6 +7363,98 @@ def _dedupe_proactive_candidates(candidates: list[dict]) -> list[dict]:
     return list(kept.values())
 
 
+def _submission_name(value) -> str:
+    if isinstance(value, dict):
+        return str(value.get("name") or value.get("student") or value.get("student_name") or "").strip()
+    return str(value or "").strip()
+
+
+def _submission_assignment_id(class_name: str, assignment: dict) -> str:
+    clean = str(assignment.get("id", "") or "").strip()
+    if clean:
+        return clean
+    raw = "|".join([
+        str(class_name or ""),
+        str(assignment.get("assignment_title") or assignment.get("title") or ""),
+        str(assignment.get("collect_by") or ""),
+        str(assignment.get("lesson_date") or ""),
+    ])
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def _submission_risk_assignments(class_item: dict) -> list[dict]:
+    assignments = class_item.get("assignments") if isinstance(class_item.get("assignments"), list) else []
+    if assignments:
+        return [item for item in assignments if isinstance(item, dict)]
+    latest = class_item.get("latest_assignment")
+    return [latest] if isinstance(latest, dict) and latest else []
+
+
+def _submission_risk_candidates(now: datetime | None = None) -> list[dict]:
+    current = _coerce_sgt_datetime(now)
+    today = current.date()
+    tomorrow = today + timedelta(days=1)
+    try:
+        summary = build_classops_status_summary(now=current)
+    except Exception as exc:
+        logger.warning(f"Submission risk summary scan failed: {exc}")
+        return []
+    candidates = []
+    for class_item in summary.get("classes", []) if isinstance(summary, dict) else []:
+        class_name = str(class_item.get("class_name") or class_item.get("class") or "").strip()
+        if not class_name:
+            continue
+        top_students = [
+            _submission_name(student)
+            for student in class_item.get("top_students", []) or []
+            if _submission_name(student)
+        ]
+        for assignment in _submission_risk_assignments(class_item):
+            collect_by = str(assignment.get("collect_by", "") or "").strip()
+            due_date = classops_ai.parse_classops_date(collect_by)
+            if not due_date or due_date > tomorrow:
+                continue
+            outstanding = [
+                _submission_name(student)
+                for student in assignment.get("non_submitted", []) or []
+                if _submission_name(student)
+            ]
+            outstanding_count = len(outstanding) or int(assignment.get("missing_count", 0) or 0)
+            if outstanding_count <= 0:
+                continue
+            assignment_id = _submission_assignment_id(class_name, assignment)
+            title = str(assignment.get("assignment_title") or assignment.get("title") or "tracked work").strip()
+            priority = "high" if due_date <= today else "medium"
+            score = min(96, 90 + min(6, outstanding_count)) if due_date <= today else min(86, 76 + min(8, outstanding_count))
+            label = "overdue" if due_date < today else "today" if due_date == today else "tomorrow"
+            names = outstanding[:3] or top_students[:3]
+            name_tail = f" Top: {', '.join(names)}." if names else ""
+            body = (
+                f"{outstanding_count} not submitted for {class_name} {title}, due {label}. "
+                "Chase now or it spills into your marking weekend."
+                f"{name_tail}"
+            )
+            candidates.append(_make_proactive_candidate(
+                "submission_risk",
+                f"submission_risk:{class_name}:{assignment_id}",
+                "update",
+                "Submission risk",
+                body,
+                score,
+                priority=priority,
+                why=f"ClassOps shows outstanding submissions due {label}.",
+                action_hint="Chase outstanding / mark collected.",
+                event_date=due_date.isoformat(),
+                metadata={
+                    "assignment_id": assignment_id,
+                    "class_name": class_name,
+                    "collect_by": collect_by,
+                    "outstanding_count": outstanding_count,
+                },
+            ))
+    return candidates
+
+
 def build_proactive_v2_queue(now: datetime | None = None, days: int = 7, families: set[str] | None = None) -> list[dict]:
     current = now or datetime.now(SGT)
     today = current.date()
@@ -7306,6 +7617,12 @@ def build_proactive_v2_queue(now: datetime | None = None, days: int = 7, familie
                 ))
         except Exception as exc:
             logger.warning(f"Proactive v2 weekly planning scan failed: {exc}")
+
+    try:
+        if allow("submission_risk"):
+            candidates.extend(_submission_risk_candidates(now=current))
+    except Exception as exc:
+        logger.warning(f"Proactive v2 submission risk scan failed: {exc}")
 
     try:
         if allow("digest") and 5 <= current.hour <= 11:
@@ -16322,6 +16639,7 @@ NOTIFICATION_COOLDOWN_HOURS = {
     "followup": 18,
     "task_reminder": 168,
     "proactive_intelligence": 24,
+    "submission_risk": 24,
     "friday_checkin": 36,
     "weekly_planning": 24,
     "friday_khutbah": 24,
@@ -17231,7 +17549,7 @@ async def calendar_reminders_job(context):
         now = datetime.now(SGT)
         await _dispatch_proactive_candidates(
             context,
-            build_proactive_v2_queue(now=now, days=2, families={"calendar_reminder", "task"}),
+            build_proactive_v2_queue(now=now, days=2, families={"calendar_reminder", "submission_risk", "task"}),
             limit=4,
         )
     except Exception as e:

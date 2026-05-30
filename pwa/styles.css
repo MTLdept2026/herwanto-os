@@ -1703,6 +1703,87 @@ html[data-theme="dark"] .load-badge.load-green {
   height: 18px;
 }
 
+.right-now-strip {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(180px, 1.4fr);
+  gap: 8px;
+  align-items: stretch;
+  margin-bottom: var(--space-md);
+  padding: 8px;
+  border: 1px solid var(--border-visible);
+  background: var(--surface);
+  border-radius: 2px;
+}
+
+.right-now-main,
+.right-now-next,
+.right-now-files {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  align-content: center;
+  padding: 10px 12px;
+  border: 1px solid var(--border-visible);
+  background: var(--surface-raised);
+}
+
+.right-now-main span,
+.right-now-next span,
+.right-now-main small,
+.right-now-next small {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.right-now-main strong,
+.right-now-next strong {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-family: var(--font-readable);
+  font-size: 16px;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.right-now-files {
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  align-content: stretch;
+  padding: 8px;
+}
+
+.right-now-file {
+  min-width: 0;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-visible);
+  background: var(--surface);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-decoration: none;
+}
+
+.right-now-file svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+
+.right-now-file.muted {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
 .live-system-label {
   display: inline-flex;
   align-items: center;
@@ -4458,6 +4539,22 @@ body:has(#settingsPanel:not([hidden])) .quick-action-fab {
   .focus-action {
     grid-column: span 2;
     min-height: 56px;
+  }
+
+  .right-now-strip {
+    grid-template-columns: 1fr;
+    gap: 6px;
+    padding: 6px;
+  }
+
+  .right-now-main,
+  .right-now-next,
+  .right-now-files {
+    padding: 8px;
+  }
+
+  .right-now-files {
+    grid-template-columns: 1fr;
   }
 
   .composer {

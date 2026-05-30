@@ -42,8 +42,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260530-code-review-fixes-1"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v139"
+PWA_APP_VERSION = "20260530-stage3-situation-1"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v140"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -3558,6 +3558,13 @@ async def home(days: int = 7, x_hira_token: Optional[str] = Header(default=None)
         "time_label": now.strftime("%H:%M SGT"),
         **data,
     }
+
+
+@app.get("/api/lesson/now")
+async def lesson_now(full: bool = False, x_hira_token: Optional[str] = Header(default=None)):
+    _require_token(x_hira_token)
+    builder = bot.build_situation_model if full else bot.build_next_lesson_companion
+    return await asyncio.to_thread(builder)
 
 
 def _briefing_replay_slot(message: str) -> str:

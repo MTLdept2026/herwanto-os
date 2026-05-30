@@ -664,6 +664,7 @@ def build_status_summary(
             roster_count = report.get("roster_count", 0)
             concern_count = report.get("concern_count", 0)
             latest = report.get("assignments", [])[-1] if report.get("assignments") else {}
+            status_assignments = report.get("assignments", []) or assignments
             insights = report.get("insights", []) or []
             concerns = sorted(
                 report.get("concerns", []) or [],
@@ -676,6 +677,7 @@ def build_status_summary(
             roster_count = 0
             concern_count = 0
             latest = assignments[-1] if assignments else {}
+            status_assignments = assignments
             insights = []
             concerns = []
 
@@ -711,6 +713,18 @@ def build_status_summary(
             "due_today_count": due_today,
             "overdue_count": overdue,
             "latest_assignment": latest,
+            "assignments": [
+                {
+                    "id": str(assignment.get("id", "")),
+                    "assignment_title": str(assignment.get("assignment_title") or "Tracked work"),
+                    "lesson_date": str(assignment.get("lesson_date") or ""),
+                    "collect_by": str(assignment.get("collect_by") or ""),
+                    "non_submitted": list(assignment.get("non_submitted", []) or []),
+                    "missing_count": int(assignment.get("missing_count") or len(assignment.get("non_submitted", []) or []) or 0),
+                }
+                for assignment in status_assignments
+                if isinstance(assignment, dict) and (assignment.get("non_submitted") or assignment.get("missing_count"))
+            ],
             "insight_count": len(insights),
             "top_insight": insights[0] if insights else {},
             "top_students": [

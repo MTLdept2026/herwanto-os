@@ -20,18 +20,20 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260530-code-review-fixes-1";
-const APP_SCRIPT = "app.js?v=20260530-code-review-fixes-1";
-const EXPECTED_SW_CACHE = "hira-os-v139";
+const APP_VERSION = "20260530-stage3-situation-1";
+const APP_SCRIPT = "app.js?v=20260530-stage3-situation-1";
+const EXPECTED_SW_CACHE = "hira-os-v140";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
+const RIGHT_NOW_CACHE_KEY = "hira_pwa_right_now_snapshot_v1";
 const AGENDA_CACHE_KEY = "hira_pwa_agenda_snapshot_v1";
 const PUSH_SYNC_MODE_KEY = "hira_pwa_last_push_sync_mode";
 const PUSH_SYNC_ENDPOINT_KEY = "hira_pwa_last_push_sync_endpoint";
 const SESSION_TOKEN_KEY = "hira_web_session_token";
 const HOME_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const HOME_REFRESH_THROTTLE_MS = 45 * 1000;
+const RIGHT_NOW_REFRESH_MS = 60 * 1000;
 const SOURCE_PLUMBING_URL_PATTERN = /https?:\/\/(?:news\.google\.com\/rss\/articles|site\.api\.espn\.com\/apis\/|duckduckgo\.com\/l\/\?)\S+/gi;
 let legacyWebToken = localStorage.getItem("hira_web_token") || "";
 let runtimeWebToken = "";
@@ -69,6 +71,11 @@ const state = {
   homeRefreshInFlight: null,
   homeLastRefreshStartedAt: 0,
   homeTimelineItems: [],
+  rightNow: null,
+  rightNowSavedAt: 0,
+  rightNowReceivedAt: 0,
+  rightNowRefreshInFlight: null,
+  rightNowPoll: null,
   actionLedger: [],
 };
 state.chatHistory = cleanStoredChatHistory(state.chatHistory);
@@ -518,6 +525,23 @@ function saveHomeSnapshot(data) {
     localStorage.setItem(HOME_CACHE_KEY, JSON.stringify({ saved_at: Date.now(), data }));
   } catch (_) {
     // If storage is tight, keeping chat and settings matters more than a warm home snapshot.
+  }
+}
+
+function readRightNowSnapshot() {
+  const snapshot = safeJsonParse(RIGHT_NOW_CACHE_KEY, null);
+  if (!snapshot || typeof snapshot !== "object" || !snapshot.data) return null;
+  const savedAt = Number(snapshot.saved_at || 0);
+  if (!Number.isFinite(savedAt) || savedAt <= 0) return null;
+  if (Date.now() - savedAt > HOME_CACHE_MAX_AGE_MS) return null;
+  return { data: snapshot.data, savedAt };
+}
+
+function saveRightNowSnapshot(data) {
+  try {
+    localStorage.setItem(RIGHT_NOW_CACHE_KEY, JSON.stringify({ saved_at: Date.now(), data }));
+  } catch (_) {
+    // This is a small convenience cache; live lesson data remains fetch-first.
   }
 }
 
@@ -3150,6 +3174,85 @@ function setView(name) {
   });
 }
 
+function lessonDisplayName(lesson) {
+  if (!lesson) return "";
+  return [lesson.subject, lesson.class].filter(Boolean).join(" ") || lesson.title || "Lesson";
+}
+
+function rightNowCountdown(nextLesson) {
+  if (!nextLesson || !Number.isFinite(Number(nextLesson.minutes_until))) return "";
+  const elapsed = Math.floor(Math.max(0, Date.now() - Number(state.rightNowReceivedAt || Date.now())) / 60000);
+  const remaining = Math.max(0, Number(nextLesson.minutes_until) - elapsed);
+  return remaining <= 0 ? "starting now" : `${remaining}m`;
+}
+
+function renderRightNow(data = state.rightNow) {
+  const strip = $("#rightNowStrip");
+  if (!strip) return;
+  const current = data?.current_lesson || null;
+  const next = data?.next_lesson || null;
+  const files = Array.isArray(data?.files) ? data.files.filter((item) => item?.url).slice(0, 4) : [];
+  if (!current && !next && !files.length) {
+    strip.hidden = true;
+    return;
+  }
+  strip.hidden = false;
+  const active = current || next;
+  $("#rightNowTitle").textContent = current ? lessonDisplayName(current) : next ? `Next: ${lessonDisplayName(next)}` : "No lesson";
+  $("#rightNowMeta").textContent = active
+    ? [active.room, `${active.start || "--:--"}-${active.end || "--:--"}`, data?.week].filter(Boolean).join(" · ")
+    : "School rhythm clear";
+  $("#rightNowNextTitle").textContent = next ? lessonDisplayName(next) : "No next lesson";
+  $("#rightNowNextMeta").textContent = next ? [rightNowCountdown(next), next.room].filter(Boolean).join(" · ") : "End-of-day";
+  $("#rightNowFiles").innerHTML = files.length
+    ? files.map((file) => `
+        <a class="right-now-file" href="${escapeHtml(safeHttpUrl(file.url))}" target="_blank" rel="noopener noreferrer">
+          <span data-lucide="file-text" aria-hidden="true"></span>
+          ${escapeHtml(file.title || file.purpose_label || "ClassOps file")}
+        </a>
+      `).join("")
+    : `<span class="right-now-file muted"><span data-lucide="folder-open" aria-hidden="true"></span>No linked files</span>`;
+  refreshIcons(strip);
+}
+
+async function loadRightNow({ background = false, useCache = true } = {}) {
+  if (state.rightNowRefreshInFlight) return state.rightNowRefreshInFlight;
+  const snapshot = useCache ? readRightNowSnapshot() : null;
+  if (snapshot && !state.rightNow) {
+    state.rightNow = snapshot.data;
+    state.rightNowSavedAt = snapshot.savedAt;
+    state.rightNowReceivedAt = snapshot.savedAt;
+    renderRightNow(snapshot.data);
+  }
+  state.rightNowRefreshInFlight = (async () => {
+    const controller = new AbortController();
+    const hardTimeout = window.setTimeout(() => controller.abort(), 10000);
+    try {
+      const data = await api("/api/lesson/now", { headers: headers(false), signal: controller.signal });
+      state.rightNow = data;
+      state.rightNowSavedAt = Date.now();
+      state.rightNowReceivedAt = Date.now();
+      saveRightNowSnapshot(data);
+      renderRightNow(data);
+    } catch (error) {
+      if (!state.rightNow) renderRightNow(null);
+      if (!background) setStatus(`Right Now unavailable: ${error.message}`, "warn");
+    } finally {
+      window.clearTimeout(hardTimeout);
+      state.rightNowRefreshInFlight = null;
+    }
+  })();
+  return state.rightNowRefreshInFlight;
+}
+
+function startRightNowPolling() {
+  if (state.rightNowPoll) return;
+  state.rightNowPoll = window.setInterval(() => {
+    renderRightNow();
+    if (!document.hidden && state.currentView === "home") loadRightNow({ background: true });
+  }, RIGHT_NOW_REFRESH_MS);
+}
+
 function renderHomeData(data = {}, { fromCache = false, savedAt = 0 } = {}) {
   updateLiveClock();
   $("#homeLivingTimeline").innerHTML = renderLivingTimeline(data.agenda_structured || {}, data.prayers || {});
@@ -3958,6 +4061,8 @@ $("#saveTokenBtn").addEventListener("click", async () => {
     setStatus("Session unlocked on this device.", "ok");
     updateNotificationControls();
     loadHome({ force: true, useCache: false });
+    loadRightNow({ background: true, useCache: false });
+    startRightNowPolling();
     startNotificationPolling();
   } catch (error) {
     $("#settingsPanel").hidden = false;
@@ -3976,6 +4081,8 @@ $("#clearTokenBtn").addEventListener("click", () => {
     sessionStorage.removeItem(SESSION_TOKEN_KEY);
   } catch (_) {}
   localStorage.removeItem("hira_session_unlocked");
+  state.rightNow = null;
+  renderRightNow(null);
   fetch("/api/auth/logout", {
     method: "POST",
     headers: state.clientId ? { "X-Hira-Client": state.clientId } : {},
@@ -3990,6 +4097,7 @@ document.querySelectorAll(".nav-tab").forEach((tab) => {
     if (view === "home" && Date.now() - state.homeLastRefreshStartedAt > HOME_REFRESH_THROTTLE_MS) {
       await loadHome({ background: true });
     }
+    if (view === "home") loadRightNow({ background: true });
     if (view === "agenda") await loadAgenda(currentAgendaDays());
     if (view === "tasks") await loadTasks(Number($("#tasksDays")?.value || 30));
   });
@@ -4157,6 +4265,7 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden) {
     reportClientModeToServiceWorker();
     updateNotificationControls();
+    if (state.sessionUnlocked && state.currentView === "home") loadRightNow({ background: true });
   }
 });
 
@@ -4190,6 +4299,8 @@ async function startAuthenticatedApp() {
     return;
   }
   loadHome({ background: true });
+  loadRightNow({ background: true });
+  startRightNowPolling();
   startNotificationPolling();
 }
 
