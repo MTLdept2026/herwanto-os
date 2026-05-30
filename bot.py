@@ -733,6 +733,18 @@ SELF_READ_QUERY_PATTERN = re.compile(
     re.I,
 )
 
+ASSISTANT_CAPABILITY_PATTERN = re.compile(
+    r"\b(?:"
+    r"what(?:'?s)?\s+(?:the\s+)?(?:most\s+impressive|best|coolest|greatest|most\s+powerful|most\s+capable)\s+(?:thing\s+)?you\b|"
+    r"what\s+can\s+you\s+do\b|"
+    r"what\s+are\s+you\s+capable\s+of\b|"
+    r"what(?:'?re)?\s+your\s+(?:capabilities|skills|features|strengths|powers|best\s+features)\b|"
+    r"impress\s+me\b|"
+    r"show\s+me\s+(?:what\s+you(?:'?re|\s+are)\s+capable|something\s+impressive)\b"
+    r")",
+    re.I,
+)
+
 
 def _is_casual_sports_lifestyle_text(text: str) -> bool:
     clean = " ".join(str(text or "").lower().split())
@@ -758,6 +770,8 @@ def _is_conversational_self_read_text(text: str) -> bool:
     ):
         return False
     if SELF_READ_QUERY_PATTERN.search(clean):
+        return True
+    if ASSISTANT_CAPABILITY_PATTERN.search(clean):
         return True
     return bool(
         re.search(r"\b(?:taste|personality|vibe|aesthetic|character)\b", clean)
