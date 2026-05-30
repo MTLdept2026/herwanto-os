@@ -4711,7 +4711,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
 
     live_briefing_slot = _live_briefing_slot(message)
     if live_briefing_slot:
-        reply = _live_briefing_text(live_briefing_slot)
+        reply = await asyncio.to_thread(_live_briefing_text, live_briefing_slot)
         quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
         return _quick_sse_response(
             reply,
@@ -4723,7 +4723,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
 
     briefing_slot = _briefing_replay_slot(message)
     if briefing_slot:
-        reply = _briefing_replay_text(briefing_slot)
+        reply = await asyncio.to_thread(_briefing_replay_text, briefing_slot)
         quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
         return _quick_sse_response(
             reply,

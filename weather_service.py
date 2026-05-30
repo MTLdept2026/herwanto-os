@@ -8,6 +8,7 @@ they still expose the same NEA data if the newer path changes availability.
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from difflib import SequenceMatcher
 
@@ -202,17 +203,38 @@ def _air_quality(area: str) -> dict:
     return result
 
 
+def _run_parallel(tasks: dict[str, tuple]) -> dict:
+    if not tasks:
+        return {}
+    results = {}
+    max_workers = min(4, len(tasks))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_by_name = {
+            executor.submit(fn): (name, fallback, warning)
+            for name, (fn, fallback, warning) in tasks.items()
+        }
+        for future in as_completed(future_by_name):
+            name, fallback, warning = future_by_name[future]
+            try:
+                results[name] = future.result()
+            except Exception as e:
+                logger.warning(f"{warning}: {e}")
+                results[name] = fallback
+    return results
+
+
 def _current_conditions(area: str) -> dict:
+    results = _run_parallel({
+        "temperature": (lambda: _latest_station_reading(AIR_TEMPERATURE_V1, area), None, "NEA air temperature fetch failed"),
+        "humidity": (lambda: _latest_station_reading(RELATIVE_HUMIDITY_V1, area), None, "NEA relative humidity fetch failed"),
+        "air_quality": (lambda: _air_quality(area), {"region": _region_for_area(area)}, "NEA air quality fetch failed"),
+    })
     conditions = {}
-    try:
-        conditions["temperature"] = _latest_station_reading(AIR_TEMPERATURE_V1, area)
-    except Exception as e:
-        logger.warning(f"NEA air temperature fetch failed: {e}")
-    try:
-        conditions["humidity"] = _latest_station_reading(RELATIVE_HUMIDITY_V1, area)
-    except Exception as e:
-        logger.warning(f"NEA relative humidity fetch failed: {e}")
-    conditions["air_quality"] = _air_quality(area)
+    if results.get("temperature") is not None:
+        conditions["temperature"] = results["temperature"]
+    if results.get("humidity") is not None:
+        conditions["humidity"] = results["humidity"]
+    conditions["air_quality"] = results.get("air_quality") or {"region": _region_for_area(area)}
     return conditions
 
 
@@ -287,7 +309,15 @@ def _four_day_forecast() -> dict:
 
 def build_weather_brief(area: str = "", include_24h: bool = True, include_4day: bool = False) -> str:
     area = " ".join((area or DEFAULT_AREA).split()) or DEFAULT_AREA
-    two_hour = _two_hour_forecast(area)
+    tasks = {
+        "two_hour": (lambda: _two_hour_forecast(area), {}, "NEA 2-hour weather fetch failed"),
+    }
+    if include_24h:
+        tasks["day"] = (_twenty_four_hour_forecast, {}, "NEA 24-hour weather fetch failed")
+    if include_4day:
+        tasks["outlook"] = (_four_day_forecast, {}, "NEA 4-day weather fetch failed")
+    fetched = _run_parallel(tasks)
+    two_hour = fetched.get("two_hour") or {}
     forecasts = two_hour.get("forecasts") or []
     matched = _match_area(area, forecasts)
 
@@ -327,7 +357,7 @@ def build_weather_brief(area: str = "", include_24h: bool = True, include_4day: 
         lines.append("Current readings: " + "; ".join(current_parts))
 
     if include_24h:
-        day = _twenty_four_hour_forecast()
+        day = fetched.get("day") or {}
         general = day.get("general") or {}
         forecast = _forecast_text(general.get("forecast"))
         temp = general.get("temperature") or {}
@@ -355,7 +385,7 @@ def build_weather_brief(area: str = "", include_24h: bool = True, include_4day: 
             lines.extend(_format_period(period) for period in clean_periods[:3])
 
     if include_4day:
-        outlook = _four_day_forecast()
+        outlook = fetched.get("outlook") or {}
         forecasts = outlook.get("forecasts") or []
         if forecasts:
             lines.append("\n4-day outlook:")

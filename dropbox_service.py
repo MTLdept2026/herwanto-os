@@ -7,6 +7,7 @@ import re
 import threading
 import time
 import zipfile
+from collections import OrderedDict
 from datetime import date, datetime
 from html.parser import HTMLParser
 from io import BytesIO
@@ -22,8 +23,10 @@ DROPBOX_API = "https://api.dropboxapi.com/2"
 DROPBOX_CONTENT_API = "https://content.dropboxapi.com/2"
 DROPBOX_TOKEN_URL = "https://api.dropbox.com/oauth2/token"
 _TOKEN_CACHE: dict = {}
-_TITLE_CACHE: dict[str, str] = {}
+_TITLE_CACHE: OrderedDict[str, str] = OrderedDict()
 _CLASSOPS_MANIFEST_CACHE: dict = {"manifest": None, "stored_at": 0.0}
+_TOKEN_CACHE_LOCK = threading.Lock()
+_TITLE_CACHE_LOCK = threading.Lock()
 _CLASSOPS_MANIFEST_LOCK = threading.Lock()
 CLASSOPS_CLASSES = {"1G2", "2G3", "3G3", "4NT"}
 CONTENT_EXTENSIONS = {
@@ -56,6 +59,7 @@ REFERENCE_SKIP_TERMS = ("reference", "rujukan", "answer", "answers", "jawapan", 
 FILING_EXTENSIONS = {".html", ".htm", ".pdf", ".docx", ".doc", ".pptx", ".ppt"}
 TITLE_INSPECT_EXTENSIONS = {".html", ".htm", ".docx"}
 TITLE_MAX_BYTES = int(os.environ.get("DROPBOX_CLASSOPS_TITLE_MAX_BYTES", "2500000") or 2500000)
+TITLE_CACHE_MAX = max(1, int(os.environ.get("DROPBOX_CLASSOPS_TITLE_CACHE_MAX", "512") or 512))
 CONTENT_PURPOSES = {
     "lesson_page": {"label": "Lesson page", "tone": "lesson", "rank": 10},
     "submission_task": {"label": "Submission task", "tone": "task", "rank": 20},
@@ -135,24 +139,30 @@ def _access_token() -> str:
     expires_at = float(_TOKEN_CACHE.get("expires_at", 0) or 0)
     if cached and expires_at - now > 120:
         return cached
-    resp = requests.post(
-        DROPBOX_TOKEN_URL,
-        data={
-            "grant_type": "refresh_token",
-            "refresh_token": os.environ["DROPBOX_REFRESH_TOKEN"],
-            "client_id": os.environ["DROPBOX_APP_KEY"],
-            "client_secret": os.environ["DROPBOX_APP_SECRET"],
-        },
-        timeout=12,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    token = str(data.get("access_token", "")).strip()
-    if not token:
-        raise RuntimeError("Dropbox token refresh returned no access_token.")
-    _TOKEN_CACHE["access_token"] = token
-    _TOKEN_CACHE["expires_at"] = now + int(data.get("expires_in", 3600) or 3600)
-    return token
+    with _TOKEN_CACHE_LOCK:
+        now = time.time()
+        cached = _TOKEN_CACHE.get("access_token", "")
+        expires_at = float(_TOKEN_CACHE.get("expires_at", 0) or 0)
+        if cached and expires_at - now > 120:
+            return cached
+        resp = requests.post(
+            DROPBOX_TOKEN_URL,
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": os.environ["DROPBOX_REFRESH_TOKEN"],
+                "client_id": os.environ["DROPBOX_APP_KEY"],
+                "client_secret": os.environ["DROPBOX_APP_SECRET"],
+            },
+            timeout=12,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        token = str(data.get("access_token", "")).strip()
+        if not token:
+            raise RuntimeError("Dropbox token refresh returned no access_token.")
+        _TOKEN_CACHE["access_token"] = token
+        _TOKEN_CACHE["expires_at"] = now + int(data.get("expires_in", 3600) or 3600)
+        return token
 
 
 def _post(endpoint: str, payload: dict) -> dict:
@@ -531,6 +541,24 @@ def _docx_title(content: bytes) -> str:
     return _smart_title(first_paragraph)
 
 
+def _title_cache_get(path: str) -> str:
+    with _TITLE_CACHE_LOCK:
+        cached = _TITLE_CACHE.get(path, "")
+        if cached:
+            _TITLE_CACHE.move_to_end(path)
+        return cached
+
+
+def _title_cache_set(path: str, title: str) -> None:
+    if not path or not title:
+        return
+    with _TITLE_CACHE_LOCK:
+        _TITLE_CACHE[path] = title
+        _TITLE_CACHE.move_to_end(path)
+        while len(_TITLE_CACHE) > TITLE_CACHE_MAX:
+            _TITLE_CACHE.popitem(last=False)
+
+
 def infer_filing_title(file_item: dict) -> str:
     name = str(file_item.get("name") or "")
     fallback = infer_filing_title_from_filename(name)
@@ -539,7 +567,7 @@ def infer_filing_title(file_item: dict) -> str:
     size = int(file_item.get("size", 0) or 0)
     if not _inspect_titles_enabled() or ext not in TITLE_INSPECT_EXTENSIONS or not dropbox_path or size > TITLE_MAX_BYTES:
         return fallback
-    cached = _TITLE_CACHE.get(dropbox_path)
+    cached = _title_cache_get(dropbox_path)
     if cached:
         return cached
     try:
@@ -549,7 +577,7 @@ def infer_filing_title(file_item: dict) -> str:
         title = ""
     title = title or fallback
     if title:
-        _TITLE_CACHE[dropbox_path] = title
+        _title_cache_set(dropbox_path, title)
     return title
 
 

@@ -19,6 +19,7 @@ COMPILE_TARGETS = [
     "bot.py",
     "web_app.py",
     "google_services.py",
+    "postgres_storage.py",
     "classops_intelligence.py",
     "dropbox_service.py",
 ]
@@ -40,6 +41,7 @@ CRITICAL_UNIT_TESTS = [
     "tests.test_agentic_openai.AgenticOpenAITests.test_dispatch_marks_action_reminder_after_confirmed_push",
     "tests.test_agentic_openai.AgenticOpenAITests.test_fill_mtl_percentage_scores_updates_blank_fa2_percentages",
     "tests.test_agentic_openai.AgenticOpenAITests.test_fill_mtl_percentage_scores_reuses_blank_column_after_raw_score",
+    "tests.test_code_review_fixes",
 ]
 
 

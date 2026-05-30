@@ -14,6 +14,8 @@ _schema_ready = False
 _pool_lock = threading.RLock()
 _pool = None
 _pool_url = ""
+_initialized_marker_lock = threading.RLock()
+_initialized_markers_written: set[str] = set()
 
 
 class PostgresUnavailable(RuntimeError):
@@ -73,6 +75,25 @@ def _sync_notification_sequence(cur) -> None:
         )
         """
     )
+
+
+def _mark_initialized(cur, key: str) -> None:
+    clean_key = str(key or "").strip()
+    if not clean_key:
+        return
+    with _initialized_marker_lock:
+        if clean_key in _initialized_markers_written:
+            return
+        cur.execute(
+            """
+            INSERT INTO app_config (key, value, updated_at)
+            VALUES (%s, '1', now())
+            ON CONFLICT (key)
+            DO UPDATE SET value = '1', updated_at = now()
+            """,
+            (clean_key,),
+        )
+        _initialized_markers_written.add(clean_key)
 
 
 def _connection_pool():
@@ -276,14 +297,7 @@ def set_memory(memory: dict[str, list], default_memory: dict[str, list]) -> dict
                     """,
                     (category, _jsonb(items)),
                 )
-            cur.execute(
-                """
-                INSERT INTO app_config (key, value, updated_at)
-                VALUES ('assistant_memory_initialized', '1', now())
-                ON CONFLICT (key)
-                DO UPDATE SET value = '1', updated_at = now()
-                """
-            )
+            _mark_initialized(cur, "assistant_memory_initialized")
         conn.commit()
     return clean
 
@@ -315,14 +329,7 @@ def add_memory(category: str, text: str, default_memory: dict[str, list]) -> dic
                     """,
                     (category, _jsonb(bucket)),
                 )
-                cur.execute(
-                    """
-                    INSERT INTO app_config (key, value, updated_at)
-                    VALUES ('assistant_memory_initialized', '1', now())
-                    ON CONFLICT (key)
-                    DO UPDATE SET value = '1', updated_at = now()
-                    """
-                )
+                _mark_initialized(cur, "assistant_memory_initialized")
     return {key: list(memory.get(key, [])) for key in default_memory}
 
 
@@ -358,15 +365,159 @@ def import_memory(memory: dict[str, list], default_memory: dict[str, list], sour
                         """,
                         (category, _jsonb(bucket)),
                     )
-                cur.execute(
-                    """
-                    INSERT INTO app_config (key, value, updated_at)
-                    VALUES ('assistant_memory_initialized', '1', now())
-                    ON CONFLICT (key)
-                    DO UPDATE SET value = '1', updated_at = now()
-                    """
-                )
+                _mark_initialized(cur, "assistant_memory_initialized")
     return {"ok": True, "imported": imported, "source": clean_source, "at": datetime.utcnow().isoformat() + "Z"}
+
+
+def _subscription_payload(item: dict) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+    subscription = item.get("subscription") if isinstance(item.get("subscription"), dict) else {}
+    client_id = str(item.get("client_id", "")).strip()
+    endpoint = str(subscription.get("endpoint", "")).strip()
+    if not client_id or not endpoint:
+        return None
+    return {
+        "client_id": client_id,
+        "endpoint": endpoint,
+        "subscription": subscription,
+        "created": str(item.get("created", "") or ""),
+        "last_seen": str(item.get("last_seen", "") or ""),
+        "display_mode": str(item.get("display_mode", "") or "unknown"),
+        "app_version": str(item.get("app_version", "") or ""),
+        "user_agent": str(item.get("user_agent", "") or "")[:180],
+    }
+
+
+def _upsert_subscription_row(cur, item: dict, merge: bool = False) -> str:
+    payload = _subscription_payload(item)
+    if not payload:
+        return ""
+    if merge:
+        cur.execute(
+            "DELETE FROM web_push_subscriptions WHERE endpoint = %s AND client_id <> %s",
+            (payload["endpoint"], payload["client_id"]),
+        )
+    else:
+        cur.execute(
+            "DELETE FROM web_push_subscriptions WHERE client_id = %s OR endpoint = %s",
+            (payload["client_id"], payload["endpoint"]),
+        )
+    sql = """
+        INSERT INTO web_push_subscriptions (
+            client_id, endpoint, subscription, created_at, last_seen,
+            display_mode, app_version, user_agent
+        )
+        VALUES (
+            %s, %s, %s,
+            COALESCE(NULLIF(%s, '')::timestamptz, now()),
+            COALESCE(NULLIF(%s, '')::timestamptz, now()),
+            %s, %s, %s
+        )
+    """
+    if merge:
+        sql += """
+        ON CONFLICT (client_id)
+        DO UPDATE SET
+            endpoint = EXCLUDED.endpoint,
+            subscription = EXCLUDED.subscription,
+            last_seen = GREATEST(web_push_subscriptions.last_seen, EXCLUDED.last_seen),
+            display_mode = EXCLUDED.display_mode,
+            app_version = EXCLUDED.app_version,
+            user_agent = EXCLUDED.user_agent
+        """
+    cur.execute(
+        sql,
+        (
+            payload["client_id"],
+            payload["endpoint"],
+            _jsonb(payload["subscription"]),
+            payload["created"],
+            payload["last_seen"],
+            payload["display_mode"],
+            payload["app_version"],
+            payload["user_agent"],
+        ),
+    )
+    return payload["client_id"]
+
+
+def _insert_delivery_log_row(cur, item: dict) -> bool:
+    if not isinstance(item, dict):
+        return False
+    cur.execute(
+        """
+        INSERT INTO web_push_delivery_log (
+            created_at, source, kind, title, attempted, sent, expired,
+            errors, last_error, payload_bytes
+        )
+        VALUES (
+            COALESCE(NULLIF(%s, '')::timestamptz, now()),
+            %s, %s, %s, %s, %s, %s, %s, %s, %s
+        )
+        """,
+        (
+            str(item.get("created", "") or ""),
+            str(item.get("source", "") or "")[:240],
+            str(item.get("kind", "") or "")[:40],
+            str(item.get("title", "") or "")[:240],
+            int(item.get("attempted", 0) or 0),
+            int(item.get("sent", 0) or 0),
+            int(item.get("expired", 0) or 0),
+            _jsonb(item.get("errors", {}) if isinstance(item.get("errors"), dict) else {}),
+            str(item.get("last_error", "") or "")[:300],
+            int(item.get("payload_bytes", 0) or 0),
+        ),
+    )
+    return True
+
+
+def _insert_notification_row(cur, item: dict, merge: bool = False, returning: bool = False):
+    if not isinstance(item, dict):
+        return None
+    notification_id = str(item.get("id", "")).strip()
+    body = str(item.get("body", "") or "").strip()
+    if not notification_id or not body:
+        return None
+    sql = """
+        INSERT INTO notification_state (
+            id, kind, title, body, source, seen_by, archived,
+            created_at, updated_at
+        )
+        VALUES (
+            %s, %s, %s, %s, %s, %s, %s,
+            COALESCE(NULLIF(%s, '')::timestamptz, now()),
+            now()
+        )
+    """
+    if merge:
+        sql += """
+        ON CONFLICT (id)
+        DO UPDATE SET
+            kind = EXCLUDED.kind,
+            title = EXCLUDED.title,
+            body = EXCLUDED.body,
+            source = EXCLUDED.source,
+            seen_by = EXCLUDED.seen_by,
+            archived = EXCLUDED.archived,
+            updated_at = now()
+        """
+    if returning:
+        sql += " RETURNING id, kind, title, body, created_at, source, seen_by, archived"
+    cur.execute(
+        sql,
+        (
+            notification_id,
+            str(item.get("kind", "") or "notice")[:40],
+            str(item.get("title", "") or "H.I.R.A")[:240],
+            body,
+            str(item.get("source", "") or "")[:240],
+            _jsonb(item.get("seen_by", []) if isinstance(item.get("seen_by"), list) else []),
+            bool(item.get("archived", False)),
+            str(item.get("created", "") or ""),
+        ),
+    )
+    return cur.fetchone() if returning else True
 
 
 def load_web_push_subscriptions() -> list[dict]:
@@ -397,44 +548,12 @@ def load_web_push_subscriptions() -> list[dict]:
 
 def upsert_web_push_subscription(item: dict) -> None:
     ensure_schema()
-    if not isinstance(item, dict):
-        return
-    client_id = str(item.get("client_id", "")).strip()
-    subscription = item.get("subscription") if isinstance(item.get("subscription"), dict) else {}
-    endpoint = str(subscription.get("endpoint", "")).strip()
-    if not client_id or not endpoint:
+    if not _subscription_payload(item):
         return
     with connect() as conn:
         with conn.transaction():
             with conn.cursor() as cur:
-                cur.execute(
-                    "DELETE FROM web_push_subscriptions WHERE client_id = %s OR endpoint = %s",
-                    (client_id, endpoint),
-                )
-                cur.execute(
-                    """
-                    INSERT INTO web_push_subscriptions (
-                        client_id, endpoint, subscription, created_at, last_seen,
-                        display_mode, app_version, user_agent
-                    )
-                    VALUES (
-                        %s, %s, %s,
-                        COALESCE(NULLIF(%s, '')::timestamptz, now()),
-                        COALESCE(NULLIF(%s, '')::timestamptz, now()),
-                        %s, %s, %s
-                    )
-                    """,
-                    (
-                        client_id,
-                        endpoint,
-                        _jsonb(subscription),
-                        str(item.get("created", "") or ""),
-                        str(item.get("last_seen", "") or ""),
-                        str(item.get("display_mode", "") or "unknown"),
-                        str(item.get("app_version", "") or ""),
-                        str(item.get("user_agent", "") or "")[:180],
-                    ),
-                )
+                _upsert_subscription_row(cur, item)
                 cur.execute(
                     """
                     DELETE FROM web_push_subscriptions
@@ -446,14 +565,7 @@ def upsert_web_push_subscription(item: dict) -> None:
                     )
                     """
                 )
-                cur.execute(
-                    """
-                    INSERT INTO app_config (key, value, updated_at)
-                    VALUES ('web_push_subscriptions_initialized', '1', now())
-                    ON CONFLICT (key)
-                    DO UPDATE SET value = '1', updated_at = now()
-                    """
-                )
+                _mark_initialized(cur, "web_push_subscriptions_initialized")
 
 
 def delete_web_push_subscriptions(client_ids: list[str] | None = None, endpoints: list[str] | None = None) -> int:
@@ -483,54 +595,17 @@ def set_web_push_subscriptions(subscriptions: list[dict]) -> None:
             with conn.cursor() as cur:
                 client_ids = []
                 for item in subscriptions:
-                    if not isinstance(item, dict):
-                        continue
-                    client_id = str(item.get("client_id", "")).strip()
-                    subscription = item.get("subscription") if isinstance(item.get("subscription"), dict) else {}
-                    endpoint = str(subscription.get("endpoint", "")).strip()
-                    if not client_id or not endpoint:
+                    payload = _subscription_payload(item)
+                    client_id = payload["client_id"] if payload else ""
+                    if not client_id:
                         continue
                     client_ids.append(client_id)
-                    cur.execute(
-                        "DELETE FROM web_push_subscriptions WHERE client_id = %s OR endpoint = %s",
-                        (client_id, endpoint),
-                    )
-                    cur.execute(
-                        """
-                        INSERT INTO web_push_subscriptions (
-                            client_id, endpoint, subscription, created_at, last_seen,
-                            display_mode, app_version, user_agent
-                        )
-                        VALUES (
-                            %s, %s, %s,
-                            COALESCE(NULLIF(%s, '')::timestamptz, now()),
-                            COALESCE(NULLIF(%s, '')::timestamptz, now()),
-                            %s, %s, %s
-                        )
-                        """,
-                        (
-                            client_id,
-                            endpoint,
-                            _jsonb(subscription),
-                            str(item.get("created", "") or ""),
-                            str(item.get("last_seen", "") or ""),
-                            str(item.get("display_mode", "") or "unknown"),
-                            str(item.get("app_version", "") or ""),
-                            str(item.get("user_agent", "") or "")[:180],
-                        ),
-                    )
+                    _upsert_subscription_row(cur, item)
                 if client_ids:
                     cur.execute("DELETE FROM web_push_subscriptions WHERE NOT (client_id = ANY(%s))", (client_ids,))
                 else:
                     cur.execute("DELETE FROM web_push_subscriptions")
-                cur.execute(
-                    """
-                    INSERT INTO app_config (key, value, updated_at)
-                    VALUES ('web_push_subscriptions_initialized', '1', now())
-                    ON CONFLICT (key)
-                    DO UPDATE SET value = '1', updated_at = now()
-                    """
-                )
+                _mark_initialized(cur, "web_push_subscriptions_initialized")
 
 
 def import_web_push_subscriptions(subscriptions: list[dict]) -> None:
@@ -540,49 +615,7 @@ def import_web_push_subscriptions(subscriptions: list[dict]) -> None:
             with conn.cursor() as cur:
                 _advisory_xact_lock(cur, "hira:web_push_subscriptions:migration")
                 for item in list(subscriptions or [])[-30:]:
-                    if not isinstance(item, dict):
-                        continue
-                    client_id = str(item.get("client_id", "")).strip()
-                    subscription = item.get("subscription") if isinstance(item.get("subscription"), dict) else {}
-                    endpoint = str(subscription.get("endpoint", "")).strip()
-                    if not client_id or not endpoint:
-                        continue
-                    cur.execute(
-                        "DELETE FROM web_push_subscriptions WHERE endpoint = %s AND client_id <> %s",
-                        (endpoint, client_id),
-                    )
-                    cur.execute(
-                        """
-                        INSERT INTO web_push_subscriptions (
-                            client_id, endpoint, subscription, created_at, last_seen,
-                            display_mode, app_version, user_agent
-                        )
-                        VALUES (
-                            %s, %s, %s,
-                            COALESCE(NULLIF(%s, '')::timestamptz, now()),
-                            COALESCE(NULLIF(%s, '')::timestamptz, now()),
-                            %s, %s, %s
-                        )
-                        ON CONFLICT (client_id)
-                        DO UPDATE SET
-                            endpoint = EXCLUDED.endpoint,
-                            subscription = EXCLUDED.subscription,
-                            last_seen = GREATEST(web_push_subscriptions.last_seen, EXCLUDED.last_seen),
-                            display_mode = EXCLUDED.display_mode,
-                            app_version = EXCLUDED.app_version,
-                            user_agent = EXCLUDED.user_agent
-                        """,
-                        (
-                            client_id,
-                            endpoint,
-                            _jsonb(subscription),
-                            str(item.get("created", "") or ""),
-                            str(item.get("last_seen", "") or ""),
-                            str(item.get("display_mode", "") or "unknown"),
-                            str(item.get("app_version", "") or ""),
-                            str(item.get("user_agent", "") or "")[:180],
-                        ),
-                    )
+                    _upsert_subscription_row(cur, item, merge=True)
                 cur.execute(
                     """
                     DELETE FROM web_push_subscriptions
@@ -594,14 +627,7 @@ def import_web_push_subscriptions(subscriptions: list[dict]) -> None:
                     )
                     """
                 )
-                cur.execute(
-                    """
-                    INSERT INTO app_config (key, value, updated_at)
-                    VALUES ('web_push_subscriptions_initialized', '1', now())
-                    ON CONFLICT (key)
-                    DO UPDATE SET value = '1', updated_at = now()
-                    """
-                )
+                _mark_initialized(cur, "web_push_subscriptions_initialized")
 
 
 def load_web_push_delivery_log(limit: int = 80) -> list[dict]:
@@ -641,42 +667,10 @@ def set_web_push_delivery_log(entries: list[dict]) -> None:
     with connect() as conn:
         with conn.transaction():
             with conn.cursor() as cur:
-                cur.execute("DELETE FROM web_push_delivery_log")
+                cur.execute("TRUNCATE web_push_delivery_log")
                 for item in kept:
-                    if not isinstance(item, dict):
-                        continue
-                    cur.execute(
-                        """
-                        INSERT INTO web_push_delivery_log (
-                            created_at, source, kind, title, attempted, sent, expired,
-                            errors, last_error, payload_bytes
-                        )
-                        VALUES (
-                            COALESCE(NULLIF(%s, '')::timestamptz, now()),
-                            %s, %s, %s, %s, %s, %s, %s, %s, %s
-                        )
-                        """,
-                        (
-                            str(item.get("created", "") or ""),
-                            str(item.get("source", "") or "")[:240],
-                            str(item.get("kind", "") or "")[:40],
-                            str(item.get("title", "") or "")[:240],
-                            int(item.get("attempted", 0) or 0),
-                            int(item.get("sent", 0) or 0),
-                            int(item.get("expired", 0) or 0),
-                            _jsonb(item.get("errors", {}) if isinstance(item.get("errors"), dict) else {}),
-                            str(item.get("last_error", "") or "")[:300],
-                            int(item.get("payload_bytes", 0) or 0),
-                        ),
-                    )
-                cur.execute(
-                    """
-                    INSERT INTO app_config (key, value, updated_at)
-                    VALUES ('web_push_delivery_log_initialized', '1', now())
-                    ON CONFLICT (key)
-                    DO UPDATE SET value = '1', updated_at = now()
-                    """
-                )
+                    _insert_delivery_log_row(cur, item)
+                _mark_initialized(cur, "web_push_delivery_log_initialized")
 
 
 def import_web_push_delivery_log(entries: list[dict]) -> None:
@@ -687,32 +681,7 @@ def import_web_push_delivery_log(entries: list[dict]) -> None:
             with conn.cursor() as cur:
                 _advisory_xact_lock(cur, "hira:web_push_delivery_log:migration")
                 for item in kept:
-                    if not isinstance(item, dict):
-                        continue
-                    cur.execute(
-                        """
-                        INSERT INTO web_push_delivery_log (
-                            created_at, source, kind, title, attempted, sent, expired,
-                            errors, last_error, payload_bytes
-                        )
-                        VALUES (
-                            COALESCE(NULLIF(%s, '')::timestamptz, now()),
-                            %s, %s, %s, %s, %s, %s, %s, %s, %s
-                        )
-                        """,
-                        (
-                            str(item.get("created", "") or ""),
-                            str(item.get("source", "") or "")[:240],
-                            str(item.get("kind", "") or "")[:40],
-                            str(item.get("title", "") or "")[:240],
-                            int(item.get("attempted", 0) or 0),
-                            int(item.get("sent", 0) or 0),
-                            int(item.get("expired", 0) or 0),
-                            _jsonb(item.get("errors", {}) if isinstance(item.get("errors"), dict) else {}),
-                            str(item.get("last_error", "") or "")[:300],
-                            int(item.get("payload_bytes", 0) or 0),
-                        ),
-                    )
+                    _insert_delivery_log_row(cur, item)
                 cur.execute(
                     """
                     DELETE FROM web_push_delivery_log
@@ -724,14 +693,7 @@ def import_web_push_delivery_log(entries: list[dict]) -> None:
                     )
                     """
                 )
-                cur.execute(
-                    """
-                    INSERT INTO app_config (key, value, updated_at)
-                    VALUES ('web_push_delivery_log_initialized', '1', now())
-                    ON CONFLICT (key)
-                    DO UPDATE SET value = '1', updated_at = now()
-                    """
-                )
+                _mark_initialized(cur, "web_push_delivery_log_initialized")
 
 
 def append_web_push_delivery_log(item: dict) -> None:
@@ -741,30 +703,7 @@ def append_web_push_delivery_log(item: dict) -> None:
     with connect() as conn:
         with conn.transaction():
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO web_push_delivery_log (
-                        created_at, source, kind, title, attempted, sent, expired,
-                        errors, last_error, payload_bytes
-                    )
-                    VALUES (
-                        COALESCE(NULLIF(%s, '')::timestamptz, now()),
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s
-                    )
-                    """,
-                    (
-                        str(item.get("created", "") or ""),
-                        str(item.get("source", "") or "")[:240],
-                        str(item.get("kind", "") or "")[:40],
-                        str(item.get("title", "") or "")[:240],
-                        int(item.get("attempted", 0) or 0),
-                        int(item.get("sent", 0) or 0),
-                        int(item.get("expired", 0) or 0),
-                        _jsonb(item.get("errors", {}) if isinstance(item.get("errors"), dict) else {}),
-                        str(item.get("last_error", "") or "")[:300],
-                        int(item.get("payload_bytes", 0) or 0),
-                    ),
-                )
+                _insert_delivery_log_row(cur, item)
                 cur.execute(
                     """
                     DELETE FROM web_push_delivery_log
@@ -776,14 +715,7 @@ def append_web_push_delivery_log(item: dict) -> None:
                     )
                     """
                 )
-                cur.execute(
-                    """
-                    INSERT INTO app_config (key, value, updated_at)
-                    VALUES ('web_push_delivery_log_initialized', '1', now())
-                    ON CONFLICT (key)
-                    DO UPDATE SET value = '1', updated_at = now()
-                    """
-                )
+                _mark_initialized(cur, "web_push_delivery_log_initialized")
 
 
 def load_app_notifications(include_archived: bool = False) -> list[dict]:
@@ -875,25 +807,20 @@ def enqueue_app_notification(kind: str, title: str, body: str, source: str = "")
                         return _notification_row_to_dict(row, duplicate=True)
                 cur.execute("SELECT nextval('notification_state_id_seq')")
                 notification_id = str(cur.fetchone()[0])
-                cur.execute(
-                    """
-                    INSERT INTO notification_state (
-                        id, kind, title, body, source, seen_by, archived, created_at, updated_at
-                    )
-                    VALUES (%s, %s, %s, %s, %s, '[]'::jsonb, false, now(), now())
-                    RETURNING id, kind, title, body, created_at, source, seen_by, archived
-                    """,
-                    (notification_id, clean_kind, clean_title, clean_body, clean_source),
+                inserted = _insert_notification_row(
+                    cur,
+                    {
+                        "id": notification_id,
+                        "kind": clean_kind,
+                        "title": clean_title,
+                        "body": clean_body,
+                        "source": clean_source,
+                        "seen_by": [],
+                        "archived": False,
+                    },
+                    returning=True,
                 )
-                inserted = cur.fetchone()
-                cur.execute(
-                    """
-                    INSERT INTO app_config (key, value, updated_at)
-                    VALUES ('notification_state_initialized', '1', now())
-                    ON CONFLICT (key)
-                    DO UPDATE SET value = '1', updated_at = now()
-                    """
-                )
+                _mark_initialized(cur, "notification_state_initialized")
                 return _notification_row_to_dict(inserted)
 
 
@@ -978,44 +905,9 @@ def set_app_notifications(notifications: list[dict]) -> None:
             with conn.cursor() as cur:
                 cur.execute("DELETE FROM notification_state")
                 for item in kept:
-                    if not isinstance(item, dict):
-                        continue
-                    notification_id = str(item.get("id", "")).strip()
-                    body = str(item.get("body", "") or "").strip()
-                    if not notification_id or not body:
-                        continue
-                    cur.execute(
-                        """
-                        INSERT INTO notification_state (
-                            id, kind, title, body, source, seen_by, archived,
-                            created_at, updated_at
-                        )
-                        VALUES (
-                            %s, %s, %s, %s, %s, %s, %s,
-                            COALESCE(NULLIF(%s, '')::timestamptz, now()),
-                            now()
-                        )
-                        """,
-                        (
-                            notification_id,
-                            str(item.get("kind", "") or "notice")[:40],
-                            str(item.get("title", "") or "H.I.R.A")[:240],
-                            body,
-                            str(item.get("source", "") or "")[:240],
-                            _jsonb(item.get("seen_by", []) if isinstance(item.get("seen_by"), list) else []),
-                            bool(item.get("archived", False)),
-                            str(item.get("created", "") or ""),
-                        ),
-                    )
-                cur.execute(
-                    """
-                    INSERT INTO app_config (key, value, updated_at)
-                    VALUES ('notification_state_initialized', '1', now())
-                    ON CONFLICT (key)
-                    DO UPDATE SET value = '1', updated_at = now()
-                        """
-                    )
+                    _insert_notification_row(cur, item)
                 _sync_notification_sequence(cur)
+                _mark_initialized(cur, "notification_state_initialized")
 
 
 def import_app_notifications(notifications: list[dict]) -> None:
@@ -1026,44 +918,7 @@ def import_app_notifications(notifications: list[dict]) -> None:
             with conn.cursor() as cur:
                 _advisory_xact_lock(cur, "hira:notification_state:migration")
                 for item in kept:
-                    if not isinstance(item, dict):
-                        continue
-                    notification_id = str(item.get("id", "")).strip()
-                    body = str(item.get("body", "") or "").strip()
-                    if not notification_id or not body:
-                        continue
-                    cur.execute(
-                        """
-                        INSERT INTO notification_state (
-                            id, kind, title, body, source, seen_by, archived,
-                            created_at, updated_at
-                        )
-                        VALUES (
-                            %s, %s, %s, %s, %s, %s, %s,
-                            COALESCE(NULLIF(%s, '')::timestamptz, now()),
-                            now()
-                        )
-                        ON CONFLICT (id)
-                        DO UPDATE SET
-                            kind = EXCLUDED.kind,
-                            title = EXCLUDED.title,
-                            body = EXCLUDED.body,
-                            source = EXCLUDED.source,
-                            seen_by = EXCLUDED.seen_by,
-                            archived = EXCLUDED.archived,
-                            updated_at = now()
-                        """,
-                        (
-                            notification_id,
-                            str(item.get("kind", "") or "notice")[:40],
-                            str(item.get("title", "") or "H.I.R.A")[:240],
-                            body,
-                            str(item.get("source", "") or "")[:240],
-                            _jsonb(item.get("seen_by", []) if isinstance(item.get("seen_by"), list) else []),
-                            bool(item.get("archived", False)),
-                            str(item.get("created", "") or ""),
-                        ),
-                    )
+                    _insert_notification_row(cur, item, merge=True)
                 cur.execute(
                     """
                     DELETE FROM notification_state
@@ -1075,15 +930,8 @@ def import_app_notifications(notifications: list[dict]) -> None:
                     )
                     """
                 )
-                cur.execute(
-                    """
-                    INSERT INTO app_config (key, value, updated_at)
-                    VALUES ('notification_state_initialized', '1', now())
-                    ON CONFLICT (key)
-                    DO UPDATE SET value = '1', updated_at = now()
-                    """
-                )
                 _sync_notification_sequence(cur)
+                _mark_initialized(cur, "notification_state_initialized")
 
 
 def storage_status() -> dict:

@@ -2,13 +2,17 @@ import asyncio
 import base64
 import json
 import os
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi import HTTPException
 
+import dropbox_service
 import google_services
+import postgres_storage
 import web_app
 
 
@@ -38,6 +42,14 @@ class _FakeRedis:
         self.entries.append((member, float(now)))
         self.expired = True
         return 1
+
+
+class _DropboxTokenResponse:
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return {"access_token": "dropbox-token", "expires_in": 3600}
 
 
 class CodeReviewFixesTests(unittest.TestCase):
@@ -91,6 +103,56 @@ class CodeReviewFixesTests(unittest.TestCase):
         bad = base64.b64encode(json.dumps({"type": "service_account"}).encode("utf-8")).decode("ascii")
         with self.assertRaisesRegex(EnvironmentError, "missing required field"):
             google_services._service_account_info(bad)
+
+    def test_initialized_marker_is_written_once_per_process(self):
+        class FakeCursor:
+            def __init__(self):
+                self.calls = 0
+
+            def execute(self, *_args):
+                self.calls += 1
+
+        postgres_storage._initialized_markers_written.discard("unit_initialized")
+        cur = FakeCursor()
+
+        postgres_storage._mark_initialized(cur, "unit_initialized")
+        postgres_storage._mark_initialized(cur, "unit_initialized")
+
+        self.assertEqual(cur.calls, 1)
+        postgres_storage._initialized_markers_written.discard("unit_initialized")
+
+    def test_dropbox_token_cache_refreshes_once_for_concurrent_callers(self):
+        env = {
+            "DROPBOX_APP_KEY": "app-key",
+            "DROPBOX_APP_SECRET": "app-secret",
+            "DROPBOX_REFRESH_TOKEN": "refresh-token",
+        }
+        calls = []
+
+        def post(*_args, **_kwargs):
+            calls.append(1)
+            time.sleep(0.02)
+            return _DropboxTokenResponse()
+
+        dropbox_service._TOKEN_CACHE.clear()
+        with patch.dict(os.environ, env, clear=False), patch.object(dropbox_service.requests, "post", side_effect=post):
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                tokens = list(executor.map(lambda _idx: dropbox_service._access_token(), range(4)))
+
+        self.assertEqual(tokens, ["dropbox-token"] * 4)
+        self.assertEqual(len(calls), 1)
+        dropbox_service._TOKEN_CACHE.clear()
+
+    def test_dropbox_title_cache_is_bounded_lru(self):
+        dropbox_service._TITLE_CACHE.clear()
+        with patch.object(dropbox_service, "TITLE_CACHE_MAX", 2):
+            dropbox_service._title_cache_set("/a.html", "A")
+            dropbox_service._title_cache_set("/b.html", "B")
+            self.assertEqual(dropbox_service._title_cache_get("/a.html"), "A")
+            dropbox_service._title_cache_set("/c.html", "C")
+
+        self.assertEqual(set(dropbox_service._TITLE_CACHE.keys()), {"/a.html", "/c.html"})
+        dropbox_service._TITLE_CACHE.clear()
 
 
 if __name__ == "__main__":
