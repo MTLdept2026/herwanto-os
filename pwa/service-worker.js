@@ -1,9 +1,9 @@
-const CACHE_NAME = "hira-os-v144";
-const HIRA_APP_VERSION = "20260530-stage6-ui-fit-2";
+const CACHE_NAME = "hira-os-v145";
+const HIRA_APP_VERSION = "20260530-typography-1";
 const ASSETS = [
   "/",
-  "/styles.css?v=20260530-stage6-ui-fit-2",
-  "/app.js?v=20260530-stage6-ui-fit-2",
+  "/styles.css?v=20260530-typography-1",
+  "/app.js?v=20260530-typography-1",
   "/static/icon.svg",
   "/static/icon-192.png",
   "/static/icon-512.png",

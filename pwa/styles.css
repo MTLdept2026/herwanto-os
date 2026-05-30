@@ -19,10 +19,14 @@
   --border-dark: #111111;
   --text-dark: #e8e7e0;
   --text-dark-dim: #58584f;
-  --font-px: "VT323", monospace;
-  --font-dot: "Doto", monospace;
-  --font-ui: "Space Mono", monospace;
-  --font-readable: "Space Grotesk", system-ui, sans-serif;
+  --font-display: "Space Grotesk", system-ui, sans-serif;
+  --font-body: "Space Grotesk", system-ui, sans-serif;
+  --font-mono: "Space Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-clock: "Doto", var(--font-mono);
+  --font-px: var(--font-mono);
+  --font-dot: var(--font-display);
+  --font-ui: var(--font-mono);
+  --font-readable: var(--font-body);
   --space-2xs: 2px;
   --space-xs: 4px;
   --space-sm: 8px;
@@ -7545,4 +7549,389 @@ span[data-lucide]::before { content: ""; }
   .composer {
     grid-template-columns: 42px 42px minmax(0, 1fr) 68px !important;
   }
+}
+
+/* Typography hierarchy pass: two families, fixed product UI scale. */
+:root {
+  --font-display: "Space Grotesk", system-ui, sans-serif;
+  --font-body: "Space Grotesk", system-ui, sans-serif;
+  --font-mono: "Space Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-clock: "Doto", var(--font-mono);
+  --font-px: var(--font-mono);
+  --font-dot: var(--font-display);
+  --font-ui: var(--font-mono);
+  --font-readable: var(--font-body);
+  --type-2xs: 10px;
+  --type-xs: 11px;
+  --type-sm: 12px;
+  --type-md: 14px;
+  --type-body: 16px;
+  --type-lg: 18px;
+  --type-xl: 22px;
+  --type-2xl: 28px;
+  --type-3xl: 36px;
+  --type-display: 54px;
+  --type-clock: 92px;
+  --line-tight: 1.1;
+  --line-copy: 1.5;
+}
+
+html,
+body {
+  font-family: var(--font-body) !important;
+  font-size: var(--type-body);
+  line-height: var(--line-copy);
+}
+
+body,
+input,
+textarea,
+select,
+.brand-subtitle,
+.chat-context,
+.signal-subtitle,
+.messages .message,
+.messages .message-body,
+.messages .message-body p,
+.messages .message-body li,
+.rich-output,
+.rich-output p,
+.rich-output li,
+.agenda-card-head strong,
+.agenda-copy strong,
+.agenda-copy span,
+.timeline-copy strong,
+.timeline-copy p,
+.task-copy p,
+.notification-reader-body,
+.empty-state {
+  font-family: var(--font-body) !important;
+  letter-spacing: 0 !important;
+}
+
+button,
+.eyebrow,
+.subtle,
+.status-label,
+#statusLine,
+.metric-label,
+.clock-meta,
+.clock-live-label,
+.signal-state,
+.nav-tab,
+.pill,
+.chip,
+.load-badge,
+.quick-command,
+.quick-command-copy strong,
+.timeline-time,
+.agenda-time,
+.agenda-day,
+.agenda-card-head span,
+.preview-more,
+.task-brief-head,
+.task-date,
+.task-copy small,
+.task-meta,
+.mini-metric,
+.marking-rail-context,
+.message-body::before,
+.message-user-label,
+.chat-trace,
+.mail small,
+.section-head button,
+#sendBtn,
+#installBtn {
+  font-family: var(--font-mono) !important;
+}
+
+h1,
+h2,
+h3,
+.hero-display,
+.topbar h1,
+.section-head h2,
+.section-head h3,
+.daily-load-head h3,
+.home-drawer summary strong,
+.timeline-head h3,
+.agenda-day-header h3,
+.focus-value {
+  font-family: var(--font-display) !important;
+  font-weight: 700 !important;
+  letter-spacing: 0 !important;
+  line-height: var(--line-tight) !important;
+}
+
+h1 {
+  font-size: var(--type-display) !important;
+}
+
+h2,
+.section-head h2 {
+  font-size: var(--type-3xl) !important;
+}
+
+h3,
+.section-head h3,
+.timeline-head h3 {
+  font-size: var(--type-2xl) !important;
+}
+
+.topbar .eyebrow,
+html[data-theme="dark"] .topbar .eyebrow {
+  font-family: var(--font-mono) !important;
+  font-size: var(--type-2xs) !important;
+  font-weight: 700 !important;
+  line-height: 1.15 !important;
+  letter-spacing: 0.08em !important;
+}
+
+.topbar h1,
+html[data-theme="dark"] .topbar h1 {
+  font-family: var(--font-display) !important;
+  font-size: 44px !important;
+  font-weight: 700 !important;
+  line-height: 0.92 !important;
+  letter-spacing: 0 !important;
+}
+
+.status-clockbar .status-label,
+.status-clockbar #greetingDate,
+.status-clockbar #statusLine,
+.clock-live-label,
+html[data-theme="dark"] .status-clockbar .status-label,
+html[data-theme="dark"] .status-clockbar #greetingDate,
+html[data-theme="dark"] .status-clockbar #statusLine,
+html[data-theme="dark"] .clock-live-label {
+  font-family: var(--font-clock) !important;
+  font-size: var(--type-sm) !important;
+  font-weight: 850 !important;
+  line-height: 1.2 !important;
+  letter-spacing: 0.02em !important;
+}
+
+.status-clockbar #greetingTime.clock-display-top,
+.clock-display,
+html[data-theme="dark"] .status-clockbar #greetingTime.clock-display-top {
+  font-family: var(--font-clock) !important;
+  font-size: var(--type-clock) !important;
+  font-weight: 900 !important;
+  line-height: 0.86 !important;
+  letter-spacing: 0 !important;
+}
+
+.metric-value,
+.agenda-day-header strong,
+.mini-metric strong,
+.daily-load-gauge .metric-value {
+  font-family: var(--font-mono) !important;
+  font-size: 44px !important;
+  font-weight: 700 !important;
+  line-height: 1 !important;
+  letter-spacing: 0 !important;
+}
+
+.daily-load-head h3 {
+  font-size: var(--type-3xl) !important;
+}
+
+.home-drawer summary strong {
+  font-size: var(--type-xl) !important;
+}
+
+.hira-signal-head .eyebrow,
+html[data-theme="dark"] .hira-signal-head .eyebrow {
+  font-family: var(--font-mono) !important;
+  font-size: var(--type-xl) !important;
+  font-weight: 700 !important;
+  line-height: 1.1 !important;
+  letter-spacing: 0.12em !important;
+}
+
+.chat-context {
+  font-size: var(--type-md) !important;
+  font-weight: 500 !important;
+  line-height: 1.35 !important;
+}
+
+.signal-subtitle {
+  font-size: var(--type-sm) !important;
+  line-height: 1.3 !important;
+}
+
+.signal-state {
+  font-size: var(--type-sm) !important;
+  letter-spacing: 0.14em !important;
+}
+
+.messages .message,
+.rich-output,
+.notification-reader-body {
+  font-size: var(--type-body) !important;
+  line-height: var(--line-copy) !important;
+}
+
+.message-body::before {
+  font-size: var(--type-body) !important;
+  line-height: 1 !important;
+}
+
+.composer textarea {
+  font-family: var(--font-body) !important;
+  font-size: var(--type-body) !important;
+  line-height: 1.3 !important;
+}
+
+.quick-command {
+  font-size: var(--type-xs) !important;
+  letter-spacing: 0.08em !important;
+}
+
+.quick-command-copy strong {
+  font-size: var(--type-sm) !important;
+  line-height: 1.1 !important;
+}
+
+.quick-command-copy small {
+  font-family: var(--font-body) !important;
+  font-size: var(--type-sm) !important;
+  line-height: 1.25 !important;
+  letter-spacing: 0 !important;
+}
+
+.timeline-time strong,
+.agenda-time {
+  font-size: var(--type-md) !important;
+  line-height: 1.1 !important;
+}
+
+.timeline-time span,
+.metric-label,
+.daily-load-score .metric-label,
+.load-badge,
+.eyebrow,
+.subtle,
+.status-label {
+  font-size: var(--type-xs) !important;
+  line-height: 1.2 !important;
+  letter-spacing: 0.08em !important;
+}
+
+.timeline-copy strong,
+.agenda-card-head strong,
+.agenda-copy strong,
+.task-copy p {
+  font-size: var(--type-lg) !important;
+  line-height: 1.25 !important;
+}
+
+.timeline-copy p,
+.agenda-copy span {
+  font-size: var(--type-md) !important;
+  line-height: 1.35 !important;
+}
+
+@media (max-width: 640px) {
+  :root {
+    --type-display: 40px;
+    --type-clock: 56px;
+  }
+
+  h1 {
+    font-size: var(--type-display) !important;
+  }
+
+  h2,
+  .section-head h2 {
+    font-size: 30px !important;
+  }
+
+  h3,
+  .section-head h3,
+  .timeline-head h3 {
+    font-size: 24px !important;
+  }
+
+  .topbar h1,
+  html[data-theme="dark"] .topbar h1 {
+    font-size: 34px !important;
+  }
+
+  .topbar .eyebrow,
+  html[data-theme="dark"] .topbar .eyebrow {
+    font-size: 8px !important;
+    line-height: 1.12 !important;
+  }
+
+  .status-clockbar #greetingTime.clock-display-top,
+  .clock-display,
+  html[data-theme="dark"] .status-clockbar #greetingTime.clock-display-top {
+    font-size: var(--type-clock) !important;
+  }
+
+  .hira-signal-head .eyebrow,
+  html[data-theme="dark"] .hira-signal-head .eyebrow {
+    font-size: 18px !important;
+    letter-spacing: 0.1em !important;
+  }
+
+  .daily-load-head h3 {
+    font-size: 34px !important;
+  }
+
+  .metric-value,
+  .agenda-day-header strong,
+  .mini-metric strong,
+  .daily-load-gauge .metric-value {
+    font-size: 38px !important;
+  }
+
+  .messages .message,
+  .rich-output,
+  .notification-reader-body {
+    font-size: 16px !important;
+  }
+}
+
+/* Clock controls use icon-only buttons; reset inherited notification grids. */
+.clock-controls,
+html[data-theme="dark"] .clock-controls {
+  top: auto !important;
+  right: 100px !important;
+  bottom: 18px !important;
+  display: inline-flex !important;
+  justify-content: flex-end !important;
+  width: 118px !important;
+  gap: 8px !important;
+}
+
+.clock-controls .icon-btn,
+.clock-controls .notification-btn {
+  display: inline-grid !important;
+  grid-template-columns: 1fr !important;
+  place-items: center !important;
+  width: 34px !important;
+  min-width: 34px !important;
+  height: 34px !important;
+  min-height: 34px !important;
+}
+
+.clock-controls #installBtn,
+.clock-controls #installBtn:hover,
+.clock-controls #installBtn:focus,
+.clock-controls #installBtn:focus-visible,
+.clock-controls #installBtn:active {
+  background: transparent !important;
+  border-color: transparent !important;
+  color: var(--hira-muted, var(--text-secondary)) !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+.clock-controls .icon-btn svg,
+.clock-controls .notification-btn svg {
+  display: block !important;
+  width: 20px !important;
+  height: 20px !important;
 }

@@ -8,13 +8,13 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Doto:wght@400..900&family=Space+Grotesk:wght@300;400;500;700&family=VT323&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Doto:wght@600..900&family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="manifest" href="/manifest.webmanifest?v=20260530-stage6-ui-fit-2" />
+    <link rel="manifest" href="/manifest.webmanifest?v=20260530-typography-1" />
     <link rel="icon" href="/static/icon.svg?v=20260510-trace-39" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=20260510-trace-39" />
-    <link rel="stylesheet" href="./styles.css?v=20260530-stage6-ui-fit-2" />
+    <link rel="stylesheet" href="./styles.css?v=20260530-typography-1" />
   </head>
   <body>
     <main class="shell">
@@ -166,15 +166,25 @@
         </div>
         <div class="clock-controls" aria-label="System controls">
           <button id="notificationsBtn" class="icon-btn notification-btn" type="button" title="Notifications">
-            <span data-lucide="bell" aria-hidden="true"></span>
+            <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M10.268 21a2 2 0 0 0 3.464 0" />
+              <path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326" />
+            </svg>
             <span class="notification-top-toggle" aria-hidden="true"><span></span></span>
             <strong id="notificationBadge" hidden>0</strong>
           </button>
           <button id="installBtn" class="icon-btn" hidden title="Install app">
-            <span data-lucide="download" aria-hidden="true"></span>
+            <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 15V3" />
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <path d="m7 10 5 5 5-5" />
+            </svg>
           </button>
           <button id="settingsBtn" class="icon-btn" title="Settings">
-            <span data-lucide="settings" aria-hidden="true"></span>
+            <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
           </button>
         </div>
         <p id="statusLine" data-tone="muted">Ready.</p>
@@ -897,6 +907,6 @@
       </div>
     </section>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-    <script src="./app.js?v=20260530-stage6-ui-fit-2" type="module"></script>
+    <script src="./app.js?v=20260530-typography-1" type="module"></script>
   </body>
 </html>
