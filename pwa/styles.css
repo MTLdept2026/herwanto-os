@@ -6060,9 +6060,7 @@ html[data-theme="dark"] .connection-card.is-on .connection-switch span {
   min-width: 0;
 }
 
-/* Keep "Clear chat" compact and readable: the mobile .section-head grid
-   would otherwise stretch it full-width, and .ghost-btn drops it to
-   low-contrast text with no horizontal padding over the surface plate. */
+/* Keep "Clear chat" compact and anchored to the chat title on mobile. */
 #resetChatBtn {
   justify-self: end;
   width: auto;
@@ -6071,6 +6069,7 @@ html[data-theme="dark"] .connection-card.is-on .connection-switch span {
   padding: 6px 12px;
   border: 1px solid var(--border-visible);
   color: var(--text-primary);
+  white-space: nowrap;
 }
 
 /* The lucide trash glyph carries internal right-side whitespace; trim a touch
@@ -6081,6 +6080,36 @@ html[data-theme="dark"] .connection-card.is-on .connection-switch span {
 
 #resetChatBtn:hover {
   color: var(--interactive);
+}
+
+@media (max-width: 640px) {
+  .chat-title-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    column-gap: var(--space-md);
+    row-gap: 6px;
+  }
+
+  .chat-title-row > div {
+    display: contents;
+  }
+
+  .chat-title-row h2 {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .chat-title-row .chat-context {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    margin-top: 0;
+  }
+
+  #resetChatBtn {
+    grid-column: 2;
+    grid-row: 1;
+    align-self: start;
+  }
 }
 
 .chat-context {
