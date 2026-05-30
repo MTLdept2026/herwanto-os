@@ -7337,7 +7337,7 @@ span[data-lucide]::before { content: ""; }
 .icon-btn span[data-lucide="mic"]::before { content: "MIC"; }
 .icon-btn span[data-lucide="paperclip"]::before { content: "AT"; }
 .icon-btn span[data-lucide="volume-2"]::before,
-.message-speak-btn span[data-lucide="volume-2"]::before { content: "SPK"; }
+.message-speak-btn span[data-lucide="volume-2"]::before { content: ""; }
 .icon-btn span[data-lucide="x"]::before { content: "X"; }
 .drawer-actions > span[data-lucide="chevron-down"]::before { content: "v"; }
 .quick-action-fab span[data-lucide="plus"]::before { content: "+"; }
@@ -7572,6 +7572,9 @@ span[data-lucide]::before { content: ""; }
   --type-3xl: 36px;
   --type-display: 54px;
   --type-clock: 92px;
+  --clock-dot: 13px;
+  --clock-dot-gap: 6px;
+  --clock-char-gap: 11px;
   --line-tight: 1.1;
   --line-copy: 1.5;
 }
@@ -7714,11 +7717,36 @@ html[data-theme="dark"] .clock-live-label {
 .status-clockbar #greetingTime.clock-display-top,
 .clock-display,
 html[data-theme="dark"] .status-clockbar #greetingTime.clock-display-top {
-  font-family: var(--font-clock) !important;
-  font-size: var(--type-clock) !important;
-  font-weight: 900 !important;
-  line-height: 0.86 !important;
+  font-size: 0 !important;
+  line-height: 1 !important;
   letter-spacing: 0 !important;
+}
+
+.status-clockbar #greetingTime.clock-display-top {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: var(--clock-char-gap) !important;
+  width: max-content !important;
+  max-width: 100% !important;
+}
+
+.clock-matrix-char {
+  display: grid;
+  grid-template-columns: repeat(var(--clock-cols, 3), var(--clock-dot));
+  grid-auto-rows: var(--clock-dot);
+  gap: var(--clock-dot-gap);
+}
+
+.clock-matrix-dot {
+  width: var(--clock-dot);
+  height: var(--clock-dot);
+  border-radius: 50%;
+  background: transparent;
+}
+
+.clock-matrix-dot.on {
+  background: var(--hira-ink, var(--text-display));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--hira-ink, var(--text-display)) 16%, transparent);
 }
 
 .metric-value,
@@ -7836,6 +7864,9 @@ html[data-theme="dark"] .hira-signal-head .eyebrow {
   :root {
     --type-display: 40px;
     --type-clock: 56px;
+    --clock-dot: 11px;
+    --clock-dot-gap: 5px;
+    --clock-char-gap: 8px;
   }
 
   h1 {
@@ -7934,4 +7965,175 @@ html[data-theme="dark"] .clock-controls {
   display: block !important;
   width: 20px !important;
   height: 20px !important;
+}
+
+/* Home detail hierarchy: fewer sizes, less bold, icon fallbacks only. */
+.focus-card .eyebrow,
+.living-timeline-card .eyebrow,
+.home-drawer summary .eyebrow {
+  font-family: var(--font-mono) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  line-height: 1.2 !important;
+  letter-spacing: 0.12em !important;
+}
+
+.focus-value {
+  max-width: 34ch;
+  font-size: 24px !important;
+  font-weight: 600 !important;
+  line-height: 1.28 !important;
+  text-wrap: pretty;
+}
+
+.home-drawer summary {
+  min-height: 68px !important;
+  padding: 12px 16px !important;
+}
+
+.home-drawer summary strong {
+  font-size: 26px !important;
+  font-weight: 600 !important;
+  line-height: 1.12 !important;
+}
+
+.timeline-head h3 {
+  font-size: 28px !important;
+  font-weight: 600 !important;
+  line-height: 1.12 !important;
+}
+
+.timeline-copy strong {
+  font-size: 20px !important;
+  font-weight: 600 !important;
+  line-height: 1.2 !important;
+}
+
+.timeline-copy p {
+  font-family: var(--font-body) !important;
+  font-size: 15px !important;
+  font-weight: 400 !important;
+  line-height: 1.35 !important;
+  letter-spacing: 0 !important;
+}
+
+.timeline-time strong {
+  font-size: 16px !important;
+  font-weight: 600 !important;
+}
+
+.timeline-time span {
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.08em !important;
+}
+
+.home-drawer .drawer-actions {
+  gap: 8px !important;
+}
+
+.home-drawer .drawer-actions .icon-btn.compact,
+.home-drawer .drawer-close {
+  width: 34px !important;
+  min-width: 34px !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  border-color: var(--border-visible) !important;
+  background: transparent !important;
+}
+
+.home-drawer .drawer-actions span[data-lucide] {
+  position: relative;
+  width: 18px !important;
+  min-width: 18px !important;
+  height: 18px !important;
+  min-height: 18px !important;
+  font-size: 0 !important;
+}
+
+.home-drawer .drawer-actions span[data-lucide]::before,
+.home-drawer .drawer-actions span[data-lucide]::after,
+.message-speak-btn span[data-lucide="volume-2"]::before,
+.message-speak-btn span[data-lucide="volume-2"]::after {
+  content: "";
+  position: absolute;
+  display: block;
+  color: inherit;
+}
+
+.speak-target-btn span[data-lucide="volume-2"]::before,
+.message-speak-btn span[data-lucide="volume-2"]::before {
+  left: 2px;
+  top: 6px;
+  width: 5px;
+  height: 7px;
+  border: 2px solid currentColor;
+  border-right: 0;
+}
+
+.speak-target-btn span[data-lucide="volume-2"]::after,
+.message-speak-btn span[data-lucide="volume-2"]::after {
+  right: 2px;
+  top: 4px;
+  width: 7px;
+  height: 9px;
+  border: 2px solid currentColor;
+  border-left: 0;
+  border-top-color: transparent;
+  border-bottom-color: transparent;
+  border-radius: 50%;
+}
+
+.drawer-close span[data-lucide="x"]::before,
+.drawer-close span[data-lucide="x"]::after {
+  left: 8px;
+  top: 3px;
+  width: 2px;
+  height: 14px;
+  background: currentColor;
+  transform: rotate(45deg);
+}
+
+.drawer-close span[data-lucide="x"]::after {
+  transform: rotate(-45deg);
+}
+
+.drawer-actions > span[data-lucide="chevron-down"] {
+  display: inline-grid !important;
+  place-items: center;
+  width: 30px !important;
+  min-width: 30px !important;
+  height: 30px !important;
+}
+
+.drawer-actions > span[data-lucide="chevron-down"]::before {
+  left: 9px;
+  top: 8px;
+  width: 9px;
+  height: 9px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg);
+}
+
+.drawer-actions > span[data-lucide="chevron-down"]::after {
+  content: none;
+}
+
+@media (max-width: 640px) {
+  .focus-value {
+    font-size: 20px !important;
+  }
+
+  .home-drawer summary strong {
+    font-size: 22px !important;
+  }
+
+  .timeline-head h3 {
+    font-size: 24px !important;
+  }
+
+  .timeline-copy strong {
+    font-size: 18px !important;
+  }
 }

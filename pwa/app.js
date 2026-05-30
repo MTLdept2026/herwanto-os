@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260530-typography-1";
-const APP_SCRIPT = "app.js?v=20260530-typography-1";
-const EXPECTED_SW_CACHE = "hira-os-v145";
+const APP_VERSION = "20260530-typography-3";
+const APP_SCRIPT = "app.js?v=20260530-typography-3";
+const EXPECTED_SW_CACHE = "hira-os-v147";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
@@ -147,9 +147,30 @@ function updateLiveClock() {
   const now = new Date();
   const time = clockFormatter.format(now).replace(/^24:/, "00:");
   const date = dateFormatter.format(now).replace(",", "").toUpperCase();
-  $("#greetingTime").textContent = time;
+  renderClockMatrix(time);
   $("#greetingDate").textContent = date;
   if (glyphMode === "time" || glyphMode === "next") renderNothingGlyph(glyphMode);
+}
+
+function renderClockMatrix(value) {
+  const el = $("#greetingTime");
+  if (!el) return;
+  const clean = String(value || "--:--").padStart(5, "-").slice(0, 5);
+  if (el.dataset.matrixValue === clean) return;
+  el.dataset.matrixValue = clean;
+  el.setAttribute("aria-label", clean);
+  el.innerHTML = [...clean]
+    .map((char) => {
+      const glyph = glyphDigitFont[char] || glyphDigitFont["-"];
+      const columns = glyph[0]?.length || 1;
+      const dots = glyph
+        .flatMap((row) =>
+          [...row].map((cell) => `<span class="clock-matrix-dot${cell === "1" ? " on" : ""}"></span>`)
+        )
+        .join("");
+      return `<span class="clock-matrix-char${char === ":" ? " is-colon" : ""}" style="--clock-cols:${columns}" aria-hidden="true">${dots}</span>`;
+    })
+    .join("");
 }
 
 function blankGlyphGrid() {
