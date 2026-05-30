@@ -7312,3 +7312,170 @@ html[data-theme="dark"] .nothing-glyph-display {
     height: 20px !important;
   }
 }
+
+/* Android UI bug pass: keep icon-only controls visible even if Lucide is offline. */
+span[data-lucide] {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1em;
+  min-height: 1em;
+  font-family: var(--font-ui);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+span[data-lucide]::before { content: ""; }
+.icon-btn span[data-lucide="bell"]::before { content: "B"; }
+.icon-btn span[data-lucide="download"]::before { content: "DL"; }
+.icon-btn span[data-lucide="settings"]::before { content: "SET"; }
+.icon-btn span[data-lucide="mic"]::before { content: "MIC"; }
+.icon-btn span[data-lucide="paperclip"]::before { content: "AT"; }
+.icon-btn span[data-lucide="volume-2"]::before,
+.message-speak-btn span[data-lucide="volume-2"]::before { content: "SPK"; }
+.icon-btn span[data-lucide="x"]::before { content: "X"; }
+.drawer-actions > span[data-lucide="chevron-down"]::before { content: "v"; }
+.quick-action-fab span[data-lucide="plus"]::before { content: "+"; }
+
+.message-speak-btn,
+.icon-btn.compact,
+.speak-target-btn,
+.drawer-close {
+  min-height: 30px !important;
+}
+
+.message-speak-btn {
+  width: 34px !important;
+  min-width: 34px !important;
+  height: 30px !important;
+  padding: 0 !important;
+}
+
+.drawer-actions .icon-btn.compact,
+.drawer-close {
+  width: 32px !important;
+  min-width: 32px !important;
+  height: 32px !important;
+  padding: 0 !important;
+}
+
+.drawer-actions > span[data-lucide] {
+  width: 18px;
+  min-width: 18px;
+  height: 18px;
+}
+
+@media (max-width: 960px) {
+  .today-focus-strip {
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+    gap: 6px !important;
+    padding: 6px !important;
+  }
+
+  .focus-tile,
+  .focus-action {
+    min-height: 64px !important;
+    padding: 8px !important;
+  }
+
+  .focus-tile:nth-child(1),
+  .focus-tile:nth-child(2) {
+    grid-column: span 2;
+  }
+
+  .focus-tile:nth-child(3),
+  .focus-tile:nth-child(4) {
+    grid-column: span 1;
+  }
+
+  .focus-action {
+    grid-column: span 2;
+  }
+
+  .composer {
+    grid-template-columns: 46px 46px minmax(0, 1fr) 74px !important;
+    min-height: 62px !important;
+  }
+
+  .composer textarea,
+  #attachBtn,
+  #voiceRecordBtn,
+  #sendBtn,
+  #sendBtn:disabled,
+  #sendBtn.is-ready,
+  html[data-theme="dark"] .composer textarea,
+  html[data-theme="dark"] #attachBtn,
+  html[data-theme="dark"] #voiceRecordBtn,
+  html[data-theme="dark"] #sendBtn,
+  html[data-theme="dark"] #sendBtn:disabled,
+  html[data-theme="dark"] #sendBtn.is-ready {
+    height: 62px !important;
+    min-height: 62px !important;
+  }
+
+  .composer textarea {
+    padding: 13px 14px !important;
+    font-size: 16px !important;
+    line-height: 1.18 !important;
+  }
+
+  #sendBtn {
+    font-size: 10px !important;
+    letter-spacing: 0.1em !important;
+  }
+
+  .hira-signal-head {
+    min-height: 76px !important;
+    padding: 0 18px !important;
+  }
+
+  .hira-signal-head .eyebrow {
+    font-size: 16px !important;
+    letter-spacing: 0.14em !important;
+  }
+
+  .signal-subtitle {
+    max-width: 30ch;
+  }
+
+  .messages,
+  .hira-signal > .messages,
+  html[data-theme="dark"] .messages,
+  html[data-theme="dark"] .hira-signal > .messages {
+    padding: 18px !important;
+  }
+
+  .daily-load-card {
+    overflow: hidden !important;
+  }
+
+  .daily-load-gauge {
+    width: min(84px, 100%) !important;
+  }
+
+  .daily-load-gauge::before {
+    border: 7px solid color-mix(in srgb, var(--hira-line) 34%, transparent) !important;
+    border-top-color: var(--score-color) !important;
+    border-right-color: var(--score-color) !important;
+    background: transparent !important;
+    -webkit-mask: none !important;
+    mask: none !important;
+  }
+
+  .daily-load-score .metric-label {
+    white-space: normal !important;
+    line-height: 1.05 !important;
+  }
+
+  .home-drawer summary {
+    min-height: 68px !important;
+    padding: 12px 14px !important;
+  }
+}
+
+@media (max-width: 420px) {
+  .composer {
+    grid-template-columns: 42px 42px minmax(0, 1fr) 68px !important;
+  }
+}
