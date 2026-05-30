@@ -5436,8 +5436,117 @@ html[data-theme="dark"] .topbar {
   animation: glyph-hot-pulse 0.52s steps(2, end) infinite alternate;
 }
 
+.nothing-glyph-display.is-north-star {
+  animation: north-star-glyph-pulse 0.9s steps(2, end) infinite alternate;
+}
+
+.north-star-egg {
+  position: fixed;
+  left: 50%;
+  bottom: calc(18px + env(safe-area-inset-bottom));
+  z-index: 1200;
+  width: min(380px, calc(100vw - 32px));
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--hira-line-strong, var(--border-visible));
+  background:
+    linear-gradient(90deg, rgba(201,0,24,0.12), transparent 34%),
+    color-mix(in srgb, var(--hira-plate, var(--surface-raised)) 92%, var(--hira-black, #050505) 8%);
+  box-shadow: 0 16px 38px var(--hira-shadow, rgba(0,0,0,0.18));
+  color: var(--hira-ink, var(--text-primary));
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 12px);
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.north-star-egg.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.north-star-egg-mark {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--hira-line, var(--border-visible));
+  background: var(--hira-black, #050505);
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  padding: 8px;
+}
+
+.north-star-egg-mark span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  align-self: center;
+  justify-self: center;
+  background: rgba(247,255,217,0.22);
+}
+
+.north-star-egg-mark span:nth-child(1) {
+  grid-column: 2;
+  grid-row: 1;
+  background: var(--hira-led, #f7ffd9);
+}
+
+.north-star-egg-mark span:nth-child(2) {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.north-star-egg-mark span:nth-child(3) {
+  grid-column: 2;
+  grid-row: 2;
+  width: 8px;
+  height: 8px;
+  background: #fff;
+  box-shadow: 0 0 10px rgba(247,255,217,0.84);
+}
+
+.north-star-egg-mark span:nth-child(4) {
+  grid-column: 3;
+  grid-row: 2;
+}
+
+.north-star-egg-mark span:nth-child(5) {
+  grid-column: 2;
+  grid-row: 3;
+}
+
+.north-star-egg-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.north-star-egg-copy strong {
+  overflow-wrap: anywhere;
+  color: var(--hira-ink, var(--text-display));
+  font-family: var(--font-readable);
+  font-size: 15px;
+  line-height: 1.15;
+  letter-spacing: 0;
+}
+
+.north-star-egg-copy span {
+  overflow-wrap: anywhere;
+  color: var(--hira-muted, var(--text-secondary));
+  font-family: var(--font-ui);
+  font-size: 11px;
+  line-height: 1.2;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
 @keyframes glyph-wave-pulse { to { opacity: 0.58; filter: brightness(0.82); } }
 @keyframes glyph-hot-pulse { to { opacity: 0.72; filter: brightness(1.28); } }
+@keyframes north-star-glyph-pulse { to { filter: brightness(1.28); box-shadow: 0 0 0 3px rgba(201,0,24,0.18), 0 14px 22px var(--hira-shadow); } }
 
 .topbar .topbar-actions .icon-btn,
 .topbar .topbar-actions .notification-btn {

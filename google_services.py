@@ -4569,6 +4569,7 @@ DEFAULT_MEMORY = {
     "topic_profiles": [],
     "correction_ledger": [],
     "self_reflections": [],
+    "learned_preferences": [],
     "source_notes": [],
 }
 
@@ -4617,6 +4618,8 @@ def _normalise_memory_category(category: str) -> str:
         "reflection": "self_reflections",
         "reflections": "self_reflections",
         "learning": "self_reflections",
+        "learned_preference": "learned_preferences",
+        "learned_preferences": "learned_preferences",
         "source": "source_notes",
         "sources": "source_notes",
         "source_note": "source_notes",

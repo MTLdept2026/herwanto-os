@@ -493,6 +493,7 @@ MEMORY_DISPLAY_CATEGORIES = (
     "topic_profiles",
     "correction_ledger",
     "self_reflections",
+    "learned_preferences",
     "source_notes",
 )
 
@@ -506,6 +507,7 @@ MEMORY_PROMPT_LIMITS: dict[str, int | None] = {
     "topic_profiles":     40,
     "people":             50,
     "teaching":           40,
+    "learned_preferences": 30,
     "profile":            60,
     "business":           30,
     "projects":           30,
@@ -551,6 +553,8 @@ def build_runtime_status() -> dict:
     subscription_count = None
     outcome_summary = {}
     delivery_log = []
+    learned_preferences = []
+    learned_muted_families = []
     memory_error = ""
     google_connected = google_ok()
     try:
@@ -571,6 +575,7 @@ def build_runtime_status() -> dict:
         try:
             memory = gs.get_memory()
             memory_counts = {category: len(memory.get(category, [])) for category in MEMORY_DISPLAY_CATEGORIES}
+            learned_preferences = list(memory.get("learned_preferences", []))
         except Exception as exc:
             memory_error = str(exc)
     if google_connected:
@@ -594,6 +599,7 @@ def build_runtime_status() -> dict:
             delivery_log = gs.get_web_push_delivery_log()[-5:]
         except Exception:
             delivery_log = []
+        learned_muted_families = sorted(_learned_muted_families())
     return {
         "memory": {
             "rss_mb": round(rss, 1),
@@ -657,6 +663,12 @@ def build_runtime_status() -> dict:
         "api_usage": api_usage_status(),
         "memory_buckets": memory_counts,
         "memory_error": memory_error,
+        "learned_preferences": {
+            "count": len(learned_preferences),
+            "auto_count": sum(1 for item in learned_preferences if str(item).strip().startswith(LEARNED_PREFERENCE_AUTO_PREFIX)),
+            "recent": learned_preferences[-5:],
+        },
+        "learned_muted_families": learned_muted_families,
         "projects": {"count": project_count},
         "notifications": {
             "queued_count": notification_count,
@@ -2258,6 +2270,7 @@ def retrieve_relevant_memory(text: str, limit: int = 6) -> list[dict]:
         "correction_ledger": 12,
         "constraints": 10,
         "self_reflections": 8,
+        "learned_preferences": 8,
         "preferences": 7,
         "topic_profiles": 7,
         "conversation_episodes": 7,
@@ -2302,7 +2315,7 @@ def retrieve_relevant_memory(text: str, limit: int = 6) -> list[dict]:
             lower = rendered.lower()
             overlap = sum(1 for token in tokens if token in lower)
             intent_bonus = 0
-            if category in {"correction_ledger", "constraints", "self_reflections", "preferences"} and re.search(
+            if category in {"correction_ledger", "constraints", "self_reflections", "learned_preferences", "preferences"} and re.search(
                 r"\b(prefer|remember|correct|wrong|mistake|style|upgrade|improve|mean|meant|context)\b",
                 text or "",
                 re.I,
@@ -7455,6 +7468,280 @@ def _submission_risk_candidates(now: datetime | None = None) -> list[dict]:
     return candidates
 
 
+_PREP_GAP_TEACHING_SUBJECTS = {"ML", "BML"}
+_PREP_GAP_SKIP_SUBJECTS = {"FTCT", "CCE", "PLT", "IPW"}
+
+
+def _prep_gap_candidates(now: datetime | None = None) -> list[dict]:
+    current = _coerce_sgt_datetime(now)
+    try:
+        companion = build_next_lesson_companion(current)
+    except Exception as exc:
+        logger.warning(f"Prep gap lesson companion failed: {exc}")
+        return []
+    next_lesson = companion.get("next_lesson") if isinstance(companion, dict) else None
+    if not isinstance(next_lesson, dict):
+        return []
+    try:
+        minutes_until = int(next_lesson.get("minutes_until", 0) or 0)
+    except Exception:
+        return []
+    if minutes_until < 0 or minutes_until > _env_int("HIRA_PREP_GAP_MINUTES", 60, 1):
+        return []
+    subject = str(next_lesson.get("subject", "") or "").strip().upper()
+    if subject in _PREP_GAP_SKIP_SUBJECTS or subject not in _PREP_GAP_TEACHING_SUBJECTS:
+        return []
+    class_name = str(next_lesson.get("class", "") or "").strip()
+    start = str(next_lesson.get("start", "") or "").strip()
+    if not class_name or not start:
+        return []
+    files = companion.get("files") if isinstance(companion.get("files"), list) else []
+    classops_joined = companion.get("source") == "timetable+classops"
+    current_lesson = companion.get("current_lesson") if isinstance(companion.get("current_lesson"), dict) else None
+    if current_lesson:
+        try:
+            files, _collection_candidates, classops_joined = _lesson_classops_files(class_name)
+        except Exception as exc:
+            logger.warning(f"Prep gap ClassOps file check failed: {exc}")
+            return []
+    if not classops_joined or files:
+        return []
+    priority = "high" if minutes_until <= 20 else "medium"
+    body = (
+        f"{class_name} {subject} in {minutes_until}m and no worksheet uploaded yet. "
+        "Pull last week's or bring a new one?"
+    )
+    return [_make_proactive_candidate(
+        "prep_gap",
+        f"prep_gap:{class_name}:{current.date().isoformat()}:{start}",
+        "update",
+        "Prep gap",
+        body,
+        88 if priority == "high" else 76,
+        priority=priority,
+        why="The next teaching lesson is soon and ClassOps has no worksheet attached.",
+        action_hint="Upload or pull last week's file.",
+        event_date=current.date().isoformat(),
+        metadata={
+            "class_name": class_name,
+            "subject": subject,
+            "start": start,
+            "minutes_until": minutes_until,
+        },
+    )]
+
+
+def _approx_age(seconds: int) -> str:
+    seconds = max(0, int(seconds or 0))
+    if seconds >= 86400:
+        return f"{max(1, round(seconds / 86400))}d"
+    if seconds >= 3600:
+        return f"{max(1, round(seconds / 3600))}h"
+    return f"{max(1, round(seconds / 60))}m"
+
+
+def _stale_data_candidates(now: datetime | None = None) -> list[dict]:
+    try:
+        if not dropbox.configured():
+            return []
+        status = dropbox.classops_manifest_cache_status()
+    except Exception as exc:
+        logger.warning(f"ClassOps cache status failed: {exc}")
+        return []
+    if not isinstance(status, dict) or not status.get("available") or status.get("fresh"):
+        return []
+    try:
+        age_seconds = int(status.get("age_seconds", 0) or 0)
+        ttl_seconds = int(status.get("ttl_seconds", 0) or 0)
+    except Exception:
+        return []
+    default_threshold = max(3600, ttl_seconds * 2)
+    threshold = _env_int("HIRA_STALE_DATA_AGE_SECONDS", default_threshold, 1)
+    if age_seconds <= threshold:
+        return []
+    age = _approx_age(age_seconds)
+    return [_make_proactive_candidate(
+        "stale_data",
+        "stale_data:classops_manifest",
+        "update",
+        "ClassOps cache is stale",
+        f"My ClassOps view is ~{age} old. I'm answering from a cached scan — refresh /classops if today's files matter.",
+        54,
+        priority="low",
+        why="The cached ClassOps manifest is older than its stale-data threshold.",
+        action_hint="Refresh ClassOps.",
+        metadata={
+            "age_seconds": age_seconds,
+            "ttl_seconds": ttl_seconds,
+            "threshold_seconds": threshold,
+        },
+    )]
+
+
+def _parse_timed_calendar_dt(value: str) -> datetime | None:
+    clean = str(value or "").strip()
+    if not clean:
+        return None
+    if clean.endswith("Z"):
+        clean = f"{clean[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(clean)
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        return SGT.localize(parsed)
+    return parsed.astimezone(SGT)
+
+
+def _calendar_conflict_event_item(event: dict, target: date) -> dict | None:
+    start_raw = event.get("start", {}).get("dateTime", "")
+    end_raw = event.get("end", {}).get("dateTime", "")
+    start_dt = _parse_timed_calendar_dt(start_raw)
+    end_dt = _parse_timed_calendar_dt(end_raw)
+    if not start_dt or not end_dt or start_dt.date() != target or end_dt <= start_dt:
+        return None
+    title = str(event.get("summary", "") or "Calendar event").strip()
+    event_id = str(event.get("id", "") or "").strip()
+    if not event_id:
+        seed = f"{title}:{start_dt.isoformat()}:{end_dt.isoformat()}:{event.get('_calendar_id', '')}"
+        event_id = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:12]
+    return {
+        "kind": "event",
+        "key": f"event:{event_id}",
+        "title": title,
+        "start": start_dt,
+        "end": end_dt,
+        "time": f"{start_dt.strftime('%H:%M')}-{end_dt.strftime('%H:%M')}",
+    }
+
+
+def _calendar_conflict_lesson_item(lesson: dict, target: date) -> dict | None:
+    try:
+        start_dt = _lesson_dt(target, lesson.get("start", ""))
+        end_dt = _lesson_dt(target, lesson.get("end", ""))
+    except Exception:
+        return None
+    if end_dt <= start_dt:
+        return None
+    class_name = _lesson_class_name(lesson)
+    subject = str(lesson.get("subject", "") or "").strip()
+    title = " ".join(part for part in [class_name, subject] if part).strip()
+    if not title:
+        title = str(lesson.get("description", "") or "Lesson").strip()
+    return {
+        "kind": "lesson",
+        "key": f"lesson:{class_name}:{subject}:{lesson.get('start', '')}",
+        "title": title,
+        "start": start_dt,
+        "end": end_dt,
+        "time": f"{start_dt.strftime('%H:%M')}-{end_dt.strftime('%H:%M')}",
+    }
+
+
+def _calendar_items_overlap(left: dict, right: dict) -> bool:
+    return left["start"] < right["end"] and right["start"] < left["end"]
+
+
+def _calendar_conflict_candidates(now: datetime | None = None) -> list[dict]:
+    current = _coerce_sgt_datetime(now)
+    targets = {current.date(), current.date() + timedelta(days=1)}
+    try:
+        events = gs.get_events_for_days(2)
+    except Exception as exc:
+        logger.warning(f"Calendar conflict event scan failed: {exc}")
+        return []
+    candidates = []
+    for target in sorted(targets):
+        items = [
+            item
+            for event in events or []
+            for item in [_calendar_conflict_event_item(event, target)]
+            if item
+        ]
+        try:
+            lessons, _wt_label = _lessons_for_date(target)
+        except Exception as exc:
+            logger.warning(f"Calendar conflict lesson scan failed for {target}: {exc}")
+            lessons = []
+        items.extend(
+            item
+            for lesson in lessons or []
+            for item in [_calendar_conflict_lesson_item(lesson, target)]
+            if item
+        )
+        for index, left in enumerate(items):
+            for right in items[index + 1:]:
+                if left["kind"] == right["kind"] == "lesson":
+                    continue
+                if not _calendar_items_overlap(left, right):
+                    continue
+                pair_key = hashlib.sha1(
+                    "|".join(sorted([left["key"], right["key"]])).encode("utf-8")
+                ).hexdigest()[:12]
+                day_label = "today" if target == current.date() else "tomorrow"
+                priority = "high" if target == current.date() else "medium"
+                body = (
+                    f"Clash on {day_label}: '{left['title']}' ({left['time']}) overlaps "
+                    f"'{right['title']}' ({right['time']}). Want to move one?"
+                )
+                candidates.append(_make_proactive_candidate(
+                    "calendar_conflict",
+                    f"calendar_conflict:{target.isoformat()}:{pair_key}",
+                    "update",
+                    "Calendar clash",
+                    body,
+                    92 if priority == "high" else 78,
+                    priority=priority,
+                    why="Two timed calendar or lesson items overlap.",
+                    action_hint="Reschedule one item.",
+                    event_date=target.isoformat(),
+                    metadata={
+                        "date": target.isoformat(),
+                        "left_key": left["key"],
+                        "right_key": right["key"],
+                    },
+                ))
+    return candidates
+
+
+def _marking_crunch_candidates(now: datetime | None = None) -> list[dict]:
+    try:
+        tasks = gs.get_marking_tasks()
+    except Exception as exc:
+        logger.warning(f"Marking crunch task scan failed: {exc}")
+        return []
+    outstanding_scripts = 0
+    active_stacks = 0
+    for task in tasks or []:
+        if not isinstance(task, dict) or task.get("done"):
+            continue
+        total = int(task.get("total_scripts", 0) or 0)
+        marked = int(task.get("marked_count", 0) or 0)
+        outstanding_scripts += max(0, total - marked)
+        active_stacks += max(1, int(task.get("stack_count", 1) or 1))
+    script_threshold = _env_int("HIRA_MARKING_CRUNCH_SCRIPTS", 80, 1)
+    stack_threshold = _env_int("HIRA_MARKING_CRUNCH_STACKS", 4, 1)
+    if outstanding_scripts < script_threshold and active_stacks < stack_threshold:
+        return []
+    return [_make_proactive_candidate(
+        "marking_crunch",
+        "marking_crunch",
+        "update",
+        "Marking crunch",
+        f"Marking load is heavy: ~{outstanding_scripts} scripts across {active_stacks} stacks. Block time before more collections land.",
+        78 if outstanding_scripts >= script_threshold else 72,
+        priority="medium",
+        why="Marking tasks are above the heavy-load threshold.",
+        action_hint="Block marking time.",
+        metadata={
+            "outstanding_scripts": outstanding_scripts,
+            "active_stacks": active_stacks,
+            "script_threshold": script_threshold,
+            "stack_threshold": stack_threshold,
+        },
+    )]
+
+
 def build_proactive_v2_queue(now: datetime | None = None, days: int = 7, families: set[str] | None = None) -> list[dict]:
     current = now or datetime.now(SGT)
     today = current.date()
@@ -7625,6 +7912,30 @@ def build_proactive_v2_queue(now: datetime | None = None, days: int = 7, familie
         logger.warning(f"Proactive v2 submission risk scan failed: {exc}")
 
     try:
+        if allow("prep_gap"):
+            candidates.extend(_prep_gap_candidates(now=current))
+    except Exception as exc:
+        logger.warning(f"Proactive v2 prep gap scan failed: {exc}")
+
+    try:
+        if allow("stale_data"):
+            candidates.extend(_stale_data_candidates(now=current))
+    except Exception as exc:
+        logger.warning(f"Proactive v2 stale data scan failed: {exc}")
+
+    try:
+        if allow("calendar_conflict"):
+            candidates.extend(_calendar_conflict_candidates(now=current))
+    except Exception as exc:
+        logger.warning(f"Proactive v2 calendar conflict scan failed: {exc}")
+
+    try:
+        if allow("marking_crunch"):
+            candidates.extend(_marking_crunch_candidates(now=current))
+    except Exception as exc:
+        logger.warning(f"Proactive v2 marking crunch scan failed: {exc}")
+
+    try:
         if allow("digest") and 5 <= current.hour <= 11:
             for entry in build_curated_digest_entries(now=current, limit=3, fetch_limit=4, record=False):
                 item = entry.get("item", {}) if isinstance(entry.get("item"), dict) else {}
@@ -7787,6 +8098,9 @@ async def _dispatch_proactive_candidates(context, candidates: list[dict], limit:
         kind = str(candidate.get("kind", "update")).strip() or "update"
         source = str(candidate.get("source", "")).strip()
         family = str(candidate.get("family", "")).strip()
+        if _notification_is_learned_muted(source or family, kind):
+            logger.info(f"Notification suppressed by learned mute for source={source or family}")
+            continue
         devotional_block = _devotional_notification_block_reason(source, title, body)
         if devotional_block:
             logger.info(f"Notification blocked at dispatch for source={source}: {devotional_block}")
@@ -16555,6 +16869,9 @@ def _queue_app_notification(kind: str, title: str, body: str, source: str = ""):
     if _should_suppress_notification(source, kind):
         logger.info(f"Notification suppressed by preference memory for source={source or kind}")
         return None
+    if _notification_is_learned_muted(source, kind):
+        logger.info(f"Notification suppressed by learned mute for source={source or kind}")
+        return None
     try:
         item = gs.enqueue_app_notification(kind, title, body, source=source)
         duplicate = bool(item.get("_duplicate"))
@@ -16634,16 +16951,25 @@ NEWS_DIGEST_FRESHNESS_HOURS = 48
 _PENDING_NEWS_DIGEST_ENTRIES: list[dict] = []
 _PENDING_NEWS_DIGEST_BUILT_AT: datetime | None = None
 NOTIFICATION_NEGATIVE_ACTIONS = {"dismissed", "not_now", "not_useful"}
+LEARNED_MUTE_CONFIG_KEY = "learned_muted_families"
+SELF_AUDIT_WEEK_KEY = "last_self_audit_week"
+LEARNED_PREFERENCE_AUTO_PREFIX = "[auto]"
+LEARNED_MUTE_EXEMPT_GROUPS = {"briefing", "morning_briefing", "evening_briefing", "prayer", "web_prayer", "nudge"}
 NOTIFICATION_COOLDOWN_HOURS = {
     "checkin": 8,
     "followup": 18,
     "task_reminder": 168,
     "proactive_intelligence": 24,
     "submission_risk": 24,
+    "prep_gap": 3,
+    "stale_data": 24,
+    "calendar_conflict": 18,
+    "marking_crunch": 24,
     "friday_checkin": 36,
     "weekly_planning": 24,
     "friday_khutbah": 24,
     "web_friday_khutbah": 24,
+    "self_audit": 168,
 }
 
 
@@ -16652,6 +16978,143 @@ def _notification_source_group(source: str, kind: str = "") -> str:
     if clean_source:
         return clean_source.split(":", 1)[0]
     return str(kind or "notice").strip() or "notice"
+
+
+def _learned_muted_families() -> set[str]:
+    try:
+        raw = gs.get_config(LEARNED_MUTE_CONFIG_KEY) or "[]"
+    except Exception:
+        return set()
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return set()
+    if isinstance(data, dict):
+        data = data.get("families", [])
+    if not isinstance(data, list):
+        return set()
+    return {
+        str(item or "").strip()
+        for item in data
+        if str(item or "").strip() and str(item or "").strip() not in LEARNED_MUTE_EXEMPT_GROUPS
+    }
+
+
+def _family_is_learned_muted(group: str) -> bool:
+    clean = str(group or "").strip()
+    return bool(clean and clean not in LEARNED_MUTE_EXEMPT_GROUPS and clean in _learned_muted_families())
+
+
+def _notification_is_learned_muted(source: str, kind: str = "") -> bool:
+    return _family_is_learned_muted(_notification_source_group(source, kind))
+
+
+def _self_audit_group_payload(group: str, bucket: dict) -> dict:
+    count = max(0, int(bucket.get("count", 0) or 0))
+    negative = max(0, int(bucket.get("negative", 0) or 0))
+    positive = max(0, int(bucket.get("positive", 0) or 0))
+    dismiss_rate = (negative / count) if count else 0.0
+    return {
+        "group": str(group or "").strip(),
+        "count": count,
+        "negative": negative,
+        "positive": positive,
+        "dismiss_rate": round(dismiss_rate, 3),
+    }
+
+
+def _replace_auto_learned_preferences(entries: list[str]) -> None:
+    memory = gs.get_memory()
+    current = list(memory.get("learned_preferences", []))
+    manual = [
+        str(item).strip()
+        for item in current
+        if str(item).strip() and not str(item).strip().startswith(LEARNED_PREFERENCE_AUTO_PREFIX)
+    ]
+    updated = manual + [str(item).strip() for item in entries if str(item).strip()]
+    if current == updated:
+        return
+    memory["learned_preferences"] = updated
+    gs.set_memory(memory)
+    _invalidate_system_prompt_cache()
+    sync = globals().get("_sync_openai_memory_after_write")
+    if callable(sync):
+        sync(memory, reason="memory:learned_preferences")
+
+
+def _self_audit_digest_body(result: dict) -> str:
+    lines = ["What I learned this week:"]
+    muted = result.get("muted", []) or []
+    watching = result.get("watching", []) or []
+    valued = result.get("valued", []) or []
+    if muted:
+        lines.append("Easing off:")
+        for item in muted[:5]:
+            lines.append(f"- {item['group']}: {item['negative']} dismissals, no useful marks.")
+    if watching:
+        lines.append("Watching:")
+        for item in watching[:5]:
+            lines.append(f"- {item['group']}: {item['negative']} dismissals in the last 14 days.")
+    if valued:
+        lines.append("You seemed to value:")
+        for item in valued[:5]:
+            lines.append(f"- {item['group']}: {item['positive']} useful marks.")
+    if not muted and not watching and not valued:
+        lines.append("- No strong preference pattern yet. I will keep observing quietly.")
+    return "\n".join(lines)
+
+
+def run_self_audit(now: datetime | None = None) -> dict:
+    current = _coerce_sgt_datetime(now)
+    result = {
+        "generated_at": current.isoformat(),
+        "muted": [],
+        "watching": [],
+        "valued": [],
+    }
+    try:
+        summary = gs.get_notification_outcome_summary(days=14)
+        groups = summary.get("groups", {}) if isinstance(summary, dict) else {}
+        threshold = _env_int("HIRA_SELFAUDIT_MUTE_THRESHOLD", 4, 1)
+        for group, bucket in sorted(groups.items()):
+            clean_group = str(group or "").strip()
+            if not clean_group or not isinstance(bucket, dict):
+                continue
+            item = _self_audit_group_payload(clean_group, bucket)
+            if item["count"] <= 0:
+                continue
+            strong = (
+                clean_group not in LEARNED_MUTE_EXEMPT_GROUPS
+                and item["negative"] >= threshold
+                and item["dismiss_rate"] >= 0.6
+                and item["positive"] == 0
+            )
+            if strong:
+                result["muted"].append(item)
+            elif item["negative"] >= 2:
+                result["watching"].append(item)
+            if item["positive"] >= 2 and item["positive"] > item["negative"]:
+                result["valued"].append(item)
+
+        muted_families = [item["group"] for item in result["muted"]]
+        gs.set_config(LEARNED_MUTE_CONFIG_KEY, json.dumps(muted_families, ensure_ascii=False))
+        today = current.date().isoformat()
+        auto_entries = [
+            (
+                f"{LEARNED_PREFERENCE_AUTO_PREFIX} Easing off {item['group']} nudges — "
+                f"dismissed {item['negative']}× in 14 days, never marked useful ({today})."
+            )
+            for item in result["muted"]
+        ]
+        _replace_auto_learned_preferences(auto_entries)
+        digest_body = _self_audit_digest_body(result)
+        source = f"self_audit:{current.isocalendar().year}-W{current.isocalendar().week:02d}"
+        result["digest_queued"] = bool(_queue_app_notification("update", "What I learned this week", digest_body, source=source))
+        return result
+    except Exception as exc:
+        logger.warning(f"Self-audit failed: {exc}")
+        result["error"] = str(exc)
+        return result
 
 
 def _notification_source_keys(source: str, kind: str = "") -> set[str]:
@@ -17506,6 +17969,24 @@ async def friday_checkin_job(context):
     except Exception as e:
         logger.error(f"Friday check-in error: {e}")
 
+
+async def self_audit_job(context=None):
+    if not google_ok():
+        return
+    if not _acquire_job_lock("self_audit", 3600):
+        return
+    current = datetime.now(SGT)
+    week_id = f"{current.isocalendar().year}-W{current.isocalendar().week:02d}"
+    try:
+        if (gs.get_config(SELF_AUDIT_WEEK_KEY) or "").strip() == week_id:
+            return
+        result = await asyncio.to_thread(run_self_audit, current)
+        if not result.get("error"):
+            gs.set_config(SELF_AUDIT_WEEK_KEY, week_id)
+    except Exception as e:
+        logger.error(f"Self-audit error: {e}")
+
+
 async def evening_briefing_job(context):
     return await send_evening_briefing_once(context, source="evening_briefing")
 
@@ -17547,9 +18028,15 @@ async def calendar_reminders_job(context):
     try:
         _log_memory("before calendar_reminders")
         now = datetime.now(SGT)
+        queue = await asyncio.to_thread(
+            build_proactive_v2_queue,
+            now=now,
+            days=2,
+            families={"calendar_reminder", "submission_risk", "prep_gap", "calendar_conflict", "task"},
+        )
         await _dispatch_proactive_candidates(
             context,
-            build_proactive_v2_queue(now=now, days=2, families={"calendar_reminder", "submission_risk", "task"}),
+            queue,
             limit=4,
         )
     except Exception as e:
@@ -17566,7 +18053,13 @@ async def proactive_intelligence_job(context):
     try:
         _log_memory("before proactive_intelligence")
         now = datetime.now(SGT)
-        await _dispatch_proactive_candidates(context, build_proactive_v2_queue(now=now, days=7, families={"intelligence"}), limit=3)
+        queue = await asyncio.to_thread(
+            build_proactive_v2_queue,
+            now=now,
+            days=7,
+            families={"intelligence", "stale_data", "marking_crunch"},
+        )
+        await _dispatch_proactive_candidates(context, queue, limit=3)
     except Exception as e:
         logger.error(f"Proactive intelligence error: {e}")
     finally:
@@ -17790,6 +18283,7 @@ async def run_pwa_notification_worker():
         asyncio.create_task(_pwa_worker_daily_loop("weekly_planning", 19, 30, weekly_planning_job, days=(6,))),
         asyncio.create_task(_pwa_worker_daily_loop("friday_khutbah", 10, 30, friday_khutbah_job, days=(4,))),
         asyncio.create_task(_pwa_worker_daily_loop("friday_checkin", 17, 0, friday_checkin_job, days=(4,))),
+        asyncio.create_task(_pwa_worker_daily_loop("self_audit", 17, 15, self_audit_job, days=(4,))),
         asyncio.create_task(_pwa_worker_daily_loop("memory_consolidation", 22, 30, memory_consolidation_job, days=(4,))),
         asyncio.create_task(_pwa_worker_repeating_loop(
             "proactive_nudges",
@@ -17931,6 +18425,7 @@ def main():
     jq.run_daily(weekly_planning_job, time=dt_time(19, 30, 0, tzinfo=SGT), days=(6,), name="weekly_planning")
     jq.run_daily(friday_khutbah_job, time=dt_time(10, 30, 0, tzinfo=SGT), days=(4,), name="friday_khutbah")
     jq.run_daily(friday_checkin_job,   time=dt_time(17, 0, 0, tzinfo=SGT), days=(4,), name="friday_checkin")
+    jq.run_daily(self_audit_job, time=dt_time(17, 15, 0, tzinfo=SGT), days=(4,), name="self_audit")
     jq.run_daily(memory_consolidation_job, time=dt_time(22, 30, 0, tzinfo=SGT), days=(4,), name="memory_consolidation")
     jq.run_repeating(
         proactive_nudges_job,

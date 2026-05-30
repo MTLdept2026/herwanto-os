@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260530-stage4-voice-a-1";
-const APP_SCRIPT = "app.js?v=20260530-stage4-voice-a-1";
-const EXPECTED_SW_CACHE = "hira-os-v141";
+const APP_VERSION = "20260530-stage6-easter-1";
+const APP_SCRIPT = "app.js?v=20260530-stage6-easter-1";
+const EXPECTED_SW_CACHE = "hira-os-v142";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
@@ -121,10 +121,15 @@ const glyphDigitFont = {
 const GLYPH_COLS = 21;
 const GLYPH_ROWS = 13;
 const GLYPH_MODES = ["time", "date", "battery", "load", "next"];
+const NORTH_STAR_TAP_TARGET = 6;
+const NORTH_STAR_TAP_WINDOW_MS = 2200;
 let glyphMode = "time";
 let glyphModeBeforeChat = "time";
 let batteryPercent = null;
 let homeGlyphDataReady = false;
+let northStarTapCount = 0;
+let northStarTapTimer = null;
+let northStarEggTimer = null;
 const CONNECTIONS = [
   { key: "calendar", label: "Calendar", icon: "calendar" },
   { key: "google", label: "Google", icon: "sparkles" },
@@ -313,6 +318,43 @@ function renderNothingGlyph(mode = glyphMode) {
 function cycleNothingGlyph() {
   const currentIndex = Math.max(0, GLYPH_MODES.indexOf(glyphMode));
   renderNothingGlyph(GLYPH_MODES[(currentIndex + 1) % GLYPH_MODES.length]);
+}
+
+function showNorthStarEgg() {
+  const egg = $("#northStarEgg");
+  const glyph = $("#nothingGlyphBtn");
+  if (!egg) return;
+  window.clearTimeout(northStarEggTimer);
+  egg.hidden = false;
+  window.requestAnimationFrame(() => egg.classList.add("is-visible"));
+  glyph?.classList.add("is-north-star");
+  setStatus("North Star online. Quiet observation mode.", "ok");
+  hapticTap(18);
+  northStarEggTimer = window.setTimeout(() => {
+    egg.classList.remove("is-visible");
+    glyph?.classList.remove("is-north-star");
+    window.setTimeout(() => {
+      if (!egg.classList.contains("is-visible")) egg.hidden = true;
+    }, 220);
+  }, 5200);
+}
+
+function trackNorthStarTap() {
+  window.clearTimeout(northStarTapTimer);
+  northStarTapCount += 1;
+  if (northStarTapCount >= NORTH_STAR_TAP_TARGET) {
+    northStarTapCount = 0;
+    showNorthStarEgg();
+    return;
+  }
+  northStarTapTimer = window.setTimeout(() => {
+    northStarTapCount = 0;
+  }, NORTH_STAR_TAP_WINDOW_MS);
+}
+
+function activateNothingGlyph() {
+  cycleNothingGlyph();
+  trackNorthStarTap();
 }
 
 async function initBatteryGlyph() {
@@ -4345,11 +4387,11 @@ $("#quickActionDrawer")?.addEventListener("click", (event) => {
   }
 });
 
-$("#nothingGlyphBtn")?.addEventListener("click", cycleNothingGlyph);
+$("#nothingGlyphBtn")?.addEventListener("click", activateNothingGlyph);
 $("#nothingGlyphBtn")?.addEventListener("keydown", (event) => {
   if (event.key === "Enter" || event.key === " ") {
     event.preventDefault();
-    cycleNothingGlyph();
+    activateNothingGlyph();
   }
 });
 
