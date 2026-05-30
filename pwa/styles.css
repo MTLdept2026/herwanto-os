@@ -6067,9 +6067,16 @@ html[data-theme="dark"] .connection-card.is-on .connection-switch span {
   justify-self: end;
   width: auto;
   min-height: 34px;
+  gap: 6px;
   padding: 6px 12px;
   border: 1px solid var(--border-visible);
   color: var(--text-primary);
+}
+
+/* The lucide trash glyph carries internal right-side whitespace; trim a touch
+   so the icon and label read as one unit instead of a detached pair. */
+#resetChatBtn svg {
+  margin-right: -3px;
 }
 
 #resetChatBtn:hover {

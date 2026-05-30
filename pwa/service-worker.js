@@ -1,4 +1,4 @@
-const CACHE_NAME = "hira-os-v157";
+const CACHE_NAME = "hira-os-v158";
 const HIRA_APP_VERSION = "20260530-typography-12";
 const ASSETS = [
   "/",
