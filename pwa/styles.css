@@ -8137,3 +8137,145 @@ html[data-theme="dark"] .clock-controls {
     font-size: 18px !important;
   }
 }
+
+/* Local time panel: keep the dot clock readable and move utilities into the open right rail. */
+.status-clockbar,
+html[data-theme="dark"] .status-clockbar {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) 174px !important;
+  column-gap: 22px !important;
+  align-items: stretch !important;
+  min-height: 178px !important;
+  padding: 24px 28px !important;
+  overflow: hidden !important;
+}
+
+.status-clock,
+html[data-theme="dark"] .status-clock {
+  grid-column: 1 !important;
+  min-width: 0 !important;
+  align-content: center !important;
+  gap: 12px !important;
+}
+
+.status-clockbar #greetingTime.clock-display-top,
+html[data-theme="dark"] .status-clockbar #greetingTime.clock-display-top {
+  width: max-content !important;
+  max-width: 100% !important;
+  font-size: 0 !important;
+  line-height: 1 !important;
+}
+
+.clock-live-label,
+html[data-theme="dark"] .clock-live-label {
+  position: static !important;
+  grid-column: 2 !important;
+  grid-row: 1 !important;
+  align-self: start !important;
+  justify-self: end !important;
+  display: grid !important;
+  justify-items: end !important;
+  gap: 5px !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+}
+
+.clock-live-label span,
+html[data-theme="dark"] .clock-live-label span {
+  width: auto !important;
+  height: auto !important;
+  background: transparent !important;
+  animation: none !important;
+}
+
+.clock-controls,
+html[data-theme="dark"] .clock-controls {
+  position: absolute !important;
+  grid-column: 2 !important;
+  grid-row: 1 !important;
+  align-self: end !important;
+  justify-self: center !important;
+  right: 28px !important;
+  bottom: 24px !important;
+  z-index: 2 !important;
+  display: inline-flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  width: 36px !important;
+  max-width: 100% !important;
+  gap: 8px !important;
+}
+
+.clock-controls .icon-btn,
+.clock-controls .notification-btn,
+.clock-controls .icon-btn.is-open,
+.clock-controls .notification-btn.is-open {
+  width: 36px !important;
+  min-width: 36px !important;
+  height: 36px !important;
+  min-height: 36px !important;
+}
+
+.clock-controls [hidden],
+.clock-controls #installBtn[hidden],
+.clock-controls #notificationBadge[hidden] {
+  display: none !important;
+}
+
+.clock-controls .icon-btn svg,
+.clock-controls .notification-btn svg {
+  width: 22px !important;
+  height: 22px !important;
+}
+
+@media (max-width: 640px) {
+  :root {
+    --clock-dot: 5.5px;
+    --clock-dot-gap: 3px;
+    --clock-char-gap: 5px;
+  }
+
+  .status-clockbar,
+  html[data-theme="dark"] .status-clockbar {
+    width: calc(100vw - 32px) !important;
+    max-width: calc(100vw - 32px) !important;
+    grid-template-columns: minmax(0, 1fr) 116px !important;
+    column-gap: 10px !important;
+    min-height: 158px !important;
+    padding: 20px 22px !important;
+  }
+
+  .status-clock,
+  html[data-theme="dark"] .status-clock {
+    gap: 10px !important;
+  }
+
+  .clock-live-label strong {
+    font-size: 18px !important;
+  }
+
+  .clock-controls,
+  html[data-theme="dark"] .clock-controls {
+    right: 22px !important;
+    bottom: 20px !important;
+    width: 30px !important;
+    gap: 6px !important;
+  }
+
+  .clock-controls .icon-btn,
+  .clock-controls .notification-btn,
+  .clock-controls .icon-btn.is-open,
+  .clock-controls .notification-btn.is-open {
+    width: 30px !important;
+    min-width: 30px !important;
+    height: 30px !important;
+    min-height: 30px !important;
+  }
+
+  .clock-controls .icon-btn svg,
+  .clock-controls .notification-btn svg {
+    width: 18px !important;
+    height: 18px !important;
+  }
+}
