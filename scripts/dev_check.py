@@ -8,13 +8,14 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PY_CACHE = "/private/tmp/hira-pycache"
+PY_CACHE = str(Path(tempfile.gettempdir()) / "hira-pycache")
 COMPILE_TARGETS = [
     "bot.py",
     "web_app.py",

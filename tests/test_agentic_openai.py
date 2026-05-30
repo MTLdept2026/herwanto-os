@@ -3836,6 +3836,7 @@ class AgenticOpenAITests(unittest.TestCase):
                 "HIRA_DIGEST_SOCIAL_SEARCH": "1",
                 "HIRA_DIGEST_SOCIAL_DOMAINS": "x.com",
                 "HIRA_DIGEST_SOCIAL_TOPIC_LIMIT": "1",
+                "HIRA_DIGEST_FREE_SOURCE_SUPPLEMENTS": "0",
             }),
         ):
             entries = bot.build_curated_digest_entries(
