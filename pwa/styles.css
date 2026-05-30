@@ -3958,6 +3958,11 @@ body:has(#settingsPanel:not([hidden])) .quick-action-fab {
   height: 15px;
 }
 
+.message-speak-btn svg.is-spinning,
+.speak-target-btn svg.is-spinning {
+  animation: spin 900ms linear infinite;
+}
+
 .composer .attachment-chip {
   grid-column: 1 / -1;
   grid-row: 2;

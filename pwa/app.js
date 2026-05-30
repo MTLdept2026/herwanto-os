@@ -2481,8 +2481,7 @@ async function playSpeech(text, control = null) {
   const previous = control?.innerHTML || "";
   if (control) {
     control.disabled = true;
-    control.innerHTML = `<span data-lucide="loader-2" aria-hidden="true"></span>`;
-    refreshIcons(control);
+    control.innerHTML = SPEAK_LOADER_SVG;
   }
   try {
     const response = await fetchWithToken("/api/tts", {
@@ -2502,8 +2501,7 @@ async function playSpeech(text, control = null) {
   } finally {
     if (control) {
       control.disabled = false;
-      control.innerHTML = previous || `<span data-lucide="volume-2" aria-hidden="true"></span>`;
-      refreshIcons(control);
+      control.innerHTML = previous || SPEAK_ICON_SVG;
     }
   }
 }
@@ -2513,11 +2511,16 @@ function maybeAutoSpeak(text) {
   playSpeech(text).catch(() => {});
 }
 
+// Inline SVGs so the speak button never falls back to an empty square when the
+// Lucide CDN is blocked (same offline-safe approach as updateVoiceRecordButton).
+const SPEAK_ICON_SVG = `<svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>`;
+const SPEAK_LOADER_SVG = `<svg class="is-spinning" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`;
+
 function messageSpeakControl(text = "") {
   const clean = visibleChatText(text || "", { final: true }).trim();
   return `
     <button type="button" class="message-speak-btn" data-speak-message ${clean ? "" : "hidden"} title="Speak reply" aria-label="Speak reply" data-speak-text="${escapeHtml(clean)}">
-      <span data-lucide="volume-2" aria-hidden="true"></span>
+      ${SPEAK_ICON_SVG}
     </button>
   `;
 }
