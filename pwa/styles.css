@@ -7572,9 +7572,9 @@ span[data-lucide]::before { content: ""; }
   --type-3xl: 36px;
   --type-display: 54px;
   --type-clock: 92px;
-  --clock-dot: 13px;
-  --clock-dot-gap: 6px;
-  --clock-char-gap: 11px;
+  --clock-dot: 8px;
+  --clock-dot-gap: 4px;
+  --clock-char-gap: 8px;
   --line-tight: 1.1;
   --line-copy: 1.5;
 }
@@ -7746,7 +7746,7 @@ html[data-theme="dark"] .status-clockbar #greetingTime.clock-display-top {
 
 .clock-matrix-dot.on {
   background: var(--hira-ink, var(--text-display));
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--hira-ink, var(--text-display)) 16%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--hira-ink, var(--text-display)) 8%, transparent);
 }
 
 .metric-value,
@@ -7864,9 +7864,9 @@ html[data-theme="dark"] .hira-signal-head .eyebrow {
   :root {
     --type-display: 40px;
     --type-clock: 56px;
-    --clock-dot: 11px;
-    --clock-dot-gap: 5px;
-    --clock-char-gap: 8px;
+    --clock-dot: 7px;
+    --clock-dot-gap: 3px;
+    --clock-char-gap: 6px;
   }
 
   h1 {

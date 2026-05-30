@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260530-typography-3";
-const APP_SCRIPT = "app.js?v=20260530-typography-3";
-const EXPECTED_SW_CACHE = "hira-os-v147";
+const APP_VERSION = "20260530-typography-4";
+const APP_SCRIPT = "app.js?v=20260530-typography-4";
+const EXPECTED_SW_CACHE = "hira-os-v148";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
@@ -118,6 +118,20 @@ const glyphDigitFont = {
   "%": ["101", "001", "010", "100", "101"],
   "-": ["000", "000", "111", "000", "000"],
 };
+const clockDigitFont = {
+  "0": ["01110", "10001", "10011", "10101", "11001", "10001", "01110"],
+  "1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
+  "2": ["01110", "10001", "00001", "00010", "00100", "01000", "11111"],
+  "3": ["11110", "00001", "00001", "01110", "00001", "00001", "11110"],
+  "4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
+  "5": ["11111", "10000", "10000", "11110", "00001", "00001", "11110"],
+  "6": ["01110", "10000", "10000", "11110", "10001", "10001", "01110"],
+  "7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
+  "8": ["01110", "10001", "10001", "01110", "10001", "10001", "01110"],
+  "9": ["01110", "10001", "10001", "01111", "00001", "00001", "01110"],
+  ":": ["0", "1", "1", "0", "1", "1", "0"],
+  "-": ["00000", "00000", "00000", "11111", "00000", "00000", "00000"],
+};
 const GLYPH_COLS = 21;
 const GLYPH_ROWS = 13;
 const GLYPH_MODES = ["time", "date", "battery", "load", "next"];
@@ -161,7 +175,7 @@ function renderClockMatrix(value) {
   el.setAttribute("aria-label", clean);
   el.innerHTML = [...clean]
     .map((char) => {
-      const glyph = glyphDigitFont[char] || glyphDigitFont["-"];
+      const glyph = clockDigitFont[char] || clockDigitFont["-"];
       const columns = glyph[0]?.length || 1;
       const dots = glyph
         .flatMap((row) =>
