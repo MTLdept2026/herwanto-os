@@ -11,6 +11,9 @@ logger = logging.getLogger(__name__)
 
 _schema_lock = threading.RLock()
 _schema_ready = False
+_pool_lock = threading.RLock()
+_pool = None
+_pool_url = ""
 
 
 class PostgresUnavailable(RuntimeError):
@@ -30,12 +33,19 @@ def _database_url() -> str:
     return url
 
 
-def _psycopg():
+def _psycopg_pool():
     try:
-        import psycopg
+        from psycopg_pool import ConnectionPool
     except Exception as exc:
-        raise PostgresUnavailable("psycopg is not installed") from exc
-    return psycopg
+        raise PostgresUnavailable("psycopg_pool is not installed") from exc
+    return ConnectionPool
+
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(os.environ.get(name, str(default)) or default))
+    except ValueError:
+        return default
 
 
 def _jsonb(value):
@@ -65,14 +75,40 @@ def _sync_notification_sequence(cur) -> None:
     )
 
 
+def _connection_pool():
+    global _pool, _pool_url
+    url = _database_url()
+    with _pool_lock:
+        if _pool is not None and _pool_url == url:
+            return _pool
+        if _pool is not None:
+            try:
+                _pool.close()
+            except Exception:
+                pass
+            _pool = None
+            _pool_url = ""
+        ConnectionPool = _psycopg_pool()
+        max_size = _env_int("HIRA_POSTGRES_POOL_MAX_SIZE", 8)
+        min_size = min(_env_int("HIRA_POSTGRES_POOL_MIN_SIZE", 1, minimum=0), max_size)
+        pool = ConnectionPool(
+            conninfo=url,
+            kwargs={"connect_timeout": 5},
+            min_size=min_size,
+            max_size=max_size,
+            open=True,
+        )
+        pool.wait(timeout=5)
+        _pool = pool
+        _pool_url = url
+        return _pool
+
+
 @contextmanager
 def connect():
-    psycopg = _psycopg()
-    conn = psycopg.connect(_database_url(), connect_timeout=5)
-    try:
+    pool = _connection_pool()
+    with pool.connection() as conn:
         yield conn
-    finally:
-        conn.close()
 
 
 def ensure_schema() -> None:
@@ -752,16 +788,16 @@ def append_web_push_delivery_log(item: dict) -> None:
 
 def load_app_notifications(include_archived: bool = False) -> list[dict]:
     ensure_schema()
-    where = "" if include_archived else "WHERE archived = false"
     with connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                f"""
+                """
                 SELECT id, kind, title, body, created_at, source, seen_by, archived
                 FROM notification_state
-                {where}
+                WHERE (%s OR archived = false)
                 ORDER BY created_at ASC
-                """
+                """,
+                (include_archived,),
             )
             rows = cur.fetchall()
     return [
@@ -785,20 +821,20 @@ def enqueue_app_notification(kind: str, title: str, body: str, source: str = "")
     clean_title = str(title or "H.I.R.A").strip()[:240] or "H.I.R.A"
     clean_body = str(body or "").strip()
     clean_source = str(source or "").strip()[:240]
+    if not clean_body:
+        return {
+            "id": "",
+            "kind": clean_kind,
+            "title": clean_title,
+            "body": clean_body,
+            "created": datetime.utcnow().isoformat() + "Z",
+            "source": clean_source,
+            "seen_by": [],
+            "archived": False,
+        }
     with connect() as conn:
         with conn.transaction():
             with conn.cursor() as cur:
-                if not clean_body:
-                    return {
-                        "id": "",
-                        "kind": clean_kind,
-                        "title": clean_title,
-                        "body": clean_body,
-                        "created": datetime.utcnow().isoformat() + "Z",
-                        "source": clean_source,
-                        "seen_by": [],
-                        "archived": False,
-                    }
                 if clean_source:
                     cur.execute(
                         """

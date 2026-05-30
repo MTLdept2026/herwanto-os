@@ -225,7 +225,10 @@ def get_prayer_times(target: date | None = None) -> dict:
 
 
 def prayer_datetime(target: date, time_text: str) -> datetime:
-    hour, minute = [int(part) for part in time_text.split(":")[:2]]
+    parts = [int(part) for part in str(time_text or "").split(":")[:2]]
+    if len(parts) != 2:
+        raise ValueError(f"Invalid prayer time: {time_text!r}")
+    hour, minute = parts
     return SGT.localize(datetime(target.year, target.month, target.day, hour, minute))
 
 

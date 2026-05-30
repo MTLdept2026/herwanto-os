@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 import time
 import uuid
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import date, datetime, timedelta
 from email.utils import parsedate_to_datetime
@@ -42,8 +42,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260529-classops-fast-sync-68"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v138"
+PWA_APP_VERSION = "20260530-code-review-fixes-1"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v139"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -120,12 +120,19 @@ _UPLOAD_QUEUE_TASKS: list[asyncio.Task] = []
 _REQUEST_CONTEXT: contextvars.ContextVar[Request | None] = contextvars.ContextVar("hira_request", default=None)
 _SESSION_COOKIE_NAME = "hira_session"
 _SESSION_MAX_AGE_SECONDS = _env_int("HIRA_WEB_SESSION_MAX_AGE_SECONDS", 60 * 60 * 24 * 30)
+_AUTH_NOT_CONFIGURED_DETAIL = "Web authentication is not configured."
+
+
+def _running_in_production() -> bool:
+    return bool(os.environ.get("RAILWAY_ENVIRONMENT", "").strip() or os.environ.get("RAILWAY_SERVICE_NAME", "").strip())
 
 
 def _apply_security_headers(response):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("X-Frame-Options", "DENY")
+    if _running_in_production():
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     response.headers.setdefault(
         "Permissions-Policy",
         "camera=(), microphone=(), geolocation=(self), payment=(), usb=()",
@@ -226,7 +233,7 @@ async def add_static_cache_headers(request: Request, call_next):
             expected = _expected_web_token()
             if not expected:
                 return _apply_security_headers(JSONResponse(
-                    {"detail": "HIRA_WEB_TOKEN is not configured. Set it in Railway environment variables."},
+                    {"detail": _AUTH_NOT_CONFIGURED_DETAIL},
                     status_code=503,
                 ))
             header_ok = _token_matches(request.headers.get("x-hira-token"), expected)
@@ -752,7 +759,7 @@ async def recover_missed_daily_briefings() -> dict:
     current = datetime.now(bot.SGT)
     today_key = current.strftime("%Y-%m-%d")
     try:
-        delivery_log = bot.gs.get_web_push_delivery_log()
+        delivery_log = await asyncio.to_thread(bot.gs.get_web_push_delivery_log)
     except Exception as exc:
         bot.logger.warning(f"Daily briefing safety net could not read delivery log: {exc}")
         delivery_log = []
@@ -780,7 +787,7 @@ async def recover_missed_daily_briefings() -> dict:
         if not (target <= current <= grace_until):
             skipped += 1
             continue
-        if _daily_briefing_confirmed(slot, today_key, delivery_log):
+        if await asyncio.to_thread(_daily_briefing_confirmed, slot, today_key, delivery_log):
             skipped += 1
             continue
         attempted += 1
@@ -794,7 +801,7 @@ async def recover_missed_daily_briefings() -> dict:
 async def _web_push_recovery_loop():
     while True:
         try:
-            result = recover_missed_push_notifications()
+            result = await asyncio.to_thread(recover_missed_push_notifications)
             briefing_result = await recover_missed_daily_briefings()
             if result.get("attempted"):
                 bot.logger.info(
@@ -3008,9 +3015,10 @@ def _request_session_valid(request: Request | None, expected: str | None = None)
 
 
 def _cookie_secure_for_request(request: Request) -> bool:
-    proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",", 1)[0].strip().lower()
-    production = bool(os.environ.get("RAILWAY_ENVIRONMENT", "").strip() or os.environ.get("RAILWAY_SERVICE_NAME", "").strip())
-    return production or proto == "https"
+    proto = request.url.scheme
+    if _env_bool("HIRA_TRUST_PROXY_HEADERS", False):
+        proto = request.headers.get("x-forwarded-proto", proto).split(",", 1)[0].strip().lower()
+    return _running_in_production() or proto == "https"
 
 
 def _same_origin(request: Request, origin: str) -> bool:
@@ -3056,7 +3064,7 @@ def _csrf_request_allowed(request: Request) -> bool:
 def _require_token(x_hira_token: Optional[str] = Header(default=None)):
     expected = _expected_web_token()
     if not expected:
-        raise HTTPException(status_code=503, detail="HIRA_WEB_TOKEN is not configured. Set it in Railway environment variables.")
+        raise HTTPException(status_code=503, detail=_AUTH_NOT_CONFIGURED_DETAIL)
     if not _token_matches(x_hira_token, expected):
         request = _REQUEST_CONTEXT.get()
         if _request_session_valid(request, expected) and _csrf_request_allowed(request):
@@ -3076,7 +3084,7 @@ class _SlidingWindowRateLimiter:
         self._name = re.sub(r"[^a-z0-9_-]+", "-", str(name or "default").lower()).strip("-") or "default"
         self._max = max_requests
         self._window = window_seconds
-        self._buckets: dict[str, list[float]] = _defaultdict(list)
+        self._buckets: dict[str, deque[float]] = _defaultdict(deque)
         self._lock: asyncio.Lock | None = None
 
     async def is_allowed(self, key: str) -> bool:
@@ -3096,13 +3104,31 @@ class _SlidingWindowRateLimiter:
         now = _time.time()
         member = f"{now:.6f}:{secrets.token_hex(4)}"
         redis_key = self._redis_key(key)
-        pipe = redis.pipeline()
-        pipe.zremrangebyscore(redis_key, 0, now - self._window)
-        pipe.zadd(redis_key, {member: now})
-        pipe.zcard(redis_key)
-        pipe.expire(redis_key, max(2, self._window * 2))
-        _removed, _added, count, _expire = pipe.execute()
-        return int(count or 0) <= self._max
+        allowed = redis.eval(
+            """
+            local key = KEYS[1]
+            local now = tonumber(ARGV[1])
+            local window = tonumber(ARGV[2])
+            local max_requests = tonumber(ARGV[3])
+            local member = ARGV[4]
+            redis.call('ZREMRANGEBYSCORE', key, 0, now - window)
+            local count = redis.call('ZCARD', key)
+            if count >= max_requests then
+                redis.call('EXPIRE', key, math.max(2, window * 2))
+                return 0
+            end
+            redis.call('ZADD', key, now, member)
+            redis.call('EXPIRE', key, math.max(2, window * 2))
+            return 1
+            """,
+            1,
+            redis_key,
+            now,
+            self._window,
+            self._max,
+            member,
+        )
+        return bool(int(allowed or 0))
 
     async def _local_is_allowed(self, key: str) -> bool:
         if self._lock is None:
@@ -3113,7 +3139,7 @@ class _SlidingWindowRateLimiter:
             bucket = self._buckets[key]
             # Drop timestamps outside the window
             while bucket and bucket[0] < cutoff:
-                bucket.pop(0)
+                bucket.popleft()
             if len(bucket) >= self._max:
                 return False
             bucket.append(now)
@@ -3334,6 +3360,25 @@ async def _spool_upload_to_temp(file: UploadFile, max_bytes: int) -> tuple[str, 
             except Exception:
                 pass
         raise
+
+
+async def _read_upload_bytes(file: UploadFile, max_bytes: int, label: str = "Upload") -> bytes:
+    data = bytearray()
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"{label} is too large. Limit is {max_bytes // (1024 * 1024)} MB.",
+            )
+        data.extend(chunk)
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+    return bytes(data)
 
 
 def _prepare_image_for_vision(data: bytes, mime: str = "", filename: str = "") -> tuple[bytes, str, str]:
@@ -6706,7 +6751,7 @@ async def upload_document(
     is_document = _is_supported_document(mime, filename)
     max_bytes = _MAX_DOCUMENT_BYTES if is_document else _MAX_UPLOAD_BYTES
     file_size = getattr(file, "size", None)
-    if file_size and file_size > max_bytes:
+    if file_size is not None and file_size > max_bytes:
         label = "Document" if is_document else "Upload"
         raise HTTPException(status_code=413, detail=f"{label} is too large. Limit is {max_bytes // (1024 * 1024)} MB.")
     async with _UPLOAD_SEMAPHORE:
@@ -6740,7 +6785,7 @@ async def create_upload_job(
     is_document = _is_supported_document(mime, filename)
     max_bytes = _MAX_DOCUMENT_BYTES if is_document else _MAX_UPLOAD_BYTES
     file_size = getattr(file, "size", None)
-    if file_size and file_size > max_bytes:
+    if file_size is not None and file_size > max_bytes:
         label = "Document" if is_document else "Upload"
         raise HTTPException(status_code=413, detail=f"{label} is too large. Limit is {max_bytes // (1024 * 1024)} MB.")
     job_id = uuid.uuid4().hex
@@ -6849,11 +6894,7 @@ async def _process_upload_document(file: UploadFile, note: str = ""):
                     pass
         return await _analyse_document_excerpt(kind, index_note, excerpt, note)
 
-    data = await file.read()
-    if not data:
-        raise HTTPException(status_code=400, detail="Empty file")
-    if len(data) > max_bytes:
-        raise HTTPException(status_code=413, detail=f"Upload is too large. Limit is {max_bytes // (1024 * 1024)} MB.")
+    data = await _read_upload_bytes(file, max_bytes)
 
     if mime.startswith("image/") or filename.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
         return await _analyse_image_bytes(data, mime, filename, note)

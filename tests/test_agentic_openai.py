@@ -1889,35 +1889,13 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertEqual(result, "create_calendar_event:done")
 
     def test_rate_limiter_uses_redis_counter_when_available(self):
-        class FakePipeline:
+        class FakeRedis:
             def __init__(self):
                 self.calls = []
 
-            def zremrangebyscore(self, *args):
-                self.calls.append(("zremrangebyscore", args))
-                return self
-
-            def zadd(self, *args):
-                self.calls.append(("zadd", args))
-                return self
-
-            def zcard(self, *args):
-                self.calls.append(("zcard", args))
-                return self
-
-            def expire(self, *args):
-                self.calls.append(("expire", args))
-                return self
-
-            def execute(self):
-                return [0, 1, 1, True]
-
-        class FakeRedis:
-            def __init__(self):
-                self.pipeline_obj = FakePipeline()
-
-            def pipeline(self):
-                return self.pipeline_obj
+            def eval(self, *args):
+                self.calls.append(("eval", args))
+                return 1
 
         fake_redis = FakeRedis()
         limiter = web_app._SlidingWindowRateLimiter("unit", max_requests=1, window_seconds=60)
@@ -1926,8 +1904,8 @@ class AgenticOpenAITests(unittest.TestCase):
             allowed = asyncio.run(limiter.is_allowed("1.2.3.4"))
 
         self.assertTrue(allowed)
-        self.assertEqual(fake_redis.pipeline_obj.calls[0][0], "zremrangebyscore")
-        self.assertEqual(fake_redis.pipeline_obj.calls[1][0], "zadd")
+        self.assertEqual(fake_redis.calls[0][0], "eval")
+        self.assertIn("ZREMRANGEBYSCORE", fake_redis.calls[0][1][0])
 
     def test_upload_request_keys_make_retries_idempotent(self):
         web_app._UPLOAD_REQUESTS.clear()

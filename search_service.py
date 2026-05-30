@@ -167,8 +167,7 @@ class _ReadableHTMLParser(HTMLParser):
             self._parts.append(text)
 
     def readable_text(self):
-        text = " ".join("\n".join(self._parts).split())
-        return re.sub(r"\s*\n\s*", "\n", text).strip()
+        return " ".join("\n".join(self._parts).split()).strip()
 
 
 def _looks_like_url(value: str) -> bool:

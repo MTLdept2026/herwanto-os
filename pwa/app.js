@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260529-classops-fast-sync-68";
-const APP_SCRIPT = "app.js?v=20260529-classops-fast-sync-68";
-const EXPECTED_SW_CACHE = "hira-os-v138";
+const APP_VERSION = "20260530-code-review-fixes-1";
+const APP_SCRIPT = "app.js?v=20260530-code-review-fixes-1";
+const EXPECTED_SW_CACHE = "hira-os-v139";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
@@ -374,7 +374,6 @@ async function createSession(token) {
     throw new Error(detail.detail || `Session unlock failed: ${response.status}`);
   }
   state.token = clean;
-  localStorage.setItem("hira_web_token", clean);
   try {
     sessionStorage.setItem(SESSION_TOKEN_KEY, clean);
   } catch (_) {
@@ -399,7 +398,7 @@ async function migrateLegacyToken() {
   if (!token) return;
   state.token = token;
   state.sessionUnlocked = true;
-  localStorage.setItem("hira_web_token", token);
+  localStorage.removeItem("hira_web_token");
   localStorage.setItem("hira_session_unlocked", "1");
   try {
     sessionStorage.setItem(SESSION_TOKEN_KEY, token);

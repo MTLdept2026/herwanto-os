@@ -20,7 +20,6 @@ import pytz
 import threading
 import statistics
 import time
-from functools import lru_cache
 from datetime import date, datetime, timedelta
 from email.message import EmailMessage
 from pathlib import Path
@@ -162,9 +161,21 @@ SCORE_STATUS_LABELS = {
 }
 
 
-@lru_cache(maxsize=4)
 def _service_account_info(raw: str) -> dict:
-    return json.loads(base64.b64decode(raw).decode("utf-8"))
+    try:
+        decoded = base64.b64decode(raw).decode("utf-8")
+        info = json.loads(decoded)
+    except Exception as exc:
+        raise EnvironmentError("GOOGLE_SERVICE_ACCOUNT_JSON must be base64-encoded service-account JSON") from exc
+    if not isinstance(info, dict):
+        raise EnvironmentError("GOOGLE_SERVICE_ACCOUNT_JSON must decode to a JSON object")
+    required = ("type", "project_id", "private_key", "client_email", "token_uri")
+    missing = [key for key in required if not str(info.get(key, "")).strip()]
+    if missing:
+        raise EnvironmentError(f"GOOGLE_SERVICE_ACCOUNT_JSON is missing required field(s): {', '.join(missing)}")
+    if str(info.get("type", "")).strip() != "service_account":
+        raise EnvironmentError("GOOGLE_SERVICE_ACCOUNT_JSON must be a service_account credential")
+    return info
 
 def _split_ids(value: str) -> list[str]:
     return [item.strip() for item in (value or "").split(",") if item.strip()]
