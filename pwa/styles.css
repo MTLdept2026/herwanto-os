@@ -3003,7 +3003,7 @@ html[data-theme="dark"] .load-badge.load-green {
 .hira-signal {
   order: 2;
   display: grid;
-  grid-template-rows: 66px minmax(146px, auto);
+  grid-template-rows: auto minmax(146px, auto);
   gap: 0;
   min-height: 212px;
   padding: 0;
@@ -3068,12 +3068,12 @@ html[data-theme="dark"] .load-badge.load-green {
 
 .quick-command {
   min-width: 0;
-  min-height: 58px;
+  min-height: 66px;
   display: inline-flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 8px;
-  padding: 0 10px;
+  padding: 8px 12px;
   border: 0;
   border-right: 1px solid var(--border-dark);
   border-radius: 0;
@@ -3111,6 +3111,42 @@ html[data-theme="dark"] .load-badge.load-green {
   white-space: nowrap;
 }
 
+.quick-command-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  overflow: visible !important;
+  text-align: left;
+  text-overflow: clip !important;
+  white-space: normal !important;
+}
+
+.quick-command-copy strong,
+.quick-command-copy small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quick-command-copy strong {
+  color: inherit;
+  font-size: 10px;
+  line-height: 1.1;
+}
+
+.quick-command-copy small {
+  color: inherit;
+  font-family: var(--font-readable);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.2;
+  opacity: 0.72;
+  text-transform: none;
+}
+
 .hira-signal-bars {
   display: none;
   align-items: end;
@@ -3146,6 +3182,16 @@ html[data-theme="dark"] .load-badge.load-green {
 
 .hira-signal > .messages {
   border-top: 1px solid var(--border-dark);
+}
+
+.chat-main.chat-empty .messages::before {
+  content: "Start with a question or choose a command below.";
+  display: block;
+  max-width: 36ch;
+  color: var(--hira-muted);
+  font-family: var(--font-readable);
+  font-size: 15px;
+  line-height: 1.4;
 }
 
 .message {
@@ -4818,6 +4864,10 @@ body:has(#settingsPanel:not([hidden])) .quick-action-fab {
     min-height: 58px;
   }
 
+  body:has(#homeView.active) .quick-action-fab {
+    display: none;
+  }
+
   .quick-drawer-sheet {
     left: max(10px, env(safe-area-inset-left));
     right: max(10px, env(safe-area-inset-right));
@@ -5997,6 +6047,22 @@ html[data-theme="dark"] .connection-card.is-on .connection-switch span {
   background: var(--hira-black) !important;
 }
 
+.chat-title-row > div {
+  min-width: 0;
+}
+
+.chat-context {
+  max-width: 54ch;
+  margin-top: 6px;
+  color: var(--hira-muted);
+  font-family: var(--font-readable);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.35;
+  text-transform: none;
+}
+
 .hira-signal,
 html[data-theme="dark"] .hira-signal {
   background:
@@ -6009,7 +6075,7 @@ html[data-theme="dark"] .hira-signal {
 
 .hira-signal-head,
 html[data-theme="dark"] .hira-signal-head {
-  min-height: 58px;
+  min-height: 70px;
   border-bottom: 1px solid var(--hira-line) !important;
   background: transparent !important;
 }
@@ -6019,6 +6085,17 @@ html[data-theme="dark"] .hira-signal-head {
   font-family: var(--font-dot);
   font-size: 18px;
   letter-spacing: 0.16em;
+}
+
+.signal-subtitle {
+  margin-top: 5px;
+  color: var(--hira-muted);
+  font-family: var(--font-readable);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.25;
+  text-transform: none;
 }
 
 .signal-state {
@@ -6063,7 +6140,7 @@ html[data-theme="dark"] .quick-command-deck {
 
 .quick-command,
 html[data-theme="dark"] .quick-command {
-  min-height: 54px;
+  min-height: 68px;
   border-color: var(--hira-line) !important;
   background: transparent !important;
   color: var(--hira-muted) !important;
@@ -6121,7 +6198,7 @@ html[data-theme="dark"] #sendBtn.is-ready {
   font-family: var(--font-readable);
   font-size: 16px;
   font-weight: 500;
-  caret-color: transparent !important;
+  caret-color: var(--hira-red) !important;
 }
 
 .composer textarea::placeholder {
@@ -6158,25 +6235,13 @@ html[data-theme="dark"] #sendBtn.is-ready {
 
 .composer textarea::placeholder,
 html[data-theme="dark"] .composer textarea::placeholder {
-  color: transparent !important;
-  opacity: 0 !important;
+  color: var(--hira-muted) !important;
+  opacity: 0.9 !important;
   animation: none !important;
 }
 
 .composer:not(.has-input)::after {
-  content: "";
-  grid-column: 2;
-  grid-row: 1;
-  align-self: center;
-  justify-self: start;
-  width: 12px;
-  height: 26px;
-  margin-left: 18px;
-  background: var(--hira-ink);
-  opacity: 0.82;
-  pointer-events: none;
-  z-index: 2;
-  animation: hira-terminal-cursor 1s steps(1, end) infinite;
+  content: none;
 }
 
 .composer.has-input::after,
@@ -7207,22 +7272,23 @@ html[data-theme="dark"] .nothing-glyph-display {
   }
 
   .quick-command-deck {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: 1fr;
   }
 
   .quick-command {
-    min-height: 50px;
+    min-height: 64px;
+    border-right: 0 !important;
+    border-top: 1px solid var(--hira-line) !important;
     justify-content: flex-start;
-    padding: 0 12px;
+    padding: 8px 12px;
   }
 
-  .quick-command:nth-child(2n) {
-    border-right: 0;
+  .quick-command:first-child {
+    border-top: 0 !important;
   }
 
   .quick-command:last-child {
-    grid-column: 1 / -1;
-    border-top: 1px solid var(--hira-line) !important;
+    grid-column: auto;
   }
 
   .clock-controls {

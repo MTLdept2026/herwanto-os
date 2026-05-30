@@ -226,15 +226,19 @@
             <div class="section-head chat-title-row">
               <div>
                 <h2>Chat</h2>
+                <p class="chat-context">Ask, upload, draft, or turn the current day into a plan.</p>
               </div>
               <button id="resetChatBtn" type="button" class="ghost-btn icon-label-btn" hidden>
                 <span data-lucide="trash-2" aria-hidden="true"></span>
-                Clear
+                Clear chat
               </button>
             </div>
-            <section id="hiraSignal" class="hira-signal" aria-label="H.I.R.A output signal">
+            <section id="hiraSignal" class="hira-signal" aria-label="H.I.R.A conversation">
               <div class="hira-signal-head">
-                <p class="eyebrow">H.I.R.A Output</p>
+                <div>
+                  <p class="eyebrow">Conversation</p>
+                  <p class="signal-subtitle">Live replies, tool progress, and notes appear here.</p>
+                </div>
                 <div class="signal-state is-live">
                   <span aria-hidden="true"></span>
                   <strong id="hiraSignalState">Live</strong>
@@ -281,23 +285,38 @@
             <section class="quick-command-deck" aria-label="Quick H.I.R.A commands">
               <button type="button" class="quick-command is-primary" data-command-action="send" data-command-prompt="Give me a crisp H.I.R.A briefing for right now: what matters today, what is due soon, what may clash, and the single best next move.">
                 <span data-lucide="radar" aria-hidden="true"></span>
-                <span>Brief Me</span>
+                <span class="quick-command-copy">
+                  <strong>Brief me</strong>
+                  <small>Today, risks, next move</small>
+                </span>
               </button>
               <button type="button" class="quick-command" data-command-action="send" data-command-prompt="Triage my current load. Pick the top 3 things I should handle next, explain why, and give me a realistic order of attack.">
                 <span data-lucide="list-checks" aria-hidden="true"></span>
-                <span>Triage</span>
+                <span class="quick-command-copy">
+                  <strong>Triage</strong>
+                  <small>Rank what to handle first</small>
+                </span>
               </button>
               <button type="button" class="quick-command" data-command-action="send" data-command-prompt="Plan a focused marking sprint from my current marking load. Give me a time-boxed plan, easiest first step, and what to postpone.">
                 <span data-lucide="timer-reset" aria-hidden="true"></span>
-                <span>Marking Sprint</span>
+                <span class="quick-command-copy">
+                  <strong>Marking sprint</strong>
+                  <small>Time-box scripts</small>
+                </span>
               </button>
               <button type="button" class="quick-command" data-command-action="fill" data-command-prompt="Draft a warm, concise reply to: ">
                 <span data-lucide="mail-plus" aria-hidden="true"></span>
-                <span>Draft Reply</span>
+                <span class="quick-command-copy">
+                  <strong>Draft reply</strong>
+                  <small>Write a message</small>
+                </span>
               </button>
-              <button type="button" class="quick-command" data-command-action="fill" data-command-prompt="/remind Description | YYYY-MM-DD | Category">
+              <button type="button" class="quick-command" data-command-action="fill" data-command-prompt="Remind me to [task] on YYYY-MM-DD. Category: [category].">
                 <span data-lucide="bell-plus" aria-hidden="true"></span>
-                <span>Reminder</span>
+                <span class="quick-command-copy">
+                  <strong>Reminder</strong>
+                  <small>Create a dated nudge</small>
+                </span>
               </button>
             </section>
             <form id="chatForm" class="composer">
@@ -314,7 +333,7 @@
               <button id="voiceRecordBtn" type="button" class="icon-btn voice-record-btn" title="Tap to speak" aria-label="Tap to speak">
                 <span data-lucide="mic" aria-hidden="true"></span>
               </button>
-              <textarea id="messageInput" rows="1" placeholder="█"></textarea>
+              <textarea id="messageInput" rows="1" placeholder="Message H.I.R.A"></textarea>
               <div id="chatAttachment" class="attachment-chip" hidden>
                 <span data-lucide="file-up" aria-hidden="true"></span>
                 <span id="chatAttachmentName"></span>
