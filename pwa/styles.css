@@ -7574,7 +7574,7 @@ span[data-lucide]::before { content: ""; }
   --type-clock: 92px;
   --clock-dot: 8px;
   --clock-dot-gap: 4px;
-  --clock-char-gap: 8px;
+  --clock-char-gap: 16px;
   --line-tight: 1.1;
   --line-copy: 1.5;
 }
@@ -7866,7 +7866,7 @@ html[data-theme="dark"] .hira-signal-head .eyebrow {
     --type-clock: 56px;
     --clock-dot: 7px;
     --clock-dot-gap: 3px;
-    --clock-char-gap: 6px;
+    --clock-char-gap: 12px;
   }
 
   h1 {
@@ -8233,7 +8233,7 @@ html[data-theme="dark"] .clock-controls {
   :root {
     --clock-dot: 5.5px;
     --clock-dot-gap: 3px;
-    --clock-char-gap: 5px;
+    --clock-char-gap: 10px;
   }
 
   .status-clockbar,
