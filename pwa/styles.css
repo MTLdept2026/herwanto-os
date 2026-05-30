@@ -7338,6 +7338,73 @@ span[data-lucide]::before { content: ""; }
 .drawer-actions > span[data-lucide="chevron-down"]::before { content: "v"; }
 .quick-action-fab span[data-lucide="plus"]::before { content: "+"; }
 
+.clock-controls span[data-lucide] {
+  position: relative;
+  width: 22px;
+  min-width: 22px;
+  height: 22px;
+  min-height: 22px;
+  font-size: 0 !important;
+}
+
+.clock-controls span[data-lucide]::before,
+.clock-controls span[data-lucide]::after {
+  content: "";
+  position: absolute;
+  display: block;
+  color: inherit;
+}
+
+.clock-controls span[data-lucide="bell"]::before {
+  left: 5px;
+  top: 4px;
+  width: 10px;
+  height: 11px;
+  border: 2px solid currentColor;
+  border-bottom: 0;
+}
+
+.clock-controls span[data-lucide="bell"]::after {
+  left: 6px;
+  bottom: 4px;
+  width: 10px;
+  height: 2px;
+  background: currentColor;
+}
+
+.clock-controls span[data-lucide="settings"]::before {
+  left: 5px;
+  top: 5px;
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  transform: rotate(45deg);
+}
+
+.clock-controls span[data-lucide="settings"]::after {
+  left: 9px;
+  top: 9px;
+  width: 4px;
+  height: 4px;
+  background: currentColor;
+}
+
+.clock-controls span[data-lucide="download"]::before {
+  left: 10px;
+  top: 4px;
+  width: 2px;
+  height: 11px;
+  background: currentColor;
+}
+
+.clock-controls span[data-lucide="download"]::after {
+  left: 6px;
+  bottom: 4px;
+  width: 10px;
+  height: 2px;
+  background: currentColor;
+}
+
 .message-speak-btn,
 .icon-btn.compact,
 .speak-target-btn,
