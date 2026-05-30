@@ -11,10 +11,10 @@
       href="https://fonts.googleapis.com/css2?family=Doto:wght@400..900&family=Space+Grotesk:wght@300;400;500;700&family=VT323&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap"
       rel="stylesheet"
     />
-    <link rel="manifest" href="/manifest.webmanifest?v=20260530-stage3-situation-1" />
+    <link rel="manifest" href="/manifest.webmanifest?v=20260530-stage4-voice-a-1" />
     <link rel="icon" href="/static/icon.svg?v=20260510-trace-39" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=20260510-trace-39" />
-    <link rel="stylesheet" href="./styles.css?v=20260530-stage3-situation-1" />
+    <link rel="stylesheet" href="./styles.css?v=20260530-stage4-voice-a-1" />
   </head>
   <body>
     <main class="shell">
@@ -103,6 +103,10 @@
           <button id="testNotificationsBtn" type="button" class="ghost-btn">Test push</button>
           <button id="checkHealthBtn" type="button" class="ghost-btn">Health</button>
         </div>
+        <label class="voice-toggle">
+          <input id="autoSpeakToggle" type="checkbox" />
+          <span>Auto-speak replies</span>
+        </label>
         <p id="notificationStateText" class="subtle notification-state">Checking notifications...</p>
         <div id="healthOutput" class="health-output" hidden></div>
         <div class="api-spend-panel">
@@ -291,6 +295,9 @@
               />
               <button id="attachBtn" type="button" class="icon-btn" title="Attach file" aria-label="Attach file">
                 <span data-lucide="paperclip" aria-hidden="true"></span>
+              </button>
+              <button id="voiceRecordBtn" type="button" class="icon-btn voice-record-btn" title="Tap to speak" aria-label="Tap to speak">
+                <span data-lucide="mic" aria-hidden="true"></span>
               </button>
               <textarea id="messageInput" rows="1" placeholder="█"></textarea>
               <div id="chatAttachment" class="attachment-chip" hidden>
@@ -580,6 +587,9 @@
                 <strong>Priority Queue</strong>
               </span>
               <span class="drawer-actions">
+                <button type="button" class="icon-btn compact speak-target-btn" data-speak-target="homeProactive" title="Speak priority queue" aria-label="Speak priority queue">
+                  <span data-lucide="volume-2" aria-hidden="true"></span>
+                </button>
                 <button type="button" class="icon-btn compact drawer-close" data-home-dismiss="priority" title="Close priority queue" aria-label="Close priority queue">
                   <span data-lucide="x" aria-hidden="true"></span>
                 </button>
@@ -596,6 +606,9 @@
                 <strong>Morning Digest</strong>
               </span>
               <span class="drawer-actions">
+                <button type="button" class="icon-btn compact speak-target-btn" data-speak-target="homeDigest" title="Speak morning digest" aria-label="Speak morning digest">
+                  <span data-lucide="volume-2" aria-hidden="true"></span>
+                </button>
                 <button type="button" class="icon-btn compact drawer-close" data-home-dismiss="digest" title="Close morning digest" aria-label="Close morning digest">
                   <span data-lucide="x" aria-hidden="true"></span>
                 </button>
@@ -612,6 +625,9 @@
                 <strong>Islamic Rhythm</strong>
               </span>
               <span class="drawer-actions">
+                <button type="button" class="icon-btn compact speak-target-btn" data-speak-target="homeIslamic" title="Speak Islamic rhythm" aria-label="Speak Islamic rhythm">
+                  <span data-lucide="volume-2" aria-hidden="true"></span>
+                </button>
                 <button type="button" class="icon-btn compact drawer-close" data-home-dismiss="islamic" title="Close Islamic rhythm" aria-label="Close Islamic rhythm">
                   <span data-lucide="x" aria-hidden="true"></span>
                 </button>
@@ -847,6 +863,6 @@
       </div>
     </section>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-    <script src="./app.js?v=20260530-stage3-situation-1" type="module"></script>
+    <script src="./app.js?v=20260530-stage4-voice-a-1" type="module"></script>
   </body>
 </html>

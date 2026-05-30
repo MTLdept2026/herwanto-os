@@ -90,6 +90,7 @@ class PwaButtonWiringTests(unittest.TestCase):
                     "data-gmail-preset",
                     "data-quick-close",
                     "data-quick-view",
+                    "data-speak-target",
                 }
             )
             if not handled:

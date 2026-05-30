@@ -42,8 +42,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260530-stage3-situation-1"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v140"
+PWA_APP_VERSION = "20260530-stage4-voice-a-1"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v141"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -86,6 +86,8 @@ _UPLOAD_QUEUE_MAX = _env_int("HIRA_WEB_UPLOAD_QUEUE_MAX", 12)
 _MAX_UPLOAD_BYTES = max(256_000, _env_int("HIRA_WEB_MAX_UPLOAD_MB", 16) * 1024 * 1024)
 _MAX_DOCUMENT_BYTES = max(_MAX_UPLOAD_BYTES, _env_int("HIRA_WEB_MAX_DOCUMENT_MB", 96) * 1024 * 1024)
 _MAX_REQUEST_BYTES = max(_MAX_DOCUMENT_BYTES, _env_int("HIRA_WEB_MAX_REQUEST_MB", 112) * 1024 * 1024)
+_MAX_VOICE_BYTES = max(256_000, _env_int("HIRA_WEB_VOICE_MAX_MB", 10) * 1024 * 1024)
+_TTS_MAX_CHARS = _env_int("HIRA_WEB_TTS_MAX_CHARS", 4000, minimum=200)
 _MEMORY_GC_RATIO = _env_float("HIRA_WEB_MEMORY_GC_RATIO", 0.80)
 _MEMORY_REJECT_RATIO = _env_float("HIRA_WEB_MEMORY_REJECT_RATIO", 0.92)
 _MEMORY_WATCHDOG_SECONDS = _env_int("HIRA_WEB_MEMORY_WATCHDOG_SECONDS", 45, minimum=10)
@@ -135,7 +137,7 @@ def _apply_security_headers(response):
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     response.headers.setdefault(
         "Permissions-Policy",
-        "camera=(), microphone=(), geolocation=(self), payment=(), usb=()",
+        "camera=(), microphone=(self), geolocation=(self), payment=(), usb=()",
     )
     response.headers.setdefault(
         "Content-Security-Policy",
@@ -144,6 +146,7 @@ def _apply_security_headers(response):
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "font-src 'self' https://fonts.gstatic.com; "
         "img-src 'self' data: blob:; "
+        "media-src 'self' blob:; "
         "connect-src 'self'; "
         "manifest-src 'self'; "
         "base-uri 'self'; "
@@ -911,6 +914,11 @@ class AuthSessionRequest(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     location: Optional[DeviceLocation] = None
+
+
+class TTSRequest(BaseModel):
+    text: str
+    voice: str = ""
 
 
 class RealtimeSessionRequest(BaseModel):
@@ -3158,6 +3166,8 @@ class _SlidingWindowRateLimiter:
 
 _CHAT_RATE_LIMITER   = _SlidingWindowRateLimiter("chat", max_requests=_env_int("HIRA_CHAT_RATE_LIMIT", 20), window_seconds=60)
 _UPLOAD_RATE_LIMITER = _SlidingWindowRateLimiter("upload", max_requests=_env_int("HIRA_UPLOAD_RATE_LIMIT", 10), window_seconds=60)
+_VOICE_RATE_LIMITER  = _SlidingWindowRateLimiter("voice", max_requests=_env_int("HIRA_VOICE_RATE_LIMIT", 12), window_seconds=60)
+_TTS_RATE_LIMITER    = _SlidingWindowRateLimiter("tts", max_requests=_env_int("HIRA_TTS_RATE_LIMIT", 20), window_seconds=60)
 _AUTH_RATE_LIMITER   = _SlidingWindowRateLimiter("auth", max_requests=_AUTH_RATE_LIMIT, window_seconds=60)
 
 
@@ -4683,6 +4693,109 @@ async def _pwa_triage_reply(message: str) -> str:
         marking_tasks if isinstance(marking_tasks, list) else [],
         errors,
     )
+
+
+def _tts_voice(voice: str = "") -> str:
+    return (
+        str(voice or "").strip()
+        or os.environ.get("OPENAI_TTS_VOICE", "").strip()
+        or bot.OPENAI_REALTIME_VOICE
+        or "verse"
+    )
+
+
+async def _audio_response_bytes(response) -> bytes:
+    if isinstance(response, bytes):
+        return response
+    content = getattr(response, "content", None)
+    if isinstance(content, bytes):
+        return content
+    read = getattr(response, "read", None)
+    if callable(read):
+        data = read()
+        if hasattr(data, "__await__"):
+            data = await data
+        return bytes(data or b"")
+    iter_bytes = getattr(response, "iter_bytes", None)
+    if callable(iter_bytes):
+        chunks = []
+        for chunk in iter_bytes():
+            chunks.append(bytes(chunk or b""))
+        return b"".join(chunks)
+    return b""
+
+
+@app.post("/api/tts")
+async def text_to_speech(
+    request: Request,
+    req: TTSRequest,
+    x_hira_token: Optional[str] = Header(default=None),
+):
+    _require_token(x_hira_token)
+    if not await _TTS_RATE_LIMITER.is_allowed(_request_ip(request)):
+        raise HTTPException(status_code=429, detail="Too many speech requests. Wait a minute and try again.")
+    if not os.environ.get("OPENAI_API_KEY", "").strip():
+        raise HTTPException(status_code=400, detail="Speech needs OPENAI_API_KEY configured first")
+    text = str(req.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Text is required")
+    text = text[:_TTS_MAX_CHARS]
+    try:
+        response = await bot.async_openai_client.audio.speech.create(
+            model=os.environ.get("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"),
+            voice=_tts_voice(req.voice),
+            input=text,
+        )
+        audio = await _audio_response_bytes(response)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not create speech: {exc}") from exc
+    if not audio:
+        raise HTTPException(status_code=400, detail="Could not create speech")
+    return StreamingResponse(iter([audio]), media_type="audio/mpeg")
+
+
+def _transcribe_audio_bytes(data: bytes, suffix: str) -> str:
+    from openai import OpenAI
+
+    with tempfile.NamedTemporaryFile(suffix=suffix or ".webm") as tmp:
+        tmp.write(data)
+        tmp.flush()
+        client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+        with open(tmp.name, "rb") as audio:
+            transcript = client.audio.transcriptions.create(
+                model=os.environ.get("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe"),
+                file=audio,
+            )
+    return getattr(transcript, "text", str(transcript)).strip()
+
+
+@app.post("/api/voice/transcribe")
+async def voice_transcribe(
+    request: Request,
+    file: UploadFile = File(...),
+    x_hira_token: Optional[str] = Header(default=None),
+):
+    _require_token(x_hira_token)
+    if not await _VOICE_RATE_LIMITER.is_allowed(_request_ip(request)):
+        raise HTTPException(status_code=429, detail="Too many voice clips. Wait a minute and try again.")
+    if not os.environ.get("OPENAI_API_KEY", "").strip():
+        raise HTTPException(status_code=400, detail="Voice transcription needs OPENAI_API_KEY configured first")
+    file_size = getattr(file, "size", None)
+    if file_size is not None and file_size > _MAX_VOICE_BYTES:
+        raise HTTPException(status_code=413, detail=f"Voice clip is too large. Limit is {_MAX_VOICE_BYTES // (1024 * 1024)} MB.")
+    data = await _read_upload_bytes(file, _MAX_VOICE_BYTES, "Voice clip")
+    suffix = Path(file.filename or "").suffix or ".webm"
+    try:
+        text = await asyncio.to_thread(_transcribe_audio_bytes, data, suffix)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not transcribe: {exc}") from exc
+    if not text:
+        raise HTTPException(status_code=400, detail="Could not transcribe.")
+    return {"text": text}
 
 
 @app.post("/api/chat")

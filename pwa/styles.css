@@ -3644,7 +3644,7 @@ html[data-theme="dark"] .load-badge.load-green {
 .composer {
   order: 3;
   display: grid;
-  grid-template-columns: 64px minmax(0, 1fr) 92px;
+  grid-template-columns: 64px 64px minmax(0, 1fr) 92px;
   gap: 0;
   align-items: stretch;
   min-width: 0;
@@ -3667,7 +3667,7 @@ html[data-theme="dark"] .load-badge.load-green {
 }
 
 .composer textarea {
-  grid-column: 2;
+  grid-column: 3;
   grid-row: 1;
   min-height: 64px;
   max-height: 160px;
@@ -3811,8 +3811,27 @@ body:has(#settingsPanel:not([hidden])) .quick-action-fab {
   background: var(--bg-dark);
 }
 
+.voice-record-btn {
+  grid-column: 2;
+  grid-row: 1;
+  height: 64px;
+  align-self: stretch;
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  border-left: 1px solid var(--border-dark);
+  border-radius: 0;
+  color: var(--text-dark-dim);
+  background: var(--bg-dark);
+}
+
+.voice-record-btn.is-recording {
+  color: #ffffff;
+  background: var(--danger);
+}
+
 #sendBtn {
-  grid-column: 3;
+  grid-column: 4;
   grid-row: 1;
   min-height: 64px;
   align-self: stretch;
@@ -3842,6 +3861,51 @@ body:has(#settingsPanel:not([hidden])) .quick-action-fab {
 #sendBtn svg {
   width: 18px;
   height: 18px;
+}
+
+.voice-toggle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid var(--border-visible);
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  font-family: var(--font-ui);
+  font-size: var(--caption);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.voice-toggle input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+
+.message-speak-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  min-width: 32px;
+  height: 28px;
+  margin-top: 8px;
+  border: 1px solid var(--border-dark);
+  background: transparent;
+  color: var(--text-dark-dim);
+}
+
+.message-speak-btn:hover,
+.message-speak-btn:focus-visible {
+  color: var(--text-dark);
+  background: var(--surface-raised);
+}
+
+.message-speak-btn svg,
+.speak-target-btn svg {
+  width: 15px;
+  height: 15px;
 }
 
 .composer .attachment-chip {
@@ -4558,7 +4622,7 @@ body:has(#settingsPanel:not([hidden])) .quick-action-fab {
   }
 
   .composer {
-    grid-template-columns: 52px minmax(0, 1fr) 78px;
+    grid-template-columns: 52px 52px minmax(0, 1fr) 78px;
     align-items: stretch;
     overflow: hidden;
   }
@@ -4572,6 +4636,7 @@ body:has(#settingsPanel:not([hidden])) .quick-action-fab {
   }
 
   #attachBtn,
+  #voiceRecordBtn,
   #sendBtn {
     min-width: 0;
     width: 100%;
@@ -4581,7 +4646,7 @@ body:has(#settingsPanel:not([hidden])) .quick-action-fab {
   }
 
   #sendBtn {
-    grid-column: 3;
+    grid-column: 4;
     grid-row: 1;
     gap: 5px;
     font-size: 10px;
@@ -5619,6 +5684,8 @@ html[data-theme="dark"] .composer {
 html[data-theme="dark"] .composer textarea,
 #attachBtn,
 html[data-theme="dark"] #attachBtn,
+#voiceRecordBtn,
+html[data-theme="dark"] #voiceRecordBtn,
 #sendBtn,
 #sendBtn:disabled,
 #sendBtn.is-ready,
@@ -5641,8 +5708,16 @@ html[data-theme="dark"] .composer textarea {
   color: color-mix(in srgb, var(--hira-white) 42%, transparent) !important;
 }
 
-#attachBtn {
+#attachBtn,
+#voiceRecordBtn {
   color: color-mix(in srgb, var(--hira-white) 58%, transparent) !important;
+}
+
+#voiceRecordBtn.is-recording,
+html[data-theme="dark"] #voiceRecordBtn.is-recording {
+  background: var(--hira-red) !important;
+  border-color: var(--hira-red) !important;
+  color: var(--hira-white) !important;
 }
 
 #sendBtn {
@@ -5921,6 +5996,8 @@ html[data-theme="dark"] .composer {
 html[data-theme="dark"] .composer textarea,
 #attachBtn,
 html[data-theme="dark"] #attachBtn,
+#voiceRecordBtn,
+html[data-theme="dark"] #voiceRecordBtn,
 #sendBtn,
 #sendBtn:disabled,
 #sendBtn.is-ready,
@@ -5943,9 +6020,17 @@ html[data-theme="dark"] #sendBtn.is-ready {
 }
 
 #attachBtn,
-html[data-theme="dark"] #attachBtn {
+html[data-theme="dark"] #attachBtn,
+#voiceRecordBtn,
+html[data-theme="dark"] #voiceRecordBtn {
   color: var(--hira-muted) !important;
   border-right: 1px solid var(--hira-line-strong) !important;
+}
+
+#voiceRecordBtn.is-recording,
+html[data-theme="dark"] #voiceRecordBtn.is-recording {
+  background: var(--hira-red) !important;
+  color: var(--hira-white) !important;
 }
 
 #sendBtn,

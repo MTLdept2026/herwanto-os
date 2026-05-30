@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260530-stage3-situation-1";
-const APP_SCRIPT = "app.js?v=20260530-stage3-situation-1";
-const EXPECTED_SW_CACHE = "hira-os-v140";
+const APP_VERSION = "20260530-stage4-voice-a-1";
+const APP_SCRIPT = "app.js?v=20260530-stage4-voice-a-1";
+const EXPECTED_SW_CACHE = "hira-os-v141";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
@@ -31,6 +31,7 @@ const AGENDA_CACHE_KEY = "hira_pwa_agenda_snapshot_v1";
 const PUSH_SYNC_MODE_KEY = "hira_pwa_last_push_sync_mode";
 const PUSH_SYNC_ENDPOINT_KEY = "hira_pwa_last_push_sync_endpoint";
 const SESSION_TOKEN_KEY = "hira_web_session_token";
+const AUTO_SPEAK_KEY = "hira_pwa_auto_speak_replies";
 const HOME_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const HOME_REFRESH_THROTTLE_MS = 45 * 1000;
 const RIGHT_NOW_REFRESH_MS = 60 * 1000;
@@ -76,6 +77,13 @@ const state = {
   rightNowReceivedAt: 0,
   rightNowRefreshInFlight: null,
   rightNowPoll: null,
+  autoSpeak: localStorage.getItem(AUTO_SPEAK_KEY) === "1",
+  voiceRecorder: null,
+  voiceStream: null,
+  voiceChunks: [],
+  voiceRecording: false,
+  speechAudio: null,
+  speechUrl: "",
   actionLedger: [],
 };
 state.chatHistory = cleanStoredChatHistory(state.chatHistory);
@@ -2378,6 +2386,65 @@ function scrollMessagesToBottom() {
   messages.scrollTop = messages.scrollHeight;
 }
 
+function stopSpeechPlayback() {
+  if (state.speechAudio) {
+    state.speechAudio.pause();
+    state.speechAudio.src = "";
+  }
+  if (state.speechUrl) {
+    URL.revokeObjectURL(state.speechUrl);
+    state.speechUrl = "";
+  }
+}
+
+async function playSpeech(text, control = null) {
+  const clean = visibleChatText(text || "", { final: true }).trim();
+  if (!clean) return;
+  stopSpeechPlayback();
+  const previous = control?.innerHTML || "";
+  if (control) {
+    control.disabled = true;
+    control.innerHTML = `<span data-lucide="loader-2" aria-hidden="true"></span>`;
+    refreshIcons(control);
+  }
+  try {
+    const response = await fetchWithToken("/api/tts", {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ text: clean }),
+    });
+    const blob = await response.blob();
+    state.speechUrl = URL.createObjectURL(blob);
+    state.speechAudio = new Audio(state.speechUrl);
+    state.speechAudio.addEventListener("ended", stopSpeechPlayback, { once: true });
+    await state.speechAudio.play();
+    setStatus("Speaking reply.", "ok");
+  } catch (error) {
+    console.error(error);
+    setStatus(`Could not speak that: ${error.message}`, "warn");
+  } finally {
+    if (control) {
+      control.disabled = false;
+      control.innerHTML = previous || `<span data-lucide="volume-2" aria-hidden="true"></span>`;
+      refreshIcons(control);
+    }
+  }
+}
+
+function maybeAutoSpeak(text) {
+  if (!state.autoSpeak) return;
+  playSpeech(text).catch(() => {});
+}
+
+function messageSpeakControl(text = "") {
+  const clean = visibleChatText(text || "", { final: true }).trim();
+  return `
+    <button type="button" class="message-speak-btn" data-speak-message ${clean ? "" : "hidden"} title="Speak reply" aria-label="Speak reply" data-speak-text="${escapeHtml(clean)}">
+      <span data-lucide="volume-2" aria-hidden="true"></span>
+    </button>
+  `;
+}
+
 function escapeHtml(text) {
   return (text || "")
     .replace(/&/g, "&amp;")
@@ -2788,8 +2855,9 @@ function addMessage(role, text, persist = true) {
   const visibleText = role === "hira" ? visibleChatText(text, { final: true }) : String(text || "");
   const el = document.createElement("article");
   el.className = `message ${role}`;
-  el.innerHTML = `<div class="message-body">${renderChatText(visibleText)}</div>`;
+  el.innerHTML = `<div class="message-body">${renderChatText(visibleText)}</div>${role === "hira" ? messageSpeakControl(visibleText) : ""}`;
   $("#messages").appendChild(el);
+  refreshIcons(el);
   scrollMessagesToBottom();
   if (persist) {
     state.chatHistory.push({ role, text: visibleText });
@@ -2930,7 +2998,15 @@ function setHiraSpeaking(el, speaking) {
 }
 
 function updateMessage(el, text) {
-  el.querySelector(".message-body").innerHTML = renderChatText(visibleChatText(text || "") || "");
+  const clean = visibleChatText(text || "") || "";
+  el.querySelector(".message-body").innerHTML = renderChatText(clean);
+  const speakButton = el.querySelector("[data-speak-message]");
+  if (speakButton) {
+    const speakText = visibleChatText(clean, { final: true }).trim();
+    speakButton.hidden = !speakText;
+    speakButton.dataset.speakText = speakText;
+  }
+  refreshIcons(el);
   scrollMessagesToBottom();
 }
 
@@ -3611,14 +3687,125 @@ function composerHasPayload() {
 function updateComposerState() {
   const composer = $("#chatForm");
   const sendButton = $("#sendBtn");
+  const voiceButton = $("#voiceRecordBtn");
   const hasPayload = composerHasPayload();
   if (composer) {
     composer.classList.toggle("has-input", hasPayload);
     composer.classList.toggle("is-busy", state.chatBusy);
+    composer.classList.toggle("is-recording", state.voiceRecording);
   }
   if (sendButton) {
     sendButton.disabled = state.chatBusy || !hasPayload;
     sendButton.classList.toggle("is-ready", hasPayload && !state.chatBusy);
+  }
+  if (voiceButton) {
+    voiceButton.disabled = state.chatBusy && !state.voiceRecording;
+  }
+}
+
+function updateVoiceRecordButton() {
+  const button = $("#voiceRecordBtn");
+  if (!button) return;
+  button.classList.toggle("is-recording", state.voiceRecording);
+  button.title = state.voiceRecording ? "Stop recording" : "Tap to speak";
+  button.setAttribute("aria-label", button.title);
+  button.innerHTML = `<span data-lucide="${state.voiceRecording ? "square" : "mic"}" aria-hidden="true"></span>`;
+  refreshIcons(button);
+  updateComposerState();
+}
+
+function stopVoiceTracks() {
+  state.voiceStream?.getTracks?.().forEach((track) => track.stop());
+  state.voiceStream = null;
+}
+
+function voiceRecorderOptions() {
+  if (!window.MediaRecorder) return null;
+  const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
+  const mimeType = candidates.find((type) => MediaRecorder.isTypeSupported?.(type));
+  return mimeType ? { mimeType } : {};
+}
+
+async function startVoiceRecording() {
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+    setStatus("Voice capture is not available in this browser. Type instead.", "warn");
+    return;
+  }
+  if (state.chatBusy) return;
+  try {
+    state.voiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    state.voiceChunks = [];
+    const options = voiceRecorderOptions();
+    state.voiceRecorder = new MediaRecorder(state.voiceStream, options || undefined);
+    state.voiceRecorder.addEventListener("dataavailable", (event) => {
+      if (event.data?.size) state.voiceChunks.push(event.data);
+    });
+    state.voiceRecorder.addEventListener("stop", () => {
+      const type = state.voiceRecorder?.mimeType || "audio/webm";
+      const blob = new Blob(state.voiceChunks, { type });
+      state.voiceRecorder = null;
+      state.voiceRecording = false;
+      stopVoiceTracks();
+      updateVoiceRecordButton();
+      transcribeVoiceBlob(blob).catch((error) => {
+        console.error(error);
+        setStatus(error.message, "error");
+      });
+    }, { once: true });
+    state.voiceRecorder.start();
+    state.voiceRecording = true;
+    updateVoiceRecordButton();
+    setStatus("Listening. Tap mic again to stop.", "muted");
+  } catch (error) {
+    stopVoiceTracks();
+    state.voiceRecording = false;
+    updateVoiceRecordButton();
+    const denied = error?.name === "NotAllowedError" || error?.name === "SecurityError";
+    setStatus(denied ? "Mic permission denied. Type instead." : `Mic failed: ${error.message}`, "warn");
+  }
+}
+
+function stopVoiceRecording() {
+  if (state.voiceRecorder && state.voiceRecording) {
+    state.voiceRecorder.stop();
+  }
+}
+
+async function transcribeVoiceBlob(blob) {
+  if (!blob?.size) {
+    setStatus("No voice captured. Try once more.", "warn");
+    return;
+  }
+  const form = new FormData();
+  const extension = blob.type.includes("mp4") ? "m4a" : "webm";
+  form.append("file", blob, `voice.${extension}`);
+  setStatus("Transcribing voice...", "muted");
+  const data = await api("/api/voice/transcribe", {
+    method: "POST",
+    headers: headers(false),
+    body: form,
+    retryNetwork: true,
+    retryLabel: "voice transcription",
+  });
+  const text = String(data.text || "").trim();
+  if (!text) {
+    setStatus("I could not catch that. Type it instead.", "warn");
+    return;
+  }
+  const input = $("#messageInput");
+  if (input) {
+    input.value = text;
+    input.style.height = "auto";
+    input.style.height = `${Math.min(input.scrollHeight, 180)}px`;
+  }
+  updateComposerState();
+  if (!state.chatBusy) {
+    if (input) {
+      input.value = "";
+      input.style.height = "auto";
+    }
+    updateComposerState();
+    sendChat(text);
   }
 }
 
@@ -3766,6 +3953,7 @@ async function uploadChatAttachment(note) {
     state.chatHistory[state.chatHistory.length - 1] = { role: "hira", text: visibleReply };
     saveChatHistory();
     setStatus(`${files.length} attachment${files.length === 1 ? "" : "s"} analysed.`, "ok");
+    maybeAutoSpeak(visibleReply);
   } catch (error) {
     const friendly = `I could not analyse the attachment${files.length === 1 ? "" : "s"}: ${error.message}`;
     pending.classList.remove("pending");
@@ -3885,6 +4073,7 @@ async function sendChat(message) {
       : { role: "hira", text: visibleReply };
     saveChatHistory();
     setStatus("H.I.R.A replied.", "ok");
+    maybeAutoSpeak(visibleReply);
   } catch (error) {
     const friendly = "H.I.R.A hit a backend snag. Try again in a moment.";
     pending.classList.remove("pending");
@@ -4050,6 +4239,11 @@ document.querySelectorAll("[data-theme-choice], .theme-btn").forEach((button) =>
     setStatus(`Theme set to ${state.theme}.`, "ok");
   });
 });
+$("#autoSpeakToggle")?.addEventListener("change", (event) => {
+  state.autoSpeak = Boolean(event.currentTarget.checked);
+  localStorage.setItem(AUTO_SPEAK_KEY, state.autoSpeak ? "1" : "0");
+  setStatus(state.autoSpeak ? "Auto-speak replies on." : "Auto-speak replies off.", "ok");
+});
 $("#saveTokenBtn").addEventListener("click", async () => {
   const button = $("#saveTokenBtn");
   const previous = button.textContent;
@@ -4104,6 +4298,21 @@ document.querySelectorAll(".nav-tab").forEach((tab) => {
 });
 
 document.addEventListener("click", (event) => {
+  const speakMessage = event.target.closest("[data-speak-message]");
+  if (speakMessage) {
+    event.preventDefault();
+    event.stopPropagation();
+    playSpeech(speakMessage.dataset.speakText || speakMessage.closest(".message")?.textContent || "", speakMessage);
+    return;
+  }
+  const speakTarget = event.target.closest("[data-speak-target]");
+  if (speakTarget) {
+    event.preventDefault();
+    event.stopPropagation();
+    const target = document.getElementById(speakTarget.dataset.speakTarget || "");
+    playSpeech(target?.textContent || "", speakTarget);
+    return;
+  }
   const taskDone = event.target.closest("[data-task-done-button]");
   if (taskDone) {
     completeTask(taskDone.dataset.taskDoneButton, taskDone);
@@ -4165,6 +4374,14 @@ $("#chatForm").addEventListener("submit", (event) => {
     return;
   }
   sendChat(message);
+});
+
+$("#voiceRecordBtn").addEventListener("click", () => {
+  if (state.voiceRecording) {
+    stopVoiceRecording();
+  } else {
+    startVoiceRecording();
+  }
 });
 
 $("#attachBtn").addEventListener("click", () => {
@@ -4274,6 +4491,7 @@ window.matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", (
 });
 
 $("#tokenInput").value = state.token;
+if ($("#autoSpeakToggle")) $("#autoSpeakToggle").checked = state.autoSpeak;
 localStorage.setItem("hira_client_id", state.clientId);
 applyTheme();
 refreshIcons();
@@ -4285,6 +4503,7 @@ mirrorStoredNotificationsToChat();
 renderNotifications();
 updateNotificationControls();
 updateComposerState();
+updateVoiceRecordButton();
 renderAppVersion();
 setView("home");
 updateLiveClock();
