@@ -3786,8 +3786,9 @@ function updateVoiceRecordButton() {
   button.classList.toggle("is-recording", state.voiceRecording);
   button.title = state.voiceRecording ? "Stop recording" : "Tap to speak";
   button.setAttribute("aria-label", button.title);
-  button.innerHTML = `<span data-lucide="${state.voiceRecording ? "square" : "mic"}" aria-hidden="true"></span>`;
-  refreshIcons(button);
+  button.innerHTML = state.voiceRecording
+    ? `<svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="12" height="12" x="6" y="6" rx="1.5"/></svg>`
+    : `<svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>`;
   updateComposerState();
 }
 
