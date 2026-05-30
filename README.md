@@ -4,6 +4,20 @@ Your AI second brain on Telegram. Calendar-aware, project-tracking, daily briefi
 
 ---
 
+## Open source status
+
+Herwanto OS is public under the MIT license and is intended as a self-hostable
+personal AI assistant stack. Production deployments depend on private
+environment variables and personal data sources; keep secrets, uploaded files,
+private Google links, logs, and exported documents out of git.
+
+- License: [MIT](LICENSE)
+- Contributions: [CONTRIBUTING.md](CONTRIBUTING.md)
+- Security reporting: [SECURITY.md](SECURITY.md)
+- Conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+
+---
+
 ## What it does
 
 | Feature | Command / Trigger |
@@ -124,8 +138,8 @@ Row 1 headers exactly: `project | status | last_update | next_milestone | milest
 
 Add your current projects in rows 2+:
 ```
-Rūḥ | App Store review | 2026-04-26 | Address rejection | 2026-05-01 | Capacitor iOS app
-GamePlan | Active development | 2026-04-26 | Land first school client | 2026-05-15 | Sports CCA websites
+Personal Admin | Active | 2026-04-26 | Review weekly plan | 2026-05-01 | Example project
+Side Project | Active development | 2026-04-26 | Ship first demo | 2026-05-15 | Example product
 ```
 
 **Tab: Config**
@@ -217,7 +231,7 @@ The bot stores your chat ID on first `/start`. This is needed for the scheduled 
 **Add a reminder:**
 ```
 /remind Set Sec 2A test | 2026-05-10 | Teaching
-/remind Submit GamePlan proposal to NBSS | 2026-05-15 | GamePlan
+/remind Submit pilot proposal | 2026-05-15 | Side Project
 /remind Submit CCA attendance report | 2026-05-30 | CCA
 ```
 
@@ -248,7 +262,7 @@ Adding a check-in with the same name updates the existing one, so you can switch
 ```
 /doc Peribahasa Sec 3 Worksheet | 20-minute BM worksheet with instructions, practice items, and answer key
 /slides GamePlan Pitch | 8-slide pitch deck for a Singapore school leader
-/template NBSS BM Worksheet | Title, learning objectives, short practice, answer key, DBP Bahasa Melayu
+/template BM Worksheet | Title, learning objectives, short practice, answer key, DBP Bahasa Melayu
 /templates
 /artifacts
 ```
@@ -529,7 +543,7 @@ For scanned/image-only PDFs, send an OCR/searchable version or the relevant page
 ```
 Draft a BM worksheet on peribahasa for Sec 3
 Here's my React error: [paste code]
-Write a cold email to NBSS admin about GamePlan
+Write a cold email to a school admin about a pilot programme
 What should my next milestone for Rūḥ be?
 ```
 
