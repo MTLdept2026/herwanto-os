@@ -6060,6 +6060,22 @@ html[data-theme="dark"] .connection-card.is-on .connection-switch span {
   min-width: 0;
 }
 
+/* Keep "Clear chat" compact and readable: the mobile .section-head grid
+   would otherwise stretch it full-width, and .ghost-btn drops it to
+   low-contrast text with no horizontal padding over the surface plate. */
+#resetChatBtn {
+  justify-self: end;
+  width: auto;
+  min-height: 34px;
+  padding: 6px 12px;
+  border: 1px solid var(--border-visible);
+  color: var(--text-primary);
+}
+
+#resetChatBtn:hover {
+  color: var(--interactive);
+}
+
 .chat-context {
   max-width: 54ch;
   margin-top: 6px;
