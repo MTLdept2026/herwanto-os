@@ -1706,6 +1706,9 @@ class AgenticOpenAITests(unittest.TestCase):
         digest.assert_called_once()
         add_nudge.assert_called_once()
 
+    def test_delayed_digest_push_ignores_descriptive_notification_complaint(self):
+        self.assertIsNone(bot.parse_delayed_digest_push_request("A news notification at 9 would annoy me"))
+
     def test_delayed_digest_push_exposes_nudge_tool_not_just_news(self):
         tools = bot.pwa_tools_for_message("Digest. Push notifications in 5 mins")
         names = {tool["name"] for tool in tools}
@@ -2192,6 +2195,126 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertIn("Monaco Grand Prix", reply)
         self.assertIn("Fri 5 Jun to Sun 7 Jun 2026", reply)
         self.assertIn("starts in 7 days", reply)
+
+    def test_f1_monaco_opinion_does_not_trigger_calendar_shortcut(self):
+        reply = web_app._pwa_direct_f1_calendar_reply(
+            "Unless mercedes are top 3, not much chance of podium finish. Monaco is notoriously boring these few seasons",
+            [],
+            today=date(2026, 5, 31),
+        )
+
+        self.assertEqual("", reply)
+
+    def test_f1_monaco_opinion_reaches_chat_path_not_calendar_shortcut(self):
+        text = "Unless mercedes are top 3, not much chance of podium finish. Monaco is notoriously boring these few seasons"
+
+        async def fake_stream(*_args, **_kwargs):
+            reply = "Yeah, Monaco has become a quali-first procession. Mercedes need Saturday magic there."
+            yield {"type": "text", "text": reply}
+            yield {"type": "done", "text": reply}
+
+        async def run():
+            response = await web_app._chat_stream_response(text, None, "phone")
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(web_app, "_schedule_background_call"),
+            patch.object(bot, "should_route_quick_pwa_chat", return_value=False),
+            patch.object(bot, "stream_agentic_chat", side_effect=fake_stream) as stream,
+        ):
+            body = asyncio.run(run())
+
+        self.assertIn("quali-first procession", body)
+        self.assertNotIn("next F1 race", body)
+        stream.assert_called_once()
+
+    def test_conversational_topic_mentions_do_not_trigger_direct_shortcuts(self):
+        cases = [
+            "The state of play in Monaco is boring now",
+            "Weather has been unbearable lately",
+            "Prayer has been hard lately",
+            "Friday khutbah was good",
+            "My tasks are killing me but dont open tasks",
+            "I cannot handle my tasks today",
+            "When Mercedes are top 3, Monaco is less boring",
+            "Monaco race weekend is boring",
+        ]
+
+        for text in cases:
+            with self.subTest(text=text):
+                tool = web_app._source_tool_for_message(text)
+                self.assertFalse(web_app._should_direct_source_route(tool, text))
+                self.assertFalse(web_app._pwa_casual_status_prompt(text))
+                self.assertEqual(0, web_app._pwa_direct_agenda_days(text))
+                self.assertEqual(0, web_app._pwa_direct_task_days(text))
+                self.assertEqual("", web_app._pwa_direct_f1_calendar_reply(text, [], today=date(2026, 5, 31)))
+
+    def test_explicit_lookup_intents_still_use_direct_shortcuts(self):
+        source_cases = [
+            ("weather today", "get_nea_weather"),
+            ("prayer times today", "get_muis_prayer_times"),
+            ("khutbah today", "get_muis_friday_khutbah"),
+        ]
+        for text, expected_tool in source_cases:
+            with self.subTest(text=text):
+                tool = web_app._source_tool_for_message(text)
+                self.assertEqual(expected_tool, tool)
+                self.assertTrue(web_app._should_direct_source_route(tool, text))
+
+        self.assertTrue(web_app._pwa_casual_status_prompt("state of play"))
+        self.assertEqual(7, web_app._pwa_direct_task_days("Can you check my tasks"))
+        self.assertIn("Monaco Grand Prix", web_app._pwa_direct_f1_calendar_reply(
+            "When is Monaco GP",
+            [],
+            today=date(2026, 5, 31),
+        ))
+        self.assertIn("Singapore time", web_app._pwa_direct_f1_calendar_reply(
+            "Monaco session timings in SGT",
+            [],
+            today=date(2026, 5, 31),
+        ))
+
+    def test_conversational_topic_mentions_do_not_force_tools(self):
+        cases = [
+            "Supporting Liverpool is character development with better chants.",
+            "The Nothing Phone aesthetic is clean but a bit performative.",
+            "Weather has been unbearable lately",
+            "Prayer has been hard lately",
+            "That briefing was brutal; I need a human read.",
+            "This task is annoying; talk me out of overthinking it.",
+            "Remember when I thought Monaco would be fun? tragic.",
+            "That parent email was oddly aggressive; help me think through the tone.",
+        ]
+
+        for text in cases:
+            with self.subTest(text=text):
+                tools = bot.pwa_tools_for_message(text, recent_context="")
+                self.assertIsNone(bot._forced_tool_for_current_turn([{"role": "user", "content": text}], tools))
+                self.assertFalse(bot.source_discipline_for_text(text)["needs_live_check"])
+
+    def test_explicit_live_and_lookup_mentions_still_force_tools(self):
+        cases = [
+            ("Any Nothing Phone updates?", "get_latest_news"),
+            ("What's Liverpool's latest result and next fixture?", "get_liverpool_brief"),
+            ("What is the latest F1 result?", "get_f1_brief"),
+            ("weather today", "get_nea_weather"),
+            ("What time is Maghrib today?", "get_muis_prayer_times"),
+            ("khutbah today", "get_muis_friday_khutbah"),
+            ("What tasks are due today?", "get_task_brief"),
+        ]
+
+        for text, expected_tool in cases:
+            with self.subTest(text=text):
+                tools = bot.pwa_tools_for_message(text, recent_context="")
+                self.assertEqual(
+                    expected_tool,
+                    bot._forced_tool_for_current_turn([{"role": "user", "content": text}], tools),
+                )
 
     def test_f1_session_followup_resolves_offer_to_singapore_timings(self):
         history = [{
@@ -5445,6 +5568,12 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertIn("No. Maxing every turn", body)
         self.assertIn("mini/nano", body)
 
+    def test_domain_model_language_does_not_trigger_model_config_advice(self):
+        self.assertEqual(
+            "",
+            web_app._pwa_model_config_advice_reply("Should I use this model of discipline with Sec 2 or is it too harsh?"),
+        )
+
     def test_agenda_today_uses_local_agenda_before_model_route(self):
         async def run():
             response = await web_app._chat_stream_response("Ok whats on my agenda today", None, "phone")
@@ -6008,6 +6137,34 @@ class AgenticOpenAITests(unittest.TestCase):
                 self.assertNotIn("get_liverpool_brief", names)
                 self.assertNotIn("get_f1_brief", names)
                 self.assertEqual(web_app._source_tool_for_message(text), "")
+
+    def test_sports_opinion_classified_as_banter_not_update(self):
+        cases = [
+            "Unless mercedes are top 3, not much chance of podium finish. Monaco is notoriously boring these few seasons",
+            "Liverpool have been so inconsistent this season.",
+            "Mercedes need a miracle at Monaco.",
+        ]
+
+        for text in cases:
+            with self.subTest(text=text):
+                frame = bot.conversation_pragmatic_frame(text)
+                plan = bot.conversation_response_plan(text, frame=frame, style_profile={}, relevant_episodes=[], relevant_arcs=[])
+
+                self.assertEqual(frame["speech_act"], "banter", f"Expected banter for: {text!r}")
+                self.assertEqual(frame["response_mode"], "converse")
+                self.assertTrue(frame["should_route_quick"])
+                self.assertEqual(plan["opener"], "light_banter")
+                self.assertEqual(plan["challenge_level"], "playful")
+
+    def test_sports_opinion_does_not_get_live_tools(self):
+        text = "Unless mercedes are top 3, not much chance of podium finish. Monaco is notoriously boring these few seasons"
+
+        discipline = bot.source_discipline_for_text(text)
+        names = {tool["name"] for tool in bot.pwa_tools_for_message(text)}
+
+        self.assertFalse(discipline["needs_live_check"])
+        self.assertNotIn("get_f1_brief", names)
+        self.assertNotIn("get_liverpool_brief", names)
 
     def test_model_policy_ignores_injected_pwa_context_for_triage(self):
         message = (
@@ -6635,6 +6792,29 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertEqual(summary["subject"], "Rhino emergency exercise briefing")
         self.assertEqual(summary["action"], "morning briefing reminder")
         self.assertIn("Latest user correction/clarification", context)
+
+    def test_pwa_working_memory_clears_old_subject_on_standalone_turn(self):
+        history_key = "pwa:test-stale-working-memory"
+        storage_key = web_app._working_memory_storage_key(history_key)
+        web_app._WEB_WORKING_MEMORY[storage_key] = {
+            "current_subject": "F1 standings",
+            "pending_action": "",
+            "competing_subjects": [],
+        }
+
+        memory = web_app._update_working_memory(
+            history_key,
+            [],
+            "This class dashboard still feels messy",
+        )
+
+        self.assertEqual("", memory.get("current_subject", ""))
+        self.assertNotIn("F1 standings", web_app._working_memory_context(memory))
+
+    def test_plain_comments_are_not_contextual_followup_acceptances(self):
+        for text in ("that was boring", "this is annoying", "again, not that"):
+            with self.subTest(text=text):
+                self.assertFalse(bot._is_contextual_followup_reply(text))
 
     def test_pwa_working_memory_clears_stale_pending_action_on_fresh_thread(self):
         history_key = "pwa:test-working-memory-stale"
@@ -8321,6 +8501,44 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertEqual(kwargs["reasoning"]["effort"], "high")
         self.assertEqual(kwargs["text"]["verbosity"], "medium")
 
+    def test_pwa_local_reply_clears_openai_response_state(self):
+        history_key = "pwa:test-local-reply-state"
+        bot._OPENAI_RESPONSE_STATE[history_key] = "resp-old"
+
+        with patch.object(bot, "google_ok", return_value=False):
+            web_app._quick_sse_response("Local answer.", history_key, [{"role": "user", "content": "weather today"}])
+
+        self.assertEqual("", bot._openai_previous_response_id(history_key))
+
+    def test_pwa_empty_history_clears_openai_response_state_before_agentic_stream(self):
+        history_key = "pwa:test-empty-history-state"
+        bot._OPENAI_RESPONSE_STATE[history_key] = "resp-old"
+
+        async def fake_stream(*_args, **kwargs):
+            self.assertEqual(history_key, kwargs.get("openai_state_key"))
+            self.assertEqual("", bot._openai_previous_response_id(history_key))
+            yield {"type": "done", "text": "Fresh path."}
+
+        async def run():
+            response = await web_app._chat_stream_response("Talk to me like normal", None, "test-empty-history-state")
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(web_app, "_update_working_memory", return_value={}),
+            patch.object(web_app, "_schedule_background_call"),
+            patch.object(bot, "should_route_quick_pwa_chat", return_value=False),
+            patch.object(bot, "stream_agentic_chat", side_effect=fake_stream),
+        ):
+            body = asyncio.run(run())
+
+        self.assertIn("Fresh path", body)
+        self.assertEqual("", bot._openai_previous_response_id(history_key))
+
     def test_openai_response_state_uses_redis_when_available(self):
         class FakeRedis:
             def __init__(self):
@@ -8689,6 +8907,14 @@ class AgenticOpenAITests(unittest.TestCase):
         }])
 
         self.assertIsNone(reply)
+
+    def test_domain_model_language_does_not_force_provider_status(self):
+        for text in (
+            "Should I use this model of discipline with Sec 2 or is it too harsh?",
+            "Which model are you using for this classroom discipline example?",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(bot._llm_provider_status_reply([{"role": "user", "content": text}]))
 
     def test_provider_status_ignores_injected_grounding_context(self):
         message = (

@@ -1040,6 +1040,13 @@ def _save_history_best_effort(history_key: str, history: list) -> None:
         bot.logger.warning(f"PWA chat history save failed for {history_key}: {exc}")
 
 
+def _clear_openai_state_for_local_reply(history_key: str) -> None:
+    try:
+        bot.clear_openai_response_state(history_key)
+    except Exception as exc:
+        bot.logger.warning(f"PWA OpenAI state clear failed for {history_key}: {exc}")
+
+
 def _working_memory_storage_key(history_key: str) -> str:
     return f"workmem:{history_key}"
 
@@ -1112,7 +1119,7 @@ def _device_location_context(location: DeviceLocation | None) -> str:
 
 _FOLLOWUP_GROUNDING_RE = re.compile(
     r"\b("
-    r"this|that|these|those|it|its|they|them|there|then|again|earlier|confirm|"
+    r"these|those|it|its|they|them|there|then|again|earlier|confirm|"
     r"that day|the day|for the day|for that day|"
     r"i meant|you meant|not regular|not coursework|"
     r"remind me|reminder|during the morning briefing|morning briefing"
@@ -1371,6 +1378,18 @@ def _pwa_direct_greeting_reply(message: str) -> tuple[str, str]:
     return "I'm here. What's the move?", "greeting"
 
 
+def _pwa_lookup_negated(message: str) -> bool:
+    clean = bot._normalise_short_reply(message)
+    if not clean:
+        return False
+    return bool(re.search(
+        r"\b(?:don'?t|dont|do not|no need to|not asking (?:you )?to|without)\b"
+        r".{0,60}\b(?:open|show|check|pull up|fetch|look up|search|brief|list|review|run|use|read|tell me)\b",
+        clean,
+        re.I,
+    ))
+
+
 def _recent_plain_chat_context(history: list, limit: int = 6) -> str:
     lines: list[str] = []
     for item in history[-limit:]:
@@ -1388,15 +1407,22 @@ def _pwa_direct_f1_calendar_reply(message: str, history: list, today: date | Non
     recent_context = _recent_plain_chat_context(history)
     effective = bot._contextual_followup_effective_text(message, recent_context)
     lower = " ".join(str(effective or "").lower().split())
+    if _pwa_lookup_negated(lower):
+        return ""
     if not re.search(r"\b(?:f1|formula 1|grand prix|monaco)\b", lower):
         return ""
     asks_calendar = bool(re.search(
-        r"\b(?:when|next|coming up|upcoming|calendar|race weekend|grand prix|monaco)\b",
+        r"\b(?:next|coming up|upcoming|coming days|calendar|schedule|dates?|starts?|race time)\b",
         lower,
-    ))
+    ) or re.search(r"\b(?:when|whens|when's)\b.{0,80}\b(?:f1|race|grand prix|gp|qualifying|quali|practice|session|weekend)\b", lower))
     asks_sessions = bool(re.search(
-        r"\b(?:session timings?|sessions?|practice|fp[123]|qualifying|quali|race time|what time|"
-        r"singapore time|sgt|tv|viewing|watch)\b",
+        r"\b(?:session timings?|sessions?|timetable|what time|singapore time|sgt)\b",
+        lower,
+    ) or re.search(
+        r"\b(?:fp[123]|practice|qualifying|quali|sprint|race)\b.{0,80}\b(?:time|timings?|sgt|singapore time|tv|viewing|watch)\b",
+        lower,
+    ) or re.search(
+        r"\b(?:tv|viewing|watch)\b.{0,80}\b(?:time|schedule|timings?|race|qualifying|quali|practice|session|grand prix|f1|monaco)\b",
         lower,
     ))
     if not (asks_calendar or asks_sessions):
@@ -1438,12 +1464,15 @@ def _source_tool_label(tool_name: str) -> str:
 def _source_tool_for_message(message: str) -> str:
     discipline = bot.source_discipline_for_text(message)
     recommended = set(discipline.get("recommended_tools") or [])
+    lowered = " ".join(str(message or "").lower().split())
     if "get_liverpool_brief" in recommended:
         return "get_liverpool_brief"
     if "get_f1_brief" in recommended:
         return "get_f1_brief"
     if "get_nea_weather" in recommended:
         return "get_nea_weather"
+    if "get_muis_friday_khutbah" in recommended and re.search(r"\b(?:khutbah|sermon|jumu'?ah|jumaat)\b", lowered):
+        return "get_muis_friday_khutbah"
     if "get_muis_prayer_times" in recommended:
         return "get_muis_prayer_times"
     if "get_muis_friday_khutbah" in recommended:
@@ -1455,16 +1484,55 @@ def _source_tool_for_message(message: str) -> str:
     return ""
 
 
+def _pwa_weather_lookup_intent(clean: str) -> bool:
+    if _pwa_lookup_negated(clean):
+        return False
+    if clean in {"weather", "forecast", "weather now", "weather today"}:
+        return True
+    return bool(
+        re.search(r"\b(?:weather|forecast|rain|raining|rainy|showers?|temperature|temp|haze|psi|pm2\.5|air quality)\b", clean)
+        and re.search(
+            r"\b(?:what'?s|whats|what is|how'?s|hows|how is|is it|will it|check|show|tell me|current|now|today|"
+            r"tonight|tomorrow|later|forecast|need umbrella|bring umbrella|should i bring|psi|pm2\.5|temperature|temp|haze|air quality)\b",
+            clean,
+        )
+    )
+
+
+def _pwa_prayer_lookup_intent(clean: str) -> bool:
+    if _pwa_lookup_negated(clean):
+        return False
+    return bool(
+        re.search(r"\b(?:prayer|prayers|pray|solat|salah|subuh|fajr|zohor|zuhur|zuhr|dhuhr|asar|asr|maghrib|isyak|isha|muis)\b", clean)
+        and re.search(r"\b(?:time|times|timing|timings|when|what time|today|now|next|show|check|tell me|muis)\b", clean)
+    )
+
+
+def _pwa_khutbah_lookup_intent(clean: str) -> bool:
+    if _pwa_lookup_negated(clean):
+        return False
+    return bool(
+        re.search(r"\b(?:khutbah|sermon|jumu'?ah|jumaat)\b", clean)
+        and re.search(r"\b(?:today|latest|this week|topic|about|summary|show|check|tell me|read|what)\b", clean)
+    )
+
+
 def _should_direct_source_route(tool_name: str, message: str) -> bool:
     clean = " ".join(str(message or "").lower().split())
     if not tool_name:
         return False
-    if tool_name in {"get_nea_weather", "get_muis_prayer_times", "get_muis_friday_khutbah"}:
-        return True
+    if _pwa_lookup_negated(clean):
+        return False
+    if tool_name == "get_nea_weather":
+        return _pwa_weather_lookup_intent(clean)
+    if tool_name == "get_muis_prayer_times":
+        return _pwa_prayer_lookup_intent(clean)
+    if tool_name == "get_muis_friday_khutbah":
+        return _pwa_khutbah_lookup_intent(clean)
     if tool_name == "get_f1_brief":
         return bool(re.search(
             r"\b(?:next|when|coming up|upcoming|standings?|result|score|qualifying|practice|"
-            r"session timings?|race weekend|grand prix|monaco)\b",
+            r"session timings?|race weekend schedule|race weekend timings?|race time|calendar|schedule)\b",
             clean,
         ))
     if tool_name == "get_liverpool_brief":
@@ -1502,7 +1570,12 @@ async def _pwa_direct_source_reply(message: str, history: list) -> tuple[str, st
 
 def _pwa_casual_status_prompt(message: str) -> bool:
     clean = _pwa_clean_addressed_message(message)
-    if re.search(r"\b(?:about|with)\b", clean) and not re.search(r"\b(?:me|my|today|day)\b", clean):
+    if _pwa_lookup_negated(clean):
+        return False
+    if re.search(r"\b(?:about|with|in|on|for|re)\b", clean) and not re.search(
+        r"\b(?:me|my|today|day|agenda|calendar|schedule|tasks?|reminders?|work|school|hira)\b",
+        clean,
+    ):
         return False
     return clean in {
         "brief me",
@@ -1548,7 +1621,13 @@ def _pwa_model_config_advice_reply(message: str) -> str:
     clean = bot._normalise_short_reply(message)
     if not clean:
         return ""
-    mentions_model_stack = bool(re.search(r"\b(?:model|provider|backend|api|gpt|reasoning)\b", clean))
+    mentions_model_stack = bool(
+        re.search(r"\b(?:provider|backend|api|gpt|openai|llm|reasoning|model stack|quick model|deep model|router model)\b", clean)
+        or (
+            re.search(r"\bmodel\b", clean)
+            and re.search(r"\b(?:backend|provider|api|gpt|openai|llm|reasoning|max|mini|nano)\b", clean)
+        )
+    )
     asks_for_judgement = bool(re.search(r"\b(?:good idea|bad idea|should i|worth it|set(?:ting)?|everything|all|max)\b", clean))
     pro_max_everything = bool(
         re.search(r"\b(?:everything|all)\b", clean)
@@ -1567,6 +1646,8 @@ def _pwa_model_config_advice_reply(message: str) -> str:
 def _pwa_direct_agenda_days(message: str) -> int:
     clean = _pwa_clean_addressed_message(message)
     if not clean:
+        return 0
+    if _pwa_lookup_negated(clean):
         return 0
     if re.search(r"\b(?:add|create|book|move|reschedule|delete|remove|cancel)\b", clean):
         return 0
@@ -1604,6 +1685,8 @@ def _pwa_direct_task_days(message: str) -> int:
         return 0
     if bot.is_hira_capability_feedback(clean):
         return 0
+    if _pwa_lookup_negated(clean):
+        return 0
     if re.search(r"\b(?:add|create|remind me|delete|remove|cancel|complete|done|finish|mark)\b", clean):
         return 0
     if clean in {"tasks", "my tasks", "task brief", "todo", "todos", "to do", "to dos"}:
@@ -1617,7 +1700,7 @@ def _pwa_direct_task_days(message: str) -> int:
     if re.search(r"\b(?:priorities|priority list|next actions?|action list|what needs doing)\b", clean):
         return 7
     has_task_word = bool(re.search(r"\b(?:tasks?|todos?|to dos?|reminders?|due|pending|outstanding|priorities)\b", clean))
-    has_read_word = bool(re.search(r"\b(?:check|show|view|list|review|pull up|what'?s|whats|what is|what are|any|due|outstanding|active|open|need|tackle|clear|handle)\b", clean))
+    has_read_word = bool(re.search(r"\b(?:check|show|view|list|review|pull up|what'?s|whats|what is|what are|any|due|outstanding|active|open)\b", clean))
     if not has_task_word or not has_read_word:
         return 0
     if re.search(r"\b(?:today|now)\b", clean):
@@ -1789,17 +1872,23 @@ def _update_working_memory(history_key: str, history: list, message: str) -> dic
     )
     frame = bot.conversation_pragmatic_frame(message, recent_context=recent_context)
     previous_subject = str(memory.get("current_subject", "") or "")
+    contextual_turn = (
+        bot._is_contextual_followup_reply(message)
+        or bot._is_clarification_detail_reply(message)
+        or bool(_FOLLOWUP_GROUNDING_RE.search(message or ""))
+    )
     candidates: list[tuple[str, str, str]] = []
-    for item in history[-8:]:
-        if not isinstance(item, dict) or not isinstance(item.get("content"), str):
-            continue
-        role = "user" if item.get("role") == "user" else "assistant"
-        for subject in _subject_candidates_from_text(item["content"]):
-            candidates.append((role, subject, _clean_turn_text(item["content"])[:220]))
+    if contextual_turn:
+        for item in history[-8:]:
+            if not isinstance(item, dict) or not isinstance(item.get("content"), str):
+                continue
+            role = "user" if item.get("role") == "user" else "assistant"
+            for subject in _subject_candidates_from_text(item["content"]):
+                candidates.append((role, subject, _clean_turn_text(item["content"])[:220]))
     for subject in _subject_candidates_from_text(message):
         candidates.append(("user", subject, _clean_turn_text(message)[:220]))
 
-    current_subject = previous_subject
+    current_subject = previous_subject if contextual_turn else ""
     latest_correction = str(memory.get("latest_correction", "") or "")
     for role, subject, source in candidates:
         if role == "user":
@@ -1817,7 +1906,7 @@ def _update_working_memory(history_key: str, history: list, message: str) -> dic
     current_action = _pending_action_from_text(message)
     if current_action:
         pending_action = current_action
-    elif bot._is_contextual_followup_reply(message) or bot._is_clarification_detail_reply(message) or _FOLLOWUP_GROUNDING_RE.search(message or ""):
+    elif contextual_turn:
         pending_action = str(memory.get("pending_action", "") or "")
         if not pending_action:
             for item in reversed(history[-8:]):
@@ -3877,6 +3966,7 @@ def _finalise_chat_trace(trace: dict, final_mode: str = "answered") -> dict:
 def _quick_sse_response(reply: str, history_key: str, history: list, route_name: str = "quick", tool_name: str = ""):
     history.append({"role": "assistant", "content": reply})
     _save_history_best_effort(history_key, history)
+    _clear_openai_state_for_local_reply(history_key)
     if route_name == "quick" and bot.google_ok():
         user_text = next(
             (
@@ -4825,6 +4915,8 @@ async def chat(
 async def _chat_stream_response(message: str, location: DeviceLocation | None, x_hira_client: str | None):
     history_key = _history_key(x_hira_client)
     history = _get_history_best_effort(history_key)
+    if not history:
+        _clear_openai_state_for_local_reply(history_key)
     retry_target = _retry_target_message(message, history)
     if retry_target:
         message = retry_target
@@ -5083,6 +5175,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
     if quick_checkin_reply:
         history.append({"role": "assistant", "content": quick_checkin_reply})
         _save_history_best_effort(history_key, history)
+        _clear_openai_state_for_local_reply(history_key)
 
         async def quick_checkin_events():
             def sse(payload: dict) -> str:
@@ -5113,6 +5206,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
     if delayed_digest_reply:
         history.append({"role": "assistant", "content": delayed_digest_reply})
         _save_history_best_effort(history_key, history)
+        _clear_openai_state_for_local_reply(history_key)
 
         async def delayed_digest_events():
             def sse(payload: dict) -> str:
@@ -5370,6 +5464,8 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                     yield sse({"type": "done", "text": reply_text})
             history.append({"role": "assistant", "content": reply_text})
             _save_history_best_effort(history_key, history)
+            if route_name == "quick":
+                _clear_openai_state_for_local_reply(history_key)
             _schedule_background_call(
                 "chat learning event",
                 bot.record_chat_learning_event,

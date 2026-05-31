@@ -973,6 +973,79 @@ def _sports_live_lookup_requested(text: str) -> bool:
         clean,
     ))
 
+
+def _lookup_negated_text(text: str) -> bool:
+    clean = " ".join(str(text or "").lower().split())
+    return bool(re.search(
+        r"\b(?:don'?t|dont|do not|no need to|not asking (?:you )?to|without)\b"
+        r".{0,60}\b(?:open|show|check|pull up|fetch|look up|search|brief|list|review|run|use|read|tell me)\b",
+        clean,
+    ))
+
+
+def _weather_lookup_requested(text: str) -> bool:
+    clean = " ".join(str(text or "").lower().split())
+    if _lookup_negated_text(clean):
+        return False
+    if clean in {"weather", "forecast", "weather now", "weather today"}:
+        return True
+    return bool(
+        re.search(r"\b(?:weather|forecast|rain|raining|rainy|showers?|temperature|temp|haze|psi|pm2\.5|air quality|umbrella)\b", clean)
+        and re.search(
+            r"\b(?:what'?s|whats|what is|how'?s|hows|how is|is it|will it|check|show|tell me|current|now|today|"
+            r"tonight|tomorrow|later|forecast|need umbrella|bring umbrella|should i bring|psi|pm2\.5|temperature|temp|haze|air quality)\b",
+            clean,
+        )
+    )
+
+
+def _prayer_times_lookup_requested(text: str) -> bool:
+    clean = " ".join(str(text or "").lower().split())
+    if _lookup_negated_text(clean):
+        return False
+    return bool(
+        re.search(r"\b(?:prayer|prayers|pray|solat|salah|subuh|fajr|zohor|zuhur|zuhr|dhuhr|asar|asr|maghrib|isyak|isha|muis)\b", clean)
+        and re.search(r"\b(?:time|times|timing|timings|when|what time|today|now|next|show|check|tell me|muis)\b", clean)
+    )
+
+
+def _khutbah_lookup_requested(text: str) -> bool:
+    clean = " ".join(str(text or "").lower().split())
+    if _lookup_negated_text(clean):
+        return False
+    return bool(
+        re.search(r"\b(?:khutbah|sermon|jumu'?ah|jumaat)\b", clean)
+        and re.search(r"\b(?:today|latest|this week|topic|about|summary|show|check|tell me|read|what)\b", clean)
+    )
+
+
+def _news_lookup_requested(text: str) -> bool:
+    clean = " ".join(str(text or "").lower().split())
+    if _lookup_negated_text(clean):
+        return False
+    return bool(re.search(
+        r"\b(?:latest|current|news|headlines?|updates?|anything new|digest|shortlist|shortlisted|preferred topics|"
+        r"search|look up|source|sources|web|what happened|what'?s up with|whats up with)\b",
+        clean,
+    ))
+
+
+def _casual_source_topic_comment(text: str) -> bool:
+    clean = " ".join(str(text or "").lower().split())
+    if not clean or _news_lookup_requested(clean):
+        return False
+    source_topic = bool(re.search(
+        r"\b(?:android|pixel|nothing phone|nothing os|nothing products|cmf|carl pei|apple|ios|ai|chatgpt|openai|"
+        r"weather|prayer|khutbah|briefing|monaco|mercedes|liverpool|lfc)\b",
+        clean,
+    ))
+    opinion_or_mood = bool(re.search(
+        r"\b(?:aesthetic|boring|clean|performative|fun|hard|brutal|stressful|unbearable|mood|vibe|feels?|felt|"
+        r"love|hate|annoying|overthinking|character development|steady|human read|killing me)\b",
+        clean,
+    ))
+    return source_topic and opinion_or_mood
+
 DAY_REFERENCE_PATTERN = re.compile(
     r"\b(today|tomorrow|tonight|this\s+week|next\s+week|"
     r"mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rs(?:day)?|r)?|fri(?:day)?|"
@@ -1369,6 +1442,15 @@ def conversation_pragmatic_frame(
         speech_act = "vent"
     elif _obvious_quick_chat(clean) or playful_tone:
         speech_act = "banter"
+    elif (
+        bool(SPORTS_FANDOM_ENTITY_PATTERN.search(clean))
+        and not needs_live_check
+        and not factual_query
+    ):
+        # Sports opinion/take with no live-data request: treat as banter so the
+        # response plan uses "light_banter" instead of "direct_answer", preventing
+        # the LLM from repeating race facts when the user is just sharing a take.
+        speech_act = "banter"
     else:
         speech_act = "update"
 
@@ -1618,8 +1700,13 @@ def source_discipline_for_text(text: str) -> dict:
 
     tools: list[str] = []
     semantic_flags = _semantic_intent_flags(clean)
+    personal_operational_intent = bool(
+        semantic_flags & {"task", "calendar", "reminder", "gmail", "gmail_draft", "followup"}
+        or re.search(r"\b(?:tasks?|reminders?|due|deadline|deadlines|calendar|agenda|schedule|gmail|emails?|follow[- ]?up)\b", lowered)
+    )
     casual_sports_lifestyle = _is_casual_sports_lifestyle_text(clean)
     conversational_self_read = _is_conversational_self_read_text(clean)
+    casual_source_comment = _casual_source_topic_comment(clean)
     sports_entity_mentioned = bool(SPORTS_FANDOM_ENTITY_PATTERN.search(clean))
     sports_live_lookup = _sports_live_lookup_requested(clean)
     if re.search(r"https?://\S+", clean):
@@ -1646,10 +1733,12 @@ def source_discipline_for_text(text: str) -> dict:
         )
     ):
         tools.append("get_f1_brief")
-    if re.search(r"\b(weather|forecast|rain|temperature|haze|psi|pm2\.5)\b", lowered):
+    if _weather_lookup_requested(clean):
         tools.append("get_nea_weather")
-    if re.search(r"\b(prayer|solat|salah|subuh|fajr|zohor|asar|maghrib|isyak|khutbah|sermon)\b", lowered):
-        tools.extend(["get_muis_prayer_times", "get_muis_friday_khutbah"])
+    if _khutbah_lookup_requested(clean):
+        tools.append("get_muis_friday_khutbah")
+    elif _prayer_times_lookup_requested(clean):
+        tools.append("get_muis_prayer_times")
     current_source_sensitive = bool(re.search(
         r"\bcurrent\s+(?:events?|news|headlines?|affairs|standings?|table|score|scores|result|results|"
         r"fixture|fixtures|lineup|line-up|weather|forecast|price|prices|cost|rollout|release|"
@@ -1659,12 +1748,19 @@ def source_discipline_for_text(text: str) -> dict:
     if (
         (
             VOLATILE_FACT_PATTERN.search(clean)
+            and not personal_operational_intent
+            and not casual_source_comment
             and not casual_sports_lifestyle
             and not conversational_self_read
             and (not sports_entity_mentioned or sports_live_lookup)
         )
-        or current_source_sensitive
-        or (not conversational_self_read and re.search(r"\b(ai|apple|android|ios|macos|singapore education|moe)\b", lowered))
+        or (current_source_sensitive and not casual_source_comment)
+        or (
+            not casual_source_comment
+            and not conversational_self_read
+            and _news_lookup_requested(clean)
+            and re.search(r"\b(ai|apple|android|ios|macos|singapore education|moe)\b", lowered)
+        )
         or (not conversational_self_read and favourite_news_topic_queries(clean))
         or "news" in semantic_flags
     ):
@@ -1676,18 +1772,20 @@ def source_discipline_for_text(text: str) -> dict:
         tools.append("web_research")
     if not conversational_self_read and (
         re.search(r"\b(search|web|website|article|page|latest|news|headline|rumou?r|digest|shortlist|shortlisted|preferred topics)\b", lowered)
-        or current_source_sensitive
+        or (current_source_sensitive and not casual_source_comment)
     ):
         tools.append("web_search")
 
     deduped_tools = list(dict.fromkeys(tools))
     volatile_fact = (
         bool(VOLATILE_FACT_PATTERN.search(clean))
+        and not personal_operational_intent
+        and not casual_source_comment
         and not casual_sports_lifestyle
         and not conversational_self_read
         and (not sports_entity_mentioned or sports_live_lookup)
     )
-    needs_live = bool(deduped_tools) or volatile_fact or current_source_sensitive
+    needs_live = bool(deduped_tools) or volatile_fact or (current_source_sensitive and not casual_source_comment)
     confidence = "needs_live_source" if needs_live else "memory_ok"
     reason = (
         "Question appears time-sensitive, source-sensitive, or about a volatile fact."
@@ -10424,6 +10522,8 @@ def parse_delayed_digest_push_request(text: str, now: datetime | None = None) ->
     wants_push = re.search(r"\b(push|notification|notifications|notify|nudge|ping)\b", lower)
     if not (wants_digest and wants_push):
         return None
+    if re.search(r"\b(?:would annoy|would be annoying|annoy me|annoys me|hate)\b", lower):
+        return None
     current = (now or datetime.now(SGT)).astimezone(SGT)
     delay = re.search(r"\bin\s+(\d{1,3})\s*(?:m|min|mins|minute|minutes)\b", lower)
     if delay:
@@ -12549,7 +12649,7 @@ def _latest_blocked_action_from_context(recent_context: str = "") -> dict:
 
 _CLARIFICATION_DETAIL_RE = re.compile(
     r"\b(?:all[-\s]?day|whole\s+day|full\s+day|timed|not\s+all[-\s]?day|"
-    r"today|tomorrow|tonight|next\s+\w+|this\s+\w+|by\s+\w+|on\s+\d{1,2}|"
+    r"today|tomorrow|tonight|next\s+\w+|this\s+(?:morning|afternoon|evening|week|month|term|mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rs(?:day)?|r)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)|by\s+\w+|on\s+\d{1,2}|"
     r"\d{4}-\d{2}-\d{2}|\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|june|jul|july|aug|sep|sept|oct|nov|dec)|"
     r"(?:jan|feb|mar|apr|may|jun|june|jul|july|aug|sep|sept|oct|nov|dec)\s+\d{1,2}|"
     r"\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{1,2}:\d{2}|"
@@ -12616,6 +12716,8 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     mark_reference_action = bool(re.search(r"\bmark\s+(?:it|this|that)\b", clean))
     semantic_flags = _semantic_intent_flags(clean)
     sports_live_lookup = _sports_live_lookup_requested(clean)
+    lookup_negated = _lookup_negated_text(clean)
+    news_lookup = _news_lookup_requested(clean)
 
     def has_any(words):
         return any(word in clean for word in words)
@@ -12698,8 +12800,11 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
         and re.search(r"\b(?:slide|slides|deck|ppt|pptx|powerpoint|presentation)\b", clean)
     ):
         return "create_slide_deck_artifact"
-    direct_lookup_intent = bool(re.search(
+    direct_lookup_intent = bool(not lookup_negated and re.search(
         r"\b(?:read|check|pull up|show|review|scan|list|what'?s on|what is on|what do i have|when)\b",
+        clean,
+    )) or bool(not lookup_negated and re.search(
+        r"\b(?:what|which|any|anything)\b.{0,50}\b(?:tasks?|reminders?|due|deadline|deadlines|priority|priorities)\b",
         clean,
     ))
     if (
@@ -12836,25 +12941,13 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
         if not has_any(["draft", "write", "compose", "reply"]):
             return "get_gmail_brief"
 
-    if "get_nea_weather" in available and has_any([
-        "weather", "forecast", "temperature", " temp", "temp ", "high temp",
-        "low temp", "hot", "cold", "rain", "raining", "rainy", "showers",
-        "thunder", "storm", "umbrella", "haze", "psi", "pm2.5",
-        "air quality", "nea", "mss"
-    ]):
+    if "get_nea_weather" in available and _weather_lookup_requested(clean):
         return "get_nea_weather"
 
-    if "get_muis_friday_khutbah" in available and has_any([
-        "khutbah", "sermon", "friday sermon", "jumuah sermon", "jumu'ah sermon",
-        "jumaah sermon", "jumaat sermon"
-    ]):
+    if "get_muis_friday_khutbah" in available and _khutbah_lookup_requested(clean):
         return "get_muis_friday_khutbah"
 
-    if "get_muis_prayer_times" in available and has_any([
-        "prayer", "prayers", "pray", "solat", "salah", "subuh", "fajr",
-        "syuruk", "zohor", "zuhur", "zuhr", "dhuhr", "asar", "asr",
-        "maghrib", "isyak", "isha", "muis"
-    ]):
+    if "get_muis_prayer_times" in available and _prayer_times_lookup_requested(clean):
         return "get_muis_prayer_times"
 
     if "fetch_url" in available and re.search(r"https?://\S+", text or "", re.I):
@@ -12870,33 +12963,35 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     ]) or "research" in semantic_flags):
         return "web_research"
 
-    if "get_f1_brief" in available and has_any([
-        "f1", "formula 1", "grand prix", "qualifying", "race result",
-        "standings", "driver standings", "constructor standings", "lineup",
-        "line-up", "teams", "drivers", "mercedes", "ferrari", "mclaren",
-        "red bull", "kimi", "antonelli", "russell", "hamilton", "monaco",
-        "practice", "session timing", "session timings", "race weekend"
-    ]):
+    if (
+        "get_f1_brief" in available
+        and (sports_live_lookup or LIVE_SPORTS_FACT_PATTERN.search(clean))
+        and has_any([
+            "f1", "formula 1", "grand prix", "qualifying", "race result",
+            "standings", "driver standings", "constructor standings", "lineup",
+            "line-up", "teams", "drivers", "mercedes", "ferrari", "mclaren",
+            "red bull", "kimi", "antonelli", "russell", "hamilton", "monaco",
+            "practice", "session timing", "session timings", "race weekend"
+        ])
+    ):
         return "get_f1_brief"
 
-    if "get_liverpool_brief" in available and has_any([
-        "liverpool", "lfc", "anfield", "ynwa", "premier league", "epl",
-        "arne slot", "salah", "van dijk", "alisson", "isak", "wirtz",
-        "mac allister", "szoboszlai", "gakpo", "chiesa", "ekitike",
-        "lineup", "line-up", "starting xi", "team news", "injury",
-        "injuries", "standings", "table", "fixtures", "results",
-        "champions league", "fa cup", "carabao", "transfer", "rumour",
-        "rumor", "signing"
-    ]):
+    if (
+        "get_liverpool_brief" in available
+        and (sports_live_lookup or LIVE_SPORTS_FACT_PATTERN.search(clean))
+        and has_any([
+            "liverpool", "lfc", "anfield", "ynwa", "premier league", "epl",
+            "arne slot", "salah", "van dijk", "alisson", "isak", "wirtz",
+            "mac allister", "szoboszlai", "gakpo", "chiesa", "ekitike",
+            "lineup", "line-up", "starting xi", "team news", "injury",
+            "injuries", "standings", "table", "fixtures", "results",
+            "champions league", "fa cup", "carabao", "transfer", "rumour",
+            "rumor", "signing"
+        ])
+    ):
         return "get_liverpool_brief"
 
-    if "get_latest_news" in available and (has_any([
-        "digest", "briefing", "news", "latest", "headlines", "shortlist",
-        "shortlisted", "preferred topics", "android", "android 17",
-        "google i/o", "google io", "gemini", "pixel", "nothing phone",
-        "nothing os", "nothing products", "cmf", "carl pei", "apple",
-        "ios", "ai", "singapore education",
-    ]) or favourite_news_topic_queries(clean) or "news" in semantic_flags):
+    if "get_latest_news" in available and (news_lookup or favourite_news_topic_queries(clean) or "news" in semantic_flags):
         return "get_latest_news"
 
     if (
@@ -12920,13 +13015,14 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
             ])
             or _is_day_planning_query(text)
         )
+        and not has_any(["task", "tasks", "due", "deadline", "deadlines", "priority", "priorities"])
     ):
         return "get_assistant_context"
 
-    if "get_task_brief" in available and has_any([
-        "tasks", "task", "due", "deadline", "deadlines", "prioritise",
-        "prioritize", "what should i do", "focus on"
-    ]):
+    if "get_task_brief" in available and (
+        (direct_lookup_intent and has_any(["tasks", "task", "due", "deadline", "deadlines", "priority", "priorities"]))
+        or has_any(["what should i do", "focus on"])
+    ):
         return "get_task_brief"
 
     return None
@@ -14612,6 +14708,7 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
     combined = f"{context}\n{effective_text}"
     favourite_topic_matches = favourite_news_topic_queries(effective_text, context)
     conversational_self_read = _is_conversational_self_read_text(effective_text)
+    casual_source_comment = _casual_source_topic_comment(effective_text)
     current_source_sensitive = bool(re.search(
         r"\bcurrent\s+(?:events?|news|headlines?|affairs|standings?|table|score|scores|result|results|"
         r"fixture|fixtures|lineup|line-up|weather|forecast|price|prices|cost|rollout|release|"
@@ -14667,6 +14764,10 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         return tools
 
     if conversational_self_read:
+        add(CONTEXT_TOOL, MEMORY_TOOL)
+        return tools
+
+    if casual_source_comment:
         add(CONTEXT_TOOL, MEMORY_TOOL)
         return tools
 
@@ -15066,6 +15167,16 @@ def _llm_provider_status_reply(messages: list[dict]) -> str | None:
     asks_provider = bool(re.search(r"\b(provider|llm|model|engine|backend|api)\b", text))
     asks_openai_stack = bool(re.search(r"\b(openai|gpt)\b", text))
     asks_identity = bool(re.search(r"\b(is|are|what|what'?s|whats|which|who|using|running|powered|backing|underneath|behind|current)\b", text))
+    plain_domain_model = bool(
+        re.search(r"\bmodel\s+of\b", text)
+        or (
+            re.search(r"\bmodel\b", text)
+            and re.search(r"\b(?:classroom|discipline|teaching|lesson|student|sec\s*\d|class)\b", text)
+            and not re.search(r"\b(?:openai|gpt|llm|provider|backend|api|h\.?i\.?r\.?a\.?|hira)\b", text)
+        )
+    )
+    if plain_domain_model:
+        return None
     explicit_status_question = bool(
         re.search(r"\b(?:what|what'?s|whats|which)\s+(?:u|you|ur|your|is|are|current|the|this|h\.?i\.?r\.?a\.?)?\s*(?:current\s+)?(?:provider|llm|model|engine|backend|api)(?:\s*/\s*(?:provider|llm|model|engine|backend|api))?\b", text)
         or re.search(r"\b(?:current|active)\s+(?:provider|llm|model|engine|backend|api)(?:\s*/\s*(?:provider|llm|model|engine|backend|api))?\b", text)
@@ -15436,7 +15547,11 @@ def _is_contextual_followup_reply(text: str) -> bool:
     words = clean.split()
     if len(words) <= 12 and re.match(r"^(?:yes|yep|yeah|sure|ok(?:ay)?|please|pls|go ahead)\b", clean):
         return True
-    return len(words) <= 5 and bool(re.search(r"\b(?:yes|ok(?:ay)?|sure|please|pls|that|this|same|again|proceed|settle|sort|handle|run)\b", clean))
+    if len(words) > 5:
+        return False
+    if clean in {"that", "this", "that one", "this one", "same", "again", "proceed"}:
+        return True
+    return bool(re.fullmatch(r"(?:run|handle|settle|sort|do)\s+(?:it|this|that|same)", clean))
 
 def _latest_contextual_offer(recent_context: str = "") -> str:
     context = str(recent_context or "").lower()
