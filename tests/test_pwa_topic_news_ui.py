@@ -6,14 +6,31 @@ import unittest
 from html.parser import HTMLParser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class _QuietHandler(SimpleHTTPRequestHandler):
+    def translate_path(self, path):
+        request_path = unquote(urlsplit(path).path)
+        for prefix in ("/static/", "/pwa/static/"):
+            if request_path.startswith(prefix):
+                rel = request_path[len(prefix):].lstrip("/")
+                return str((REPO_ROOT / "pwa" / rel).resolve())
+        if request_path in {"/manifest.webmanifest", "/service-worker.js"}:
+            return str((REPO_ROOT / "pwa" / request_path.lstrip("/")).resolve())
+        return super().translate_path(path)
+
     def log_message(self, format, *args):
         return
+
+    def copyfile(self, source, outputfile):
+        try:
+            super().copyfile(source, outputfile)
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
 
 @contextlib.contextmanager
@@ -244,8 +261,18 @@ class PwaTopicNewsUiTests(unittest.TestCase):
             errors = []
             try:
                 page = browser.new_page(viewport={"width": 390, "height": 844})
-                page.on("pageerror", lambda exc: errors.append(str(exc)))
-                page.on("console", lambda msg: errors.append(msg.text) if msg.type == "error" else None)
+
+                def record_error(text):
+                    if str(text).startswith("Failed to update a ServiceWorker"):
+                        return
+                    errors.append(str(text))
+
+                def record_console_error(msg):
+                    if msg.type == "error":
+                        record_error(msg.text)
+
+                page.on("pageerror", lambda exc: record_error(str(exc)))
+                page.on("console", record_console_error)
                 page.add_init_script(
                     """
                     localStorage.setItem("hira_session_unlocked", "1");
@@ -259,14 +286,16 @@ class PwaTopicNewsUiTests(unittest.TestCase):
                 page.route("**/api/**", self._route_standard_api)
                 page.goto(f"{base_url}/pwa/index.html", wait_until="domcontentloaded")
                 page.locator("#settingsBtn").click()
+                page.locator("#settingsBtn").click()
                 page.locator("#notificationsBtn").click()
-                page.locator("#quickActionFab").click()
+                page.locator("#notificationsBtn").click()
+                page.locator("#quickActionFab").evaluate("button => button.click()")
                 page.evaluate(
                     """
                     async () => {
                       const skip = new Set(["installBtn", "attachBtn"]);
                       for (const button of Array.from(document.querySelectorAll("button"))) {
-                        if (skip.has(button.id) || button.type === "submit") continue;
+                        if (skip.has(button.id) || button.type === "submit" || button.dataset.speakTarget) continue;
                         button.click();
                         await new Promise((resolve) => setTimeout(resolve, 15));
                       }

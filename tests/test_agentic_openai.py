@@ -126,6 +126,37 @@ class FakeSheetsService:
 class AgenticOpenAITests(unittest.TestCase):
     def setUp(self):
         bot.gs._invalidate_classlist_cache()
+        bot._invalidate_system_prompt_cache()
+        bot._mem_histories.clear()
+        bot._BREAK_AWARE_SLOT_CACHE.clear()
+        bot._PRAYER_PROMPT_FALLBACK_KEYS.clear()
+        bot._FORGET_CONFIRM_PENDING.clear()
+        bot._OPENAI_RESPONSE_STATE.clear()
+        bot._OPENAI_USAGE_SUMMARY = {"version": 1, "days": {}}
+        bot._OPENAI_USAGE_SUMMARY_LOADED = False
+        bot._OPENAI_USAGE_LAST_PERSISTED_AT = 0.0
+        bot._PENDING_NEWS_DIGEST_ENTRIES = []
+        bot._PENDING_NEWS_DIGEST_BUILT_AT = None
+        web_app._UPLOAD_JOBS.clear()
+        web_app._UPLOAD_REQUESTS.clear()
+        web_app._WEB_WORKING_MEMORY.clear()
+        for limiter in (
+            web_app._CHAT_RATE_LIMITER,
+            web_app._UPLOAD_RATE_LIMITER,
+            web_app._VOICE_RATE_LIMITER,
+            web_app._TTS_RATE_LIMITER,
+            web_app._AUTH_RATE_LIMITER,
+        ):
+            limiter._buckets.clear()
+        for semaphore, value in (
+            (web_app._CHAT_SEMAPHORE, web_app._env_int("HIRA_WEB_CHAT_CONCURRENCY", 2)),
+            (web_app._UPLOAD_SEMAPHORE, web_app._env_int("HIRA_WEB_UPLOAD_CONCURRENCY", 2)),
+            (web_app._HOME_SEMAPHORE, web_app._env_int("HIRA_WEB_HOME_CONCURRENCY", 2)),
+        ):
+            semaphore._value = value
+            waiters = getattr(semaphore, "_waiters", None)
+            if waiters is not None:
+                waiters.clear()
         os.environ.setdefault("HIRA_DIGEST_SOCIAL_SEARCH", "0")
 
     def test_google_ok_accepts_user_oauth_sheets_credentials(self):
@@ -441,6 +472,43 @@ class AgenticOpenAITests(unittest.TestCase):
         )
 
         self.assertEqual(forced, "create_gmail_draft")
+
+    def test_contextual_offer_this_weekend_does_not_backfill_stale_context(self):
+        context = (
+            "Mercedes read:\n\n"
+            "- P1-P3 start -> proper podium chance\n"
+            "- P4-P6 -> need chaos or genius strategy\n\n"
+            "Monaco is a beautiful tax haven disguised as a race track. "
+            "If you want, I can lay out the most realistic Merc podium scenarios for this weekend."
+        )
+
+        offer = bot._latest_contextual_offer(context)
+
+        self.assertIn("i can lay out the most realistic merc podium scenarios for this weekend", offer)
+        self.assertNotIn("p1-p3 start", offer)
+        self.assertNotIn("tax haven", offer)
+
+    def test_contextual_offer_still_backfills_vague_do_that_offer(self):
+        context = (
+            "I can draft a reply to the latest Gmail thread. "
+            "Want me to do that?"
+        )
+
+        offer = bot._latest_contextual_offer(context)
+
+        self.assertIn("i can draft a reply to the latest gmail thread", offer)
+        self.assertIn("want me to do that", offer)
+
+    def test_contextual_offer_does_not_backfill_vague_offer_across_turns(self):
+        context = (
+            "I can run a live pass on Teenage Engineering updates. Want me to do that?\n"
+            "The parent reply needs a softer version. Want me to do that?"
+        )
+
+        offer = bot._latest_contextual_offer(context)
+
+        self.assertEqual("want me to do that?", offer)
+        self.assertTrue(bot._latest_contextual_offer_is_current(context))
 
     def test_contextual_followup_keeps_latest_news_topic(self):
         messages = [
@@ -2333,6 +2401,27 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertIn("Qualifying: Sat 6 Jun 22:00-23:00 SGT", reply)
         self.assertIn("Race: Sun 7 Jun 21:00-23:00 SGT", reply)
 
+    def test_f1_podium_math_followup_does_not_trigger_calendar_shortcut(self):
+        history = [{
+            "role": "assistant",
+            "content": (
+                "Mercedes read:\n\n"
+                "- P1-P3 start -> proper podium chance\n"
+                "- P4-P6 -> need chaos or genius strategy\n"
+                "- P7 and below -> enjoy the scenery, I suppose\n\n"
+                "Monaco is a beautiful tax haven disguised as a race track. "
+                "If you want, I can lay out the most realistic Merc podium scenarios for this weekend."
+            ),
+        }]
+
+        reply = web_app._pwa_direct_f1_calendar_reply(
+            "Yes pls. Give me the math and stats of it",
+            history,
+            today=date(2026, 5, 31),
+        )
+
+        self.assertEqual("", reply)
+
     def test_direct_weather_question_uses_source_tool_without_model(self):
         async def fake_execute_tool(name, inp):
             self.assertEqual(name, "get_nea_weather")
@@ -2348,6 +2437,20 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertEqual(tool, "get_nea_weather")
         self.assertIn("Weather: Yishun", reply)
         self.assertIn("light showers", reply)
+
+    def test_direct_source_does_not_recheck_weather_for_commute_plan_affirmation(self):
+        history = [{
+            "role": "assistant",
+            "content": "Weather today: heavy rain in Yishun. A commute plan would help. Want me to do that?",
+        }]
+
+        async def fail_execute_tool(*_args, **_kwargs):
+            raise AssertionError("direct source should not run")
+
+        with patch.object(bot, "_execute_tool_offloop", side_effect=fail_execute_tool):
+            reply, tool = asyncio.run(web_app._pwa_direct_source_reply("yes pls", history))
+
+        self.assertEqual(("", ""), (reply, tool))
 
     def test_sports_news_sections_surface_google_news_rss_failures(self):
         with patch.object(bot.sports.ss, "_parse_google_news_rss", side_effect=RuntimeError("403 Forbidden")):
@@ -5752,6 +5855,9 @@ class AgenticOpenAITests(unittest.TestCase):
         stream.assert_called_once()
 
     def test_chat_model_failure_returns_conversational_failure_not_backend_snag(self):
+        history_key = "pwa:phone"
+        bot._OPENAI_RESPONSE_STATE[history_key] = "resp-old"
+
         async def broken_stream(*_args, **_kwargs):
             raise RuntimeError("model down")
             yield {"type": "text", "text": ""}
@@ -5779,6 +5885,7 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertIn("chat handoff failed", body)
         self.assertNotIn('"type": "error"', body)
         self.assertNotIn("backend snag", body.lower())
+        self.assertEqual("", bot._openai_previous_response_id(history_key))
 
     def test_pwa_tool_route_keeps_presence_preface_out_of_visible_answer(self):
         async def fake_agentic_stream(*_args, **_kwargs):
@@ -5941,6 +6048,19 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertIsNotNone(reply)
         self.assertIn("Removed 3 tasks", reply[0])
         self.assertEqual([call.args[0] for call in complete.call_args_list], ["47", "47", "48"])
+
+    def test_task_removal_confirmation_requires_latest_offer_for_bare_do_it(self):
+        context = (
+            "I found these stale tasks: `[31]` Old Android query. "
+            "Do you want me to remove that task?\n"
+            "I can rewrite the parent reply now. Want me to do that?"
+        )
+
+        with patch.object(bot, "complete_reminder_by_id") as complete:
+            reply = web_app._pwa_task_removal_confirmation_reply("do it", context)
+
+        self.assertIsNone(reply)
+        complete.assert_not_called()
 
     def test_complete_task_validation_accepts_delete_task_language(self):
         self.assertTrue(
@@ -6450,6 +6570,20 @@ class AgenticOpenAITests(unittest.TestCase):
         )])
         self.assertIn("Teenage Engineering", reply)
         self.assertIn("OP-XY firmware update", reply)
+
+    def test_topic_news_affirmation_uses_latest_offer_not_old_context(self):
+        context = (
+            "I can run a live pass on Teenage Engineering updates. Want me to do that?\n"
+            "The parent reply needs a softer version. Want me to do that?"
+        )
+
+        async def fail_execute_tool(*_args, **_kwargs):
+            raise AssertionError("topic news should not run")
+
+        with patch.object(bot, "_execute_tool_offloop", side_effect=fail_execute_tool):
+            reply = asyncio.run(web_app._pwa_topic_news_reply("Yes pls", context))
+
+        self.assertEqual("", reply)
 
     def test_source_contract_guardrail_blocks_unconfirmed_result(self):
         messages = [{"role": "user", "content": "is that the latest result?"}]
@@ -8510,6 +8644,73 @@ class AgenticOpenAITests(unittest.TestCase):
 
         self.assertEqual("", bot._openai_previous_response_id(history_key))
 
+    def test_unconsumed_chat_response_does_not_take_chat_semaphore_slot(self):
+        async def fake_allowed(_key):
+            return True
+
+        async def run():
+            start_value = web_app._CHAT_SEMAPHORE._value
+            request = web_app.Request({
+                "type": "http",
+                "method": "POST",
+                "path": "/api/chat",
+                "headers": [],
+                "client": ("127.0.0.1", 12345),
+                "server": ("testserver", 80),
+                "scheme": "http",
+            })
+            response = await web_app.chat(
+                request,
+                web_app.ChatRequest(message="hello"),
+                x_hira_token="token",
+                x_hira_client="semaphore-test",
+            )
+            self.assertEqual(start_value, web_app._CHAT_SEMAPHORE._value)
+            return response
+
+        with (
+            patch.object(web_app, "_require_token"),
+            patch.object(web_app._CHAT_RATE_LIMITER, "is_allowed", side_effect=fake_allowed),
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+        ):
+            response = asyncio.run(run())
+
+        self.assertEqual(response.media_type, "text/event-stream")
+
+    def test_direct_source_prefetch_uses_chat_semaphore_slot(self):
+        class FakeSemaphore:
+            def __init__(self, value):
+                self._value = value
+
+            async def acquire(self):
+                self._value -= 1
+
+            def release(self):
+                self._value += 1
+
+        observed_slots = []
+
+        async def fake_direct_source_reply(_message, _history):
+            observed_slots.append(web_app._CHAT_SEMAPHORE._value)
+            return "Weather: Yishun, light showers later.", "get_nea_weather"
+
+        async def run():
+            response = await web_app._chat_stream_response("weather in yishun later", None, "prefetch-slot")
+            self.assertEqual(1, web_app._CHAT_SEMAPHORE._value)
+            return response
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(web_app, "_CHAT_SEMAPHORE", FakeSemaphore(1)),
+            patch.object(web_app, "_pwa_direct_source_reply", side_effect=fake_direct_source_reply),
+        ):
+            response = asyncio.run(run())
+
+        self.assertEqual([0], observed_slots)
+        self.assertEqual(response.media_type, "text/event-stream")
+
     def test_pwa_empty_history_clears_openai_response_state_before_agentic_stream(self):
         history_key = "pwa:test-empty-history-state"
         bot._OPENAI_RESPONSE_STATE[history_key] = "resp-old"
@@ -9704,6 +9905,18 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertEqual([call.args[0] for call in cancel.call_args_list], ["78", "79"])
         self.assertEqual([call.args[0] for call in archive.call_args_list], [["91"], ["92"]])
 
+    def test_nudge_removal_confirmation_requires_latest_offer_for_bare_do_it(self):
+        context = (
+            "I found nudges #78 and #79. Do you want me to cancel those nudges?\n"
+            "Softer parent reply is better. Rewrite it now?"
+        )
+
+        with patch.object(bot.gs, "cancel_nudge") as cancel:
+            reply = web_app._pwa_nudge_removal_confirmation_reply("do it", context)
+
+        self.assertIsNone(reply)
+        cancel.assert_not_called()
+
     def test_pwa_followups_command_lists_open_followups(self):
         followups = [
             {
@@ -9796,6 +10009,15 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertFalse(bot._is_affirmative("Yes pls"))
         self.assertFalse(web_app._should_complete_checkin_from_affirmation("Yes pls", history))
         self.assertFalse(bot.should_complete_checkin_from_affirmation("Yes pls", history[:-1]))
+
+    def test_yes_does_not_complete_checkin_after_create_checkin_offer(self):
+        history = [
+            {"role": "assistant", "content": "I can create a daily check-in for salawat at 22:00. Want me to do that?"},
+            {"role": "user", "content": "yes"},
+        ]
+
+        self.assertFalse(web_app._should_complete_checkin_from_affirmation("yes", history))
+        self.assertFalse(bot.should_complete_checkin_from_affirmation("yes", history[:-1]))
 
     def test_plain_yes_only_completes_checkin_after_checkin_prompt(self):
         history = [

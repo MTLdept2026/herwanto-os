@@ -1412,9 +1412,9 @@ def _pwa_direct_f1_calendar_reply(message: str, history: list, today: date | Non
     if not re.search(r"\b(?:f1|formula 1|grand prix|monaco)\b", lower):
         return ""
     asks_calendar = bool(re.search(
-        r"\b(?:next|coming up|upcoming|coming days|calendar|schedule|dates?|starts?|race time)\b",
+        r"\b(?:next|coming up|upcoming|coming days|calendar|schedule|dates?|race time)\b",
         lower,
-    ) or re.search(r"\b(?:when|whens|when's)\b.{0,80}\b(?:f1|race|grand prix|gp|qualifying|quali|practice|session|weekend)\b", lower))
+    ) or re.search(r"\b(?:when|whens|when's|what date|what time)\b.{0,80}\b(?:starts?|f1|race|grand prix|gp|qualifying|quali|practice|session|weekend)\b", lower))
     asks_sessions = bool(re.search(
         r"\b(?:session timings?|sessions?|timetable|what time|singapore time|sgt)\b",
         lower,
@@ -3963,6 +3963,19 @@ def _finalise_chat_trace(trace: dict, final_mode: str = "answered") -> dict:
     return trace
 
 
+async def _run_with_chat_slot(coro):
+    acquired = False
+    try:
+        await _CHAT_SEMAPHORE.acquire()
+        acquired = True
+        return await coro
+    finally:
+        if acquired:
+            _CHAT_SEMAPHORE.release()
+        elif hasattr(coro, "close"):
+            coro.close()
+
+
 def _quick_sse_response(reply: str, history_key: str, history: list, route_name: str = "quick", tool_name: str = ""):
     history.append({"role": "assistant", "content": reply})
     _save_history_best_effort(history_key, history)
@@ -3993,6 +4006,7 @@ def _quick_sse_response(reply: str, history_key: str, history: list, route_name:
         def sse(payload: dict) -> str:
             return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
+        await _CHAT_SEMAPHORE.acquire()
         try:
             yield sse({"type": "route", "name": route_name})
             yield sse({"type": "trace", "trace": trace})
@@ -4424,6 +4438,10 @@ def _pwa_nudge_removal_confirmation_reply(message: str, recent_context: str = ""
     clean = " ".join(str(message or "").lower().split())
     if not clean:
         return None
+    bare_confirmation = bool(re.fullmatch(
+        r"(?:yes|yep|yeah|sure|ok(?:ay)?|please|pls|go ahead|do it|proceed)",
+        clean,
+    ))
     confirmation = bool(
         re.match(r"^(?:yes|yep|yeah|sure|ok(?:ay)?|please|pls|go ahead|do it|proceed)\b", clean)
         or re.search(r"\b(?:remove|delete|clear|dismiss|cancel|stop)\s+(?:those|them|these|the\s+nudges?)\b", clean)
@@ -4433,7 +4451,8 @@ def _pwa_nudge_removal_confirmation_reply(message: str, recent_context: str = ""
     context = str(recent_context or "")
     context_lower = context.lower()
     latest_offer = bot._latest_contextual_offer(context)
-    offer_text = latest_offer or context_lower
+    latest_offer_current = bool(latest_offer and bot._latest_contextual_offer_is_current(context))
+    offer_text = latest_offer if latest_offer_current else ("" if bare_confirmation else context_lower)
     nudge_removal_offer = bool(
         re.search(r"\b(?:cancel|clear|delete|remove|dismiss|stop)\b", offer_text)
         and re.search(r"\bnudges?\b", offer_text)
@@ -4567,6 +4586,10 @@ def _pwa_task_removal_confirmation_reply(message: str, recent_context: str = "")
         return None
     direct_task_ids = _pwa_task_ids_from_direct_request(message)
     id_list_task_ids = _pwa_task_ids_from_id_list_reply(message)
+    bare_confirmation = bool(re.fullmatch(
+        r"(?:yes|yep|yeah|sure|ok(?:ay)?|please|pls|go ahead|do it|proceed)",
+        clean,
+    ))
     confirmation = bool(
         re.match(r"^(?:yes|yep|yeah|sure|ok(?:ay)?|please|pls|go ahead|do it|proceed)\b", clean)
         or re.search(r"\b(?:remove|delete|clear|dismiss|archive)\s+(?:those|them|these|the\s+tasks?)\b", clean)
@@ -4582,9 +4605,11 @@ def _pwa_task_removal_confirmation_reply(message: str, recent_context: str = "")
     latest_offer = bot._latest_contextual_offer(context)
     action_pattern = r"\b(?:remove|delete|clear|dismiss|archive|complete|mark(?:\s+as)?\s+done)\b"
     task_pattern = r"\b(?:tasks?|reminders?|items?)\b"
+    latest_offer_current = bool(latest_offer and bot._latest_contextual_offer_is_current(context))
+    fallback_context = "" if bare_confirmation else context_lower
     task_removal_offer = any(
         source and re.search(action_pattern, source) and re.search(task_pattern, source)
-        for source in (latest_offer, context_lower)
+        for source in ((latest_offer if latest_offer_current else ""), fallback_context)
     )
     if not task_removal_offer and not direct_task_ids:
         return None
@@ -4904,12 +4929,7 @@ async def chat(
     if len(message) > 12_000:
         raise HTTPException(status_code=413, detail="Message is too long. Keep it under 12,000 characters.")
 
-    await _CHAT_SEMAPHORE.acquire()
-    try:
-        return await _chat_stream_response(message, req.location, x_hira_client)
-    except Exception:
-        _CHAT_SEMAPHORE.release()
-        raise
+    return await _chat_stream_response(message, req.location, x_hira_client)
 
 
 async def _chat_stream_response(message: str, location: DeviceLocation | None, x_hira_client: str | None):
@@ -4923,7 +4943,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
 
     live_briefing_slot = _live_briefing_slot(message)
     if live_briefing_slot:
-        reply = await asyncio.to_thread(_live_briefing_text, live_briefing_slot)
+        reply = await _run_with_chat_slot(asyncio.to_thread(_live_briefing_text, live_briefing_slot))
         quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
         return _quick_sse_response(
             reply,
@@ -4935,7 +4955,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
 
     briefing_slot = _briefing_replay_slot(message)
     if briefing_slot:
-        reply = await asyncio.to_thread(_briefing_replay_text, briefing_slot)
+        reply = await _run_with_chat_slot(asyncio.to_thread(_briefing_replay_text, briefing_slot))
         quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
         return _quick_sse_response(
             reply,
@@ -4945,7 +4965,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             tool_name=f"{briefing_slot}_briefing",
         )
 
-    triage_reply = await _pwa_triage_reply(message)
+    triage_reply = await _run_with_chat_slot(_pwa_triage_reply(message))
     if triage_reply:
         quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
         return _quick_sse_response(
@@ -4997,7 +5017,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             tool_name="get_f1_brief",
         )
 
-    direct_source_reply, direct_source_tool = await _pwa_direct_source_reply(message, history)
+    direct_source_reply, direct_source_tool = await _run_with_chat_slot(_pwa_direct_source_reply(message, history))
     if direct_source_reply:
         quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
         return _quick_sse_response(
@@ -5010,14 +5030,14 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
 
     if _pwa_casual_status_prompt(message):
         try:
-            status_reply = await bot._execute_tool_offloop("get_assistant_context", {"days": 3})
+            status_reply = await _run_with_chat_slot(bot._execute_tool_offloop("get_assistant_context", {"days": 3}))
         except Exception as exc:
             bot.logger.warning(f"PWA casual status brief failed: {exc}")
-            status_reply = await asyncio.to_thread(
+            status_reply = await _run_with_chat_slot(asyncio.to_thread(
                 _safe_text,
                 lambda: bot.build_agenda(1),
                 "I could not pull the full status brief right now, but I am still here.",
-            )
+            ))
         if not status_reply:
             status_reply = "I could not pull the current status brief right now, but I am still here."
         quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
@@ -5031,11 +5051,11 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
 
     agenda_days = _pwa_direct_agenda_days(message)
     if agenda_days:
-        agenda_reply = await asyncio.to_thread(
+        agenda_reply = await _run_with_chat_slot(asyncio.to_thread(
             _safe_text,
             lambda: bot.build_agenda(agenda_days),
             "Agenda unavailable right now.",
-        )
+        ))
         quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
         return _quick_sse_response(
             agenda_reply,
@@ -5047,11 +5067,11 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
 
     task_days = _pwa_direct_task_days(message)
     if task_days:
-        task_reply = await asyncio.to_thread(
+        task_reply = await _run_with_chat_slot(asyncio.to_thread(
             _safe_text,
             lambda: bot.build_task_brief(task_days),
             "Task brief unavailable right now.",
-        )
+        ))
         quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
         return _quick_sse_response(
             task_reply,
@@ -5157,7 +5177,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
         reply, tool_name = task_removal_confirmation
         return _quick_sse_response(reply, history_key, history, route_name="task_admin", tool_name=tool_name)
 
-    topic_news_reply = await _pwa_topic_news_reply(message, recent_context_for_followup)
+    topic_news_reply = await _run_with_chat_slot(_pwa_topic_news_reply(message, recent_context_for_followup))
     if topic_news_reply:
         return _quick_sse_response(
             topic_news_reply,
@@ -5181,6 +5201,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             def sse(payload: dict) -> str:
                 return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
+            await _CHAT_SEMAPHORE.acquire()
             try:
                 yield sse({"type": "route", "name": "quick"})
                 if archived_checkin_notification_ids:
@@ -5212,6 +5233,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             def sse(payload: dict) -> str:
                 return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
+            await _CHAT_SEMAPHORE.acquire()
             try:
                 yield sse({"type": "route", "name": "quick"})
                 yield sse({"type": "tool", "name": "create_proactive_nudge"})
@@ -5261,6 +5283,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             }}})
             return payload
 
+        await _CHAT_SEMAPHORE.acquire()
         try:
             if working_summary:
                 yield sse({"type": "understood", **working_summary})
@@ -5376,6 +5399,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                     "final_mode": "leaked_action_recovered",
                     "response_contract": {"status": "recovered_leaked_action_payload"},
                 })
+                _clear_openai_state_for_local_reply(history_key)
                 yield sse({"type": "replace", "text": reply_text})
                 yield sse({"type": "done", "text": reply_text})
             repaired_reply_text, repair_meta = await bot.maybe_self_repair_reply(
@@ -5395,6 +5419,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                     "reply_repair": repair_meta,
                     "final_mode": "self_repaired",
                 })
+                _clear_openai_state_for_local_reply(history_key)
                 yield sse({"type": "trace", "trace": trace})
                 yield sse({"type": "replace", "text": reply_text})
                 yield sse({"type": "done", "text": reply_text})
@@ -5428,6 +5453,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                         "I lost the actual answer before it reached the chat, so I’m not going to pretend that was done. "
                         "Try again in a moment."
                     )
+                _clear_openai_state_for_local_reply(history_key)
                 yield sse({"type": "replace", "text": reply_text})
                 yield sse({"type": "done", "text": reply_text})
             elif (
@@ -5452,6 +5478,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                         "response_contract": {"status": "fallback_replaced_no_access_claim"},
                     })
                     reply_text = fallback_text
+                    _clear_openai_state_for_local_reply(history_key)
                     yield sse({"type": "replace", "text": reply_text})
                     yield sse({"type": "done", "text": reply_text})
                 elif response_contract.get("weak_answer"):
@@ -5460,6 +5487,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                         "final_mode": "weak_answer_blocked",
                     })
                     reply_text = "That was too thin for what you asked. I’m treating it as a failed pass, not a real answer."
+                    _clear_openai_state_for_local_reply(history_key)
                     yield sse({"type": "replace", "text": reply_text})
                     yield sse({"type": "done", "text": reply_text})
             history.append({"role": "assistant", "content": reply_text})
@@ -5502,6 +5530,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                 })
                 history.append({"role": "assistant", "content": fallback_text})
                 _save_history_best_effort(history_key, history)
+                _clear_openai_state_for_local_reply(history_key)
                 yield sse({"type": "text", "text": fallback_text})
                 yield sse({"type": "done", "text": fallback_text})
                 yield sse({"type": "trace", "trace": trace})
@@ -5510,6 +5539,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                 reply_text = _pwa_model_failure_reply(message, error_detail)
                 history.append({"role": "assistant", "content": reply_text})
                 _save_history_best_effort(history_key, history)
+                _clear_openai_state_for_local_reply(history_key)
                 _merge_chat_trace(trace, {"confidence_gate": "failed", "final_mode": "model_failure"})
                 yield sse({"type": "trace", "trace": trace})
                 yield sse({"type": "replace", "text": reply_text})

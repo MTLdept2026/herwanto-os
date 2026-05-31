@@ -8948,7 +8948,10 @@ def favourite_news_topic_queries(text: str = "", recent_context: str = "") -> li
     ):
         return []
     prompt_cue = bool(FAVOURITE_NEWS_PROMPT_CUE_RE.search(clean))
-    inherited_news_context = bool(FAVOURITE_NEWS_CONTEXT_RE.search(context))
+    context_for_inheritance = context
+    if _is_contextual_followup_reply(clean):
+        context_for_inheritance = _latest_contextual_offer(context) if _latest_contextual_offer_is_current(context) else ""
+    inherited_news_context = bool(FAVOURITE_NEWS_CONTEXT_RE.search(context_for_inheritance))
     asks_all_topics = bool(FAVOURITE_NEWS_ALL_TOPICS_RE.search(clean)) and bool(
         re.search(r"\b(?:any|anything|recent|latest|updates?|news|brief|digest|radar|covered|coverage|missing|other)\b", clean, re.I)
     )
@@ -8962,7 +8965,7 @@ def favourite_news_topic_queries(text: str = "", recent_context: str = "") -> li
     for rule in FAVOURITE_NEWS_TOPIC_RULES:
         explicit = any(re.search(pattern, clean, re.I) for pattern in rule.get("patterns", ()))
         inherited_explicit = contextual_affirmation and any(
-            re.search(pattern, context, re.I) for pattern in rule.get("patterns", ())
+            re.search(pattern, context_for_inheritance, re.I) for pattern in rule.get("patterns", ())
         )
         if inherited_explicit:
             add(str(rule["label"]), str(rule["query"]))
@@ -8989,8 +8992,8 @@ def favourite_news_topic_queries(text: str = "", recent_context: str = "") -> li
         elif (
             bare_pattern
             and contextual_affirmation
-            and re.search(bare_pattern, context, re.I)
-            and NOTHING_TOPIC_CUE_RE.search(context)
+            and re.search(bare_pattern, context_for_inheritance, re.I)
+            and NOTHING_TOPIC_CUE_RE.search(context_for_inheritance)
         ):
             add(str(rule["label"]), str(rule["query"]))
     if not matches and asks_all_topics:
@@ -10809,6 +10812,11 @@ def _recent_assistant_checkin_prompt(history: list[dict]) -> bool:
         content = str(item.get("content", "") or "").lower()
         if not content.strip():
             continue
+        if (
+            re.search(r"\b(?:create|add|set up|schedule|start)\b.{0,90}\bcheck-?in\b", content)
+            and re.search(r"\b(?:want me|should i|shall i|do you want me)\b", content)
+        ):
+            return False
         if re.search(r"\b(check-?in|istigh?far|salawat|selawat|dah baca|done for today)\b", content):
             return True
         return False
@@ -15553,6 +15561,30 @@ def _is_contextual_followup_reply(text: str) -> bool:
         return True
     return bool(re.fullmatch(r"(?:run|handle|settle|sort|do)\s+(?:it|this|that|same)", clean))
 
+def _contextual_offer_needs_backfill(offer: str = "") -> bool:
+    clean = " ".join(str(offer or "").lower().split())
+    if not clean:
+        return False
+    return bool(re.search(
+        r"^(?:assistant:\s*)?(?:(?:do you )?want me to|want me to|should i|shall i|"
+        r"need me to|let me|we can|i can|i(?:'|’)ll|i will|i should|i need to)\s+"
+        r"(?:do|run|handle|settle|sort|add|schedule|save|send|delete|remove|"
+        r"cancel|build|make|create|draft|write|check|"
+        r"pull up|look up|search|confirm|review|continue|finish|calculate|"
+        r"estimate|compare|summari[sz]e|explain|lay out)\s+(?:it|that|this)\b"
+        r"(?:\s+(?:now|properly|for you|please|pls))*\s*[?.!]?$",
+        clean,
+    ))
+
+def _latest_contextual_offer_is_current(recent_context: str = "") -> bool:
+    context = str(recent_context or "").lower()
+    matches = list(_CONTEXTUAL_OFFER_RE.finditer(context))
+    if not matches:
+        return False
+    trailing = context[matches[-1].end():].strip()
+    trailing = re.sub(r"^(?:assistant|hira|h|user|herwanto)\s*:\s*", "", trailing).strip()
+    return not trailing
+
 def _latest_contextual_offer(recent_context: str = "") -> str:
     context = str(recent_context or "").lower()
     if not context:
@@ -15562,11 +15594,16 @@ def _latest_contextual_offer(recent_context: str = "") -> str:
         return ""
     latest_match = matches[-1]
     latest = latest_match.group(0)
-    if re.search(r"\b(?:it|that|this)\b", latest):
+    if _contextual_offer_needs_backfill(latest):
         if len(matches) > 1:
+            gap = context[matches[-2].end():latest_match.start()]
+            if "\n" in gap:
+                return latest
             return f"{matches[-2].group(0)} {latest}"
-        start = max(0, latest_match.start() - 420)
-        return context[start:latest_match.end()]
+        if re.match(r"^(?:assistant:\s*)?i(?:(?:'|’)ll|\s+(?:can|will|should|need to))\s+do\s+(?:it|that|this)\b", latest):
+            start = context.rfind("\n", 0, latest_match.start()) + 1
+            return context[start:latest_match.end()]
+        return latest
     return latest
 
 def _contextual_followup_effective_text(text: str, recent_context: str = "") -> str:
