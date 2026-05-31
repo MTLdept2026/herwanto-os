@@ -47,6 +47,7 @@ CRITICAL_UNIT_TESTS = [
     "tests.test_voice_tier_a",
     "tests.test_anticipation_catalog",
     "tests.test_self_audit",
+    "tests.test_stage8_phase0",
 ]
 
 
