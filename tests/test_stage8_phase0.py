@@ -20,7 +20,6 @@ class _FrozenDateTime(datetime):
 
 
 class Stage8Phase0TargetTests(unittest.TestCase):
-    @unittest.expectedFailure
     def test_prompt_static_prefix_precedes_fresh_dynamic_tail(self):
         first_now = bot.SGT.localize(datetime(2026, 7, 10, 10, 5))
         second_now = bot.SGT.localize(datetime(2026, 7, 10, 10, 6))

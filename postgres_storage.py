@@ -218,6 +218,22 @@ def ensure_schema() -> None:
                     )
                     """
                 )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS quality_signals (
+                        id BIGSERIAL PRIMARY KEY,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        kind TEXT NOT NULL DEFAULT '',
+                        surface TEXT NOT NULL DEFAULT '',
+                        route TEXT NOT NULL DEFAULT '',
+                        signal JSONB NOT NULL DEFAULT '{}'::jsonb
+                    )
+                    """
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS quality_signals_created_idx "
+                    "ON quality_signals (created_at DESC, id DESC)"
+                )
                 cur.execute("CREATE SEQUENCE IF NOT EXISTS notification_state_id_seq")
                 _sync_notification_sequence(cur)
             conn.commit()
@@ -247,6 +263,76 @@ def set_config(key: str, value: str) -> None:
                 (key, value),
             )
         conn.commit()
+
+
+def _quality_signal_payload(item: dict) -> dict:
+    if not isinstance(item, dict):
+        return {}
+    return dict(item)
+
+
+def _quality_signal_row(row) -> dict:
+    signal = row[5] if isinstance(row[5], dict) else {}
+    item = dict(signal)
+    created_at = row[1]
+    item["id"] = str(row[0])
+    item.setdefault("created", created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at or ""))
+    item["kind"] = str(row[2] or item.get("kind", "") or "")
+    item["surface"] = str(row[3] or item.get("surface", "") or "")
+    item["route"] = str(row[4] or item.get("route", "") or "")
+    return item
+
+
+def get_quality_signals(limit: int = 200) -> list[dict]:
+    ensure_schema()
+    clean_limit = max(1, min(500, int(limit or 200)))
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, created_at, kind, surface, route, signal
+                FROM quality_signals
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """,
+                (clean_limit,),
+            )
+            rows = cur.fetchall()
+    return [_quality_signal_row(row) for row in reversed(rows)]
+
+
+def add_quality_signal(item: dict, limit: int = 200) -> list[dict]:
+    ensure_schema()
+    clean_limit = max(1, min(500, int(limit or 200)))
+    payload = _quality_signal_payload(item)
+    if not payload:
+        return get_quality_signals(clean_limit)
+    kind = str(payload.get("kind", "") or "")[:80]
+    surface = str(payload.get("surface", "") or "")[:80]
+    route = str(payload.get("route", "") or "")[:80]
+    with connect() as conn:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO quality_signals (created_at, kind, surface, route, signal)
+                    VALUES (now(), %s, %s, %s, %s)
+                    """,
+                    (kind, surface, route, _jsonb(payload)),
+                )
+                cur.execute(
+                    """
+                    DELETE FROM quality_signals
+                    WHERE id NOT IN (
+                        SELECT id
+                        FROM quality_signals
+                        ORDER BY created_at DESC, id DESC
+                        LIMIT %s
+                    )
+                    """,
+                    (clean_limit,),
+                )
+    return get_quality_signals(clean_limit)
 
 
 def _coerce_items(value) -> list[str]:

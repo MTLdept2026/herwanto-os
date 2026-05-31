@@ -3859,6 +3859,76 @@ def add_notification_outcome(
     return entries
 
 
+def _quality_signal_item(item: dict) -> dict:
+    if not isinstance(item, dict):
+        return {}
+    clean = dict(item)
+    clean["created"] = str(clean.get("created") or datetime.now(SGT).isoformat())
+    clean["kind"] = str(clean.get("kind", "") or "").strip()[:80]
+    clean["surface"] = str(clean.get("surface", "") or "").strip()[:80]
+    clean["route"] = str(clean.get("route", "") or "").strip()[:80]
+    return clean if clean["kind"] else {}
+
+
+def _get_quality_signals_config(limit: int = 200) -> list:
+    raw = get_config("quality_signals")
+    if not raw:
+        return []
+    try:
+        entries = json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(entries, list):
+        return []
+    clean_limit = max(1, min(500, int(limit or 200)))
+    clean = []
+    for item in entries[-clean_limit:]:
+        signal = _quality_signal_item(item)
+        if signal:
+            clean.append(signal)
+    return clean
+
+
+def get_quality_signals(limit: int = 200) -> list:
+    clean_limit = max(1, min(500, int(limit or 200)))
+    if _postgres_available():
+        try:
+            return pg_storage.get_quality_signals(clean_limit)
+        except Exception as exc:
+            logger.warning(f"Postgres quality signal read failed; using config fallback: {exc}")
+    return _get_quality_signals_config(clean_limit)
+
+
+def set_quality_signals(entries: list, limit: int = 200) -> list:
+    clean_limit = max(1, min(500, int(limit or 200)))
+    kept = []
+    for item in list(entries or [])[-clean_limit:]:
+        signal = _quality_signal_item(item)
+        if signal:
+            kept.append(signal)
+    payload = json.dumps(kept, ensure_ascii=False)
+    while kept and len(payload) > 45000:
+        kept = kept[20:]
+        payload = json.dumps(kept, ensure_ascii=False)
+    set_config("quality_signals", payload)
+    return kept
+
+
+def add_quality_signal(item: dict, limit: int = 200) -> list:
+    clean_limit = max(1, min(500, int(limit or 200)))
+    signal = _quality_signal_item(item)
+    if not signal:
+        return get_quality_signals(clean_limit)
+    if _postgres_available():
+        try:
+            return pg_storage.add_quality_signal(signal, clean_limit)
+        except Exception as exc:
+            logger.warning(f"Postgres quality signal write failed; using config fallback: {exc}")
+    entries = _get_quality_signals_config(clean_limit)
+    entries.append(signal)
+    return set_quality_signals(entries, clean_limit)
+
+
 def get_notification_outcome_summary(days: int = 14) -> dict:
     current = datetime.now(SGT)
     threshold = current - timedelta(days=max(1, int(days or 14)))

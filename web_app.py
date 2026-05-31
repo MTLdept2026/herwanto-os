@@ -5294,6 +5294,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                 relevant_arcs=operator_state.get("relevant_arcs", []),
                 trace=trace,
             )
+            bot.record_self_repair_quality_signal(message, repair_meta, surface="pwa", route="chat")
             if repair_meta.get("repaired") and repaired_reply_text != reply_text:
                 reply_text = repaired_reply_text
                 _merge_chat_trace(trace, {

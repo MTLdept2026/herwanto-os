@@ -190,6 +190,10 @@ def _env_int_setting(name: str, default: int, minimum: int = 1, maximum: int | N
     return min(value, maximum) if maximum is not None else value
 
 
+QUALITY_GUARDRAIL_COUNTERS_KEY = "quality_guardrail_counters"
+QUALITY_SIGNAL_LIMIT = 200
+QUALITY_COUNTER_WEEK_LIMIT = 8
+
 _DEFAULT_AGENTIC_MODEL = "gpt-5.4"
 _DEFAULT_DEEP_MODEL = "gpt-5.5"
 _DEFAULT_QUICK_MODEL = "gpt-5.4-mini"
@@ -543,6 +547,173 @@ def save_history(user_id, history):
             _mem_histories.popitem(last=False)
 
 
+def _quality_signals_enabled() -> bool:
+    return _env_flag("HIRA_QUALITY_SIGNALS", False)
+
+
+def _quality_week_key(current: datetime | None = None) -> str:
+    current = current or datetime.now(SGT)
+    if getattr(current, "tzinfo", None):
+        current = current.astimezone(SGT)
+    iso_year, iso_week, _ = current.isocalendar()
+    return f"{iso_year}-W{iso_week:02d}"
+
+
+def _quality_safe_value(value, depth: int = 0):
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return value[:240]
+    if depth >= 3:
+        return str(value)[:240]
+    if isinstance(value, list):
+        return [_quality_safe_value(item, depth + 1) for item in value[:8]]
+    if isinstance(value, dict):
+        clean = {}
+        for key, item in list(value.items())[:12]:
+            clean[str(key)[:60]] = _quality_safe_value(item, depth + 1)
+        return clean
+    return str(value)[:240]
+
+
+def _record_quality_signal(kind: str, surface: str = "", route: str = "", **fields) -> None:
+    if not _quality_signals_enabled():
+        return
+    payload = {
+        "created": datetime.now(SGT).isoformat(),
+        "kind": str(kind or "").strip()[:80],
+        "surface": str(surface or "").strip()[:80],
+        "route": str(route or "").strip()[:80],
+    }
+    if not payload["kind"]:
+        return
+    payload.update({key: _quality_safe_value(value) for key, value in fields.items()})
+    try:
+        gs.add_quality_signal(payload, limit=QUALITY_SIGNAL_LIMIT)
+    except Exception as exc:
+        logger.debug(f"Quality signal write skipped: {exc}")
+
+
+def record_self_repair_quality_signal(user_text: str, repair_meta: dict, surface: str = "", route: str = "") -> None:
+    if not isinstance(repair_meta, dict):
+        return
+    verdict = repair_meta.get("verdict", {}) if isinstance(repair_meta.get("verdict", {}), dict) else {}
+    flags = verdict.get("flags", []) if isinstance(verdict.get("flags", []), list) else []
+    repaired = bool(repair_meta.get("repaired"))
+    if not repaired and not flags:
+        return
+    _record_quality_signal(
+        "self_repair",
+        surface=surface,
+        route=route,
+        repaired=repaired,
+        flags=[str(item)[:80] for item in flags[:6]],
+        reason=str(verdict.get("reason", "") or repair_meta.get("reason", "") or "")[:160],
+        error=str(repair_meta.get("error", "") or "")[:160],
+        user_chars=len(str(user_text or "")),
+    )
+
+
+def _increment_quality_guardrail_counter(name: str, surface: str = "", route: str = "") -> None:
+    if not _quality_signals_enabled():
+        return
+    clean_name = str(name or "").strip()[:80]
+    if not clean_name:
+        return
+    try:
+        raw = gs.get_config(QUALITY_GUARDRAIL_COUNTERS_KEY) or ""
+        counters = json.loads(raw) if raw else {}
+        if not isinstance(counters, dict):
+            counters = {}
+        week = _quality_week_key()
+        bucket = counters.get(week)
+        if not isinstance(bucket, dict):
+            bucket = {}
+        guardrails = bucket.get("guardrails") if isinstance(bucket.get("guardrails"), dict) else {}
+        guardrails[clean_name] = int(guardrails.get(clean_name, 0) or 0) + 1
+        bucket["guardrails"] = guardrails
+        bucket["total"] = sum(int(value or 0) for value in guardrails.values())
+        if surface:
+            surfaces = bucket.get("surfaces") if isinstance(bucket.get("surfaces"), dict) else {}
+            clean_surface = str(surface or "").strip()[:80]
+            surfaces[clean_surface] = int(surfaces.get(clean_surface, 0) or 0) + 1
+            bucket["surfaces"] = surfaces
+        if route:
+            routes = bucket.get("routes") if isinstance(bucket.get("routes"), dict) else {}
+            clean_route = str(route or "").strip()[:80]
+            routes[clean_route] = int(routes.get(clean_route, 0) or 0) + 1
+            bucket["routes"] = routes
+        counters[week] = bucket
+        kept = {key: counters[key] for key in sorted(counters)[-QUALITY_COUNTER_WEEK_LIMIT:]}
+        gs.set_config(QUALITY_GUARDRAIL_COUNTERS_KEY, json.dumps(kept, ensure_ascii=False))
+    except Exception as exc:
+        logger.debug(f"Quality guardrail counter skipped: {exc}")
+
+
+def _record_guardrail_if_changed(name: str, before: str, after: str, surface: str = "", route: str = "") -> str:
+    if str(after or "") != str(before or ""):
+        _increment_quality_guardrail_counter(name, surface=surface, route=route)
+    return after
+
+
+def _quality_signal_is_recent(item: dict, current: datetime) -> bool:
+    raw = str(item.get("created", "") or "")
+    if not raw:
+        return False
+    try:
+        created = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return False
+    if created.tzinfo is None:
+        created = SGT.localize(created)
+    return created.astimezone(SGT) >= current - timedelta(days=7)
+
+
+def _quality_trend_summary() -> dict:
+    current = datetime.now(SGT)
+    enabled = _quality_signals_enabled()
+    if not enabled:
+        return {
+            "enabled": False,
+            "signals_total": 0,
+            "signals_7d": 0,
+            "self_repair_7d": 0,
+            "self_repair_rewrites_7d": 0,
+            "guardrail_weeks_tracked": 0,
+            "guardrail_current_week": _quality_week_key(current),
+            "guardrail_current_week_total": 0,
+            "guardrail_current_week_counters": {},
+        }
+    signals = []
+    try:
+        signals = gs.get_quality_signals(limit=QUALITY_SIGNAL_LIMIT)
+    except Exception:
+        signals = []
+    recent_signals = [item for item in signals if isinstance(item, dict) and _quality_signal_is_recent(item, current)]
+    raw_counters = ""
+    try:
+        raw_counters = gs.get_config(QUALITY_GUARDRAIL_COUNTERS_KEY) or ""
+        counters = json.loads(raw_counters) if raw_counters else {}
+    except Exception:
+        counters = {}
+    if not isinstance(counters, dict):
+        counters = {}
+    week = _quality_week_key(current)
+    week_bucket = counters.get(week, {}) if isinstance(counters.get(week, {}), dict) else {}
+    week_guardrails = week_bucket.get("guardrails") if isinstance(week_bucket.get("guardrails"), dict) else {}
+    return {
+        "enabled": enabled,
+        "signals_total": len(signals),
+        "signals_7d": len(recent_signals),
+        "self_repair_7d": sum(1 for item in recent_signals if item.get("kind") == "self_repair"),
+        "self_repair_rewrites_7d": sum(1 for item in recent_signals if item.get("kind") == "self_repair" and item.get("repaired")),
+        "guardrail_weeks_tracked": len(counters),
+        "guardrail_current_week": week,
+        "guardrail_current_week_total": int(week_bucket.get("total", 0) or 0),
+        "guardrail_current_week_counters": dict(week_guardrails),
+    }
+
+
 def build_runtime_status() -> dict:
     limit = _memory_limit_mb()
     rss = _rss_mb()
@@ -563,6 +734,7 @@ def build_runtime_status() -> dict:
         memory_storage = {"connected": False, "source": "unavailable", "error": str(exc)}
     memory_connected = bool(memory_storage.get("connected")) or google_connected
     redis_guardrail = redis_guardrail_status()
+    quality_trend = _quality_trend_summary()
     def safe_config(key: str) -> str:
         if not google_connected:
             return ""
@@ -661,6 +833,7 @@ def build_runtime_status() -> dict:
         },
         "openai_usage": openai_usage_status(),
         "api_usage": api_usage_status(),
+        "quality": quality_trend,
         "memory_buckets": memory_counts,
         "memory_error": memory_error,
         "learned_preferences": {
@@ -2981,7 +3154,7 @@ def _acquire_job_lock(name: str, ttl_seconds: int = 120) -> bool:
 
 # ─── SYSTEM PROMPT ───────────────────────────────────────────────────────────
 
-def SYSTEM_PROMPT():
+def _system_prompt_dynamic_tail():
     now = datetime.now(SGT)
     date_ctx = now.strftime("Today is %A, %-d %B %Y. Current time in Singapore: %H:%M SGT.")
     memory_ctx = (
@@ -3029,9 +3202,19 @@ def SYSTEM_PROMPT():
         except Exception:
             pass
 
-    return f"""{date_ctx}{memory_ctx}
+    return f"""
 
-You are Herwanto's personal AI assistant. Your name is H.I.R.A — Herwanto Interface for Responsive Assistance.
+Fresh H.I.R.A context:
+{date_ctx}{memory_ctx}
+"""
+
+
+def SYSTEM_PROMPT():
+    return f"{CACHED_SYSTEM_PROMPT()}{_system_prompt_dynamic_tail()}"
+
+
+def _system_prompt_static_prefix():
+    return """You are Herwanto's personal AI assistant. Your name is H.I.R.A — Herwanto Interface for Responsive Assistance.
 You are Singapore-based, calm under pressure, quick with useful judgment, and quietly warm.
 You feel like a capable chief-of-staff in his pocket: practical, observant, wickedly witty when the moment allows, and never needy.
 
@@ -3105,7 +3288,7 @@ Rules:
 - When he asks to add, schedule, or create a calendar event, create it directly if the date and time are clear. If details are incomplete, ask only for the missing detail.
 - When he asks to cancel, remove, delete, or mark a calendar event as done, call delete_calendar_event_by_text with the event description. When he asks to clean up duplicates, bulk delete replicated calendar items, or remove events copied two/three times, call bulk_delete_duplicate_calendar_events so exact duplicate groups are cleaned in one pass while one copy is kept.
 - Never offer to generate .ics files. Use Google Calendar directly.
-- The current date and time is already provided at the top of this prompt — always use it for any date/time reasoning.
+- The current date and time is already provided in the fresh context section of this prompt — always use it for any date/time reasoning.
 - Never guess weekdays. If you mention a date with a weekday, derive the weekday from the actual calendar date. For 2026, 1 May is Friday, not Thursday.
 - For appointments and dated commitments, treat Google Calendar/tool output as authoritative. Copy exact dates from tool results; never shift an appointment by memory, assumption, or weekday inference. Known correction: the HDB appointment is on 6 May, not 7 May, unless a newer calendar result says otherwise.
 - Religion, prayers, solat times, Islamic rulings, halal/haram questions, and worship guidance require extra care: verify with credible sources before giving factual claims. For Singapore practice, prefer MUIS or official Singapore mosque/source data. If no credible source/tool result is available, say clearly that H.I.R.A cannot verify it right now.
@@ -3170,11 +3353,10 @@ Rules:
 """
 
 def CACHED_SYSTEM_PROMPT():
-    now = datetime.now(SGT)
-    key = (now.strftime("%Y-%m-%d %H:%M"), google_ok())
+    key = "static-prefix-v1"
     if _SYSTEM_PROMPT_CACHE["key"] != key:
         _SYSTEM_PROMPT_CACHE["key"] = key
-        _SYSTEM_PROMPT_CACHE["value"] = SYSTEM_PROMPT()
+        _SYSTEM_PROMPT_CACHE["value"] = _system_prompt_static_prefix()
     return _SYSTEM_PROMPT_CACHE["value"]
 
 
@@ -3499,7 +3681,7 @@ def _openai_specialist_instruction(policy: dict | None = None) -> str:
 
 
 def _openai_instructions_for_policy(policy: dict | None = None) -> str:
-    return f"{CACHED_SYSTEM_PROMPT()}{_openai_specialist_instruction(policy)}"
+    return f"{SYSTEM_PROMPT()}{_openai_specialist_instruction(policy)}"
 
 
 def _openai_request_options(
@@ -15051,9 +15233,13 @@ async def _run_agentic_openai(messages, max_tokens=2048, tools=None, openai_stat
             if fallback:
                 logger.warning("OpenAI follow-up failed after tool actions; returning tool-result fallback: %s", exc)
                 guarded = _memory_tool_failure_guardrail(fallback, all_tool_results)
-                guarded = _backend_claim_guardrail(guarded, all_tool_results)
-                guarded = _cca_sheet_user_burden_guardrail(guarded, all_tool_results)
-                return strip_ai_citation_markers(_correct_weekday_date_mismatches(guarded))
+                before = guarded
+                guarded = _record_guardrail_if_changed("backend_claim", before, _backend_claim_guardrail(guarded, all_tool_results), surface="openai", route="agentic_fallback")
+                before = guarded
+                guarded = _record_guardrail_if_changed("cca_sheet_user_burden", before, _cca_sheet_user_burden_guardrail(guarded, all_tool_results), surface="openai", route="agentic_fallback")
+                before = guarded
+                guarded = _record_guardrail_if_changed("weekday_date", before, _correct_weekday_date_mismatches(guarded), surface="openai", route="agentic_fallback")
+                return strip_ai_citation_markers(guarded)
             raise
 
         tool_blocks = _openai_tool_calls(resp)
@@ -15103,12 +15289,17 @@ async def _run_agentic_openai(messages, max_tokens=2048, tools=None, openai_stat
         openai_input = tool_output_items if previous_response_id else call_items + tool_output_items
         guarded = _source_contract_guardrail(messages, tool_results)
         if guarded:
+            _increment_quality_guardrail_counter("source_contract", surface="openai", route="agentic")
             return strip_ai_citation_markers(guarded)
 
     guarded_reply = _memory_tool_failure_guardrail(reply_text or "Done.", all_tool_results)
-    guarded_reply = _backend_claim_guardrail(guarded_reply, all_tool_results)
-    guarded_reply = _cca_sheet_user_burden_guardrail(guarded_reply, all_tool_results)
-    return strip_ai_citation_markers(_correct_weekday_date_mismatches(guarded_reply))
+    before = guarded_reply
+    guarded_reply = _record_guardrail_if_changed("backend_claim", before, _backend_claim_guardrail(guarded_reply, all_tool_results), surface="openai", route="agentic")
+    before = guarded_reply
+    guarded_reply = _record_guardrail_if_changed("cca_sheet_user_burden", before, _cca_sheet_user_burden_guardrail(guarded_reply, all_tool_results), surface="openai", route="agentic")
+    before = guarded_reply
+    guarded_reply = _record_guardrail_if_changed("weekday_date", before, _correct_weekday_date_mismatches(guarded_reply), surface="openai", route="agentic")
+    return strip_ai_citation_markers(guarded_reply)
 
 
 async def _run_agentic_chat(
@@ -15634,9 +15825,12 @@ async def stream_agentic_openai(
             if fallback:
                 logger.warning("OpenAI stream follow-up failed after tool actions; returning tool-result fallback: %s", exc)
                 guarded = _memory_tool_failure_guardrail(fallback, all_tool_results)
-                guarded = _backend_claim_guardrail(guarded, all_tool_results)
-                guarded = _cca_sheet_user_burden_guardrail(guarded, all_tool_results)
-                corrected = _correct_weekday_date_mismatches(guarded)
+                before = guarded
+                guarded = _record_guardrail_if_changed("backend_claim", before, _backend_claim_guardrail(guarded, all_tool_results), surface="openai", route="stream_fallback")
+                before = guarded
+                guarded = _record_guardrail_if_changed("cca_sheet_user_burden", before, _cca_sheet_user_burden_guardrail(guarded, all_tool_results), surface="openai", route="stream_fallback")
+                before = guarded
+                corrected = _record_guardrail_if_changed("weekday_date", before, _correct_weekday_date_mismatches(guarded), surface="openai", route="stream_fallback")
                 yield {"type": "replace", "text": corrected}
                 yield {"type": "done", "text": corrected}
                 return
@@ -15716,6 +15910,7 @@ async def stream_agentic_openai(
             yield {"type": "trace", "patch": {"source_contracts_seen": contracts, "confidence_gate": "passed"}}
         guarded = _source_contract_guardrail(messages, tool_results)
         if guarded:
+            _increment_quality_guardrail_counter("source_contract", surface="openai", route="stream")
             clean_guarded = strip_ai_citation_markers(guarded)
             yield {"type": "replace", "text": clean_guarded}
             yield {"type": "done", "text": clean_guarded}
@@ -15732,9 +15927,12 @@ async def stream_agentic_openai(
         openai_input = tool_output_items if previous_response_id else call_items + tool_output_items
 
     guarded_reply = _memory_tool_failure_guardrail(reply_text or "Done.", all_tool_results)
-    guarded_reply = _backend_claim_guardrail(guarded_reply, all_tool_results)
-    guarded_reply = _cca_sheet_user_burden_guardrail(guarded_reply, all_tool_results)
-    corrected = strip_ai_citation_markers(_correct_weekday_date_mismatches(guarded_reply))
+    before = guarded_reply
+    guarded_reply = _record_guardrail_if_changed("backend_claim", before, _backend_claim_guardrail(guarded_reply, all_tool_results), surface="openai", route="stream")
+    before = guarded_reply
+    guarded_reply = _record_guardrail_if_changed("cca_sheet_user_burden", before, _cca_sheet_user_burden_guardrail(guarded_reply, all_tool_results), surface="openai", route="stream")
+    before = guarded_reply
+    corrected = strip_ai_citation_markers(_record_guardrail_if_changed("weekday_date", before, _correct_weekday_date_mismatches(guarded_reply), surface="openai", route="stream"))
     if corrected != reply_text:
         yield {"type": "replace", "text": corrected}
     yield {"type": "done", "text": corrected}
@@ -16736,6 +16934,7 @@ async def _process_user_text(update, context, text: str):
             style_profile=style_profile,
             relevant_arcs=operator_state.get("relevant_arcs", []),
         )
+        record_self_repair_quality_signal(text, _repair_meta, surface="telegram", route="chat")
 
         # Save only user message + final reply to persistent history
         history.append({"role": "assistant", "content": reply_text})
@@ -17389,6 +17588,12 @@ def _self_audit_digest_body(result: dict) -> str:
     retrospective = result.get("retrospective", {}) if isinstance(result.get("retrospective", {}), dict) else {}
     retro_strong = retrospective.get("strong", []) or []
     retro_watch = retrospective.get("watch", []) or []
+    quality = _quality_trend_summary()
+    quality_present = bool(
+        quality.get("signals_7d")
+        or quality.get("guardrail_current_week_total")
+        or quality.get("self_repair_rewrites_7d")
+    )
     if muted:
         lines.append("Easing off:")
         for item in muted[:5]:
@@ -17408,7 +17613,14 @@ def _self_audit_digest_body(result: dict) -> str:
         remaining = max(0, 5 - min(3, len(retro_strong)))
         for item in retro_watch[:remaining]:
             lines.append(f"- Watching {item.get('kind', 'signal')}: {item.get('label', 'pattern')} ({item.get('evidence_count', 0)}x).")
-    if not muted and not watching and not valued and not retro_strong and not retro_watch:
+    if quality_present:
+        lines.append("Quality signals:")
+        lines.append(
+            f"- Last 7 days: {quality.get('self_repair_7d', 0)} self-repair signal(s), "
+            f"{quality.get('self_repair_rewrites_7d', 0)} rewrite(s); "
+            f"{quality.get('guardrail_current_week_total', 0)} guardrail fire(s) this ISO week."
+        )
+    if not muted and not watching and not valued and not retro_strong and not retro_watch and not quality_present:
         lines.append("- No strong preference pattern yet. I will keep observing quietly.")
     return "\n".join(lines)
 
