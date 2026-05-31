@@ -17023,6 +17023,240 @@ def _notification_is_learned_muted(source: str, kind: str = "") -> bool:
     return _family_is_learned_muted(_notification_source_group(source, kind))
 
 
+RETROSPECTIVE_MEMORY_ENTRY_LIMIT = 30
+RETROSPECTIVE_PATTERN_CLUSTERS = {
+    "source_discipline": {"live", "source", "sources", "latest", "web", "search", "cite", "citation"},
+    "date_discipline": {"guess", "weekday", "date", "dates", "today", "tomorrow", "assume"},
+    "entity_precision": {"wrong", "class", "student", "person", "name", "entity", "meant", "room"},
+    "verbosity_tone": {"verbose", "verbosity", "short", "concise", "direct", "preamble", "long", "brief"},
+    "write_safety": {"confirm", "clarify", "delete", "draft", "recipient", "event", "calendar", "reminder"},
+}
+RETROSPECTIVE_CLUSTER_LABELS = {
+    "source_discipline": "source discipline",
+    "date_discipline": "date discipline",
+    "entity_precision": "entity precision",
+    "verbosity_tone": "verbosity and tone",
+    "write_safety": "write safety",
+}
+RETROSPECTIVE_CLUSTER_RECOMMENDATIONS = {
+    "source_discipline": "Use live/source-backed tools before answering current or changing facts.",
+    "date_discipline": "Verify concrete dates and weekdays before asserting them.",
+    "entity_precision": "Confirm class, student, person, or entity references when a mismatch is possible.",
+    "verbosity_tone": "Keep answers concise and direct when the user signals brevity or tone drift.",
+    "write_safety": "Clarify critical details before creating, updating, deleting, or drafting.",
+}
+RETROSPECTIVE_STRONG_TRIGGER_RE = re.compile(r"\b(always|never|must)\b|\bdo\s+not\b|\bdon'?t\b", re.I)
+RETROSPECTIVE_ACTION_UNDONE_EXEMPT_STATUSES = {"", "pending", "not_applicable", "unavailable"}
+
+
+def _retrospective_tokens(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", str(text or "").lower()))
+
+
+def _retrospective_entry_clusters(text: str) -> set[str]:
+    tokens = _retrospective_tokens(text)
+    clusters = set()
+    for cluster, keywords in RETROSPECTIVE_PATTERN_CLUSTERS.items():
+        if len(tokens & keywords) >= 2:
+            clusters.add(cluster)
+    return clusters
+
+
+def _retrospective_parse_memory_entry(entry) -> tuple[dict, bool]:
+    if isinstance(entry, dict):
+        return dict(entry), True
+    raw = str(entry or "").strip()
+    if not raw:
+        return {}, False
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {}, False
+    return (parsed, True) if isinstance(parsed, dict) else ({}, False)
+
+
+def _retrospective_correction_text(entry) -> str:
+    parsed, is_dict = _retrospective_parse_memory_entry(entry)
+    if is_dict:
+        return str(parsed.get("correction", "") or "").strip()
+    return str(entry or "").strip()
+
+
+def _retrospective_reflection_text(entry) -> str:
+    parsed, is_dict = _retrospective_parse_memory_entry(entry)
+    if is_dict:
+        return str(parsed.get("learned", "") or "").strip()
+    return str(entry or "").strip()
+
+
+def _retrospective_has_strong_trigger(text: str) -> bool:
+    return bool(RETROSPECTIVE_STRONG_TRIGGER_RE.search(str(text or "")))
+
+
+def _retrospective_signal(kind: str, cluster: str, texts: list[str], confidence: str) -> dict:
+    label = RETROSPECTIVE_CLUSTER_LABELS.get(cluster, cluster.replace("_", " "))
+    return {
+        "kind": kind,
+        "key": f"{kind}:{cluster}",
+        "cluster": cluster,
+        "label": label,
+        "evidence_count": len(texts),
+        "confidence": confidence,
+        "evidence": [str(item or "").strip()[:240] for item in texts[:3] if str(item or "").strip()],
+        "recommendation": RETROSPECTIVE_CLUSTER_RECOMMENDATIONS.get(cluster, ""),
+    }
+
+
+def _retrospective_clustered_texts(entries: list, text_getter) -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = {}
+    for entry in entries[-RETROSPECTIVE_MEMORY_ENTRY_LIMIT:]:
+        text = text_getter(entry)
+        if not text:
+            continue
+        for cluster in _retrospective_entry_clusters(text):
+            grouped.setdefault(cluster, []).append(text)
+    return grouped
+
+
+def _retrospective_correction_signals(memory: dict, now: datetime | None = None) -> list[dict]:
+    entries = memory.get("correction_ledger", []) if isinstance(memory, dict) else []
+    grouped = _retrospective_clustered_texts(entries if isinstance(entries, list) else [], _retrospective_correction_text)
+    signals = []
+    for cluster, texts in sorted(grouped.items()):
+        if len(texts) < 2:
+            continue
+        strong_trigger_count = sum(1 for text in texts if _retrospective_has_strong_trigger(text))
+        confidence = "strong" if len(texts) >= 3 or strong_trigger_count >= 2 else "watch"
+        signals.append(_retrospective_signal("correction", cluster, texts, confidence))
+    return signals
+
+
+def _retrospective_reflection_signals(memory: dict, now: datetime | None = None) -> list[dict]:
+    entries = memory.get("self_reflections", []) if isinstance(memory, dict) else []
+    grouped = _retrospective_clustered_texts(entries if isinstance(entries, list) else [], _retrospective_reflection_text)
+    correction_clusters = {
+        cluster
+        for signal in _retrospective_correction_signals(memory, now=now)
+        for cluster in [signal.get("cluster", "")]
+        if cluster
+    }
+    signals = []
+    for cluster, texts in sorted(grouped.items()):
+        if len(texts) < 2:
+            continue
+        confidence = "strong" if cluster in correction_clusters else "watch"
+        signals.append(_retrospective_signal("reflection", cluster, texts, confidence))
+    return signals
+
+
+def _retrospective_action_created_at(item: dict) -> datetime | None:
+    raw = str(item.get("created", "") or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        return SGT.localize(parsed)
+    return parsed.astimezone(SGT)
+
+
+def _retrospective_action_signal_group(item: dict) -> str:
+    action = str(item.get("action", "") or "").strip()
+    source = str(item.get("source", "") or "").strip()
+    source_group = _notification_source_group(source, action)
+    if source_group in LEARNED_MUTE_EXEMPT_GROUPS:
+        return ""
+    if action in LEARNED_MUTE_EXEMPT_GROUPS:
+        return ""
+    return action or source_group
+
+
+def _retrospective_action_signals(action_ledger: list[dict], now: datetime | None = None, days: int = 14) -> list[dict]:
+    current = _coerce_sgt_datetime(now)
+    threshold = current - timedelta(days=max(1, int(days or 14)))
+    grouped: dict[str, list[str]] = {}
+    for item in action_ledger if isinstance(action_ledger, list) else []:
+        if not isinstance(item, dict):
+            continue
+        undo_status = str(item.get("undo_status", "") or "").strip().lower()
+        if undo_status in RETROSPECTIVE_ACTION_UNDONE_EXEMPT_STATUSES:
+            continue
+        created_at = _retrospective_action_created_at(item)
+        if not created_at or created_at < threshold:
+            continue
+        group = _retrospective_action_signal_group(item)
+        if not group:
+            continue
+        subject = str(item.get("subject", "") or "").strip()
+        result = str(item.get("result", "") or "").strip()
+        evidence = " | ".join(part for part in [group, subject, undo_status, result] if part)
+        grouped.setdefault(group, []).append(evidence or group)
+    signals = []
+    for group, texts in sorted(grouped.items()):
+        if len(texts) < 2:
+            continue
+        signals.append({
+            "kind": "action",
+            "key": f"action:{group}",
+            "cluster": group,
+            "label": group.replace("_", " "),
+            "evidence_count": len(texts),
+            "confidence": "watch",
+            "evidence": [str(item or "").strip()[:240] for item in texts[:3] if str(item or "").strip()],
+            "recommendation": f"Watch repeated undone {group.replace('_', ' ')} actions before making similar changes.",
+        })
+    return signals
+
+
+def build_retrospective_evidence(now: datetime | None = None, days: int = 14) -> dict:
+    current = _coerce_sgt_datetime(now)
+    result = {
+        "generated_at": current.isoformat(),
+        "window_days": max(1, int(days or 14)),
+        "signals": [],
+        "strong": [],
+        "watch": [],
+        "errors": [],
+    }
+    memory: dict = {}
+    try:
+        memory = gs.get_memory()
+    except Exception as exc:
+        result["errors"].append(f"memory: {exc}")
+    if isinstance(memory, dict) and memory:
+        for label, builder in (
+            ("corrections", _retrospective_correction_signals),
+            ("reflections", _retrospective_reflection_signals),
+        ):
+            try:
+                result["signals"].extend(builder(memory, now=current))
+            except Exception as exc:
+                result["errors"].append(f"{label}: {exc}")
+    try:
+        action_ledger = gs.get_action_ledger(include_reviewed=True)
+    except Exception as exc:
+        action_ledger = []
+        result["errors"].append(f"action_ledger: {exc}")
+    try:
+        result["signals"].extend(_retrospective_action_signals(action_ledger, now=current, days=result["window_days"]))
+    except Exception as exc:
+        result["errors"].append(f"actions: {exc}")
+
+    result["signals"] = sorted(
+        result["signals"],
+        key=lambda item: (
+            0 if item.get("confidence") == "strong" else 1,
+            str(item.get("kind", "")),
+            str(item.get("key", "")),
+        ),
+    )
+    result["strong"] = [item for item in result["signals"] if item.get("confidence") == "strong"]
+    result["watch"] = [item for item in result["signals"] if item.get("confidence") != "strong"]
+    return result
+
+
 def _self_audit_group_payload(group: str, bucket: dict) -> dict:
     count = max(0, int(bucket.get("count", 0) or 0))
     negative = max(0, int(bucket.get("negative", 0) or 0))

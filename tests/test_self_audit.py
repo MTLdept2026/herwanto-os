@@ -17,6 +17,26 @@ def _memory(learned=None):
     return memory
 
 
+def _correction(text, assistant_response=""):
+    return json.dumps({
+        "date": "2026-07-10 17:15 SGT",
+        "source": "test",
+        "correction": text,
+        "assistant_response": assistant_response,
+        "priority": "high",
+    })
+
+
+def _reflection(learned, trigger="", next_behavior=""):
+    return json.dumps({
+        "date": "2026-07-10 17:15 SGT",
+        "source": "test",
+        "trigger": trigger,
+        "learned": learned,
+        "next_behavior": next_behavior,
+    })
+
+
 class SelfAuditTests(unittest.TestCase):
     def setUp(self):
         self.now = bot.SGT.localize(datetime(2026, 7, 10, 17, 15))
@@ -177,6 +197,141 @@ class SelfAuditTests(unittest.TestCase):
             bot.run_self_audit(self.now)
 
         self.assertEqual([key for key, _value in config_calls], [bot.LEARNED_MUTE_CONFIG_KEY])
+
+    def test_retrospective_correction_strong_signal_uses_clusters(self):
+        memory = _memory()
+        memory["correction_ledger"] = [
+            _correction("Do not guess the weekday; verify the date first."),
+            _correction("Never assume the date or weekday from memory."),
+            _correction("You must check dates before saying today or tomorrow."),
+        ]
+
+        signals = bot._retrospective_correction_signals(memory, now=self.now)
+
+        self.assertEqual(len(signals), 1)
+        self.assertEqual(signals[0]["cluster"], "date_discipline")
+        self.assertEqual(signals[0]["confidence"], "strong")
+
+    def test_retrospective_stopword_collision_does_not_fire(self):
+        memory = _memory()
+        memory["correction_ledger"] = [
+            _correction("Do not guess the weekday."),
+            _correction("That was not the wrong class."),
+        ]
+
+        signals = bot._retrospective_correction_signals(memory, now=self.now)
+
+        self.assertEqual(signals, [])
+
+    def test_retrospective_correction_ignores_assistant_response(self):
+        memory = _memory()
+        memory["correction_ledger"] = [
+            _correction("Small correction.", assistant_response="I must use live latest web sources and citations."),
+            _correction("Another small correction.", assistant_response="I should search the latest web sources and cite them."),
+        ]
+
+        signals = bot._retrospective_correction_signals(memory, now=self.now)
+
+        self.assertEqual(signals, [])
+
+    def test_retrospective_reflection_matches_learned_only(self):
+        memory = _memory()
+        memory["self_reflections"] = [
+            _reflection(
+                "I failed source discipline by not checking latest web sources.",
+                trigger="wrong class student name",
+                next_behavior="confirm class student entity",
+            ),
+            _reflection(
+                "I should use web search and cite sources for latest facts.",
+                trigger="wrong person entity",
+                next_behavior="confirm class room",
+            ),
+        ]
+
+        signals = bot._retrospective_reflection_signals(memory, now=self.now)
+
+        self.assertEqual(len(signals), 1)
+        self.assertEqual(signals[0]["cluster"], "source_discipline")
+        self.assertEqual(signals[0]["confidence"], "watch")
+
+    def test_retrospective_corrections_use_last_30_entries(self):
+        memory = _memory()
+        memory["correction_ledger"] = [
+            _correction("Use live latest web sources."),
+            _correction("Search latest web sources before answering."),
+        ] + [_correction(f"Filler correction {index}") for index in range(29)]
+
+        signals = bot._retrospective_correction_signals(memory, now=self.now)
+
+        self.assertEqual(signals, [])
+
+    def test_retrospective_action_ledger_undone_is_watch_only(self):
+        ledger = [
+            {
+                "id": "1",
+                "created": self.now.isoformat(),
+                "action": "create_calendar_event",
+                "subject": "Meeting A",
+                "result": "Created event",
+                "source": "assistant_tool",
+                "undo_status": "undone",
+            },
+            {
+                "id": "2",
+                "created": self.now.isoformat(),
+                "action": "create_calendar_event",
+                "subject": "Meeting B",
+                "result": "Created event",
+                "source": "assistant_tool",
+                "undo_status": "undone",
+            },
+        ]
+
+        signals = bot._retrospective_action_signals(ledger, now=self.now, days=14)
+
+        self.assertEqual(len(signals), 1)
+        self.assertEqual(signals[0]["key"], "action:create_calendar_event")
+        self.assertEqual(signals[0]["confidence"], "watch")
+
+    def test_retrospective_action_ledger_exempts_critical_sources(self):
+        ledger = [
+            {
+                "id": "1",
+                "created": self.now.isoformat(),
+                "action": "create_proactive_nudge",
+                "source": "nudge:1",
+                "undo_status": "undone",
+            },
+            {
+                "id": "2",
+                "created": self.now.isoformat(),
+                "action": "create_proactive_nudge",
+                "source": "nudge:2",
+                "undo_status": "undone",
+            },
+        ]
+
+        signals = bot._retrospective_action_signals(ledger, now=self.now, days=14)
+
+        self.assertEqual(signals, [])
+
+    def test_build_retrospective_evidence_degrades_action_ledger_failure(self):
+        memory = _memory()
+        memory["correction_ledger"] = [
+            _correction("Use live latest web sources."),
+            _correction("Search latest web sources before answering."),
+        ]
+
+        with patch.object(bot.gs, "get_memory", return_value=memory), \
+             patch.object(bot.gs, "get_action_ledger", side_effect=RuntimeError("ledger down")), \
+             patch.object(bot.gs, "set_memory", side_effect=AssertionError("no writes")), \
+             patch.object(bot.gs, "set_config", side_effect=AssertionError("no config writes")), \
+             patch.object(bot, "_queue_app_notification", side_effect=AssertionError("no notifications")):
+            result = bot.build_retrospective_evidence(now=self.now, days=14)
+
+        self.assertTrue(any("ledger down" in error for error in result["errors"]))
+        self.assertEqual(result["watch"][0]["cluster"], "source_discipline")
 
 
 if __name__ == "__main__":
