@@ -1077,6 +1077,52 @@ def _schedule_background_call(label: str, fn, *args, **kwargs) -> None:
     task.add_done_callback(_done)
 
 
+def _upload_chat_user_text(filename: str = "", note: str = "") -> str:
+    label = filename or "uploaded file"
+    clean_note = str(note or "").strip()
+    return f"Attached {label}\n\n{clean_note}" if clean_note else f"Attached {label}"
+
+
+def _upload_chat_assistant_text(result: dict | None) -> str:
+    result = result or {}
+    reply = str(result.get("reply") or "").strip()
+    index = str(result.get("index") or "").strip()
+    if index and index not in reply:
+        return f"{reply or 'Upload analysed.'}\n\n[Upload index: {index}]"
+    return reply or index
+
+
+def _store_pwa_upload_analysis(
+    client_key: str | None,
+    filename: str,
+    mime: str,
+    note: str,
+    result: dict | None,
+    source_id: str = "",
+) -> None:
+    assistant_text = _upload_chat_assistant_text(result)
+    if not assistant_text:
+        return
+    history_key = _history_key(client_key)
+    history = _get_history_best_effort(history_key)
+    history.append({"role": "user", "content": _upload_chat_user_text(filename, note)})
+    history.append({"role": "assistant", "content": assistant_text})
+    _save_history_best_effort(history_key, history)
+    _clear_openai_state_for_local_reply(history_key)
+
+    memory_source_id = source_id or f"pwa-upload:{_client_key(client_key)}:{uuid.uuid4().hex}"
+    _schedule_background_call(
+        "uploaded file memory",
+        bot._remember_uploaded_file,
+        "pwa_upload",
+        memory_source_id,
+        note,
+        assistant_text,
+        filename=filename or "PWA upload",
+        mime_type=mime or "upload",
+    )
+
+
 def _record_web_action(
     action: str,
     status: str,
@@ -7002,6 +7048,7 @@ async def upload_document(
     file: UploadFile = File(...),
     note: str = Form(""),
     x_hira_token: Optional[str] = Header(default=None),
+    x_hira_client: Optional[str] = Header(default=None),
 ):
     _require_token(x_hira_token)
     if not await _UPLOAD_RATE_LIMITER.is_allowed(_request_ip(request)):
@@ -7016,7 +7063,15 @@ async def upload_document(
         raise HTTPException(status_code=413, detail=f"{label} is too large. Limit is {max_bytes // (1024 * 1024)} MB.")
     async with _UPLOAD_SEMAPHORE:
         try:
-            return await _process_upload_document(file, note)
+            result = await _process_upload_document(file, note)
+            _store_pwa_upload_analysis(
+                _client_key(x_hira_client),
+                filename,
+                mime,
+                note,
+                result,
+            )
+            return result
         finally:
             gc.collect()
             bot._log_memory("after pwa upload")
@@ -7097,6 +7152,15 @@ async def _run_upload_job(job_id: str, tmp_path: str, mime: str, filename: str, 
     try:
         async with _UPLOAD_SEMAPHORE:
             result = await _process_upload_path(tmp_path, mime, filename, note)
+        job = _get_upload_job(job_id) or {}
+        _store_pwa_upload_analysis(
+            str(job.get("client_key", "") or ""),
+            filename,
+            mime,
+            note,
+            result,
+            source_id=f"pwa-upload-job:{job_id}",
+        )
         _set_upload_job(job_id, {"status": "done", **result})
     except Exception as exc:
         bot.logger.exception(f"Upload job {job_id} failed: {exc}")

@@ -12282,7 +12282,9 @@ _STATE_CHANGING_ACTIONS = {
 _VAGUE_ACTION_REF_RE = re.compile(r"\b(this|that|it|that day|the day|same day|there|then)\b", re.I)
 _CONFIRM_ACTION_RE = re.compile(
     r"^\s*(?:yes|yep|yeah|ok(?:ay)?|correct|confirm(?:ed)?|proceed|go ahead|do it|save it|add it|"
-    r"create it|delete it|remove it|mark it done|all day)(?:[.! ]*)$",
+    r"create it|delete it|remove it|mark it done|all day|"
+    r"(?:yes|yep|yeah|ok(?:ay)?|correct|confirm(?:ed)?)\s+(?:save it|save draft|create it|add it|do it|go ahead|proceed)|"
+    r"confirm(?:ed)?\s+(?:save\s+)?draft)(?:[.! ]*)$",
     re.I,
 )
 
@@ -15564,6 +15566,12 @@ _CONTEXTUAL_FOLLOWUP_REPLIES = {
     "again",
     "proceed",
     "confirm",
+    "confirm save draft",
+    "confirmed save draft",
+    "save draft",
+    "save it",
+    "yes save it",
+    "yes save draft",
     "go for it",
     "sounds good",
     "lets do it",
@@ -15742,6 +15750,15 @@ def _contextual_followup_tool_from_context(
         action = blocked.get("action", "")
         if action and (not available or action in available):
             return action
+    raw_clean = _normalise_short_reply(text)
+    full_context = str(recent_context or "").lower()
+    if (
+        (not available or "create_gmail_draft" in available)
+        and re.search(r"\b(?:(?:yes\s+)?save\s+(?:it|draft)|confirm(?:ed)?\s+(?:save\s+)?draft)\b", raw_clean)
+        and re.search(r"\b(?:gmail|email|mail)\b", full_context)
+        and re.search(r"\bdraft\b", full_context)
+    ):
+        return "create_gmail_draft"
     context = _latest_contextual_offer(recent_context)
 
     def use(name: str, *patterns: str) -> str | None:

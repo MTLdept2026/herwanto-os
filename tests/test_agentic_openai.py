@@ -1998,6 +1998,34 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertEqual(stranger["status"], "missing")
         self.assertEqual(missing_client["status"], "missing")
 
+    def test_pwa_upload_analysis_is_stored_in_chat_context(self):
+        saved = []
+        cleared = []
+        result = {
+            "reply": "Appointment is on 11 June 2026 at 10:00. Case Ref 05457D26.",
+            "index": "Image analysed: appointment.png",
+        }
+
+        with patch.object(web_app, "_get_history_best_effort", return_value=[]), \
+            patch.object(web_app, "_save_history_best_effort", side_effect=lambda key, history: saved.append((key, history))), \
+            patch.object(web_app, "_clear_openai_state_for_local_reply", side_effect=lambda key: cleared.append(key)), \
+            patch.object(web_app, "_schedule_background_call") as background_call:
+            web_app._store_pwa_upload_analysis(
+                "phone",
+                "appointment.png",
+                "image/png",
+                "Inform my lawyers via personal 2 Gmail",
+                result,
+                source_id="job-1",
+            )
+
+        self.assertEqual(saved[0][0], "pwa:phone")
+        self.assertIn("Attached appointment.png", saved[0][1][0]["content"])
+        self.assertIn("11 June 2026", saved[0][1][1]["content"])
+        self.assertEqual(cleared, ["pwa:phone"])
+        background_call.assert_called_once()
+        self.assertEqual(background_call.call_args.args[3], "job-1")
+
     def test_prepare_image_for_vision_normalises_large_png(self):
         from PIL import Image
 
@@ -2038,6 +2066,39 @@ class AgenticOpenAITests(unittest.TestCase):
         )
 
         self.assertIsNone(blocked)
+
+    def test_confirmation_phrases_allow_pending_gmail_draft_save(self):
+        draft = {
+            "to": "lawyer@example.com",
+            "subject": "Appointment time",
+            "body": "The appointment is at 10:00.",
+            "account": "personal2",
+        }
+
+        for phrase in ("Yes save it", "Confirm save draft"):
+            with self.subTest(phrase=phrase):
+                blocked = bot._validated_action_failure(
+                    "create_gmail_draft",
+                    draft,
+                    direct_user_text=phrase,
+                )
+                self.assertIsNone(blocked)
+
+    def test_confirm_save_draft_followup_forces_gmail_draft(self):
+        assistant_offer = (
+            "Concrete action I'm trying to take: save this as a draft in personal 2 Gmail "
+            "to nictan@alphalawllc.com, subject HDB Flat Completion on 11 June 2026. "
+            "Reply with Confirm save draft and I'll push it again."
+        )
+        tools = [bot.GMAIL_BRIEF_TOOL, bot.GMAIL_DRAFT_TOOL]
+
+        for phrase in ("Confirm save draft", "Yes save it"):
+            with self.subTest(phrase=phrase):
+                forced = bot._forced_tool_for_current_turn(
+                    [{"role": "assistant", "content": assistant_offer}, {"role": "user", "content": phrase}],
+                    tools,
+                )
+                self.assertEqual(forced, "create_gmail_draft")
 
     def test_inform_via_personal_email_forces_draft_not_inbox_read(self):
         text = "Inform my lawyers via my personal email of the appointment time pls"
