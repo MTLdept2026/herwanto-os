@@ -12365,6 +12365,23 @@ def _normalise_direct_user_text(value: str | None) -> str:
     return " ".join(str(value or "").lower().split())
 
 
+def _is_outbound_gmail_draft_request(text: str | None) -> bool:
+    clean = _normalise_direct_user_text(text)
+    if not clean:
+        return False
+    if re.search(r"\b(?:draft|compose|write|reply|respond)\b", clean) and re.search(r"\b(?:gmail|email|mail|reply)\b", clean):
+        return True
+    if re.search(
+        r"\b(?:send|inform|notify|tell)\b(?!\s+me\b).{0,120}\b"
+        r"(?:via|by|through|using|from)\s+(?:my\s+)?"
+        r"(?:(?:personal|work|school|moe|second(?:ary)?|other)\s+)?(?:gmail|email|mail)\b",
+        clean,
+        re.I,
+    ):
+        return True
+    return bool(re.search(r"\b(?:send|draft|compose|write)\s+(?:an?\s+)?(?:gmail|email|mail)\b", clean, re.I))
+
+
 def _direct_user_intent_allows_tool(name: str, direct_user_text: str | None) -> bool:
     if direct_user_text is None:
         return True
@@ -12424,7 +12441,7 @@ def _direct_user_intent_allows_tool(name: str, direct_user_text: str | None) -> 
     if name == "create_slide_deck_artifact":
         return has(r"\b(create|generate|make|build|draft)\b") and has(r"\b(slide|slides|deck|ppt|pptx|powerpoint|presentation)\b")
     if name == "create_gmail_draft":
-        return has(r"\b(draft|compose|write|reply)\b") and has(r"\b(gmail|email|mail|reply)\b")
+        return _is_outbound_gmail_draft_request(clean)
     return True
 
 
@@ -12767,7 +12784,8 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     if "remember_user_info" in available and (_is_memory_commit_query_text(text) or "memory" in semantic_flags):
         return "remember_user_info"
 
-    if "create_gmail_draft" in available and "gmail_draft" in semantic_flags:
+    outbound_gmail_draft = _is_outbound_gmail_draft_request(clean)
+    if "create_gmail_draft" in available and ("gmail_draft" in semantic_flags or outbound_gmail_draft):
         return "create_gmail_draft"
 
     if (
@@ -12946,7 +12964,7 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
             return "get_timetable"
 
     if "get_gmail_brief" in available and gmail_intent:
-        if not has_any(["draft", "write", "compose", "reply"]):
+        if not outbound_gmail_draft:
             return "get_gmail_brief"
 
     if "get_nea_weather" in available and _weather_lookup_requested(clean):
@@ -14986,6 +15004,17 @@ def _latest_user_text(messages: list[dict]) -> str:
     return ""
 
 
+def _latest_user_has_media_content(messages: list[dict]) -> bool:
+    for message in reversed(messages or []):
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            return False
+        return any(isinstance(item, dict) and item.get("type") in {"image"} for item in content)
+    return False
+
+
 def _memory_category_for_text(text: str, fallback: str = "profile") -> str:
     fallback = fallback or "profile"
     if fallback != "profile":
@@ -15060,6 +15089,8 @@ def _openai_action_tool_names(tools: list[dict] | None = None) -> set[str]:
 
 def _should_run_openai_action_planner(messages: list[dict], tools: list[dict] | None = None) -> bool:
     if not (OPENAI_ACTION_PLANNER_ENABLED and LLM_PROVIDER == "openai" and OPENAI_API_KEY):
+        return False
+    if _latest_user_has_media_content(messages):
         return False
     side_effect_tools = _openai_action_tool_names(tools)
     if not side_effect_tools:

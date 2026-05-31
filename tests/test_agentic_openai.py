@@ -2014,6 +2014,55 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertLess(len(data), 4 * 1024 * 1024)
         self.assertIn("Image normalised", note)
 
+    def test_upload_email_note_exposes_gmail_tools(self):
+        tools = web_app._upload_analysis_tools(
+            "Inform my lawyers via my personal email of the appointment time pls"
+        )
+        names = {tool["name"] for tool in tools}
+
+        self.assertIn("get_gmail_brief", names)
+        self.assertIn("create_gmail_draft", names)
+        self.assertIn("get_assistant_context", names)
+        self.assertIn("create_calendar_event", names)
+
+    def test_inform_via_personal_email_allows_gmail_draft_action(self):
+        blocked = bot._validated_action_failure(
+            "create_gmail_draft",
+            {
+                "to": "lawyer@example.com",
+                "subject": "Appointment time",
+                "body": "The appointment is at 10:00.",
+                "account": "personal",
+            },
+            direct_user_text="Inform my lawyers via my personal email of the appointment time pls",
+        )
+
+        self.assertIsNone(blocked)
+
+    def test_inform_via_personal_email_forces_draft_not_inbox_read(self):
+        text = "Inform my lawyers via my personal email of the appointment time pls"
+        tools = [bot.GMAIL_BRIEF_TOOL, bot.GMAIL_DRAFT_TOOL]
+
+        forced = bot._forced_tool_for_text(text, tools)
+
+        self.assertEqual(forced, "create_gmail_draft")
+
+    def test_action_preflight_skips_image_turn_before_vision_extraction(self):
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "abc"}},
+                {"type": "text", "text": "User note: send an email about the appointment time"},
+            ],
+        }]
+        with patch.object(bot, "OPENAI_ACTION_PLANNER_ENABLED", True), patch.object(bot, "OPENAI_API_KEY", "test-key"):
+            should_run = bot._should_run_openai_action_planner(
+                messages,
+                [bot.CONTEXT_TOOL, bot.CALENDAR_TOOL, bot.REMINDER_TOOL, bot.GMAIL_DRAFT_TOOL],
+            )
+
+        self.assertFalse(should_run)
+
     def test_relief_context_becomes_teaching_memory(self):
         now = bot.SGT.localize(bot.datetime(2026, 5, 6, 6, 21))
         with (

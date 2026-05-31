@@ -3525,6 +3525,19 @@ def _prepare_image_for_vision(data: bytes, mime: str = "", filename: str = "") -
         return data, mime or "image/png", ""
 
 
+_UPLOAD_NOTE_EXTRA_TOOL_NAMES = {"get_gmail_brief", "create_gmail_draft"}
+
+
+def _upload_analysis_tools(note: str = "") -> list[dict]:
+    tools = [bot.CONTEXT_TOOL, bot.CALENDAR_TOOL, bot.REMINDER_TOOL, bot.MEMORY_TOOL]
+    if not str(note or "").strip():
+        return tools
+    for tool in bot.pwa_tools_for_message(note):
+        if tool.get("name") in _UPLOAD_NOTE_EXTRA_TOOL_NAMES and tool not in tools:
+            tools.append(tool)
+    return tools
+
+
 async def _analyse_image_bytes(data: bytes, mime: str, filename: str, note: str):
     prepared, media_type, normalise_note = _prepare_image_for_vision(data, mime, filename)
     encoded = base64.b64encode(prepared).decode()
@@ -3537,7 +3550,7 @@ async def _analyse_image_bytes(data: bytes, mime: str, filename: str, note: str)
             {"type": "text", "text": f"{bot.MEDIA_SCHEDULE_INSTRUCTION}\n\nUser note: {user_note}"}
         ]}],
         max_tokens=2200,
-        tools=[bot.CONTEXT_TOOL, bot.CALENDAR_TOOL, bot.REMINDER_TOOL, bot.MEMORY_TOOL],
+        tools=_upload_analysis_tools(note),
         direct_user_text=note,
     )
     index = f"Image analysed: {filename or 'uploaded image'}"
@@ -7247,7 +7260,7 @@ async def _analyse_document_excerpt(kind: str, index_note: str, excerpt: str, no
     reply_text = await bot._run_agentic_chat(
         [{"role": "user", "content": prompt}],
         max_tokens=2500,
-        tools=[bot.CONTEXT_TOOL, bot.CALENDAR_TOOL, bot.REMINDER_TOOL, bot.MEMORY_TOOL],
+        tools=_upload_analysis_tools(note),
         direct_user_text=note,
     )
     return {"reply": reply_text, "index": index_note}
