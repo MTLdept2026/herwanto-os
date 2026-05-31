@@ -67,6 +67,8 @@ class SelfAuditTests(unittest.TestCase):
 
         self.assertEqual(status["memory_buckets"]["learned_preferences"], 1)
         self.assertEqual(status["learned_preferences"]["auto_count"], 1)
+        self.assertEqual(status["retrospective"]["auto_count"], 0)
+        self.assertEqual(status["retrospective"]["last_week"], "2026-07-10")
         self.assertEqual(status["learned_muted_families"], ["prep_gap"])
 
     def test_strong_dismiss_pattern_mutes_and_writes_auto_preference_digest(self):
@@ -81,6 +83,7 @@ class SelfAuditTests(unittest.TestCase):
                 "marking_crunch": {"count": 5, "negative": 5, "positive": 0},
              })), \
              patch.object(bot.gs, "get_memory", side_effect=lambda: {key: list(value) for key, value in store.items()}), \
+             patch.object(bot.gs, "get_action_ledger", return_value=[]), \
              patch.object(bot.gs, "set_memory", side_effect=set_memory) as set_memory_mock, \
              patch.object(bot.gs, "set_config", side_effect=lambda key, value: config.__setitem__(key, value)) as set_config, \
              patch.object(bot, "_queue_app_notification", return_value={"id": "audit"}) as queue:
@@ -101,6 +104,7 @@ class SelfAuditTests(unittest.TestCase):
                 "prep_gap": {"count": 4, "negative": 2, "positive": 0},
              })), \
              patch.object(bot.gs, "get_memory", return_value=_memory()), \
+             patch.object(bot.gs, "get_action_ledger", return_value=[]), \
              patch.object(bot.gs, "set_memory") as set_memory, \
              patch.object(bot.gs, "set_config", side_effect=lambda key, value: config.__setitem__(key, value)), \
              patch.object(bot, "_queue_app_notification", return_value={"id": "audit"}):
@@ -120,6 +124,7 @@ class SelfAuditTests(unittest.TestCase):
             store.update({key: list(value.get(key, [])) for key in bot.gs.DEFAULT_MEMORY})
 
         with patch.object(bot.gs, "get_memory", side_effect=lambda: {key: list(value) for key, value in store.items()}), \
+             patch.object(bot.gs, "get_action_ledger", return_value=[]), \
              patch.object(bot.gs, "set_memory", side_effect=set_memory), \
              patch.object(bot.gs, "set_config", side_effect=lambda key, value: config.__setitem__(key, value)), \
              patch.object(bot, "_queue_app_notification", return_value={"id": "audit"}):
@@ -145,6 +150,7 @@ class SelfAuditTests(unittest.TestCase):
                 "briefing": {"count": 6, "negative": 6, "positive": 0},
              })), \
              patch.object(bot.gs, "get_memory", return_value=_memory()), \
+             patch.object(bot.gs, "get_action_ledger", return_value=[]), \
              patch.object(bot.gs, "set_memory") as set_memory, \
              patch.object(bot.gs, "set_config", side_effect=lambda key, value: config.__setitem__(key, value)), \
              patch.object(bot, "_queue_app_notification", return_value={"id": "audit"}):
@@ -191,12 +197,160 @@ class SelfAuditTests(unittest.TestCase):
                 "calendar_conflict": {"count": 5, "negative": 5, "positive": 0},
              })), \
              patch.object(bot.gs, "get_memory", side_effect=lambda: {key: list(value) for key, value in memory_store.items()}), \
+             patch.object(bot.gs, "get_action_ledger", return_value=[]), \
              patch.object(bot.gs, "set_memory", side_effect=set_memory), \
              patch.object(bot.gs, "set_config", side_effect=lambda key, value: config_calls.append((key, value))), \
              patch.object(bot, "_queue_app_notification", return_value={"id": "audit"}):
             bot.run_self_audit(self.now)
 
         self.assertEqual([key for key, _value in config_calls], [bot.LEARNED_MUTE_CONFIG_KEY])
+
+    def test_run_self_audit_writes_deduped_retro_preference_for_strong_evidence(self):
+        store = _memory(["manual preference stays"])
+        store["correction_ledger"] = [
+            _correction("Do not answer current facts without live latest web sources."),
+            _correction("Never skip web search and source citations for latest facts."),
+            _correction("You must cite sources when facts are current or changing."),
+        ]
+        store["self_reflections"] = [
+            _reflection("I missed source discipline by not checking latest web sources."),
+            _reflection("I should use web search and cite sources for current facts."),
+        ]
+        config = {}
+
+        def set_memory(value):
+            store.clear()
+            store.update({key: list(value.get(key, [])) for key in bot.gs.DEFAULT_MEMORY})
+
+        with patch.object(bot.gs, "get_notification_outcome_summary", return_value=_summary({})), \
+             patch.object(bot.gs, "get_memory", side_effect=lambda: {key: list(value) for key, value in store.items()}), \
+             patch.object(bot.gs, "get_action_ledger", return_value=[]), \
+             patch.object(bot.gs, "set_memory", side_effect=set_memory), \
+             patch.object(bot.gs, "set_config", side_effect=lambda key, value: config.__setitem__(key, value)), \
+             patch.object(bot, "_queue_app_notification", return_value={"id": "audit"}) as queue:
+            result = bot.run_self_audit(self.now)
+
+        retro_entries = [item for item in store["learned_preferences"] if item.startswith(bot.RETROSPECTIVE_AUTO_PREFIX)]
+        self.assertEqual(len(retro_entries), 1)
+        self.assertIn("Use live/source-backed tools", retro_entries[0])
+        self.assertEqual(len(result["retrospective"]["strong"]), 2)
+        self.assertIn("Patterns I noticed", queue.call_args.args[2])
+
+    def test_run_self_audit_weak_retro_pattern_is_digest_only(self):
+        store = _memory()
+        store["correction_ledger"] = [
+            _correction("Use live latest web sources."),
+            _correction("Search latest web sources before answering."),
+        ]
+        config = {}
+
+        with patch.object(bot.gs, "get_notification_outcome_summary", return_value=_summary({})), \
+             patch.object(bot.gs, "get_memory", side_effect=lambda: {key: list(value) for key, value in store.items()}), \
+             patch.object(bot.gs, "get_action_ledger", return_value=[]), \
+             patch.object(bot.gs, "set_memory") as set_memory, \
+             patch.object(bot.gs, "set_config", side_effect=lambda key, value: config.__setitem__(key, value)), \
+             patch.object(bot, "_queue_app_notification", return_value={"id": "audit"}) as queue:
+            result = bot.run_self_audit(self.now)
+
+        self.assertEqual(result["retrospective"]["strong"], [])
+        self.assertEqual(result["retrospective"]["watch"][0]["cluster"], "source_discipline")
+        set_memory.assert_not_called()
+        self.assertIn("Watching correction", queue.call_args.args[2])
+
+    def test_run_self_audit_action_retro_signal_is_watch_only(self):
+        store = _memory()
+        ledger = [
+            {
+                "id": "1",
+                "created": self.now.isoformat(),
+                "action": "create_calendar_event",
+                "subject": "Meeting A",
+                "source": "assistant_tool",
+                "undo_status": "undone",
+            },
+            {
+                "id": "2",
+                "created": self.now.isoformat(),
+                "action": "create_calendar_event",
+                "subject": "Meeting B",
+                "source": "assistant_tool",
+                "undo_status": "undone",
+            },
+        ]
+
+        with patch.object(bot.gs, "get_notification_outcome_summary", return_value=_summary({})), \
+             patch.object(bot.gs, "get_memory", side_effect=lambda: {key: list(value) for key, value in store.items()}), \
+             patch.object(bot.gs, "get_action_ledger", return_value=ledger), \
+             patch.object(bot.gs, "set_memory") as set_memory, \
+             patch.object(bot.gs, "set_config"), \
+             patch.object(bot, "_queue_app_notification", return_value={"id": "audit"}):
+            result = bot.run_self_audit(self.now)
+
+        self.assertEqual(result["retrospective"]["strong"], [])
+        self.assertEqual(result["retrospective"]["watch"][0]["kind"], "action")
+        set_memory.assert_not_called()
+
+    def test_run_self_audit_retro_entries_survive_two_runs(self):
+        store = _memory()
+        store["correction_ledger"] = [
+            _correction("Do not guess the weekday; verify the date first."),
+            _correction("Never assume the date or weekday from memory."),
+            _correction("You must check dates before saying today or tomorrow."),
+        ]
+
+        def set_memory(value):
+            store.clear()
+            store.update({key: list(value.get(key, [])) for key in bot.gs.DEFAULT_MEMORY})
+
+        with patch.object(bot.gs, "get_notification_outcome_summary", return_value=_summary({})), \
+             patch.object(bot.gs, "get_memory", side_effect=lambda: {key: list(value) for key, value in store.items()}), \
+             patch.object(bot.gs, "get_action_ledger", return_value=[]), \
+             patch.object(bot.gs, "set_memory", side_effect=set_memory), \
+             patch.object(bot.gs, "set_config"), \
+             patch.object(bot, "_queue_app_notification", return_value={"id": "audit"}):
+            bot.run_self_audit(self.now)
+            first = list(store["learned_preferences"])
+            bot.run_self_audit(self.now)
+
+        self.assertEqual(store["learned_preferences"], first)
+        self.assertEqual(len([item for item in first if item.startswith(bot.RETROSPECTIVE_AUTO_PREFIX)]), 1)
+
+    def test_run_self_audit_skips_retro_when_similar_preference_exists(self):
+        store = _memory()
+        store["preferences"] = ["Always use live source backed tools before answering current facts."]
+        store["correction_ledger"] = [
+            _correction("Do not answer current facts without live latest web sources."),
+            _correction("Never skip web search and source citations for latest facts."),
+            _correction("You must cite sources when facts are current or changing."),
+        ]
+
+        with patch.object(bot.gs, "get_notification_outcome_summary", return_value=_summary({})), \
+             patch.object(bot.gs, "get_memory", side_effect=lambda: {key: list(value) for key, value in store.items()}), \
+             patch.object(bot.gs, "get_action_ledger", return_value=[]), \
+             patch.object(bot.gs, "set_memory") as set_memory, \
+             patch.object(bot.gs, "set_config"), \
+             patch.object(bot, "_queue_app_notification", return_value={"id": "audit"}):
+            bot.run_self_audit(self.now)
+
+        set_memory.assert_not_called()
+
+    def test_run_self_audit_survives_action_ledger_failure(self):
+        store = _memory()
+        config = {}
+
+        with patch.object(bot.gs, "get_notification_outcome_summary", return_value=_summary({
+                "prep_gap": {"count": 4, "negative": 2, "positive": 0},
+             })), \
+             patch.object(bot.gs, "get_memory", side_effect=lambda: {key: list(value) for key, value in store.items()}), \
+             patch.object(bot.gs, "get_action_ledger", side_effect=RuntimeError("ledger down")), \
+             patch.object(bot.gs, "set_memory") as set_memory, \
+             patch.object(bot.gs, "set_config", side_effect=lambda key, value: config.__setitem__(key, value)), \
+             patch.object(bot, "_queue_app_notification", return_value={"id": "audit"}):
+            result = bot.run_self_audit(self.now)
+
+        self.assertEqual([item["group"] for item in result["watching"]], ["prep_gap"])
+        self.assertTrue(any("ledger down" in error for error in result["retrospective"]["errors"]))
+        set_memory.assert_not_called()
 
     def test_retrospective_correction_strong_signal_uses_clusters(self):
         memory = _memory()

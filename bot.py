@@ -668,6 +668,14 @@ def build_runtime_status() -> dict:
             "auto_count": sum(1 for item in learned_preferences if str(item).strip().startswith(LEARNED_PREFERENCE_AUTO_PREFIX)),
             "recent": learned_preferences[-5:],
         },
+        "retrospective": {
+            "auto_count": sum(1 for item in learned_preferences if str(item).strip().startswith(RETROSPECTIVE_AUTO_PREFIX)),
+            "recent": [
+                item for item in learned_preferences
+                if str(item).strip().startswith(RETROSPECTIVE_AUTO_PREFIX)
+            ][-3:],
+            "last_week": safe_config(SELF_AUDIT_WEEK_KEY),
+        },
         "learned_muted_families": learned_muted_families,
         "projects": {"count": project_count},
         "notifications": {
@@ -16968,6 +16976,7 @@ NOTIFICATION_NEGATIVE_ACTIONS = {"dismissed", "not_now", "not_useful"}
 LEARNED_MUTE_CONFIG_KEY = "learned_muted_families"
 SELF_AUDIT_WEEK_KEY = "last_self_audit_week"
 LEARNED_PREFERENCE_AUTO_PREFIX = "[auto]"
+RETROSPECTIVE_AUTO_PREFIX = "[retro]"
 LEARNED_MUTE_EXEMPT_GROUPS = {"briefing", "morning_briefing", "evening_briefing", "prayer", "web_prayer", "nudge"}
 NOTIFICATION_COOLDOWN_HOURS = {
     "checkin": 8,
@@ -17091,6 +17100,88 @@ def _retrospective_reflection_text(entry) -> str:
 
 def _retrospective_has_strong_trigger(text: str) -> bool:
     return bool(RETROSPECTIVE_STRONG_TRIGGER_RE.search(str(text or "")))
+
+
+def _retrospective_similarity_tokens(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", str(text or "").lower())
+
+
+RETROSPECTIVE_GENERIC_WINDOWS = {
+    ("before", "answering", "similar", "questions"),
+    ("when", "the", "user", "signals"),
+}
+
+
+def _retrospective_four_word_windows(text: str) -> list[tuple[str, str, str, str]]:
+    tokens = _retrospective_similarity_tokens(text)
+    windows = [tuple(tokens[index:index + 4]) for index in range(max(0, len(tokens) - 3))]
+    return [window for window in windows if window not in RETROSPECTIVE_GENERIC_WINDOWS]
+
+
+def _retrospective_similar_preference_exists(recommendation: str, memory: dict) -> bool:
+    windows = _retrospective_four_word_windows(recommendation)
+    if not windows or not isinstance(memory, dict):
+        return False
+    existing: list[str] = []
+    for category in ("preferences", "constraints", "learned_preferences"):
+        for item in memory.get(category, []) or []:
+            text = str(item or "").strip()
+            if not text or text.startswith(RETROSPECTIVE_AUTO_PREFIX):
+                continue
+            existing.append(" ".join(_retrospective_similarity_tokens(text)))
+    for window in windows:
+        needle = " ".join(window)
+        if any(needle in item for item in existing):
+            return True
+    return False
+
+
+def _retrospective_entry_text(signal: dict, current: datetime) -> str:
+    recommendation = str(signal.get("recommendation", "") or "").strip()
+    if not recommendation:
+        return ""
+    label = str(signal.get("label", "") or signal.get("cluster", "") or "pattern").strip()
+    count = int(signal.get("evidence_count", 0) or 0)
+    return (
+        f"{RETROSPECTIVE_AUTO_PREFIX} {recommendation} "
+        f"- repeated {label} evidence ({count} item{'s' if count != 1 else ''}, {current.date().isoformat()})."
+    )
+
+
+def _replace_retrospective_learned_preferences(signals: list[dict], now: datetime | None = None) -> None:
+    current = _coerce_sgt_datetime(now)
+    memory = gs.get_memory()
+    current_items = list(memory.get("learned_preferences", []))
+    kept = [
+        str(item).strip()
+        for item in current_items
+        if str(item).strip() and not str(item).strip().startswith(RETROSPECTIVE_AUTO_PREFIX)
+    ]
+    entries: list[str] = []
+    seen_recommendations: set[str] = set()
+    for signal in signals or []:
+        if signal.get("kind") == "action" or signal.get("confidence") != "strong":
+            continue
+        recommendation = str(signal.get("recommendation", "") or "").strip()
+        if not recommendation or recommendation in seen_recommendations:
+            continue
+        if _retrospective_similar_preference_exists(recommendation, memory):
+            continue
+        entry = _retrospective_entry_text(signal, current)
+        if entry:
+            entries.append(entry)
+            seen_recommendations.add(recommendation)
+        if len(entries) >= 3:
+            break
+    updated = kept + entries
+    if current_items == updated:
+        return
+    memory["learned_preferences"] = updated
+    gs.set_memory(memory)
+    _invalidate_system_prompt_cache()
+    sync = globals().get("_sync_openai_memory_after_write")
+    if callable(sync):
+        sync(memory, reason="memory:learned_preferences:retrospective")
 
 
 def _retrospective_signal(kind: str, cluster: str, texts: list[str], confidence: str) -> dict:
@@ -17295,6 +17386,9 @@ def _self_audit_digest_body(result: dict) -> str:
     muted = result.get("muted", []) or []
     watching = result.get("watching", []) or []
     valued = result.get("valued", []) or []
+    retrospective = result.get("retrospective", {}) if isinstance(result.get("retrospective", {}), dict) else {}
+    retro_strong = retrospective.get("strong", []) or []
+    retro_watch = retrospective.get("watch", []) or []
     if muted:
         lines.append("Easing off:")
         for item in muted[:5]:
@@ -17307,7 +17401,14 @@ def _self_audit_digest_body(result: dict) -> str:
         lines.append("You seemed to value:")
         for item in valued[:5]:
             lines.append(f"- {item['group']}: {item['positive']} useful marks.")
-    if not muted and not watching and not valued:
+    if retro_strong or retro_watch:
+        lines.append("Patterns I noticed:")
+        for item in retro_strong[:3]:
+            lines.append(f"- Strong {item.get('kind', 'signal')}: {item.get('label', 'pattern')} ({item.get('evidence_count', 0)}x).")
+        remaining = max(0, 5 - min(3, len(retro_strong)))
+        for item in retro_watch[:remaining]:
+            lines.append(f"- Watching {item.get('kind', 'signal')}: {item.get('label', 'pattern')} ({item.get('evidence_count', 0)}x).")
+    if not muted and not watching and not valued and not retro_strong and not retro_watch:
         lines.append("- No strong preference pattern yet. I will keep observing quietly.")
     return "\n".join(lines)
 
@@ -17319,6 +17420,7 @@ def run_self_audit(now: datetime | None = None) -> dict:
         "muted": [],
         "watching": [],
         "valued": [],
+        "retrospective": {"strong": [], "watch": [], "errors": []},
     }
     try:
         summary = gs.get_notification_outcome_summary(days=14)
@@ -17344,6 +17446,12 @@ def run_self_audit(now: datetime | None = None) -> dict:
             if item["positive"] >= 2 and item["positive"] > item["negative"]:
                 result["valued"].append(item)
 
+        retrospective = build_retrospective_evidence(now=current, days=14)
+        result["retrospective"] = {
+            "strong": list(retrospective.get("strong", []) or []),
+            "watch": list(retrospective.get("watch", []) or []),
+            "errors": list(retrospective.get("errors", []) or []),
+        }
         muted_families = [item["group"] for item in result["muted"]]
         gs.set_config(LEARNED_MUTE_CONFIG_KEY, json.dumps(muted_families, ensure_ascii=False))
         today = current.date().isoformat()
@@ -17355,6 +17463,7 @@ def run_self_audit(now: datetime | None = None) -> dict:
             for item in result["muted"]
         ]
         _replace_auto_learned_preferences(auto_entries)
+        _replace_retrospective_learned_preferences(result["retrospective"]["strong"], now=current)
         digest_body = _self_audit_digest_body(result)
         source = f"self_audit:{current.isocalendar().year}-W{current.isocalendar().week:02d}"
         result["digest_queued"] = bool(_queue_app_notification("update", "What I learned this week", digest_body, source=source))
