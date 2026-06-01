@@ -6459,12 +6459,17 @@ class AgenticOpenAITests(unittest.TestCase):
         fresh_stamp = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
 
         async def fake_execute_tool(name, inp):
+            if name == "web_research":
+                raise RuntimeError("research unavailable")
             self.assertEqual(name, "get_latest_news")
             if "Teenage Engineering" in inp["query"]:
                 raise RuntimeError("rss unavailable")
             return f"*News: Android*\n\n- Android security update ships (Android Developers · {fresh_stamp})"
 
-        with patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool):
+        with (
+            patch.object(bot, "OPENAI_API_KEY", "test-key"),
+            patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool),
+        ):
             reply = asyncio.run(web_app._pwa_topic_news_reply("Teenage Engineering and Android updates?"))
 
         self.assertIn("Teenage Engineering", reply)
@@ -6489,6 +6494,7 @@ class AgenticOpenAITests(unittest.TestCase):
             return f"*Fresh news: Nothing*\n\n- Nothing OS beta expands to more Phone users (9to5Google · {recent_stamp})"
 
         with (
+            patch.object(web_app.ss, "search_enabled", return_value=False),
             patch.object(bot, "NEWS_MAX_AGE_HOURS", 24),
             patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool),
         ):
@@ -6499,28 +6505,77 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertIn("Nothing OS beta expands", reply)
         self.assertNotIn("No fresh usable item", reply)
 
-    def test_topic_news_reply_keeps_hira_voice_and_filters_junk(self):
+    def test_topic_news_rss_fallback_fetches_deeper_than_visible_limit(self):
         fresh_stamp = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
+        calls = []
 
         async def fake_execute_tool(name, inp):
             self.assertEqual(name, "get_latest_news")
-            query = inp["query"]
-            if "Teenage Engineering" in query:
+            calls.append(dict(inp))
+            if inp["max_items"] < 5:
                 return "\n".join([
                     "*News: Teenage Engineering*",
                     "",
+                    f"- Generic product market note (Example · {fresh_stamp})",
+                    f"- Interface design roundup (Example · {fresh_stamp})",
+                ])
+            return "\n".join([
+                "*News: Teenage Engineering*",
+                "",
+                f"- Generic product market note (Example · {fresh_stamp})",
+                f"- Interface design roundup (Example · {fresh_stamp})",
+                f"- OP-XY firmware update spotted (Synth Daily · {fresh_stamp})",
+            ])
+
+        with (
+            patch.object(web_app.ss, "search_enabled", return_value=False),
+            patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool),
+        ):
+            reply = asyncio.run(web_app._pwa_topic_news_reply("How about Teenage Engineering?"))
+
+        self.assertEqual(calls[0]["max_items"], 5)
+        self.assertIn("OP-XY firmware update", reply)
+        self.assertNotIn("No fresh usable item", reply)
+        self.assertNotIn("feed handed me lint", reply)
+
+    def test_topic_news_reply_uses_web_research_and_llm_relevance(self):
+        fresh_stamp = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
+        calls = []
+
+        async def fake_execute_tool(name, inp):
+            self.assertEqual(name, "web_research")
+            calls.append(dict(inp))
+            query = inp["query"]
+            if "Teenage Engineering" in query:
+                return "\n".join([
+                    "Research query: Teenage Engineering",
                     "- Teenage Engineering celebrates 10 years of the Pocket Operator (MusicRadar · Fri, 21 Feb 2025 08:00:00 GMT)",
                     "- TomatoSystem Registers AI-Based UI/UX Development Solution with Public Procurement Service... Targets Public DX Market (Asia Economy · Wed, 20 May 2026 23:46:02 GMT)",
                 ])
             if "Nothing" in query:
                 return "\n".join([
-                    "*News: Nothing*",
-                    "",
+                    "Research query: Nothing",
+                    "- Carl Pei's Nothing enters Kenya officially with Mitsumi as distributor (tech-ish.com · Thu, 21 May 2026 07:00:00 GMT)",
                     f"- CMF by Nothing teases new audio product (Nothing Community · {fresh_stamp})",
                 ])
-            return "No news found."
+            return "No research sources found."
 
-        with patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool):
+        async def fake_llm_text_async(**kwargs):
+            user_content = kwargs["messages"][0]["content"]
+            self.assertIn("Carl Pei's Nothing enters Kenya", user_content)
+            self.assertIn("TomatoSystem", user_content)
+            return (
+                "*Teenage Engineering*\n"
+                "- No fresh Teenage Engineering news in the last ~2 weeks.\n\n"
+                "*Nothing*\n"
+                f"- CMF by Nothing teases new audio product (Nothing Community · {fresh_stamp})"
+            )
+
+        with (
+            patch.object(bot, "OPENAI_API_KEY", "test-key"),
+            patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool),
+            patch.object(bot, "_llm_text_async", side_effect=fake_llm_text_async),
+        ):
             reply = asyncio.run(
                 web_app._pwa_topic_news_reply(
                     "I asked only about Teenage Engineering and Nothing",
@@ -6528,11 +6583,43 @@ class AgenticOpenAITests(unittest.TestCase):
                 )
             )
 
-        self.assertIn("Got it. Narrowing the lens: Teenage Engineering and Nothing.", reply)
-        self.assertIn("Only stale/low-signal hits came back", reply)
+        self.assertEqual([call["query"] for call in calls], [
+            "Teenage Engineering OP-XY OP-1 Field Pocket Operator firmware update product news",
+            "Nothing Phone Nothing OS Nothing Ear CMF Carl Pei Android update launch product news",
+        ])
+        self.assertIn("No fresh Teenage Engineering news", reply)
         self.assertIn("CMF by Nothing teases new audio product", reply)
         self.assertNotIn("TomatoSystem", reply)
-        self.assertNotIn("Quick live check on the non-sports topics", reply)
+        self.assertNotIn("Carl Pei's Nothing enters Kenya", reply)
+        self.assertNotIn("buffet plate", reply)
+        self.assertNotIn("lint", reply)
+
+    def test_topic_news_reply_falls_back_to_rss_when_llm_relevance_fails(self):
+        fresh_stamp = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
+        calls = []
+
+        async def fake_execute_tool(name, inp):
+            calls.append((name, dict(inp)))
+            if name == "web_research":
+                return "Research query: Nothing\n- Nothing OS beta reaches Phone users"
+            if name == "get_latest_news":
+                return f"*News: Nothing*\n\n- Nothing OS fallback item (9to5Google · {fresh_stamp})"
+            raise AssertionError(f"unexpected tool: {name}")
+
+        async def fake_llm_text_async(**_kwargs):
+            raise RuntimeError("llm down")
+
+        with (
+            patch.object(bot, "OPENAI_API_KEY", "test-key"),
+            patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool),
+            patch.object(bot, "_llm_text_async", side_effect=fake_llm_text_async),
+        ):
+            reply = asyncio.run(web_app._pwa_topic_news_reply("Any news on Nothing OS/products?"))
+
+        self.assertEqual([name for name, _inp in calls], ["web_research", "get_latest_news"])
+        self.assertIn("Nothing OS fallback item", reply)
+        self.assertNotIn("buffet plate", reply)
+        self.assertNotIn("lint", reply)
 
     def test_source_fallback_exception_returns_specific_live_check_failure(self):
         with patch.object(bot, "_execute_tool_offloop", side_effect=RuntimeError("network down")):
@@ -6548,27 +6635,38 @@ class AgenticOpenAITests(unittest.TestCase):
         calls = []
 
         async def fake_execute_tool(name, inp):
-            self.assertEqual(name, "get_latest_news")
-            calls.append(dict(inp))
+            self.assertEqual(name, "web_research")
+            calls.append((name, dict(inp)))
             query = inp["query"]
             self.assertNotEqual(query, prompt)
             if "Teenage Engineering" in query:
-                return f"*News: Teenage Engineering*\n\n- OP-XY firmware update spotted (Synth Daily · {fresh_stamp})"
+                return f"Research query: Teenage Engineering\n- OP-XY firmware update spotted (Synth Daily · {fresh_stamp})"
             if "Nothing" in query:
-                return f"*News: Nothing*\n\n- Nothing OS update reaches Phone users (9to5Google · {fresh_stamp})"
-            return "No news found."
+                return f"Research query: Nothing\n- Nothing OS update reaches Phone users (9to5Google · {fresh_stamp})"
+            return "No research sources found."
 
-        with patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool):
+        async def fake_llm_text_async(**_kwargs):
+            return (
+                "*Teenage Engineering*\n- OP-XY firmware update spotted (Synth Daily)\n\n"
+                "*Nothing*\n- Nothing OS update reaches Phone users (9to5Google)"
+            )
+
+        with (
+            patch.object(bot, "OPENAI_API_KEY", "test-key"),
+            patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool),
+            patch.object(bot, "_llm_text_async", side_effect=fake_llm_text_async),
+        ):
             text, tool, result = asyncio.run(web_app._source_check_backend_fallback_payload(prompt))
 
         self.assertEqual(tool, "get_latest_news")
         self.assertEqual(result, text)
         self.assertIn("OP-XY firmware update", text)
         self.assertIn("Nothing OS update", text)
-        self.assertEqual([call["query"] for call in calls], [
+        self.assertEqual([call[1]["query"] for call in calls], [
             "Teenage Engineering OP-XY OP-1 Field Pocket Operator firmware update product news",
             "Nothing Phone Nothing OS Nothing Ear CMF Carl Pei Android update launch product news",
         ])
+        self.assertEqual({call[0] for call in calls}, {"web_research"})
 
     def test_retry_target_message_replays_previous_user_turn_after_failed_reply(self):
         history = [
@@ -6668,6 +6766,7 @@ class AgenticOpenAITests(unittest.TestCase):
             patch.object(bot, "save_history"),
             patch.object(web_app, "_update_working_memory", return_value={}),
             patch.object(web_app, "_schedule_background_call"),
+            patch.object(web_app.ss, "search_enabled", return_value=False),
             patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool),
             patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("should not route to model")),
         ):
@@ -6685,15 +6784,21 @@ class AgenticOpenAITests(unittest.TestCase):
         calls = []
 
         async def fake_execute_tool(name, inp):
-            self.assertEqual(name, "get_latest_news")
+            self.assertEqual(name, "web_research")
             calls.append(dict(inp))
             query = inp["query"]
             self.assertNotEqual(query, prompt)
             if "Teenage Engineering" in query:
-                return f"*News: Teenage Engineering*\n\n- OP-XY firmware update spotted (Synth Daily · {fresh_stamp})"
+                return f"Research query: Teenage Engineering\n- OP-XY firmware update spotted (Synth Daily · {fresh_stamp})"
             if "Nothing" in query:
-                return f"*News: Nothing*\n\n- Nothing OS update reaches Phone users (9to5Google · {fresh_stamp})"
-            return "No news found."
+                return f"Research query: Nothing\n- Nothing OS update reaches Phone users (9to5Google · {fresh_stamp})"
+            return "No research sources found."
+
+        async def fake_llm_text_async(**_kwargs):
+            return (
+                "*Teenage Engineering*\n- OP-XY firmware update spotted (Synth Daily)\n\n"
+                "*Nothing*\n- Nothing OS update reaches Phone users (9to5Google)"
+            )
 
         async def run():
             response = await web_app._chat_stream_response(prompt, None, "phone")
@@ -6707,7 +6812,9 @@ class AgenticOpenAITests(unittest.TestCase):
             patch.object(bot, "save_history"),
             patch.object(web_app, "_update_working_memory", return_value={}),
             patch.object(web_app, "_schedule_background_call"),
+            patch.object(bot, "OPENAI_API_KEY", "test-key"),
             patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool),
+            patch.object(bot, "_llm_text_async", side_effect=fake_llm_text_async),
             patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("should not route to model")),
         ):
             body = asyncio.run(run())
@@ -6762,7 +6869,10 @@ class AgenticOpenAITests(unittest.TestCase):
 
         async def fake_execute_tool(name, inp):
             calls.append((name, inp))
-            return f"*News: Teenage Engineering*\n\n- OP-XY firmware update spotted (Synth Daily · {fresh_stamp})"
+            return f"Research query: Teenage Engineering\n- OP-XY firmware update spotted (Synth Daily · {fresh_stamp})"
+
+        async def fake_llm_text_async(**_kwargs):
+            return "*Teenage Engineering*\n- OP-XY firmware update spotted (Synth Daily)"
 
         context = (
             "Let me do the proper thing: I should run a targeted live search for:\n\n"
@@ -6771,15 +6881,20 @@ class AgenticOpenAITests(unittest.TestCase):
             "- OP-XY updates/reviews\n"
             "- Singapore availability/pricing if relevant"
         )
-        with patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool):
+        with (
+            patch.object(bot, "OPENAI_API_KEY", "test-key"),
+            patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool),
+            patch.object(bot, "_llm_text_async", side_effect=fake_llm_text_async),
+        ):
             reply = asyncio.run(web_app._pwa_topic_news_reply("Yes pls", context))
 
         self.assertEqual(calls, [(
-            "get_latest_news",
+            "web_research",
             {
                 "query": "Teenage Engineering OP-XY OP-1 Field Pocket Operator firmware update product news",
-                "max_items": 2,
-                "max_age_hours": bot.NEWS_MAX_AGE_HOURS,
+                "max_sources": 6,
+                "fetch_pages": 2,
+                "freshness": "latest",
             },
         )])
         self.assertIn("Teenage Engineering", reply)

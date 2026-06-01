@@ -34,6 +34,7 @@ import bot
 import classops_intelligence as classops_ai
 import document_service as docs
 import dropbox_service as dropbox
+import search_service as ss
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -1874,20 +1875,62 @@ def _pwa_topic_recent_window_hours(label: str) -> int:
 def _pwa_topic_news_intro(topics: list[tuple[str, str]]) -> str:
     labels = [label for label, _query in topics]
     if labels == ["Latest from your shortlist"]:
-        return "I widened the radar across your shortlist. Useful bits only; confetti stays outside."
+        return "I widened the radar across your shortlist."
     if len(labels) == 1:
-        return f"Got it. Narrowing the lens: {labels[0]}. No random buffet plate."
-    return f"Got it. Narrowing the lens: {', '.join(labels[:-1])} and {labels[-1]}. No random buffet plate."
+        return f"Got it. Narrowing the lens: {labels[0]}."
+    return f"Got it. Narrowing the lens: {', '.join(labels[:-1])} and {labels[-1]}."
 
 
-async def _pwa_topic_news_reply(message: str, recent_context: str = "") -> str:
+def _pwa_topic_news_research_failed(result: str) -> bool:
+    clean = " ".join(str(result or "").strip().split()).lower()
+    return not clean or clean.startswith("failed to") or clean in {
+        "no research sources found.",
+        "web research is disabled or the query is empty.",
+    }
+
+
+def _pwa_topic_news_research_system(topics: list[tuple[str, str]]) -> str:
+    labels = ", ".join(label for label, _query in topics)
+    return (
+        "You are H.I.R.A summarising a live topic-news check from web research source packs. "
+        "Use only the supplied source-pack evidence; do not answer from memory. "
+        f"Topics requested: {labels}. "
+        "Keep only items genuinely about the named topic's products, OS, firmware, company news, developer ecosystem, "
+        "or material community signal. Drop tangential regional distribution, generic PR, listicles, market filler, "
+        "and off-topic keyword matches. Prefer fresh or recent sources and include the source name/domain plus date when available. "
+        "Return concise markdown: 1-2 bullets per topic. If a topic has no genuinely relevant fresh item, say that in one plain sentence. "
+        "No quips, no 'buffet plate', no 'lint', no pretending stale or weak items are useful. "
+        f"{bot.hira_wit_style_brief()}"
+    )
+
+
+def _pwa_topic_news_research_user_message(
+    message: str,
+    topics: list[tuple[str, str]],
+    research_blocks: list[tuple[str, str, str]],
+) -> str:
+    topic_lines = "\n".join(f"- {label}: {query}" for label, query in topics)
+    packs = "\n\n".join(
+        f"## Topic: {label}\nQuery: {query}\n\n{result}"
+        for label, query, result in research_blocks
+    )
+    return (
+        f"User asked: {message}\n\n"
+        f"Resolved topics:\n{topic_lines}\n\n"
+        "Source packs from live web research:\n\n"
+        f"{packs}\n\n"
+        "Write the final chat answer only."
+    )
+
+
+async def _pwa_topic_news_reply_rss(message: str, recent_context: str = "") -> str:
     topics = _pwa_topic_news_queries(message, recent_context)
     if not topics:
         return ""
 
     async def fetch(label: str, query: str):
         try:
-            max_items = 6 if not str(query or "").strip() else 2
+            max_items = 6 if not str(query or "").strip() else 5
             primary_window = int(bot.NEWS_MAX_AGE_HOURS)
             result = await bot._execute_tool_offloop(
                 "get_latest_news",
@@ -1923,12 +1966,56 @@ async def _pwa_topic_news_reply(message: str, recent_context: str = "") -> str:
         elif stale_items:
             sections.append(f"*{label}*\n- Only stale/low-signal hits came back. I’m leaving them off the main plate.")
         else:
-            sections.append(f"*{label}*\n- No fresh usable item. The feed handed me lint; I’m leaving it there.")
+            sections.append(f"*{label}*\n- No fresh usable item came back from the live news feed.")
 
     if not sections:
         labels = ", ".join(label for label, _query in topics)
         return f"I ran the live news check for {labels}, but it did not return usable items. I’m not going to guess from memory."
     return _pwa_topic_news_intro(topics) + "\n\n" + "\n\n".join(sections)
+
+
+async def _pwa_topic_news_reply(message: str, recent_context: str = "") -> str:
+    topics = _pwa_topic_news_queries(message, recent_context)
+    if not topics:
+        return ""
+    if not ss.search_enabled() or not str(getattr(bot, "OPENAI_API_KEY", "") or "").strip():
+        return await _pwa_topic_news_reply_rss(message, recent_context)
+    if any(not str(query or "").strip() for _label, query in topics):
+        return await _pwa_topic_news_reply_rss(message, recent_context)
+
+    async def fetch_research(label: str, query: str) -> tuple[str, str, str]:
+        try:
+            result = await bot._execute_tool_offloop(
+                "web_research",
+                {"query": query, "max_sources": 6, "fetch_pages": 2, "freshness": "latest"},
+            )
+            return label, query, str(result or "")
+        except Exception as exc:
+            bot.logger.warning(f"PWA topic web research failed for {label}: {exc}")
+            return label, query, f"Failed to run web research: {exc}"
+
+    research_blocks = await asyncio.gather(*(fetch_research(label, query) for label, query in topics))
+    if any(_pwa_topic_news_research_failed(result) for _label, _query, result in research_blocks):
+        return await _pwa_topic_news_reply_rss(message, recent_context)
+
+    try:
+        reply = await bot._llm_text_async(
+            model=bot.QUICK_MODEL,
+            max_tokens=650,
+            system=_pwa_topic_news_research_system(topics),
+            messages=[{
+                "role": "user",
+                "content": _pwa_topic_news_research_user_message(message, topics, research_blocks),
+            }],
+        )
+    except Exception as exc:
+        bot.logger.warning(f"PWA topic-news relevance pass failed: {exc}")
+        return await _pwa_topic_news_reply_rss(message, recent_context)
+
+    clean = str(reply or "").strip()
+    if not clean:
+        return await _pwa_topic_news_reply_rss(message, recent_context)
+    return clean
 
 
 def _update_working_memory(history_key: str, history: list, message: str) -> dict:
