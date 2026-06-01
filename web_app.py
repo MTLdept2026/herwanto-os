@@ -1883,10 +1883,91 @@ def _pwa_topic_news_intro(topics: list[tuple[str, str]]) -> str:
 
 def _pwa_topic_news_research_failed(result: str) -> bool:
     clean = " ".join(str(result or "").strip().split()).lower()
-    return not clean or clean.startswith("failed to") or clean in {
-        "no research sources found.",
-        "web research is disabled or the query is empty.",
-    }
+    return (
+        not clean
+        or clean.startswith("failed to")
+        or clean.startswith("no research sources")
+        or clean == "web research is disabled or the query is empty."
+    )
+
+
+def _pwa_topic_news_source_text(source: dict) -> str:
+    return " ".join(
+        str(source.get(key, "") or "")
+        for key in ("title", "description", "evidence", "domain", "url", "date")
+    )
+
+
+def _pwa_topic_news_source_is_stale(label: str, source: dict) -> bool:
+    freshness = str(source.get("freshness", "") or "").strip().lower()
+    if freshness in {"aging", "stale"}:
+        return True
+    date_text = str(source.get("date", "") or "").strip()
+    if not date_text:
+        return False
+    try:
+        parsed = ss._parse_source_date(date_text)
+    except Exception:
+        parsed = None
+    if not parsed:
+        return False
+    current = datetime.now(bot.SGT)
+    if current.tzinfo is None:
+        current = bot.SGT.localize(current)
+    age_hours = (current.astimezone(bot.SGT) - parsed.astimezone(bot.SGT)).total_seconds() / 3600
+    return age_hours > _pwa_topic_recent_window_hours(label)
+
+
+def _pwa_topic_news_source_allowed(label: str, source: dict) -> bool:
+    text = _pwa_topic_news_source_text(source)
+    if _PWA_LOW_SIGNAL_NEWS_RE.search(text):
+        return False
+    if _pwa_topic_news_source_is_stale(label, source):
+        return False
+    return _pwa_news_item_matches_topic(label, text)
+
+
+def _pwa_topic_news_pruned_research_pack(label: str, pack: dict) -> dict:
+    if not isinstance(pack, dict) or not pack.get("ok"):
+        return pack if isinstance(pack, dict) else {"ok": False, "error": "No research sources found."}
+    kept = []
+    for source in pack.get("sources") or []:
+        if not isinstance(source, dict) or not _pwa_topic_news_source_allowed(label, source):
+            continue
+        item = dict(source)
+        kept.append(item)
+    for index, source in enumerate(kept, start=1):
+        source["id"] = f"S{index}"
+        source["citation"] = f"[S{index}]"
+    quality = dict(pack.get("quality") or {})
+    quality.update({
+        "source_count": len(kept),
+        "fetched_count": sum(1 for source in kept if source.get("fetched")),
+        "official_count": sum(1 for source in kept if source.get("source_type") == "official/primary"),
+        "fresh_or_recent_count": sum(1 for source in kept if source.get("freshness") in {"fresh", "recent"}),
+        "domain_count": len({source.get("domain") for source in kept if source.get("domain")}),
+        "confidence": quality.get("confidence", "thin") if kept else "thin",
+    })
+    pruned = dict(pack)
+    pruned["sources"] = kept
+    pruned["ok"] = bool(kept)
+    pruned["quality"] = quality
+    pruned["fetched_count"] = quality["fetched_count"]
+    if not kept:
+        pruned["error"] = "No research sources survived deterministic topic/freshness filters."
+    return pruned
+
+
+def _pwa_topic_news_dedupe_topics(topics: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    deduped: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for label, query in topics:
+        key = (str(label), str(query))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append((label, query))
+    return deduped
 
 
 def _pwa_topic_news_research_system(topics: list[tuple[str, str]]) -> str:
@@ -1923,8 +2004,7 @@ def _pwa_topic_news_research_user_message(
     )
 
 
-async def _pwa_topic_news_reply_rss(message: str, recent_context: str = "") -> str:
-    topics = _pwa_topic_news_queries(message, recent_context)
+async def _pwa_topic_news_reply_rss_for_topics(topics: list[tuple[str, str]]) -> str:
     if not topics:
         return ""
 
@@ -1974,6 +2054,10 @@ async def _pwa_topic_news_reply_rss(message: str, recent_context: str = "") -> s
     return _pwa_topic_news_intro(topics) + "\n\n" + "\n\n".join(sections)
 
 
+async def _pwa_topic_news_reply_rss(message: str, recent_context: str = "") -> str:
+    return await _pwa_topic_news_reply_rss_for_topics(_pwa_topic_news_queries(message, recent_context))
+
+
 async def _pwa_topic_news_reply(message: str, recent_context: str = "") -> str:
     topics = _pwa_topic_news_queries(message, recent_context)
     if not topics:
@@ -1985,37 +2069,62 @@ async def _pwa_topic_news_reply(message: str, recent_context: str = "") -> str:
 
     async def fetch_research(label: str, query: str) -> tuple[str, str, str]:
         try:
-            result = await bot._execute_tool_offloop(
-                "web_research",
-                {"query": query, "max_sources": 6, "fetch_pages": 2, "freshness": "latest"},
+            pack = await asyncio.to_thread(
+                ss.web_research,
+                query,
+                max_sources=6,
+                fetch_pages=2,
+                freshness="latest",
             )
+            result = ss.format_research_pack(_pwa_topic_news_pruned_research_pack(label, pack))
             return label, query, str(result or "")
         except Exception as exc:
             bot.logger.warning(f"PWA topic web research failed for {label}: {exc}")
             return label, query, f"Failed to run web research: {exc}"
 
-    research_blocks = await asyncio.gather(*(fetch_research(label, query) for label, query in topics))
-    if any(_pwa_topic_news_research_failed(result) for _label, _query, result in research_blocks):
-        return await _pwa_topic_news_reply_rss(message, recent_context)
+    fetched_blocks = await asyncio.gather(*(fetch_research(label, query) for label, query in topics))
+    research_blocks = [
+        (label, query, result)
+        for label, query, result in fetched_blocks
+        if not _pwa_topic_news_research_failed(result)
+    ]
+    fallback_topics = [
+        (label, query)
+        for label, query, result in fetched_blocks
+        if _pwa_topic_news_research_failed(result)
+    ]
 
+    research_reply = ""
     try:
-        reply = await bot._llm_text_async(
-            model=bot.QUICK_MODEL,
-            max_tokens=650,
-            system=_pwa_topic_news_research_system(topics),
-            messages=[{
-                "role": "user",
-                "content": _pwa_topic_news_research_user_message(message, topics, research_blocks),
-            }],
-        )
+        if research_blocks:
+            research_topics = [(label, query) for label, query, _result in research_blocks]
+            research_reply = await bot._llm_text_async(
+                model=bot.QUICK_MODEL,
+                max_tokens=650,
+                system=_pwa_topic_news_research_system(research_topics),
+                messages=[{
+                    "role": "user",
+                    "content": _pwa_topic_news_research_user_message(message, research_topics, research_blocks),
+                }],
+            )
     except Exception as exc:
         bot.logger.warning(f"PWA topic-news relevance pass failed: {exc}")
-        return await _pwa_topic_news_reply_rss(message, recent_context)
+        research_reply = ""
 
-    clean = str(reply or "").strip()
-    if not clean:
-        return await _pwa_topic_news_reply_rss(message, recent_context)
-    return clean
+    parts = []
+    clean_research = str(research_reply or "").strip()
+    if clean_research:
+        parts.append(clean_research)
+    elif research_blocks:
+        fallback_topics = _pwa_topic_news_dedupe_topics([
+            *fallback_topics,
+            *[(label, query) for label, query, _result in research_blocks],
+        ])
+    if fallback_topics:
+        fallback_reply = await _pwa_topic_news_reply_rss_for_topics(_pwa_topic_news_dedupe_topics(fallback_topics))
+        if fallback_reply:
+            parts.append(fallback_reply)
+    return "\n\n".join(parts).strip()
 
 
 def _update_working_memory(history_key: str, history: list, message: str) -> dict:
