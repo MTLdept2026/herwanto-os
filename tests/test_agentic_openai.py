@@ -4,7 +4,7 @@ import json
 import os
 import time
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import ANY, patch
@@ -6427,6 +6427,15 @@ class AgenticOpenAITests(unittest.TestCase):
 
         self.assertEqual([label for label, _query in topics], ["Teenage Engineering", "Android", "Nothing"])
 
+    def test_favourite_topic_news_prompt_does_not_use_generic_direct_source(self):
+        text = "Any new developments or news on Nothing OS/products or Teenage engineering?"
+        topics = web_app._pwa_topic_news_queries(text)
+        tool = web_app._source_tool_for_message(text)
+
+        self.assertEqual([label for label, _query in topics], ["Teenage Engineering", "Nothing"])
+        self.assertEqual(tool, "get_latest_news")
+        self.assertFalse(web_app._should_direct_source_route(tool, text))
+
     def test_teenage_engineering_without_news_keyword_still_uses_news_tools(self):
         text = "How about Teenage Engineering and OP-XY stuff?"
         tools = bot.pwa_tools_for_message(text)
@@ -6463,6 +6472,32 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertNotIn("Quick live check on the non-sports topics", reply)
         self.assertIn("Android security update ships", reply)
         self.assertNotIn("backend snag", reply.lower())
+
+    def test_topic_news_reply_widens_recent_window_for_product_topics(self):
+        recent_stamp = (datetime.now(timezone.utc) - timedelta(days=5)).strftime("%a, %d %b %Y %H:%M:%S GMT")
+        calls = []
+
+        async def fake_execute_tool(name, inp):
+            self.assertEqual(name, "get_latest_news")
+            calls.append(dict(inp))
+            if inp["max_age_hours"] == 24:
+                return (
+                    f"*Fresh news: {inp['query']}*\n"
+                    "_Freshness gate: last 24h_\n\n"
+                    f"No fresh usable news for {inp['query']} in the last 24h."
+                )
+            return f"*Fresh news: Nothing*\n\n- Nothing OS beta expands to more Phone users (9to5Google · {recent_stamp})"
+
+        with (
+            patch.object(bot, "NEWS_MAX_AGE_HOURS", 24),
+            patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool),
+        ):
+            reply = asyncio.run(web_app._pwa_topic_news_reply("Any news on Nothing OS/products?"))
+
+        self.assertEqual([call["max_age_hours"] for call in calls], [24, 14 * 24])
+        self.assertIn("recent window: 14d", reply)
+        self.assertIn("Nothing OS beta expands", reply)
+        self.assertNotIn("No fresh usable item", reply)
 
     def test_topic_news_reply_keeps_hira_voice_and_filters_junk(self):
         fresh_stamp = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
@@ -6501,11 +6536,39 @@ class AgenticOpenAITests(unittest.TestCase):
 
     def test_source_fallback_exception_returns_specific_live_check_failure(self):
         with patch.object(bot, "_execute_tool_offloop", side_effect=RuntimeError("network down")):
-            text, tool, result = asyncio.run(web_app._source_check_backend_fallback_payload("Any Android updates?"))
+            text, tool, result = asyncio.run(web_app._source_check_backend_fallback_payload("Any semiconductor earnings news?"))
 
         self.assertEqual(tool, "get_latest_news")
         self.assertEqual(result, "")
         self.assertIn("live news source check also failed", text)
+
+    def test_source_fallback_uses_topic_resolver_before_raw_news_query(self):
+        prompt = "Any new developments or news on Nothing OS/products or Teenage engineering?"
+        fresh_stamp = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
+        calls = []
+
+        async def fake_execute_tool(name, inp):
+            self.assertEqual(name, "get_latest_news")
+            calls.append(dict(inp))
+            query = inp["query"]
+            self.assertNotEqual(query, prompt)
+            if "Teenage Engineering" in query:
+                return f"*News: Teenage Engineering*\n\n- OP-XY firmware update spotted (Synth Daily · {fresh_stamp})"
+            if "Nothing" in query:
+                return f"*News: Nothing*\n\n- Nothing OS update reaches Phone users (9to5Google · {fresh_stamp})"
+            return "No news found."
+
+        with patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool):
+            text, tool, result = asyncio.run(web_app._source_check_backend_fallback_payload(prompt))
+
+        self.assertEqual(tool, "get_latest_news")
+        self.assertEqual(result, text)
+        self.assertIn("OP-XY firmware update", text)
+        self.assertIn("Nothing OS update", text)
+        self.assertEqual([call["query"] for call in calls], [
+            "Teenage Engineering OP-XY OP-1 Field Pocket Operator firmware update product news",
+            "Nothing Phone Nothing OS Nothing Ear CMF Carl Pei Android update launch product news",
+        ])
 
     def test_retry_target_message_replays_previous_user_turn_after_failed_reply(self):
         history = [
@@ -6615,6 +6678,47 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertIn("Android feature drop", body)
         self.assertIn("Nothing OS update", body)
         self.assertNotIn('"final_mode": "backend_error"', body)
+
+    def test_topic_news_screenshot_prompt_bypasses_generic_direct_news_query(self):
+        prompt = "Any new developments or news on Nothing OS/products or Teenage engineering?"
+        fresh_stamp = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
+        calls = []
+
+        async def fake_execute_tool(name, inp):
+            self.assertEqual(name, "get_latest_news")
+            calls.append(dict(inp))
+            query = inp["query"]
+            self.assertNotEqual(query, prompt)
+            if "Teenage Engineering" in query:
+                return f"*News: Teenage Engineering*\n\n- OP-XY firmware update spotted (Synth Daily · {fresh_stamp})"
+            if "Nothing" in query:
+                return f"*News: Nothing*\n\n- Nothing OS update reaches Phone users (9to5Google · {fresh_stamp})"
+            return "No news found."
+
+        async def run():
+            response = await web_app._chat_stream_response(prompt, None, "phone")
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(web_app, "_update_working_memory", return_value={}),
+            patch.object(web_app, "_schedule_background_call"),
+            patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool),
+            patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("should not route to model")),
+        ):
+            body = asyncio.run(run())
+
+        self.assertIn('"name": "topic_news"', body)
+        self.assertIn("OP-XY firmware update", body)
+        self.assertIn("Nothing OS update", body)
+        self.assertEqual([call["query"] for call in calls], [
+            "Teenage Engineering OP-XY OP-1 Field Pocket Operator firmware update product news",
+            "Nothing Phone Nothing OS Nothing Ear CMF Carl Pei Android update launch product news",
+        ])
 
     def test_provider_status_bypasses_topic_news_shortcut(self):
         async def run():

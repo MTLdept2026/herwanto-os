@@ -1584,6 +1584,8 @@ def _should_direct_source_route(tool_name: str, message: str) -> bool:
     if tool_name == "get_liverpool_brief":
         return bool(re.search(r"\b(?:next|when|fixture|result|score|standings?|table|match|game)\b", clean))
     if tool_name == "get_latest_news":
+        if _pwa_topic_news_queries(clean):
+            return False
         return len(clean.split()) <= 14 and bool(re.search(r"\b(?:latest|news|updates?|headlines?|anything new)\b", clean))
     return False
 
@@ -1792,6 +1794,17 @@ _PWA_LOW_SIGNAL_NEWS_RE = re.compile(
     re.I,
 )
 
+_PWA_TOPIC_RECENT_WINDOW_HOURS = {
+    "Teenage Engineering": 14 * 24,
+    "Nothing": 14 * 24,
+    "Android": 7 * 24,
+    "AI Tools": 7 * 24,
+    "iOS": 7 * 24,
+    "macOS": 7 * 24,
+    "Solo Dev": 7 * 24,
+    "Design / UI/UX": 7 * 24,
+}
+
 
 def _pwa_news_item_matches_topic(label: str, item: str) -> bool:
     if label == "Latest from your shortlist":
@@ -1803,15 +1816,16 @@ def _pwa_news_item_matches_topic(label: str, item: str) -> bool:
     return any(term in lowered for term in terms)
 
 
-def _pwa_news_item_is_stale(item: str, now: datetime | None = None) -> bool:
+def _pwa_news_item_is_stale(item: str, now: datetime | None = None, max_age_hours: int | None = None) -> bool:
     text = str(item or "")
     current = now or datetime.now(bot.SGT)
+    freshness_window = max(1, int(max_age_hours or bot.NEWS_MAX_AGE_HOURS))
     full_match = re.search(r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+\d{1,2}\s+[A-Za-z]{3}\s+20\d{2}\s+\d{2}:\d{2}:\d{2}\s+GMT\b", text)
     if full_match:
         try:
             item_dt = parsedate_to_datetime(full_match.group(0)).astimezone(bot.SGT)
             age_hours = (current.astimezone(bot.SGT) - item_dt).total_seconds() / 3600
-            return age_hours > max(1, int(bot.NEWS_MAX_AGE_HOURS))
+            return age_hours > freshness_window
         except Exception:
             pass
     match = re.search(r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+(\d{1,2}\s+[A-Za-z]{3}\s+20\d{2})\b", text)
@@ -1820,14 +1834,14 @@ def _pwa_news_item_is_stale(item: str, now: datetime | None = None) -> bool:
             item_date = datetime.strptime(match.group(1), "%d %b %Y")
             item_dt = bot.SGT.localize(item_date)
             age_hours = (current.astimezone(bot.SGT) - item_dt).total_seconds() / 3600
-            return age_hours > max(1, int(bot.NEWS_MAX_AGE_HOURS))
+            return age_hours > freshness_window
         except ValueError:
             pass
     years = [int(year) for year in re.findall(r"\b(20\d{2})\b", text)]
     return bool(years) and max(years) < current.year
 
 
-def _pwa_topic_news_items(label: str, result: str, limit: int) -> tuple[list[str], list[str]]:
+def _pwa_topic_news_items(label: str, result: str, limit: int, max_age_hours: int | None = None) -> tuple[list[str], list[str]]:
     raw_items = _fallback_news_items(result, limit=max(limit * 3, 6))
     usable: list[str] = []
     stale: list[str] = []
@@ -1841,13 +1855,20 @@ def _pwa_topic_news_items(label: str, result: str, limit: int) -> tuple[list[str
         if key in seen:
             continue
         seen.add(key)
-        if _pwa_news_item_is_stale(item):
+        if _pwa_news_item_is_stale(item, max_age_hours=max_age_hours):
             stale.append(item)
         else:
             usable.append(item)
         if len(usable) >= limit:
             break
     return usable, stale
+
+
+def _pwa_topic_recent_window_hours(label: str) -> int:
+    return max(
+        int(bot.NEWS_MAX_AGE_HOURS),
+        int(_PWA_TOPIC_RECENT_WINDOW_HOURS.get(label, bot.NEWS_MAX_AGE_HOURS)),
+    )
 
 
 def _pwa_topic_news_intro(topics: list[tuple[str, str]]) -> str:
@@ -1867,22 +1888,36 @@ async def _pwa_topic_news_reply(message: str, recent_context: str = "") -> str:
     async def fetch(label: str, query: str):
         try:
             max_items = 6 if not str(query or "").strip() else 2
+            primary_window = int(bot.NEWS_MAX_AGE_HOURS)
             result = await bot._execute_tool_offloop(
                 "get_latest_news",
-                {"query": query, "max_items": max_items, "max_age_hours": bot.NEWS_MAX_AGE_HOURS},
+                {"query": query, "max_items": max_items, "max_age_hours": primary_window},
             )
-            return label, result
+            limit = 4 if label == "Latest from your shortlist" else 2
+            items, _stale_items = _pwa_topic_news_items(label, result, limit=limit, max_age_hours=primary_window)
+            recent_window = _pwa_topic_recent_window_hours(label)
+            if items or recent_window <= primary_window or not str(query or "").strip():
+                return label, result, primary_window
+            widened = await bot._execute_tool_offloop(
+                "get_latest_news",
+                {"query": query, "max_items": max_items, "max_age_hours": recent_window},
+            )
+            return label, widened, recent_window
         except Exception as exc:
             bot.logger.warning(f"PWA topic news fetch failed for {label}: {exc}")
-            return label, f"Failed to fetch news: {exc}"
+            return label, f"Failed to fetch news: {exc}", int(bot.NEWS_MAX_AGE_HOURS)
 
     sections: list[str] = []
-    for label, result in await asyncio.gather(*(fetch(label, query) for label, query in topics)):
+    for label, result, freshness_window in await asyncio.gather(*(fetch(label, query) for label, query in topics)):
         limit = 4 if label == "Latest from your shortlist" else 2
-        items, stale_items = _pwa_topic_news_items(label, result, limit=limit)
+        items, stale_items = _pwa_topic_news_items(label, result, limit=limit, max_age_hours=freshness_window)
         if items:
             bullets = "\n".join(f"- {item}" for item in items)
-            sections.append(f"*{label}*\n{bullets}")
+            window_note = ""
+            if freshness_window > int(bot.NEWS_MAX_AGE_HOURS):
+                days = max(1, round(freshness_window / 24))
+                window_note = f" (recent window: {days}d)"
+            sections.append(f"*{label}*{window_note}\n{bullets}")
         elif str(result or "").startswith("Failed to fetch"):
             sections.append(f"*{label}*\n- Live news check failed here, so I’m not dressing memory up as news.")
         elif stale_items:
@@ -5724,6 +5759,10 @@ async def _source_check_backend_fallback_payload(message: str) -> tuple[str, str
     label = _source_tool_label(tool_name)
     if not tool_name:
         return "", "", ""
+    if tool_name == "get_latest_news" and _pwa_topic_news_queries(message):
+        topic_reply = await _pwa_topic_news_reply(message)
+        if topic_reply:
+            return topic_reply, tool_name, topic_reply
 
     try:
         result = await bot._execute_tool_offloop(tool_name, _source_tool_input(tool_name, message))
