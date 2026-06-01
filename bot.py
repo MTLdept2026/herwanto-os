@@ -868,8 +868,8 @@ def build_runtime_status() -> dict:
 
 VOLATILE_FACT_PATTERN = re.compile(
     r"\b("
-    r"latest|today|tomorrow|now|live|result|results|score|scores|standings|table|"
-    r"lineup|line-up|starting xi|fixture|fixtures|schedule|injury|injuries|transfer|rumou?r|"
+    r"latest|live|result|results|score|scores|standings|table|"
+    r"lineup|line-up|starting xi|fixture|fixtures|injury|injuries|transfer|rumou?r|"
     r"price|prices|cost|weather|forecast|prayer|khutbah|news|headline|headlines|digest|briefing|"
     r"shortlist|shortlisted|preferred topics|f1|formula 1|liverpool|lfc|epl|premier league|"
     r"nothing phone|nothing os|nothing products|cmf|carl pei"

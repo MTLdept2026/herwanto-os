@@ -6297,6 +6297,58 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertNotIn("get_latest_news", names)
         self.assertNotIn("web_search", names)
 
+    def test_bare_temporal_status_updates_are_not_live_news(self):
+        cases = [
+            "Doing my onscreen marking training now. Will get on the 4NT prelim paper this evening",
+            "Heading home now, long day",
+            "I will start the report tomorrow",
+            "Feeling wrecked today honestly",
+            "Got my staff meeting now then free after",
+            "Taking a break now",
+        ]
+
+        for text in cases:
+            with self.subTest(text=text):
+                discipline = bot.source_discipline_for_text(text)
+
+                self.assertFalse(discipline["needs_live_check"])
+                self.assertNotIn("get_latest_news", discipline["recommended_tools"])
+                self.assertEqual(web_app._source_tool_for_message(text), "")
+
+    def test_source_gate_keeps_conversational_reply_for_marking_status_update(self):
+        text = "Doing my onscreen marking training now. Will get on the 4NT prelim paper this evening"
+        reply = "Good. Training first, then the 4NT prelim paper this evening is a sensible order."
+
+        async def fake_stream(*_args, **_kwargs):
+            yield {"type": "text", "text": reply}
+            yield {"type": "done", "text": reply}
+
+        async def run():
+            response = await web_app._chat_stream_response(text, None, "phone")
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(web_app, "_update_working_memory", return_value={}),
+            patch.object(web_app, "_schedule_background_call"),
+            patch.object(bot, "should_route_quick_pwa_chat", return_value=False),
+            patch.object(bot, "stream_agentic_chat", side_effect=fake_stream),
+            patch.object(
+                web_app,
+                "_source_check_backend_fallback_payload",
+                side_effect=AssertionError("ordinary status update should not run source fallback"),
+            ),
+        ):
+            body = asyncio.run(run())
+
+        self.assertIn(reply, body)
+        self.assertNotIn("quick live news check", body)
+        self.assertNotIn('"missing_source_contract": true', body)
+
     def test_casual_epl_weekend_distraction_is_not_live_news(self):
         text = "Now that epl season is over gonna need a new distraction during weekend"
 
