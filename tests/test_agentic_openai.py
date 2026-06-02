@@ -7528,6 +7528,70 @@ class AgenticOpenAITests(unittest.TestCase):
 
         self.assertIsNone(blocked)
 
+    def test_tool_write_policy_allows_resolved_calendar_delete_followup(self):
+        blocked = bot._validated_action_failure(
+            "delete_calendar_event_by_text",
+            {"query": "First aid training"},
+            direct_user_text="Yes please remove it. Now for the seminar rehearsal at 3pm",
+        )
+
+        self.assertIsNone(blocked)
+
+    def test_tool_write_policy_blocks_unresolved_calendar_delete_followup(self):
+        blocked = bot._validated_action_failure(
+            "delete_calendar_event_by_text",
+            {"query": "it"},
+            direct_user_text="Yes please remove it. Now for the seminar rehearsal at 3pm",
+        )
+
+        self.assertIsNotNone(blocked)
+        self.assertIn("did not explicitly request", blocked)
+
+    def test_tool_write_policy_allows_event_noun_with_time_calendar_request(self):
+        blocked = bot._validated_action_failure(
+            "create_calendar_event",
+            {
+                "title": "Seminar Bahasa rehearsal",
+                "date": "2026-06-02",
+                "start_time": "15:00",
+                "end_time": "16:30",
+            },
+            direct_user_text="Yes please remove it. Now for the seminar rehearsal at 3pm",
+        )
+
+        self.assertIsNone(blocked)
+
+    def test_tool_write_policy_defaults_calendar_end_time_from_start_time(self):
+        inp = {
+            "title": "Seminar Bahasa rehearsal",
+            "date": "2026-06-02",
+            "start_time": "15:00",
+        }
+
+        blocked = bot._validated_action_failure(
+            "create_calendar_event",
+            inp,
+            direct_user_text="Now for the seminar rehearsal at 3pm",
+        )
+
+        self.assertIsNone(blocked)
+        self.assertEqual(inp["end_time"], "16:00")
+
+    def test_tool_write_policy_blocks_calendar_create_question(self):
+        blocked = bot._validated_action_failure(
+            "create_calendar_event",
+            {
+                "title": "Seminar Bahasa rehearsal",
+                "date": "2026-06-02",
+                "start_time": "15:00",
+                "end_time": "16:00",
+            },
+            direct_user_text="Any seminar rehearsal at 3pm?",
+        )
+
+        self.assertIsNotNone(blocked)
+        self.assertIn("did not explicitly request", blocked)
+
     def test_tool_write_policy_blocks_persistent_memory_from_plain_summary_request(self):
         blocked = bot._validated_action_failure(
             "remember_user_info",

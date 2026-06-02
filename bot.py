@@ -12397,12 +12397,19 @@ def _direct_user_intent_allows_tool(name: str, direct_user_text: str | None) -> 
         return bool(re.search(pattern, clean, re.I))
 
     if name == "create_calendar_event":
+        calendar_event_noun = (
+            r"\b(meeting|appointment|event|duty|training|match|leave|briefing|"
+            r"rehearsal|seminar|practice|session|workshop|presentation)\b"
+        )
+        calendar_time_ref = (
+            r"\b(today|tomorrow|tonight|on|at|from|until|by|next|this|"
+            r"\d{1,2}(?::\d{2})?\s*(?:am|pm)?|"
+            r"jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b"
+        )
+        calendar_read_query = r"\b(when|what|which|show|check|confirm|review|view|pull up|do i have|any|anything)\b"
         return (
             has(r"\b(add|create|schedule|book|put|block)\b.*\b(calendar|event|meeting|appointment|duty|training|leave|all[- ]day)\b|\bcalendar\b.*\b(add|create|schedule|book|block)\b")
-            or (
-                has(r"\b(meeting|appointment|event|duty|training|match|leave|briefing|appointment)\b")
-                and has(r"\b(today|tomorrow|tonight|on|at|from|until|by|next|this|\d{1,2}(?::\d{2})?\s*(?:am|pm)?|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b")
-            )
+            or (has(calendar_event_noun) and has(calendar_time_ref) and not has(calendar_read_query))
         )
     if name == "delete_calendar_event_by_text":
         return has(r"\b(delete|remove|cancel)\b.*\b(calendar|event|meeting|appointment|schedule)\b|\bcalendar\b.*\b(delete|remove|cancel)\b")
@@ -12458,14 +12465,36 @@ def _direct_user_intent_failure(name: str, direct_user_text: str | None) -> str:
     )
 
 
+def _calendar_delete_followup_allows_resolved_query(name: str, inp: dict, direct_user_text: str | None) -> bool:
+    if name != "delete_calendar_event_by_text":
+        return False
+    clean = _normalise_direct_user_text(direct_user_text)
+    if not re.search(r"\b(delete|remove|cancel)\s+(?:it|this|that)\b", clean, re.I):
+        return False
+    query = str(inp.get("query", "") or "").strip()
+    if len(query) < 3 or _VAGUE_ACTION_REF_RE.fullmatch(query.lower()):
+        return False
+    return not re.search(
+        r"\b(?:all|every|each|entire|whole)\b.*\b(?:calendar|schedule|events?|meetings?|appointments?)\b",
+        query,
+        re.I,
+    )
+
+
+def _default_calendar_end_time(start_time: str) -> str:
+    start = datetime.strptime(str(start_time or "").strip(), "%H:%M")
+    return (start + timedelta(hours=1)).strftime("%H:%M")
+
+
 def _validate_state_changing_action(name: str, inp: dict, direct_user_text: str | None = None) -> tuple[bool, str]:
     if name not in _STATE_CHANGING_ACTIONS:
         return True, ""
+    resolved_direct_user_text = _TOOL_DIRECT_USER_TEXT.get() if direct_user_text is None else direct_user_text
     direct_reason = _direct_user_intent_failure(
         name,
-        _TOOL_DIRECT_USER_TEXT.get() if direct_user_text is None else direct_user_text,
+        resolved_direct_user_text,
     )
-    if direct_reason:
+    if direct_reason and not _calendar_delete_followup_allows_resolved_query(name, inp, resolved_direct_user_text):
         return False, direct_reason
     subject = _action_subject_for_audit(name, inp).strip()
     if len(subject) < 3:
@@ -12484,9 +12513,14 @@ def _validate_state_changing_action(name: str, inp: dict, direct_user_text: str 
             if end_date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", end_date):
                 return False, "All-day calendar event end_date must be YYYY-MM-DD."
         else:
-            required = ("title", "date", "start_time", "end_time")
+            required = ("title", "date", "start_time")
             if any(not str(inp.get(field, "") or "").strip() for field in required):
                 return False, "Timed calendar event needs title, date, start time, and end time."
+            if not str(inp.get("end_time", "") or "").strip():
+                try:
+                    inp["end_time"] = _default_calendar_end_time(inp["start_time"])
+                except Exception:
+                    return False, "Timed calendar event needs title, date, start time, and end time."
     elif name == "add_reminder":
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(inp.get("due_date", "") or "")):
             return False, "Reminder needs a concrete YYYY-MM-DD due date."
