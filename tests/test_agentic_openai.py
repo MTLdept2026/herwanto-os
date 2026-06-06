@@ -6673,9 +6673,9 @@ class AgenticOpenAITests(unittest.TestCase):
 
         async def fake_llm_text_async(**kwargs):
             user_content = kwargs["messages"][0]["content"]
-            self.assertIn("Carl Pei's Nothing enters Kenya", user_content)
             self.assertIn("OP-XY firmware update spotted", user_content)
             self.assertNotIn("TomatoSystem", user_content)
+            self.assertNotIn("Carl Pei's Nothing enters Kenya", user_content)
             return (
                 "*Teenage Engineering*\n"
                 f"- OP-XY firmware update spotted (Synth Daily · {fresh_stamp})\n\n"
@@ -6687,6 +6687,11 @@ class AgenticOpenAITests(unittest.TestCase):
             patch.object(bot, "OPENAI_API_KEY", "test-key"),
             patch.object(web_app.ss, "web_research", side_effect=fake_web_research),
             patch.object(bot, "_llm_text_async", side_effect=fake_llm_text_async),
+            patch.object(
+                web_app,
+                "_pwa_topic_news_reply_rss_for_topics",
+                side_effect=AssertionError("unexpected RSS fallback for successful web research"),
+            ),
         ):
             reply = asyncio.run(
                 web_app._pwa_topic_news_reply(
