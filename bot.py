@@ -8455,6 +8455,16 @@ async def _dispatch_proactive_candidates(context, candidates: list[dict], limit:
         kind = str(candidate.get("kind", "update")).strip() or "update"
         source = str(candidate.get("source", "")).strip()
         family = str(candidate.get("family", "")).strip()
+        mute_reason = _temporary_notification_mute_reason(source, title, body, now=current)
+        if mute_reason:
+            logger.info(f"Notification suppressed by temporary mute for source={source or family}: {mute_reason}")
+            _record_notification_outcome(
+                "muted_temporary",
+                source=source,
+                kind=kind,
+                title=title,
+            )
+            continue
         if _notification_is_learned_muted(source or family, kind):
             logger.info(f"Notification suppressed by learned mute for source={source or family}")
             continue
@@ -10053,6 +10063,20 @@ def _notification_expired_action_reason(
             catchup = _env_int("HIRA_CALENDAR_REMINDER_CATCHUP_MINUTES", 10, 0)
             if end_dt and current > end_dt + timedelta(minutes=catchup):
                 return "timed task event end time has passed"
+    if group == "prayer":
+        text = " ".join([str(title or ""), str(body or "")])
+        source_date = source_day or current.date()
+        time_match = re.search(r"\bends\s+around\s+(\d{1,2}:\d{2})\b", text, re.I)
+        if not time_match:
+            time_match = re.search(r"\bentered\s+at\s+(\d{1,2}:\d{2})\b", text, re.I)
+        if time_match:
+            try:
+                due_dt = SGT.localize(datetime.combine(source_date, datetime.strptime(time_match.group(1), "%H:%M").time()))
+            except Exception:
+                due_dt = None
+            catchup = _env_int("HIRA_PRAYER_REMINDER_WINDOW_MINUTES", 20, 3)
+            if due_dt and current > due_dt + timedelta(minutes=catchup):
+                return "prayer reminder window has passed"
     return ""
 
 
@@ -10064,10 +10088,34 @@ def _low_value_notification_block_reason(source: str = "", title: str = "", body
 
 
 DEVOTIONAL_REMINDER_RE = re.compile(r"\b(?:istigh?far|selawat|salawat)\b", re.I)
+PRAYER_REMINDER_RE = re.compile(
+    r"\b(?:subuh|fajr|zohor|zuhur|zuhr|dhuhr|asar|asr|maghrib|isyak|isha|prayer|prayers|solat|salah)\b",
+    re.I,
+)
+PRAYER_SPORTS_CONTEXT_RE = re.compile(r"\b(?:liverpool|lfc|match|goal|assist|injury|line-?up|fixture|transfer)\b", re.I)
+LESSON_NUDGE_MUTE_UNTIL_KEY = "lesson_nudge_mute_until"
+LESSON_NUDGE_SOURCE_GROUPS = {
+    "prep_gap",
+    "submission_risk",
+    "stale_data",
+}
+LESSON_NUDGE_TEXT_RE = re.compile(
+    r"\b(?:lesson|lessons|teaching|timetable|classops|worksheet|submission|prep[_ -]?gap)\b",
+    re.I,
+)
 
 
 def _is_devotional_reminder_text(*parts: str) -> bool:
     return bool(DEVOTIONAL_REMINDER_RE.search(" ".join(str(part or "") for part in parts)))
+
+
+def _is_prayer_reminder_nudge_text(*parts: str) -> bool:
+    text = " ".join(str(part or "") for part in parts)
+    if not PRAYER_REMINDER_RE.search(text):
+        return False
+    if PRAYER_SPORTS_CONTEXT_RE.search(text) and not re.search(r"\b(?:pray|prayer|prayers|solat|salah|entered\s+at)\b", text, re.I):
+        return False
+    return bool(re.search(r"\b(?:pray|prayer|prayers|solat|salah|entered\s+at|subuh|fajr|zohor|zuhur|zuhr|dhuhr|asar|asr|maghrib|isyak|isha)\b", text, re.I))
 
 
 def _devotional_notification_block_reason(source: str = "", title: str = "", body: str = "") -> str:
@@ -10076,6 +10124,116 @@ def _devotional_notification_block_reason(source: str = "", title: str = "", bod
     if not _is_devotional_reminder_text(source, title, body):
         return ""
     return "istighfar/selawat reminders are disabled"
+
+
+def school_term_start_date(term_number: int, year: int = 2026) -> date | None:
+    roman = {1: "I", 2: "II", 3: "III", 4: "IV"}.get(int(term_number or 0), "")
+    if not roman:
+        return None
+    wanted = f"Term {roman}".lower()
+    for term_name, start, _end in tt.SCHOOL_TERMS_2026:
+        if start.year == year and str(term_name).lower() == wanted:
+            return start
+    return None
+
+
+def _lesson_nudge_mute_until() -> date | None:
+    try:
+        raw = str(gs.get_config(LESSON_NUDGE_MUTE_UNTIL_KEY) or "").strip()
+    except Exception:
+        return None
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw)
+    except Exception:
+        return None
+
+
+def _notification_is_lesson_related(source: str = "", title: str = "", body: str = "") -> bool:
+    clean_source = str(source or "").strip()
+    if _notification_source_group(clean_source) in LESSON_NUDGE_SOURCE_GROUPS:
+        return True
+    return bool(LESSON_NUDGE_TEXT_RE.search(" ".join([clean_source, str(title or ""), str(body or "")])))
+
+
+def _temporary_notification_mute_reason(
+    source: str = "",
+    title: str = "",
+    body: str = "",
+    now: datetime | None = None,
+) -> str:
+    if not _notification_is_lesson_related(source, title, body):
+        return ""
+    current = _coerce_sgt_datetime(now)
+    until = _lesson_nudge_mute_until()
+    if until and current.date() < until:
+        return f"lesson nudges paused until {until.isoformat()}"
+    return ""
+
+
+def pause_lesson_nudges_until(until: date, now: datetime | None = None) -> dict:
+    current = _coerce_sgt_datetime(now)
+    removed = {
+        "until": until.isoformat(),
+        "nudges": [],
+        "notifications": [],
+        "errors": [],
+    }
+    try:
+        gs.set_config(LESSON_NUDGE_MUTE_UNTIL_KEY, until.isoformat())
+    except Exception as exc:
+        removed["errors"].append(f"mute: {exc}")
+
+    try:
+        for nudge in gs.get_nudges(include_sent=True):
+            if str(nudge.get("status", "")).lower() == "sent":
+                continue
+            if not _notification_is_lesson_related("", "", nudge.get("message", "")):
+                continue
+            try:
+                send_at = _parse_iso_sgt(nudge.get("send_at", ""))
+            except Exception:
+                send_at = None
+            if send_at and send_at.date() >= until:
+                continue
+            if gs.cancel_nudge(str(nudge.get("id", ""))):
+                removed["nudges"].append(str(nudge.get("id", "")))
+    except Exception as exc:
+        removed["errors"].append(f"nudges: {exc}")
+
+    try:
+        archive_ids = []
+        for item in gs.get_app_notifications(include_archived=False):
+            if not _notification_is_lesson_related(
+                item.get("source", ""),
+                item.get("title", ""),
+                item.get("body", ""),
+            ):
+                continue
+            source_text = str(item.get("source", "") or "")
+            source_day = _source_date(source_text)
+            if not source_day:
+                date_match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", source_text)
+                if date_match:
+                    try:
+                        source_day = date.fromisoformat(date_match.group(1))
+                    except Exception:
+                        source_day = None
+            if source_day and source_day >= until:
+                continue
+            item_id = str(item.get("id", "") or "").strip()
+            if item_id:
+                archive_ids.append(item_id)
+        if archive_ids:
+            gs.archive_app_notifications(archive_ids)
+            removed["notifications"].extend(archive_ids)
+    except Exception as exc:
+        removed["errors"].append(f"notifications: {exc}")
+
+    if current.date() >= until:
+        removed["errors"].append("mute date is not in the future")
+    return removed
 
 
 def remove_devotional_reminders() -> dict:
@@ -10790,6 +10948,8 @@ def _create_nudge(message: str, send_at: str) -> dict:
     send_dt = _parse_iso_sgt(send_at)
     if send_dt <= datetime.now(SGT):
         raise ValueError("Nudge time must be in the future.")
+    if _is_prayer_reminder_nudge_text(message):
+        raise ValueError("Prayer reminders use the dedicated prayer reminder system, not generic nudges.")
     return gs.add_nudge(message, send_dt.isoformat())
 
 AFFIRMATIVE_REPLIES = {
@@ -12645,6 +12805,8 @@ def _validate_state_changing_action(name: str, inp: dict, direct_user_text: str 
             return False, "Nudge needs a concrete send_at datetime."
         if _is_devotional_reminder_text(inp.get("message", "")):
             return False, "Istighfar/selawat reminders are disabled."
+        if _is_prayer_reminder_nudge_text(inp.get("message", "")):
+            return False, "Prayer reminders use the dedicated prayer reminder system, not generic nudges."
     elif name in {"create_daily_checkin", "create_break_aware_daily_checkin"}:
         if not str(inp.get("question", "") or "").strip():
             return False, "Check-in needs a concrete question."
@@ -17514,6 +17676,16 @@ def _queue_app_notification(kind: str, title: str, body: str, source: str = ""):
         logger.info(f"Notification blocked before queue for source={source or kind}: {devotional_block}")
         _record_notification_outcome(
             "blocked_devotional",
+            source=source,
+            kind=kind,
+            title=title,
+        )
+        return None
+    mute_reason = _temporary_notification_mute_reason(source, title, body)
+    if mute_reason:
+        logger.info(f"Notification blocked before queue for source={source or kind}: {mute_reason}")
+        _record_notification_outcome(
+            "muted_temporary",
             source=source,
             kind=kind,
             title=title,

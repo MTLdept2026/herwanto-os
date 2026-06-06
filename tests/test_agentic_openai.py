@@ -8869,6 +8869,94 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertIsNotNone(blocked)
         self.assertIn("disabled", blocked)
 
+    def test_prayer_text_is_not_queued_as_generic_nudge(self):
+        blocked = bot._validated_action_failure(
+            "create_proactive_nudge",
+            {
+                "message": "Subuh entered at 05:35. Pray as soon as it enters.",
+                "send_at": "2026-06-06T06:37:00+08:00",
+            },
+        )
+
+        self.assertIsNotNone(blocked)
+        self.assertIn("dedicated prayer reminder system", blocked)
+
+    def test_stale_prayer_notification_has_expired_reason(self):
+        now = bot.SGT.localize(bot.datetime(2026, 6, 6, 6, 37))
+
+        with patch.dict(os.environ, {"HIRA_PRAYER_REMINDER_WINDOW_MINUTES": "20"}):
+            reason = bot._notification_expired_action_reason(
+                "prayer:2026-06-06:subuh",
+                "Subuh prayer",
+                "Subuh entered at 05:35. Pray as soon as it enters.",
+                now=now,
+            )
+
+        self.assertEqual(reason, "prayer reminder window has passed")
+
+    def test_pause_lesson_nudges_until_term_start_clears_matching_items(self):
+        nudges = [
+            {
+                "id": "156",
+                "message": "2026-06-03 Teaching",
+                "send_at": "2026-06-06T06:37:00+08:00",
+                "status": "pending",
+            },
+            {
+                "id": "200",
+                "message": "Term 3 Teaching prep",
+                "send_at": "2026-07-01T06:37:00+08:00",
+                "status": "pending",
+            },
+            {
+                "id": "4",
+                "message": "Call mum",
+                "send_at": "2026-06-06T07:00:00+08:00",
+                "status": "pending",
+            },
+        ]
+        notifications = [
+            {
+                "id": "91",
+                "source": "prep_gap:2G3:2026-06-10:10:50",
+                "title": "Lesson prep",
+                "body": "Worksheet missing",
+                "archived": False,
+            },
+            {
+                "id": "92",
+                "source": "prep_gap:2G3:2026-07-01:10:50",
+                "title": "Lesson prep",
+                "body": "Worksheet missing",
+                "archived": False,
+            },
+            {
+                "id": "93",
+                "source": "prayer:2026-06-06:subuh",
+                "title": "Subuh prayer",
+                "body": "Subuh entered at 05:35.",
+                "archived": False,
+            },
+        ]
+
+        with (
+            patch.object(bot.gs, "set_config") as set_config,
+            patch.object(bot.gs, "get_nudges", return_value=nudges),
+            patch.object(bot.gs, "cancel_nudge", return_value=True) as cancel,
+            patch.object(bot.gs, "get_app_notifications", return_value=notifications),
+            patch.object(bot.gs, "archive_app_notifications", return_value=1) as archive,
+        ):
+            result = bot.pause_lesson_nudges_until(
+                date(2026, 6, 29),
+                now=bot.SGT.localize(bot.datetime(2026, 6, 6, 6, 37)),
+            )
+
+        set_config.assert_called_once_with(bot.LESSON_NUDGE_MUTE_UNTIL_KEY, "2026-06-29")
+        cancel.assert_called_once_with("156")
+        archive.assert_called_once_with(["91"])
+        self.assertEqual(result["nudges"], ["156"])
+        self.assertEqual(result["notifications"], ["91"])
+
     def test_forced_tool_ignores_structured_tool_result_turns(self):
         messages = [
             {"role": "user", "content": "tell me about my last 5 emails"},
@@ -10383,6 +10471,35 @@ class AgenticOpenAITests(unittest.TestCase):
     def test_pwa_cancelnudge_command_requires_ids_for_vague_delete(self):
         with patch.object(bot.gs, "cancel_nudge") as cancel:
             reply, tool = web_app._pwa_nudge_command_reply("Delete all queued nudges")
+
+        self.assertEqual(tool, "cancel_nudge")
+        self.assertIn("exact nudge ID", reply)
+        cancel.assert_not_called()
+
+    def test_pwa_lesson_nudge_pause_uses_term_start_not_nudge_id(self):
+        with (
+            patch.object(bot, "pause_lesson_nudges_until", return_value={
+                "until": "2026-06-29",
+                "nudges": ["156"],
+                "notifications": ["91"],
+                "errors": [],
+            }) as pause,
+            patch.object(bot.gs, "cancel_nudge") as cancel,
+        ):
+            reply, tool = web_app._pwa_nudge_command_reply(
+                "Stop all nudges for lessons until term 3 starts."
+            )
+
+        self.assertEqual(tool, "pause_lesson_nudges")
+        self.assertIn("Term 3 starts on Mon 29 Jun 2026", reply)
+        self.assertIn("Cancelled 1 pending lesson nudge", reply)
+        pause.assert_called_once()
+        self.assertEqual(pause.call_args.args[0], date(2026, 6, 29))
+        cancel.assert_not_called()
+
+    def test_pwa_natural_cancel_does_not_treat_term_number_as_nudge_id(self):
+        with patch.object(bot.gs, "cancel_nudge") as cancel:
+            reply, tool = web_app._pwa_nudge_command_reply("Stop all nudges until term 3 starts.")
 
         self.assertEqual(tool, "cancel_nudge")
         self.assertIn("exact nudge ID", reply)

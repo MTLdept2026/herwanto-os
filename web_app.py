@@ -545,6 +545,22 @@ def recover_missed_push_notifications(limit: int | None = None) -> dict:
                 title=title,
             )
             continue
+        mute_reason = bot._temporary_notification_mute_reason(source, title, body, now=current)
+        if mute_reason:
+            skipped += 1
+            if item_id:
+                try:
+                    bot.gs.archive_app_notifications([item_id])
+                except Exception as exc:
+                    bot.logger.warning(f"Could not archive muted recovered notification {item_id}: {exc}")
+            bot._record_notification_outcome(
+                "muted_temporary",
+                notification_id=item_id,
+                source=source,
+                kind=kind,
+                title=title,
+            )
+            continue
         expired_reason = bot._notification_expired_action_reason(source, title, body, now=current)
         if expired_reason:
             skipped += 1
@@ -4490,6 +4506,66 @@ def _parse_nudge_ids(raw: str) -> list[str]:
     return ids
 
 
+def _parse_natural_nudge_ids(raw: str) -> list[str]:
+    ids: list[str] = []
+    seen: set[str] = set()
+    text = str(raw or "")
+    pattern = r"(?<![A-Za-z0-9-])#?((?:r-)?\d+)(?![A-Za-z0-9-])"
+    for match in re.finditer(pattern, text, re.I):
+        before = text[max(0, match.start() - 24):match.start()].lower()
+        if re.search(r"\b(?:term|week|semester|period|p)\s*$", before):
+            continue
+        nudge_id = match.group(1)
+        if nudge_id not in seen:
+            seen.add(nudge_id)
+            ids.append(nudge_id)
+    return ids
+
+
+def _term_number_from_text(text: str) -> int | None:
+    match = re.search(r"\bterm\s*(\d|i{1,3}|iv)\b", str(text or ""), re.I)
+    if not match:
+        return None
+    raw = match.group(1).lower()
+    numerals = {"i": 1, "ii": 2, "iii": 3, "iv": 4}
+    return numerals.get(raw) or int(raw)
+
+
+def _pwa_lesson_nudge_pause_reply(message: str) -> tuple[str, str] | None:
+    clean = str(message or "").strip()
+    lower = clean.lower()
+    if not (
+        re.search(r"\bnudges?\b", lower)
+        and re.search(r"\b(?:lesson|lessons|teaching|timetable|classops)\b", lower)
+        and re.search(r"\b(?:stop|pause|mute|cancel|clear|delete|remove|disable|turn off)\b", lower)
+        and re.search(r"\buntil\b", lower)
+    ):
+        return None
+    term_number = _term_number_from_text(lower)
+    if not term_number:
+        return None
+    current = datetime.now(bot.SGT)
+    term_start = bot.school_term_start_date(term_number, current.year)
+    if not term_start:
+        return None
+    result = bot.pause_lesson_nudges_until(term_start, now=current)
+    term_label = f"Term {term_number}"
+    date_label = term_start.strftime("%a %-d %b %Y")
+    errors = result.get("errors") or []
+    lines = [
+        f"Paused lesson nudges until {term_label} starts on {date_label}.",
+        (
+            f"Cancelled {len(result.get('nudges') or [])} pending lesson nudge"
+            f"{'s' if len(result.get('nudges') or []) != 1 else ''} and removed "
+            f"{len(result.get('notifications') or [])} queued lesson app notification"
+            f"{'s' if len(result.get('notifications') or []) != 1 else ''}."
+        ),
+    ]
+    if errors:
+        lines.append(f"Storage notes: {'; '.join(str(item) for item in errors)}")
+    return "\n".join(lines), "pause_lesson_nudges"
+
+
 def _nudge_id_from_source(source: str) -> str:
     match = re.fullmatch(r"nudge:((?:r-)?\d+)", str(source or "").strip(), re.I)
     return match.group(1) if match else ""
@@ -4676,6 +4752,9 @@ def _pwa_nudge_command_reply(message: str) -> tuple[str, str] | None:
     if not clean:
         return None
     lower = clean.lower()
+    lesson_pause = _pwa_lesson_nudge_pause_reply(clean)
+    if lesson_pause:
+        return lesson_pause
     wants_list = (
         lower in {"/nudges", "nudges"}
         or (
@@ -4714,10 +4793,10 @@ def _pwa_nudge_command_reply(message: str) -> tuple[str, str] | None:
             return None
         after_nudge = re.search(r"\bnudges?\b\s*(.+?)\s*$", clean, re.I)
         target_text = after_nudge.group(1) if after_nudge else clean
-        if not _parse_nudge_ids(target_text):
+        if not _parse_natural_nudge_ids(target_text):
             return "Tell me the exact nudge ID(s) to cancel, e.g. `/cancelnudge 78` or `clear nudges 78, 79`.", "cancel_nudge"
 
-    nudge_ids = _parse_nudge_ids(target_text)
+    nudge_ids = _parse_nudge_ids(target_text) if match else _parse_natural_nudge_ids(target_text)
     if not nudge_ids:
         return "Send `/cancelnudge 78` or `/cancelnudge 78, 79, 80` to clear pending nudges.", "cancel_nudge"
 
