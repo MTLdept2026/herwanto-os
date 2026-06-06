@@ -435,10 +435,39 @@ def _mark_recovered_nudge(source: str):
     match = re.match(r"^nudge:(.+)$", str(source or "").strip())
     if not match:
         return
+    nudge_id = match.group(1)
+    if _cancelled_nudge_id_from_source(source):
+        _archive_cancelled_nudge_notifications(nudge_id)
+        return
     try:
-        bot.gs.mark_nudge_sent(match.group(1))
+        bot.gs.mark_nudge_sent(nudge_id)
     except Exception as exc:
         bot.logger.warning(f"Could not mark recovered nudge delivered: {exc}")
+
+
+def _cancelled_nudge_id_from_source(source: str) -> str:
+    nudge_id = _nudge_id_from_source(source)
+    if not nudge_id:
+        return ""
+    try:
+        nudges = bot.gs.get_nudges(include_sent=True)
+    except Exception as exc:
+        bot.logger.warning(f"Could not inspect recovered nudge {nudge_id}: {exc}")
+        return ""
+    for nudge in nudges:
+        if str(nudge.get("id", "") or "").strip() != nudge_id:
+            continue
+        if str(nudge.get("status", "") or "").strip().lower() == "cancelled":
+            return nudge_id
+        return ""
+    return ""
+
+
+def _archive_cancelled_nudge_notifications(nudge_id: str):
+    try:
+        bot.gs.cancel_nudge_and_archive(nudge_id)
+    except Exception as exc:
+        bot.logger.warning(f"Could not archive cancelled nudge {nudge_id}: {exc}")
 
 
 def _archive_low_value_notifications() -> int:
@@ -513,6 +542,18 @@ def recover_missed_push_notifications(limit: int | None = None) -> dict:
             skipped += 1
             continue
         item_id = str(item.get("id", "") or "").strip()
+        cancelled_nudge_id = _cancelled_nudge_id_from_source(source)
+        if cancelled_nudge_id:
+            skipped += 1
+            _archive_cancelled_nudge_notifications(cancelled_nudge_id)
+            bot._record_notification_outcome(
+                "cancelled_nudge",
+                notification_id=item_id,
+                source=source,
+                kind=kind,
+                title=title,
+            )
+            continue
         low_value_block = bot._low_value_notification_block_reason(source, title, body)
         if low_value_block:
             skipped += 1
@@ -2104,8 +2145,8 @@ async def _pwa_topic_news_reply(message: str, recent_context: str = "") -> str:
         for label, query, result in fetched_blocks
         if not _pwa_topic_news_research_failed(result)
     ]
-    fallback_topics = [
-        (label, query)
+    failed_blocks = [
+        (label, query, result)
         for label, query, result in fetched_blocks
         if _pwa_topic_news_research_failed(result)
     ]
@@ -2129,13 +2170,16 @@ async def _pwa_topic_news_reply(message: str, recent_context: str = "") -> str:
 
     parts = []
     clean_research = str(research_reply or "").strip()
+    fallback_topics = []
     if clean_research:
         parts.append(clean_research)
     elif research_blocks:
-        fallback_topics = _pwa_topic_news_dedupe_topics([
-            *fallback_topics,
-            *[(label, query) for label, query, _result in research_blocks],
-        ])
+        fallback_topics = _pwa_topic_news_dedupe_topics([(label, query) for label, query, _result in research_blocks])
+    if failed_blocks:
+        parts.append("\n\n".join(
+            f"*{label}*\n- Live news check failed here, so I’m not dressing memory up as news."
+            for label, _query, _result in failed_blocks
+        ))
     if fallback_topics:
         fallback_reply = await _pwa_topic_news_reply_rss_for_topics(_pwa_topic_news_dedupe_topics(fallback_topics))
         if fallback_reply:
@@ -4411,13 +4455,6 @@ def _archive_completed_notification(req_id: str, source: str) -> list[str]:
     return archived_ids
 
 
-def _archive_nudge_notifications(nudge_id: str) -> int:
-    source = f"nudge:{str(nudge_id or '').strip()}"
-    if source == "nudge:":
-        return 0
-    return len(_archive_notifications_by_source(source))
-
-
 def _active_checkin_notification_ids() -> list[str]:
     try:
         notifications = bot.gs.get_app_notifications(include_archived=True)
@@ -4595,10 +4632,10 @@ def _pwa_cancel_nudge_ids(nudge_ids: list[str]) -> tuple[str, str]:
     archived = 0
     for nudge_id in nudge_ids:
         try:
-            ok = bot.gs.cancel_nudge(nudge_id)
+            ok, archived_count = bot.gs.cancel_nudge_and_archive(nudge_id)
             if ok:
                 cancelled.append(nudge_id)
-                archived += _archive_nudge_notifications(nudge_id)
+                archived += archived_count
             else:
                 missing.append(nudge_id)
         except Exception as exc:
@@ -6583,7 +6620,7 @@ def _undo_action_ledger_entry(entry: dict) -> tuple[bool, str]:
         nudge_id = metadata.get("nudge_id") or _ledger_id_from_result(entry, r"nudge #([\w-]+)")
         if not nudge_id:
             return False, "No nudge id was recorded for this action."
-        ok = bot.gs.cancel_nudge(nudge_id)
+        ok, _archived = bot.gs.cancel_nudge_and_archive(nudge_id)
         return ok, f"Cancelled nudge #{nudge_id}." if ok else f"Nudge #{nudge_id} was not found or already sent."
 
     if action == "create_calendar_event":
@@ -7160,7 +7197,7 @@ def notifications_action(
                 ok = bot.mark_prayer_prompt_done(prayer_key)
                 result = {"completed": bool(ok), "prayer_key": prayer_key}
             elif nudge_id:
-                ok = bot.gs.cancel_nudge(nudge_id)
+                ok, _archived = bot.gs.cancel_nudge_and_archive(nudge_id)
                 already_cleared = False
                 if not ok:
                     try:

@@ -10197,7 +10197,8 @@ def pause_lesson_nudges_until(until: date, now: datetime | None = None) -> dict:
                 send_at = None
             if send_at and send_at.date() >= until:
                 continue
-            if gs.cancel_nudge(str(nudge.get("id", ""))):
+            ok, _archived = gs.cancel_nudge_and_archive(str(nudge.get("id", "")))
+            if ok:
                 removed["nudges"].append(str(nudge.get("id", "")))
     except Exception as exc:
         removed["errors"].append(f"nudges: {exc}")
@@ -10260,7 +10261,8 @@ def remove_devotional_reminders() -> dict:
                 continue
             if not _is_devotional_reminder_text(nudge.get("message", "")):
                 continue
-            if gs.cancel_nudge(str(nudge.get("id", ""))):
+            ok, _archived = gs.cancel_nudge_and_archive(str(nudge.get("id", "")))
+            if ok:
                 removed["nudges"].append(str(nudge.get("id", "")))
     except Exception as exc:
         removed["errors"].append(f"nudges: {exc}")
@@ -14266,7 +14268,7 @@ async def cancelnudge_cmd(update, context):
         return
     try:
         nudge_id = context.args[0]
-        ok = gs.cancel_nudge(nudge_id)
+        ok, _archived = gs.cancel_nudge_and_archive(nudge_id)
         await update.message.reply_text(f"Nudge #{nudge_id} cancelled." if ok else f"Nudge #{nudge_id} not found.")
     except Exception as e:
         await update.message.reply_text(f"Nudges error: {e}")

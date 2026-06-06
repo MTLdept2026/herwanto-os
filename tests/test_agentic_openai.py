@@ -95,6 +95,14 @@ def research_pack(query, sources):
     }
 
 
+def _guard_no_rss_fallback():
+    return patch.object(
+        web_app,
+        "_pwa_topic_news_reply_rss_for_topics",
+        side_effect=AssertionError("unexpected RSS fallback"),
+    )
+
+
 class FakeSheetsRequest:
     def __init__(self, payload=None, callback=None):
         self.payload = payload or {}
@@ -1620,6 +1628,7 @@ class AgenticOpenAITests(unittest.TestCase):
             patch.object(web_app.bot.gs, "get_app_notifications", return_value=[item]),
             patch.object(web_app.bot.gs, "get_web_push_delivery_log", return_value=[]),
             patch.object(web_app.bot.gs, "send_web_push_notification", return_value=1),
+            patch.object(web_app.bot.gs, "get_nudges", return_value=[{"id": "9", "status": "pending"}]),
             patch.object(web_app.bot.gs, "mark_nudge_sent") as mark_nudge,
             patch.object(web_app.bot, "_should_send_phone_push", return_value=True),
             patch.object(web_app.bot, "_record_notification_outcome"),
@@ -1628,6 +1637,36 @@ class AgenticOpenAITests(unittest.TestCase):
 
         self.assertEqual(result["sent"], 1)
         mark_nudge.assert_called_once_with("9")
+
+    def test_recovery_skips_cancelled_nudge(self):
+        now = bot.datetime.now(bot.SGT)
+        item = {
+            "id": "35",
+            "kind": "reminder",
+            "title": "H.I.R.A nudge",
+            "body": "Cancelled lesson reminder",
+            "source": "nudge:7",
+            "created": now.isoformat(),
+            "archived": False,
+        }
+        with (
+            patch.object(web_app.bot.gs, "get_app_notifications", return_value=[item]),
+            patch.object(web_app.bot.gs, "get_web_push_delivery_log", return_value=[]),
+            patch.object(web_app.bot.gs, "get_nudges", return_value=[{"id": "7", "status": "cancelled"}]),
+            patch.object(web_app.bot.gs, "cancel_nudge_and_archive", return_value=(True, 1)) as cancel_archive,
+            patch.object(web_app.bot.gs, "send_web_push_notification") as send_push,
+            patch.object(web_app.bot.gs, "mark_nudge_sent") as mark_nudge,
+            patch.object(web_app.bot, "_should_send_phone_push", return_value=True),
+            patch.object(web_app.bot, "_record_notification_outcome"),
+        ):
+            result = web_app.recover_missed_push_notifications(limit=1)
+
+        self.assertEqual(result["attempted"], 0)
+        self.assertEqual(result["sent"], 0)
+        self.assertEqual(result["skipped"], 1)
+        cancel_archive.assert_called_once_with("7")
+        send_push.assert_not_called()
+        mark_nudge.assert_not_called()
 
     def test_web_push_recovery_archives_blocked_cca_calendar_notification(self):
         now = bot.SGT.localize(bot.datetime(2026, 5, 12, 14, 10))
@@ -6564,9 +6603,11 @@ class AgenticOpenAITests(unittest.TestCase):
 
         with (
             patch.object(bot, "OPENAI_API_KEY", "test-key"),
+            patch.object(web_app.ss, "search_enabled", return_value=True),
             patch.object(web_app.ss, "web_research", side_effect=fake_web_research),
             patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool),
             patch.object(bot, "_llm_text_async", side_effect=fake_llm_text_async),
+            _guard_no_rss_fallback(),
         ):
             reply = asyncio.run(web_app._pwa_topic_news_reply("Teenage Engineering and Android updates?"))
 
@@ -6579,30 +6620,48 @@ class AgenticOpenAITests(unittest.TestCase):
 
     def test_topic_news_reply_widens_recent_window_for_product_topics(self):
         recent_stamp = (datetime.now(timezone.utc) - timedelta(days=5)).strftime("%a, %d %b %Y %H:%M:%S GMT")
+        stale_stamp = (datetime.now(timezone.utc) - timedelta(days=21)).strftime("%a, %d %b %Y %H:%M:%S GMT")
         calls = []
 
-        async def fake_execute_tool(name, inp):
-            self.assertEqual(name, "get_latest_news")
-            calls.append(dict(inp))
-            if inp["max_age_hours"] == 24:
-                return (
-                    f"*Fresh news: {inp['query']}*\n"
-                    "_Freshness gate: last 24h_\n\n"
-                    f"No fresh usable news for {inp['query']} in the last 24h."
-                )
-            return f"*Fresh news: Nothing*\n\n- Nothing OS beta expands to more Phone users (9to5Google · {recent_stamp})"
+        def fake_web_research(query, **kwargs):
+            calls.append({"query": query, **kwargs})
+            return research_pack(query, [
+                {
+                    "title": "Nothing OS beta expands to more Phone users",
+                    "date": recent_stamp,
+                    "domain": "9to5google.com",
+                },
+                {
+                    "title": "Nothing archive post from last month",
+                    "date": stale_stamp,
+                    "domain": "example.com",
+                },
+            ])
+
+        async def fake_llm_text_async(**kwargs):
+            user_content = kwargs["messages"][0]["content"]
+            self.assertIn("Nothing OS beta expands to more Phone users", user_content)
+            self.assertNotIn("Nothing archive post from last month", user_content)
+            return f"*Nothing*\n- Nothing OS beta expands to more Phone users (9to5Google · {recent_stamp})"
 
         with (
-            patch.object(web_app.ss, "search_enabled", return_value=False),
+            patch.object(bot, "OPENAI_API_KEY", "test-key"),
             patch.object(bot, "NEWS_MAX_AGE_HOURS", 24),
-            patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool),
+            patch.object(web_app.ss, "search_enabled", return_value=True),
+            patch.object(web_app.ss, "web_research", side_effect=fake_web_research),
+            patch.object(bot, "_llm_text_async", side_effect=fake_llm_text_async),
+            _guard_no_rss_fallback(),
         ):
             reply = asyncio.run(web_app._pwa_topic_news_reply("Any news on Nothing OS/products?"))
 
-        self.assertEqual([call["max_age_hours"] for call in calls], [24, 14 * 24])
-        self.assertIn("recent window: 14d", reply)
+        self.assertEqual(calls, [{
+            "query": "Nothing Phone Nothing OS Nothing Ear CMF Carl Pei Android update launch product news",
+            "max_sources": 6,
+            "fetch_pages": 2,
+            "freshness": "latest",
+        }])
         self.assertIn("Nothing OS beta expands", reply)
-        self.assertNotIn("No fresh usable item", reply)
+        self.assertNotIn("archive post", reply)
 
     def test_topic_news_rss_fallback_fetches_deeper_than_visible_limit(self):
         fresh_stamp = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
@@ -6685,13 +6744,10 @@ class AgenticOpenAITests(unittest.TestCase):
 
         with (
             patch.object(bot, "OPENAI_API_KEY", "test-key"),
+            patch.object(web_app.ss, "search_enabled", return_value=True),
             patch.object(web_app.ss, "web_research", side_effect=fake_web_research),
             patch.object(bot, "_llm_text_async", side_effect=fake_llm_text_async),
-            patch.object(
-                web_app,
-                "_pwa_topic_news_reply_rss_for_topics",
-                side_effect=AssertionError("unexpected RSS fallback for successful web research"),
-            ),
+            _guard_no_rss_fallback(),
         ):
             reply = asyncio.run(
                 web_app._pwa_topic_news_reply(
@@ -6868,16 +6924,33 @@ class AgenticOpenAITests(unittest.TestCase):
     def test_topic_news_followup_bypasses_model_route(self):
         fresh_stamp = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
 
-        async def fake_execute_tool(name, inp):
-            self.assertEqual(name, "get_latest_news")
-            query = inp["query"]
+        def fake_web_research(query, **_kwargs):
             if "Nothing" in query:
-                return f"*News: Nothing*\n\n- Nothing OS update reaches Phone users (9to5Google · {fresh_stamp})"
+                return research_pack(query, [{
+                    "title": "Nothing OS update reaches Phone users",
+                    "date": fresh_stamp,
+                    "domain": "9to5google.com",
+                }])
             if "Teenage Engineering" in query:
-                return f"*News: Teenage Engineering*\n\n- OP-XY firmware update spotted (Synth Daily · {fresh_stamp})"
+                return research_pack(query, [{
+                    "title": "OP-XY firmware update spotted",
+                    "date": fresh_stamp,
+                    "domain": "synthdaily.example",
+                }])
             if "Android" in query:
-                return f"*News: Android*\n\n- Android feature drop starts rolling out (Android Developers · {fresh_stamp})"
-            return "No news found."
+                return research_pack(query, [{
+                    "title": "Android feature drop starts rolling out",
+                    "date": fresh_stamp,
+                    "domain": "android-developers.googleblog.com",
+                }])
+            return research_pack(query, [])
+
+        async def fake_llm_text_async(**_kwargs):
+            return (
+                "*Nothing*\n- Nothing OS update reaches Phone users (9to5Google)\n\n"
+                "*Teenage Engineering*\n- OP-XY firmware update spotted (Synth Daily)\n\n"
+                "*Android*\n- Android feature drop starts rolling out (Android Developers)"
+            )
 
         async def run():
             response = await web_app._chat_stream_response(
@@ -6899,9 +6972,12 @@ class AgenticOpenAITests(unittest.TestCase):
             patch.object(bot, "save_history"),
             patch.object(web_app, "_update_working_memory", return_value={}),
             patch.object(web_app, "_schedule_background_call"),
-            patch.object(web_app.ss, "search_enabled", return_value=False),
-            patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute_tool),
+            patch.object(bot, "OPENAI_API_KEY", "test-key"),
+            patch.object(web_app.ss, "search_enabled", return_value=True),
+            patch.object(web_app.ss, "web_research", side_effect=fake_web_research),
+            patch.object(bot, "_llm_text_async", side_effect=fake_llm_text_async),
             patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("should not route to model")),
+            _guard_no_rss_fallback(),
         ):
             body = asyncio.run(run())
 
@@ -6952,9 +7028,11 @@ class AgenticOpenAITests(unittest.TestCase):
             patch.object(web_app, "_update_working_memory", return_value={}),
             patch.object(web_app, "_schedule_background_call"),
             patch.object(bot, "OPENAI_API_KEY", "test-key"),
+            patch.object(web_app.ss, "search_enabled", return_value=True),
             patch.object(web_app.ss, "web_research", side_effect=fake_web_research),
             patch.object(bot, "_llm_text_async", side_effect=fake_llm_text_async),
             patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("should not route to model")),
+            _guard_no_rss_fallback(),
         ):
             body = asyncio.run(run())
 
@@ -7026,8 +7104,10 @@ class AgenticOpenAITests(unittest.TestCase):
         )
         with (
             patch.object(bot, "OPENAI_API_KEY", "test-key"),
+            patch.object(web_app.ss, "search_enabled", return_value=True),
             patch.object(web_app.ss, "web_research", side_effect=fake_web_research),
             patch.object(bot, "_llm_text_async", side_effect=fake_llm_text_async),
+            _guard_no_rss_fallback(),
         ):
             reply = asyncio.run(web_app._pwa_topic_news_reply("Yes pls", context))
 
@@ -7049,7 +7129,10 @@ class AgenticOpenAITests(unittest.TestCase):
         async def fail_execute_tool(*_args, **_kwargs):
             raise AssertionError("topic news should not run")
 
-        with patch.object(bot, "_execute_tool_offloop", side_effect=fail_execute_tool):
+        with (
+            patch.object(bot, "_execute_tool_offloop", side_effect=fail_execute_tool),
+            _guard_no_rss_fallback(),
+        ):
             reply = asyncio.run(web_app._pwa_topic_news_reply("Yes pls", context))
 
         self.assertEqual("", reply)
@@ -8836,7 +8919,7 @@ class AgenticOpenAITests(unittest.TestCase):
             patch.object(bot.gs, "get_checkins", return_value=checkins),
             patch.object(bot.gs, "cancel_checkin", return_value=True) as cancel_checkin,
             patch.object(bot.gs, "get_nudges", return_value=nudges),
-            patch.object(bot.gs, "cancel_nudge", return_value=True) as cancel_nudge,
+            patch.object(bot.gs, "cancel_nudge_and_archive", return_value=(True, 0)) as cancel_nudge,
             patch.object(bot.gs, "get_app_notifications", return_value=notifications),
             patch.object(bot.gs, "archive_app_notifications", return_value=1) as archive,
         ):
@@ -8947,7 +9030,7 @@ class AgenticOpenAITests(unittest.TestCase):
         with (
             patch.object(bot.gs, "set_config") as set_config,
             patch.object(bot.gs, "get_nudges", return_value=nudges),
-            patch.object(bot.gs, "cancel_nudge", return_value=True) as cancel,
+            patch.object(bot.gs, "cancel_nudge_and_archive", return_value=(True, 0)) as cancel,
             patch.object(bot.gs, "get_app_notifications", return_value=notifications),
             patch.object(bot.gs, "archive_app_notifications", return_value=1) as archive,
         ):
@@ -10371,6 +10454,41 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertEqual(archived, 1)
         self.assertEqual([item["id"] for item in visible], ["2"])
 
+    def test_mark_nudge_sent_refuses_cancelled(self):
+        nudges = [{"id": "7", "message": "Cancelled nudge", "status": "cancelled", "sent_at": ""}]
+
+        with (
+            patch.object(bot.gs, "get_nudges", return_value=nudges),
+            patch.object(bot.gs, "set_nudges") as set_nudges,
+            patch.object(bot.gs, "_set_redis_nudges") as set_redis_nudges,
+            self.assertLogs(bot.gs.logger, level="WARNING") as logs,
+        ):
+            bot.gs.mark_nudge_sent("7")
+
+        self.assertEqual(nudges[0]["status"], "cancelled")
+        self.assertEqual(nudges[0]["sent_at"], "")
+        set_nudges.assert_not_called()
+        set_redis_nudges.assert_not_called()
+        self.assertIn("Refusing to mark cancelled nudge 7 as sent", "\n".join(logs.output))
+
+    def test_cancel_nudge_and_archive_archives_linked_notifications(self):
+        notifications = [
+            {"id": "9", "source": "nudge:7", "archived": False},
+            {"id": "10", "source": "nudge:8", "archived": False},
+        ]
+
+        with (
+            patch.object(bot.gs, "cancel_nudge", return_value=True) as cancel,
+            patch.object(bot.gs, "get_app_notifications", return_value=notifications),
+            patch.object(bot.gs, "archive_app_notifications", return_value=1) as archive,
+        ):
+            ok, archived = bot.gs.cancel_nudge_and_archive("7")
+
+        self.assertTrue(ok)
+        self.assertEqual(archived, 1)
+        cancel.assert_called_once_with("7")
+        archive.assert_called_once_with(["9"])
+
     def test_notification_action_snooze_creates_nudge_and_archives(self):
         item = {
             "id": "9",
@@ -10438,43 +10556,24 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertIsNone(web_app._pwa_nudge_command_reply("Nudge me to check marking at 10pm"))
 
     def test_pwa_cancelnudge_command_cancels_and_archives_notification(self):
-        notifications = [
-            {"id": "9", "source": "nudge:7", "archived": False},
-            {"id": "10", "source": "nudge:8", "archived": False},
-        ]
-
-        with (
-            patch.object(bot.gs, "cancel_nudge", return_value=True) as cancel,
-            patch.object(bot.gs, "get_app_notifications", return_value=notifications),
-            patch.object(bot.gs, "archive_app_notifications", return_value=1) as archive,
-        ):
+        with patch.object(bot.gs, "cancel_nudge_and_archive", return_value=(True, 1)) as cancel:
             reply, tool = web_app._pwa_nudge_command_reply("/cancelnudge 7")
 
         self.assertEqual(tool, "cancel_nudge")
         self.assertIn("Nudge #7 cancelled", reply)
         cancel.assert_called_once_with("7")
-        archive.assert_called_once_with(["9"])
 
     def test_pwa_cancelnudge_command_understands_natural_delete_with_ids(self):
-        notifications = [
-            {"id": "31", "source": "nudge:7", "archived": False},
-            {"id": "32", "source": "nudge:8", "archived": False},
-        ]
-
-        with (
-            patch.object(bot.gs, "cancel_nudge", return_value=True) as cancel,
-            patch.object(bot.gs, "get_app_notifications", return_value=notifications),
-            patch.object(bot.gs, "archive_app_notifications", return_value=2) as archive,
-        ):
+        with patch.object(bot.gs, "cancel_nudge_and_archive", return_value=(True, 1)) as cancel:
             reply, tool = web_app._pwa_nudge_command_reply("Delete nudges 7 and 8")
 
         self.assertEqual(tool, "cancel_nudge")
         self.assertIn("Cancelled nudges: #7, #8.", reply)
+        self.assertIn("Removed 2 matching app notifications.", reply)
         self.assertEqual([call.args[0] for call in cancel.call_args_list], ["7", "8"])
-        self.assertEqual([call.args[0] for call in archive.call_args_list], [["31"], ["32"]])
 
     def test_pwa_cancelnudge_command_requires_ids_for_vague_delete(self):
-        with patch.object(bot.gs, "cancel_nudge") as cancel:
+        with patch.object(bot.gs, "cancel_nudge_and_archive") as cancel:
             reply, tool = web_app._pwa_nudge_command_reply("Delete all queued nudges")
 
         self.assertEqual(tool, "cancel_nudge")
@@ -10489,7 +10588,7 @@ class AgenticOpenAITests(unittest.TestCase):
                 "notifications": ["91"],
                 "errors": [],
             }) as pause,
-            patch.object(bot.gs, "cancel_nudge") as cancel,
+            patch.object(bot.gs, "cancel_nudge_and_archive") as cancel,
         ):
             reply, tool = web_app._pwa_nudge_command_reply(
                 "Stop all nudges for lessons until term 3 starts."
@@ -10503,7 +10602,7 @@ class AgenticOpenAITests(unittest.TestCase):
         cancel.assert_not_called()
 
     def test_pwa_natural_cancel_does_not_treat_term_number_as_nudge_id(self):
-        with patch.object(bot.gs, "cancel_nudge") as cancel:
+        with patch.object(bot.gs, "cancel_nudge_and_archive") as cancel:
             reply, tool = web_app._pwa_nudge_command_reply("Stop all nudges until term 3 starts.")
 
         self.assertEqual(tool, "cancel_nudge")
@@ -10511,24 +10610,13 @@ class AgenticOpenAITests(unittest.TestCase):
         cancel.assert_not_called()
 
     def test_pwa_cancelnudge_command_accepts_comma_separated_ids(self):
-        notifications = [
-            {"id": "91", "source": "nudge:78", "archived": False},
-            {"id": "92", "source": "nudge:79", "archived": False},
-            {"id": "93", "source": "nudge:80", "archived": False},
-        ]
-
-        with (
-            patch.object(bot.gs, "cancel_nudge", return_value=True) as cancel,
-            patch.object(bot.gs, "get_app_notifications", return_value=notifications),
-            patch.object(bot.gs, "archive_app_notifications", side_effect=lambda ids: len(ids)) as archive,
-        ):
+        with patch.object(bot.gs, "cancel_nudge_and_archive", return_value=(True, 1)) as cancel:
             reply, tool = web_app._pwa_nudge_command_reply("/cancelnudge 78, 79, 80")
 
         self.assertEqual(tool, "cancel_nudge")
         self.assertIn("Cancelled nudges: #78, #79, #80.", reply)
         self.assertIn("Removed 3 matching app notifications.", reply)
         self.assertEqual([call.args[0] for call in cancel.call_args_list], ["78", "79", "80"])
-        self.assertEqual([call.args[0] for call in archive.call_args_list], [["91"], ["92"], ["93"]])
 
     def test_pwa_nudge_removal_confirmation_cancels_previous_nudge_ids(self):
         context = (
@@ -10537,23 +10625,13 @@ class AgenticOpenAITests(unittest.TestCase):
             "`[79]` *2026-05-30 22:00* - Prep tomorrow\n\n"
             "Use `/cancelnudge <id>` to cancel nudges."
         )
-        notifications = [
-            {"id": "91", "source": "nudge:78", "archived": False},
-            {"id": "92", "source": "nudge:79", "archived": False},
-        ]
-
-        with (
-            patch.object(bot.gs, "cancel_nudge", return_value=True) as cancel,
-            patch.object(bot.gs, "get_app_notifications", return_value=notifications),
-            patch.object(bot.gs, "archive_app_notifications", side_effect=lambda ids: len(ids)) as archive,
-        ):
+        with patch.object(bot.gs, "cancel_nudge_and_archive", return_value=(True, 1)) as cancel:
             reply, tool = web_app._pwa_nudge_removal_confirmation_reply("yes remove those", context)
 
         self.assertEqual(tool, "cancel_nudge")
         self.assertIn("Cancelled nudges: #78, #79.", reply)
         self.assertIn("Removed 2 matching app notifications.", reply)
         self.assertEqual([call.args[0] for call in cancel.call_args_list], ["78", "79"])
-        self.assertEqual([call.args[0] for call in archive.call_args_list], [["91"], ["92"]])
 
     def test_nudge_removal_confirmation_requires_latest_offer_for_bare_do_it(self):
         context = (
@@ -10561,11 +10639,31 @@ class AgenticOpenAITests(unittest.TestCase):
             "Softer parent reply is better. Rewrite it now?"
         )
 
-        with patch.object(bot.gs, "cancel_nudge") as cancel:
+        with patch.object(bot.gs, "cancel_nudge_and_archive") as cancel:
             reply = web_app._pwa_nudge_removal_confirmation_reply("do it", context)
 
         self.assertIsNone(reply)
         cancel.assert_not_called()
+
+    def test_telegram_cancel_archives_linked_notifications(self):
+        class FakeMessage:
+            def __init__(self):
+                self.replies = []
+
+            async def reply_text(self, text, **_kwargs):
+                self.replies.append(text)
+
+        update = SimpleNamespace(message=FakeMessage())
+        context = SimpleNamespace(args=["7"])
+
+        with (
+            patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot.gs, "cancel_nudge_and_archive", return_value=(True, 1)) as cancel,
+        ):
+            asyncio.run(bot.cancelnudge_cmd(update, context))
+
+        cancel.assert_called_once_with("7")
+        self.assertEqual(update.message.replies, ["Nudge #7 cancelled."])
 
     def test_pwa_followups_command_lists_open_followups(self):
         followups = [
@@ -10830,7 +10928,7 @@ class AgenticOpenAITests(unittest.TestCase):
         archive.assert_called_once_with(["9"])
         self.assertEqual(ledger.call_args.kwargs["metadata"]["prayer_key"], "maghrib")
 
-    def test_notification_action_done_clears_linked_nudge(self):
+    def test_done_path_cancel_archives_notifications(self):
         item = {
             "id": "9",
             "kind": "reminder",
@@ -10843,7 +10941,7 @@ class AgenticOpenAITests(unittest.TestCase):
         with (
             patch.object(web_app, "_require_token"),
             patch.object(bot.gs, "get_app_notification", return_value=item),
-            patch.object(bot.gs, "cancel_nudge", return_value=True) as cancel,
+            patch.object(bot.gs, "cancel_nudge_and_archive", return_value=(True, 1)) as cancel,
             patch.object(bot, "_record_notification_outcome"),
             patch.object(bot.gs, "archive_app_notifications") as archive,
             patch.object(bot.gs, "add_action_ledger") as ledger,

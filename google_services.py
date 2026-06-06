@@ -5343,6 +5343,29 @@ def cancel_nudge(nudge_id: str) -> bool:
         return changed
 
 
+def cancel_nudge_and_archive(nudge_id: str) -> tuple[bool, int]:
+    clean_id = str(nudge_id or "").strip()
+    if not clean_id:
+        return False, 0
+    ok = cancel_nudge(clean_id)
+    if not ok:
+        return False, 0
+    archived = 0
+    source = f"nudge:{clean_id}"
+    try:
+        notification_ids = [
+            str(item.get("id", "") or "").strip()
+            for item in get_app_notifications(include_archived=False)
+            if str(item.get("source", "") or "").strip() == source
+        ]
+        notification_ids = [item_id for item_id in notification_ids if item_id]
+        if notification_ids:
+            archived = archive_app_notifications(notification_ids)
+    except Exception as exc:
+        logger.warning("Could not archive notifications for cancelled nudge %s: %s", clean_id, exc)
+    return True, int(archived or 0)
+
+
 def _parse_nudge_send_at(value: str) -> datetime | None:
     try:
         send_at = datetime.fromisoformat(str(value or "").strip())
@@ -5412,11 +5435,21 @@ def mark_nudge_sent(nudge_id: str):
     with _storage_mutation_lock("proactive_nudges", _nudges_mutation_lock):
         nudges = get_nudges(include_sent=True)
         now = datetime.now(SGT).isoformat()
+        changed = False
         for nudge in nudges:
             if str(nudge.get("id")) == str(nudge_id):
+                status = str(nudge.get("status", "") or "").strip().lower()
+                if status == "cancelled":
+                    logger.warning("Refusing to mark cancelled nudge %s as sent", nudge_id)
+                    return
+                if status == "sent":
+                    return
                 nudge["status"] = "sent"
                 nudge["sent_at"] = now
+                changed = True
                 break
+        if not changed:
+            return
         sheet_items = [n for n in nudges if not str(n.get("id", "")).startswith("r-")]
         redis_items = [n for n in nudges if str(n.get("id", "")).startswith("r-")]
         if str(nudge_id).startswith("r-"):
