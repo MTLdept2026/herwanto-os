@@ -34,6 +34,7 @@ import artifact_service as artifacts
 import pdf_service as pdfs
 import document_service as docs
 import islamic_service as isl
+import obsidian_service as obsidian
 
 # ─── SETUP ───────────────────────────────────────────────────────────────────
 
@@ -3395,11 +3396,13 @@ Rules:
 - Never invent mosque or place locations. If a place location affects the answer and you do not have a verified source/tool result, say what you know and what is unverified. Be especially careful with Singapore masjid names that sound similar.
 - Known mosque correction: Masjid Al-Muttaqin is at 5140 Ang Mo Kio Ave 6, Singapore 569844, not Kovan.
 - For journey-time estimates, use the current device location context when it is provided. If it is not provided, use only explicit user-provided origin/destination or stable stored memory, and label any estimate as rough.
-- You have tools: create_calendar_event, delete_calendar_event_by_text, bulk_delete_duplicate_calendar_events, find_available_training_slots, get_cca_schedule, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, get_classops_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_mtl_classlists, analyze_mtl_scores, generate_mtl_score_trend_report, apply_mtl_failure_highlighting, update_mtl_class_score, fill_mtl_percentage_scores, get_gmail_brief, create_gmail_draft, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, create_topic_profile, remember_source_insight, update_project_status, get_nea_weather, get_muis_prayer_times, get_muis_friday_khutbah, get_latest_news, get_liverpool_brief, get_f1_brief, web_search, and fetch_url. Use them proactively.
+- You have tools: create_calendar_event, delete_calendar_event_by_text, bulk_delete_duplicate_calendar_events, find_available_training_slots, get_cca_schedule, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, get_classops_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_mtl_classlists, analyze_mtl_scores, generate_mtl_score_trend_report, apply_mtl_failure_highlighting, update_mtl_class_score, fill_mtl_percentage_scores, get_gmail_brief, create_gmail_draft, search_vault, read_note, list_recent_notes, append_to_inbox, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, create_topic_profile, remember_source_insight, update_project_status, get_nea_weather, get_muis_prayer_times, get_muis_friday_khutbah, get_latest_news, get_liverpool_brief, get_f1_brief, web_search, and fetch_url. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking, but do not recreate tasks that are already in the task brief or recently marked done. If a scanned email/screenshot repeats a completed or already-tracked item, report that it is already handled instead of adding a new reminder.
 - When the user mentions marking scripts, papers, compositions, kefahaman, karangan, worksheets, or a marking stack, use marking tools instead of ordinary reminders: add_marking_task for a new stack, update_marking_progress when he says how many scripts are marked, reset_marking_load when he asks to reset/clear the marking load or board, and get_marking_brief when he asks what marking is outstanding. Marking tasks are mission-critical and must persist even at 0 outstanding; only complete one when he explicitly says that marking stack is done, completed, can be closed, reset, or cleared.
 - When the user asks about ClassOps, Dropbox class materials, submission tracking, class follow-up signals, or the ClassOps dashboard, call get_classops_brief. Do not say ClassOps is unavailable unless that tool reports the connected service is not configured or a provider call fails.
+- When the user asks about Obsidian, his vault, second brain, notes, recent notes, or a note title/path, use search_vault, read_note, or list_recent_notes. These tools deliberately exclude 31 ClassOps, private, and student-sensitive paths. If a note is excluded or blocked, say that directly and do not ask him to paste sensitive material.
+- When the user explicitly asks to save/capture/append something to the Obsidian inbox, call append_to_inbox. Do not append inferred tasks, private content, or student-sensitive content unless Herwanto explicitly asks and the target path passes the vault safety policy.
 - PWA Web Push can deliver OS notifications to subscribed Android/browser devices through the service worker even when the app is closed. Scheduled nudges, reminders, digests, and briefings should use the app notification/Web Push path. Do not tell Herwanto the PWA must be open or Telegram must be active for OS push if the device is subscribed; if delivery fails, diagnose Web Push delivery/logging instead.
 - When the user asks you to nudge, ping, notify, push a notification, check in, remind him at a specific time, or initiate a chat later — call create_proactive_nudge. Use this for time-specific heads-ups, not ordinary all-day deadlines.
 - If the user asks for a digest/news/briefing to be pushed or notified later ("in 5 mins", "at 6:30", etc.), schedule a proactive nudge containing the digest/news content for that time. Do not return the digest immediately unless he also asks to see it now.
@@ -5293,6 +5296,58 @@ GMAIL_DRAFT_TOOL = {
             "account": {"type": "string", "description": "personal, personal2, or work. Work/MOE/school Gmail is experimental and may be blocked by Workspace policy."}
         },
         "required": ["to", "subject", "body"]
+    }
+}
+
+VAULT_SEARCH_TOOL = {
+    "name": "search_vault",
+    "description": "Search readable Markdown notes in Herwanto's Obsidian vault. Excludes 31 ClassOps, private, and student-sensitive paths before reading note content.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Search terms for the Obsidian vault."},
+            "max_results": {"type": "integer", "description": "Maximum results to return, default 8, capped at 20."}
+        },
+        "required": ["query"]
+    }
+}
+
+VAULT_READ_NOTE_TOOL = {
+    "name": "read_note",
+    "description": "Read one readable Markdown note from Herwanto's Obsidian vault by relative path or title. Excluded paths are blocked.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "note": {"type": "string", "description": "Relative note path or title, e.g. Projects/Hira.md."},
+            "max_chars": {"type": "integer", "description": "Maximum characters to return, default 12000, capped at 50000."}
+        },
+        "required": ["note"]
+    }
+}
+
+VAULT_RECENT_NOTES_TOOL = {
+    "name": "list_recent_notes",
+    "description": "List recently modified readable Markdown notes in Herwanto's Obsidian vault. Excluded paths are omitted.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "limit": {"type": "integer", "description": "Maximum notes to list, default 10, capped at 25."}
+        }
+    }
+}
+
+VAULT_APPEND_INBOX_TOOL = {
+    "name": "append_to_inbox",
+    "description": "Append a Markdown entry to Herwanto's Obsidian inbox note. Only use after an explicit request to save/capture/append to the vault inbox.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "content": {"type": "string", "description": "Markdown content to append."},
+            "heading": {"type": "string", "description": "Short heading for the inbox entry."},
+            "source": {"type": "string", "description": "Optional source label, default H.I.R.A."},
+            "inbox_path": {"type": "string", "description": "Optional relative inbox note path. Defaults to HIRA_OBSIDIAN_INBOX_NOTE or Inbox.md."}
+        },
+        "required": ["content"]
     }
 }
 
@@ -12251,6 +12306,62 @@ def _artifact_result_text(kind: str, path, drive_file: dict | None = None) -> st
     return text
 
 
+def _format_vault_search(pack: dict) -> str:
+    if not pack.get("ok"):
+        return f"Failed to search Obsidian vault: {pack.get('error', 'unknown error')}"
+    results = pack.get("results") or []
+    if not results:
+        return (
+            f"No readable Obsidian notes matched `{pack.get('query', '')}`. "
+            "Excluded 31 ClassOps, private, and student-sensitive paths were not searched."
+        )
+    lines = [
+        f"Obsidian vault search: `{pack.get('query', '')}`",
+        "Excluded 31 ClassOps, private, and student-sensitive paths were not searched.",
+    ]
+    for item in results:
+        excerpt = str(item.get("excerpt", "") or "").strip()
+        if len(excerpt) > 240:
+            excerpt = excerpt[:237].rstrip() + "..."
+        detail = f"- `{item.get('path', '')}` | modified {item.get('modified', '')}"
+        if excerpt:
+            detail += f" | {excerpt}"
+        lines.append(detail)
+    return "\n".join(lines)
+
+
+def _format_vault_note(pack: dict) -> str:
+    if not pack.get("ok"):
+        return f"Failed to read Obsidian note: {pack.get('error', 'unknown error')}"
+    truncated = " [truncated]" if pack.get("truncated") else ""
+    return (
+        f"Obsidian note: `{pack.get('path', '')}` | modified {pack.get('modified', '')}{truncated}\n\n"
+        f"{pack.get('content', '')}"
+    )
+
+
+def _format_recent_vault_notes(pack: dict) -> str:
+    if not pack.get("ok"):
+        return f"Failed to list recent Obsidian notes: {pack.get('error', 'unknown error')}"
+    notes = pack.get("notes") or []
+    if not notes:
+        return "No readable recent Obsidian notes found. Excluded paths were omitted."
+    lines = ["Recent readable Obsidian notes:"]
+    for item in notes:
+        lines.append(f"- `{item.get('path', '')}` | modified {item.get('modified', '')}")
+    lines.append("Excluded 31 ClassOps, private, and student-sensitive paths were omitted.")
+    return "\n".join(lines)
+
+
+def _format_vault_append(pack: dict) -> str:
+    if not pack.get("ok"):
+        return f"Failed to append to Obsidian inbox: {pack.get('error', 'unknown error')}"
+    return (
+        f"Appended to Obsidian inbox: `{pack.get('path', '')}` "
+        f"({pack.get('chars_appended', 0)} chars at {pack.get('timestamp', '')})."
+    )
+
+
 _STATE_CHANGING_ACTIONS = {
     "create_calendar_event",
     "delete_calendar_event_by_text",
@@ -12278,6 +12389,7 @@ _STATE_CHANGING_ACTIONS = {
     "create_slide_deck_artifact",
     "remember_artifact_template",
     "create_gmail_draft",
+    "append_to_inbox",
 }
 _VAGUE_ACTION_REF_RE = re.compile(r"\b(this|that|it|that day|the day|same day|there|then)\b", re.I)
 _CONFIRM_ACTION_RE = re.compile(
@@ -12347,6 +12459,8 @@ def _action_subject_for_audit(name: str, inp: dict) -> str:
         return str(inp.get("name", "") or "")
     if name == "create_gmail_draft":
         return str(inp.get("subject") or inp.get("to") or "")
+    if name == "append_to_inbox":
+        return str(inp.get("heading") or inp.get("content") or "Obsidian inbox entry")
     return ""
 
 
@@ -12451,6 +12565,8 @@ def _direct_user_intent_allows_tool(name: str, direct_user_text: str | None) -> 
         return has(r"\b(create|generate|make|build|draft)\b") and has(r"\b(slide|slides|deck|ppt|pptx|powerpoint|presentation)\b")
     if name == "create_gmail_draft":
         return _is_outbound_gmail_draft_request(clean)
+    if name == "append_to_inbox":
+        return has(r"\b(?:append|save|capture|write|add)\b") and has(r"\b(?:inbox|obsidian|vault|note|notes)\b")
     return True
 
 
@@ -12540,6 +12656,9 @@ def _validate_state_changing_action(name: str, inp: dict, direct_user_text: str 
     elif name == "create_gmail_draft":
         if any(not str(inp.get(field, "") or "").strip() for field in ("to", "subject", "body")):
             return False, "Gmail draft needs a recipient, subject, and body."
+    elif name == "append_to_inbox":
+        if not str(inp.get("content", "") or "").strip():
+            return False, "Obsidian inbox append needs concrete content."
     elif name == "update_mtl_class_score":
         if any(not str(inp.get(field, "") or "").strip() for field in ("student_query", "score_column", "score_value")):
             return False, "Classlist score update needs a student, score column, and value."
@@ -12820,6 +12939,16 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     if "remember_user_info" in available and (_is_memory_commit_query_text(text) or "memory" in semantic_flags):
         return "remember_user_info"
 
+    if (
+        "append_to_inbox" in available
+        and re.search(r"\b(?:append|save|capture|write|add)\b", clean)
+        and (
+            has_any(["obsidian", "vault", "notes inbox", "inbox note"])
+            or (has_any(["inbox"]) and not has_any(["gmail", "email", "mail"]))
+        )
+    ):
+        return "append_to_inbox"
+
     outbound_gmail_draft = _is_outbound_gmail_draft_request(clean)
     if "create_gmail_draft" in available and ("gmail_draft" in semantic_flags or outbound_gmail_draft):
         return "create_gmail_draft"
@@ -12849,6 +12978,22 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
         )
     ):
         return "get_classops_brief"
+
+    vault_context = bool(
+        has_any(["obsidian", "vault", "second brain", "second-brain"])
+        or re.search(r"\b(?:read|search|find|list|recent|open|pull up)\b.{0,60}\bnotes?\b", clean)
+    )
+    if "list_recent_notes" in available and vault_context and has_any(["recent", "latest", "list"]):
+        return "list_recent_notes"
+    if (
+        "read_note" in available
+        and vault_context
+        and has_any(["read", "open", "pull up", "show", "review"])
+        and not has_any(["search", "find"])
+    ):
+        return "read_note"
+    if "search_vault" in available and vault_context and has_any(["search", "find", "look for", "lookup", "look up"]):
+        return "search_vault"
 
     if (
         "create_document_artifact" in available
@@ -13353,6 +13498,7 @@ async def _run_forced_weather_fallback(tool_choice: str | None) -> str | None:
 def _tool_action_fallback_reply(tool_results: list[dict]) -> str:
     created: list[str] = []
     reminders: list[str] = []
+    vault_appends: list[str] = []
     clarifications: list[str] = []
     failed: list[str] = []
     other: list[str] = []
@@ -13370,15 +13516,17 @@ def _tool_action_fallback_reply(tool_results: list[dict]) -> str:
             clarifications.append(first_line.strip())
         elif first_line.startswith("Added reminder"):
             reminders.append(first_line.strip())
+        elif first_line.startswith("Appended to Obsidian inbox"):
+            vault_appends.append(first_line.strip())
         elif first_line.lower().startswith("failed"):
             failed.append(first_line.strip())
         elif first_line and len(other) < 3:
             other.append(first_line)
 
-    if clarifications and not (created or reminders or failed):
+    if clarifications and not (created or reminders or vault_appends or failed):
         return clarifications[0]
 
-    if not (created or reminders or failed):
+    if not (created or reminders or vault_appends or failed):
         return ""
 
     lines: list[str] = []
@@ -13396,6 +13544,13 @@ def _tool_action_fallback_reply(tool_results: list[dict]) -> str:
         lines.extend(f"- {item}" for item in shown)
         if len(reminders) > len(shown):
             lines.append(f"- ...and {len(reminders) - len(shown)} more reminder(s).")
+    if vault_appends:
+        if lines:
+            lines.append("")
+        lines.append("I updated Obsidian:")
+        lines.extend(f"- {item}" for item in vault_appends[:8])
+        if len(vault_appends) > 8:
+            lines.append(f"- ...and {len(vault_appends) - 8} more vault update(s).")
     if clarifications:
         if lines:
             lines.append("")
@@ -13409,7 +13564,7 @@ def _tool_action_fallback_reply(tool_results: list[dict]) -> str:
         lines.extend(f"- {item}" for item in shown)
         if len(failed) > len(shown):
             lines.append(f"- ...and {len(failed) - len(shown)} more failed action(s).")
-    if other and not (created or reminders):
+    if other and not (created or reminders or vault_appends):
         if lines:
             lines.append("")
         lines.append("Tool results:")
@@ -14746,6 +14901,10 @@ def _core_tools():
         FILL_PERCENTAGE_SCORES_TOOL,
         GMAIL_BRIEF_TOOL,
         GMAIL_DRAFT_TOOL,
+        VAULT_SEARCH_TOOL,
+        VAULT_READ_NOTE_TOOL,
+        VAULT_RECENT_NOTES_TOOL,
+        VAULT_APPEND_INBOX_TOOL,
         MEMORY_TOOL,
         SOURCE_NOTE_TOOL,
         WEEK_TYPE_TOOL,
@@ -14843,6 +15002,19 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
 
     if re.search(r"\b(gmail|email|emails|mail|inbox|unread|draft|reply)\b", effective_text) or "gmail" in semantic_flags:
         add(GMAIL_BRIEF_TOOL, GMAIL_DRAFT_TOOL)
+    vault_intent = bool(
+        re.search(r"\b(obsidian|vault|second brain|second-brain)\b", effective_text)
+        or re.search(r"\b(?:read|search|find|list|recent|open|pull up)\b.{0,60}\bnotes?\b", effective_text)
+        or re.search(r"\b(?:append|save|capture|write|add)\b.{0,60}\b(?:vault|obsidian|inbox note|notes inbox)\b", effective_text)
+        or (
+            re.search(r"\b(?:append|save|capture|write|add)\b.{0,60}\binbox\b", effective_text)
+            and not re.search(r"\b(?:gmail|email|mail)\b", effective_text)
+        )
+    )
+    if vault_intent:
+        add(VAULT_SEARCH_TOOL, VAULT_READ_NOTE_TOOL, VAULT_RECENT_NOTES_TOOL)
+        if re.search(r"\b(?:append|save|capture|write|add)\b.{0,80}\b(?:inbox|vault|obsidian)\b", effective_text):
+            add(VAULT_APPEND_INBOX_TOOL)
     if (
         re.search(r"\b(timetable|lesson|lessons|class|classes|period|odd week|even week|school week|plt|professional learning teams?)\b", effective_text)
         or _is_timetable_verification_query(text, context)
@@ -14958,6 +15130,7 @@ def _tool_timeout_seconds() -> int:
 
 _SIDE_EFFECT_TOOL_PREFIXES = (
     "add_",
+    "append_",
     "apply_",
     "bulk_delete_",
     "complete_",
@@ -16373,6 +16546,51 @@ async def _execute_tool(name: str, inp: dict) -> str:
     elif name == "fetch_url":
         result = ss.fetch_url(inp.get("url", ""), max_chars=inp.get("max_chars", 6000))
         return ss.format_url_fetch(result)
+
+    elif name == "search_vault":
+        try:
+            result = obsidian.search_vault(
+                inp.get("query", ""),
+                max_results=inp.get("max_results", 8),
+            )
+            return _format_vault_search(result)
+        except Exception as e:
+            return f"Failed to search Obsidian vault: {e}"
+
+    elif name == "read_note":
+        try:
+            result = obsidian.read_note(
+                inp.get("note", ""),
+                max_chars=inp.get("max_chars", obsidian.DEFAULT_MAX_READ_CHARS),
+            )
+            return _format_vault_note(result)
+        except Exception as e:
+            return f"Failed to read Obsidian note: {e}"
+
+    elif name == "list_recent_notes":
+        try:
+            result = obsidian.list_recent_notes(inp.get("limit", 10))
+            return _format_recent_vault_notes(result)
+        except Exception as e:
+            return f"Failed to list recent Obsidian notes: {e}"
+
+    elif name == "append_to_inbox":
+        try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
+            result = obsidian.append_to_inbox(
+                inp.get("content", ""),
+                heading=inp.get("heading", ""),
+                source=inp.get("source", "H.I.R.A"),
+                inbox_path=inp.get("inbox_path", ""),
+            )
+            text = _format_vault_append(result)
+            if not result.get("ok"):
+                return text
+            return f"{text}\n\n{_action_audit_text(name, inp, text, metadata={'path': str(result.get('path', ''))})}"
+        except Exception as e:
+            return f"Failed to append to Obsidian inbox: {e}"
 
     elif name == "remember_source_insight":
         try:
