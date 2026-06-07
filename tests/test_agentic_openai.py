@@ -4536,6 +4536,42 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertEqual(items[0]["published"], "2026-06-07T21:14:00+08:00")
         self.assertTrue(items[0]["social_read"])
 
+    def test_social_digest_expands_relative_x_profile_status_links(self):
+        def fake_fetch_url(url, max_chars=6000):
+            if url == "https://x.com/LFCTransferRoom":
+                return {
+                    "ok": True,
+                    "title": "LFC Transfer Room (@LFCTransferRoom) / X",
+                    "text": '<a href="/LFCTransferRoom/status/2046249571882500354/photo/1">post</a>',
+                    "reader_fallback": True,
+                }
+            self.assertEqual(url, "https://x.com/LFCTransferRoom/status/2046249571882500354")
+            return {
+                "ok": True,
+                "title": "LFC Transfer Room on X: Liverpool transfer update",
+                "text": "Liverpool are monitoring a summer transfer target. 9:14 PM · Jun 7, 2026",
+                "reader_fallback": True,
+            }
+
+        with (
+            patch("search_service.social_search", return_value=[{
+                "title": "LFC Transfer Room (@LFCTransferRoom) / Posts / X",
+                "url": "https://x.com/LFCTransferRoom",
+                "description": "",
+            }]),
+            patch("search_service.fetch_url", side_effect=fake_fetch_url),
+            patch.dict(os.environ, {
+                "HIRA_DIGEST_SOCIAL_SEARCH": "1",
+                "HIRA_DIGEST_SOCIAL_DOMAINS": "x.com",
+                "HIRA_DIGEST_SOCIAL_READ": "1",
+                "HIRA_DIGEST_SOCIAL_PROFILE_READ": "1",
+            }),
+        ):
+            items = bot._digest_social_items("⚽ Liverpool / EPL", "lfc transfers")
+
+        self.assertEqual(items[0]["url"], "https://x.com/LFCTransferRoom/status/2046249571882500354")
+        self.assertTrue(items[0]["social_read"])
+
     def test_social_digest_prioritizes_direct_status_over_profile_expansion(self):
         def fake_fetch_url(url, max_chars=6000):
             if url == "https://x.com/LFCTransferRoom/status/2062874151090610459":
@@ -7427,7 +7463,7 @@ class AgenticOpenAITests(unittest.TestCase):
 
         execute_tool.assert_called_once_with(
             "get_liverpool_brief",
-            {"focus": "latest Liverpool transfer news rumours", "max_items": 2},
+            {"focus": "latest Liverpool transfer news rumours", "max_items": 4},
         )
         self.assertIn("⚽ Liverpool / EPL", reply)
         self.assertIn("X scan was thin", reply)
@@ -7438,7 +7474,7 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertNotIn("Brentford transfers", reply)
         self.assertNotIn("Old Liverpool transfer rumour", reply)
 
-    def test_lfc_x_prompt_falls_back_when_social_title_is_url_only(self):
+    def test_lfc_x_prompt_salvages_url_only_social_title_from_description(self):
         now = datetime.now(bot.SGT)
         social_entry = {
             "label": "⚽ Liverpool / EPL",
@@ -7458,14 +7494,65 @@ class AgenticOpenAITests(unittest.TestCase):
 
         with (
             patch.object(bot, "build_social_digest_entries_for_topics", return_value=[social_entry]),
-            patch.object(bot, "_execute_tool_offloop", return_value=fallback_result),
+            patch.object(bot, "_execute_tool_offloop", return_value=fallback_result) as execute_tool,
         ):
             reply = asyncio.run(web_app._pwa_topic_news_reply("Any latest LFC transfer news on X?"))
 
-        self.assertIn("Fallback board", reply)
-        self.assertIn("Liverpool transfer news, rumours and gossip", reply)
-        self.assertNotIn("X/social radar", reply)
-        self.assertNotIn("Why it matters", reply)
+        execute_tool.assert_not_called()
+        self.assertIn("X/social radar", reply)
+        self.assertIn("#Liverpool transfer bid update", reply)
+        self.assertIn("Social: x.com", reply)
+        self.assertIn("Why it matters", reply)
+        self.assertNotIn("Fallback board", reply)
+        self.assertNotIn("Liverpool transfer news, rumours and gossip", reply)
+
+    def test_chat_api_lfc_social_transfer_prompt_returns_rich_topic_news(self):
+        now = datetime.now(bot.SGT)
+        social_entry = {
+            "label": "⚽ Liverpool / EPL",
+            "item": {
+                "title": "Nicolò Schira on X: Liverpool are ready to submit a bid",
+                "description": "#Liverpool are ready to submit a bid. #LFC #transfers",
+                "url": "https://x.com/NicoSchira/status/2062874151090610459",
+                "source": "Social: x.com",
+                "published": "",
+                "observed_at": now.isoformat(),
+                "social": True,
+                "social_read": True,
+            },
+            "why": "Liverpool relevance",
+        }
+
+        async def run():
+            response = await web_app._chat_stream_response(
+                "Any LFC news or transfer rumours on X or social media?",
+                None,
+                "lfc-social-repro",
+            )
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(web_app, "_update_working_memory", return_value={}),
+            patch.object(web_app, "_schedule_background_call"),
+            patch.object(bot, "build_social_digest_entries_for_topics", return_value=[social_entry]),
+            patch.object(bot, "build_social_digest_entries", side_effect=AssertionError("shortlist social digest should not run")),
+            patch.object(bot, "_execute_tool_offloop", side_effect=AssertionError("fallback board should not run")),
+            patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("topic news should bypass model route")),
+        ):
+            body = asyncio.run(run())
+
+        self.assertIn('"name": "topic_news"', body)
+        self.assertIn("X/social radar", body)
+        self.assertIn("Nicolò Schira", body)
+        self.assertIn("Social: x.com", body)
+        self.assertNotIn("X scan was thin", body)
+        self.assertNotIn("Fallback board", body)
+        self.assertNotIn('"name": "agentic"', body)
 
     def test_lfc_transfer_x_prompt_filters_non_transfer_social_posts(self):
         now = datetime.now(bot.SGT)
@@ -8423,6 +8510,31 @@ class AgenticOpenAITests(unittest.TestCase):
         duckduckgo.assert_called_once()
         google_news_results.assert_not_called()
         self.assertEqual(results[0]["url"], "https://x.com/android/status/123")
+
+    def test_social_search_continues_past_unusable_x_shell_results(self):
+        with (
+            patch.object(search_service, "_tavily_search", return_value=[
+                {"title": "X Search", "description": "", "url": "https://x.com/search?q=lfc%20transfers"},
+            ]) as tavily_search,
+            patch.object(search_service, "_duckduckgo_search", return_value=[
+                {"title": "Log in to X", "description": "", "url": "https://x.com/login"},
+            ]) as duckduckgo,
+            patch.object(search_service, "_brave_search", return_value=[
+                {
+                    "title": "Nicolò Schira on X: Liverpool transfer bid update",
+                    "description": "#Liverpool #LFC #transfers",
+                    "url": "https://x.com/NicoSchira/status/2062874151090610459",
+                },
+            ]) as brave_search,
+            patch.object(search_service, "_jina_search") as jina_search,
+        ):
+            results = search_service.social_search("site:x.com lfc transfers", max_results=1)
+
+        tavily_search.assert_called_once()
+        duckduckgo.assert_called_once()
+        brave_search.assert_called_once()
+        jina_search.assert_not_called()
+        self.assertEqual(results[0]["url"], "https://x.com/NicoSchira/status/2062874151090610459")
 
     def test_social_search_uses_jina_when_duckduckgo_has_no_results(self):
         with (

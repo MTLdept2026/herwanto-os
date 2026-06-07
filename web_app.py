@@ -1853,6 +1853,8 @@ _PWA_LOW_SIGNAL_NEWS_RE = re.compile(
 )
 
 _PWA_TOPIC_RECENT_WINDOW_HOURS = {
+    "⚽ Liverpool / EPL": 96,
+    "🏎️ F1 / Mercedes": 96,
     "Teenage Engineering": 14 * 24,
     "Nothing": 14 * 24,
     "Android": 7 * 24,
@@ -1991,6 +1993,78 @@ def _pwa_social_search_topics(message: str, topics: list[tuple[str, str]]) -> li
     return _pwa_topic_news_dedupe_topics(variants + topics)
 
 
+_PWA_SOCIAL_LOW_SIGNAL_RE = re.compile(
+    r"\b(?:log in to x|javascript is not available|something went wrong|try again|cookies?|enable javascript)\b",
+    re.I,
+)
+
+
+def _pwa_social_recent_window_hours(topics: list[tuple[str, str]]) -> int:
+    windows = [int(bot.NEWS_MAX_AGE_HOURS)]
+    for label, _query in topics or []:
+        windows.append(_pwa_topic_recent_window_hours(str(label or "")))
+    return max(windows)
+
+
+def _pwa_social_clean_snippet(text: str, max_chars: int = 240) -> str:
+    clean = " ".join(str(text or "").split())
+    clean = re.sub(r"https?://\S+", "", clean, flags=re.I).strip()
+    clean = re.sub(
+        r"\s+\d{1,2}:\d{2}\s+[AP]M\s+\u00b7\s+[A-Z][a-z]{2}\s+\d{1,2},\s+20\d{2}.*$",
+        "",
+        clean,
+    ).strip()
+    if not clean or _PWA_SOCIAL_LOW_SIGNAL_RE.search(clean):
+        return ""
+    if len(clean) > max_chars:
+        clean = clean[: max(0, max_chars - 3)].rstrip(" ,.;:-") + "..."
+    return clean
+
+
+def _pwa_social_entry_title(item: dict) -> str:
+    title = bot._digest_display_title(str((item or {}).get("title", "") or "").strip())
+    if title:
+        return title
+    return bot._digest_display_title(
+        _pwa_social_clean_snippet(str((item or {}).get("description", "") or ""), max_chars=180)
+    )
+
+
+def _pwa_social_entry_rich_enough(entry: dict) -> bool:
+    item = entry.get("item") if isinstance(entry, dict) else {}
+    if not isinstance(item, dict):
+        return False
+    if _pwa_social_entry_title(item):
+        return True
+    return bool(_pwa_social_clean_snippet(str(item.get("description", "") or ""), max_chars=180))
+
+
+def _pwa_format_social_digest(entries: list[dict]) -> str:
+    lines: list[str] = []
+    for entry in entries or []:
+        item = entry.get("item") if isinstance(entry, dict) else {}
+        if not isinstance(item, dict):
+            continue
+        title = _pwa_social_entry_title(item)
+        if not title:
+            continue
+        label = str(entry.get("label", "")).strip()
+        source = str(item.get("source", "") or "").strip()
+        published = str(item.get("published", "") or item.get("observed_at", "") or "").strip()
+        why = str(entry.get("why", "") or "").strip()
+        url = str(item.get("url", "") or "").strip()
+        snippet = _pwa_social_clean_snippet(str(item.get("description", "") or ""), max_chars=260)
+        meta = " · ".join(part for part in [label, source, published] if part)
+        lines.append(f"- *{title}*{f' ({meta})' if meta else ''}")
+        if snippet and snippet.lower() != title.lower():
+            lines.append(f"  {snippet}")
+        if url:
+            lines.append(f"  Source: {url}")
+        if why:
+            lines.append(f"  Why it matters: {why}.")
+    return "\n".join(lines).strip()
+
+
 def _pwa_digest_entry_is_social(entry: dict) -> bool:
     item = entry.get("item") if isinstance(entry, dict) else {}
     if not isinstance(item, dict):
@@ -2018,9 +2092,9 @@ def _pwa_social_fallback_tool(topics: list[tuple[str, str]]) -> tuple[str, dict]
     queries = " ".join(query for _label, query in topics).lower()
     combined = f"{labels} {queries}"
     if "liverpool" in combined or "lfc" in combined:
-        return "get_liverpool_brief", {"focus": "latest Liverpool transfer news rumours", "max_items": 2}
+        return "get_liverpool_brief", {"focus": "latest Liverpool transfer news rumours", "max_items": 4}
     if "f1" in combined or "formula 1" in combined or "mercedes" in combined:
-        return "get_f1_brief", {"focus": "latest F1 Mercedes social trend news", "max_items": 2}
+        return "get_f1_brief", {"focus": "latest F1 Mercedes social trend news", "max_items": 4}
     query = next((query for _label, query in topics if str(query or "").strip()), "")
     if query:
         return "get_latest_news", {"query": query, "max_items": 3, "max_age_hours": bot.NEWS_MAX_AGE_HOURS}
@@ -2042,7 +2116,7 @@ def _pwa_transfer_board_items(result: str, limit: int = 3, topic_scope: str = ""
             continue
         if liverpool_scope and not re.search(r"\b(?:liverpool|lfc|transfer centre)\b", clean, re.I):
             continue
-        if _pwa_news_item_is_stale(clean, max_age_hours=bot.NEWS_MAX_AGE_HOURS):
+        if _pwa_news_item_is_stale(clean, max_age_hours=_pwa_topic_recent_window_hours(topic_scope)):
             continue
         if re.search(r"https?://", clean):
             clean = re.sub(r"\s*https?://\S+", "", clean).strip()
@@ -2076,7 +2150,7 @@ async def _pwa_social_thin_fallback_reply(message: str, topics: list[tuple[str, 
     except Exception as exc:
         bot.logger.warning(f"PWA social thin fallback failed for {scope}: {exc}")
         return ""
-    items = _pwa_transfer_board_items(result, limit=3, topic_scope=scope)
+    items = _pwa_transfer_board_items(result, limit=4, topic_scope=scope)
     if not items:
         items = _fallback_news_items(result, limit=2)
     if not items:
@@ -2105,11 +2179,16 @@ async def _pwa_topic_news_social_first_reply(message: str, topics: list[tuple[st
                 limit=8,
                 fetch_limit=1,
             )
+        recent_window = _pwa_social_recent_window_hours(search_topics)
         social_entries = [
-            entry for entry in bot._fresh_news_entries(entries, max_age_hours=int(bot.NEWS_MAX_AGE_HOURS))
-            if _pwa_digest_entry_is_social(entry) and _pwa_social_entry_matches_prompt(message, entry)
+            entry for entry in bot._fresh_news_entries(entries, max_age_hours=recent_window)
+            if (
+                _pwa_digest_entry_is_social(entry)
+                and _pwa_social_entry_matches_prompt(message, entry)
+                and _pwa_social_entry_rich_enough(entry)
+            )
         ][:4]
-        body = bot.format_curated_digest(social_entries)
+        body = _pwa_format_social_digest(social_entries)
     except Exception as exc:
         bot.logger.warning(f"PWA X-first shortlist digest failed: {exc}")
         body = ""

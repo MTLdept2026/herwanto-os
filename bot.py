@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, time as dt_time, date
 from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
 from types import SimpleNamespace
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 import pytz
 
 from openai import OpenAI, AsyncOpenAI
@@ -9358,15 +9358,21 @@ def _digest_social_status_urls_from_profile(url: str, max_urls: int = 3) -> list
     text = str((fetched or {}).get("text", "") or "")
     seen = set()
     urls = []
-    for match in re.finditer(r"https://(?:x|twitter)\.com/[^)\]\s/]+/status/\d+", text, re.I):
-        candidate = re.sub(r"/(?:photo|video)/\d+$", "", match.group(0)).strip()
-        key = candidate.lower().rstrip("/")
-        if key in seen:
-            continue
-        seen.add(key)
-        urls.append(candidate)
-        if len(urls) >= max(1, int(max_urls or 3)):
-            break
+    for pattern in (
+        r"https://(?:x|twitter)\.com/[^)\]\s/]+/status/\d+(?:/(?:photo|video)/\d+)?",
+        r"/[^)\]\s\"']+/status/\d+(?:/(?:photo|video)/\d+)?",
+    ):
+        for match in re.finditer(pattern, text, re.I):
+            raw = match.group(0).strip()
+            candidate = raw if raw.lower().startswith("http") else urljoin(url, raw)
+            candidate = re.sub(r"/(?:photo|video)/\d+$", "", candidate).strip()
+            key = candidate.lower().rstrip("/")
+            if key in seen:
+                continue
+            seen.add(key)
+            urls.append(candidate)
+            if len(urls) >= max(1, int(max_urls or 3)):
+                return urls
     return urls
 
 

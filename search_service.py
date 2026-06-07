@@ -634,6 +634,33 @@ def _dedupe_results(results: list[dict], max_results: int) -> list[dict]:
     return clean
 
 
+def _social_query_targets_x(query: str) -> bool:
+    return bool(re.search(r"\bsite:(?:www\.)?(?:x|twitter)\.com\b", str(query or ""), re.I))
+
+
+def _x_social_result_is_usable(item: dict) -> bool:
+    parsed = urlparse(str((item or {}).get("url", "") or ""))
+    host = parsed.netloc.lower().removeprefix("www.")
+    if host not in {"x.com", "twitter.com"}:
+        return False
+    path = parsed.path.strip("/")
+    if not path:
+        return False
+    lowered = path.lower()
+    if lowered.startswith(("search", "explore", "home", "login", "signup", "i/flow")):
+        return False
+    if re.search(r"(?:^|/)status/\d+\b", lowered) or lowered.startswith("i/trending/"):
+        return True
+    parts = [part for part in lowered.split("/") if part]
+    if len(parts) == 1:
+        return parts[0] not in {"i", "intent", "share"}
+    return len(parts) == 2 and parts[1] == "with_replies"
+
+
+def _usable_x_social_results(results: list[dict], max_results: int) -> list[dict]:
+    return _dedupe_results([item for item in results if _x_social_result_is_usable(item)], max_results)
+
+
 def _tavily_search(query: str, max_results: int = 5) -> list[dict]:
     api_key = _tavily_api_key()
     if not api_key:
@@ -843,14 +870,25 @@ def social_search(query: str, max_results: int = 5) -> list[dict]:
     if not clean or not search_enabled():
         return []
     limit = max(1, min(int(max_results or 5), 10))
+    x_targeted = _social_query_targets_x(clean)
+
+    def enough_usable() -> bool:
+        if not x_targeted:
+            return len(_dedupe_results(results, limit)) >= limit
+        return bool(_usable_x_social_results(results, limit))
+
     results = []
     results.extend(_tavily_search(clean, max_results=limit))
-    if len(results) < limit:
+    if not enough_usable():
         results.extend(_duckduckgo_search(clean, max_results=limit * 2))
-    if len(results) < limit:
+    if not enough_usable():
         results.extend(_brave_search(clean, max_results=limit * 2))
-    if len(results) < limit:
+    if not enough_usable():
         results.extend(_jina_search(clean, max_results=limit * 2))
+    if x_targeted:
+        usable = _usable_x_social_results(results, limit)
+        if usable:
+            return usable
     return _dedupe_results(results, limit)
 
 
