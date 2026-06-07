@@ -2018,6 +2018,122 @@ class AgenticOpenAITests(unittest.TestCase):
         with self.assertRaises(ValueError):
             search_service._read_limited_response(FakeResponse(), 10)
 
+    def test_fetch_url_uses_jina_reader_fallback_after_direct_failure(self):
+        original_url = "https://x.com/hira/status/123"
+        reader_url = f"https://r.jina.ai/{original_url}"
+        calls = []
+
+        class FakeResponse:
+            url = reader_url
+            headers = {"content-type": "text/plain; charset=utf-8"}
+            text = (
+                "Title: Hira trend post\n"
+                f"URL Source: {original_url}\n\n"
+                "Markdown Content:\n"
+                "A public X post says this topic is moving quickly today."
+            )
+
+            def raise_for_status(self):
+                pass
+
+        def fake_get_public_url(url, **_kwargs):
+            calls.append(url)
+            if url == original_url:
+                raise RuntimeError("403 Forbidden")
+            return FakeResponse()
+
+        with patch.object(search_service, "_validate_public_http_url", return_value=(True, "")), \
+                patch.object(search_service, "_get_public_url", side_effect=fake_get_public_url), \
+                patch.dict(os.environ, {"HIRA_JINA_READER_FALLBACK": "1"}, clear=False):
+            result = search_service.fetch_url(original_url)
+
+        self.assertEqual(calls, [original_url, reader_url])
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["reader_fallback"])
+        self.assertEqual(result["url"], original_url)
+        self.assertEqual(result["title"], "Hira trend post")
+        self.assertIn("public X post", result["text"])
+        formatted = search_service.format_url_fetch(result)
+        self.assertIn("Jina Reader", formatted)
+        self.assertNotIn("r.jina.ai", formatted)
+
+    def test_fetch_url_uses_jina_reader_for_x_error_shell(self):
+        original_url = "https://x.com/hira/status/456"
+        reader_url = f"https://r.jina.ai/{original_url}"
+        calls = []
+
+        class FakeDirectResponse:
+            url = original_url
+            headers = {"content-type": "text/html; charset=utf-8"}
+            text = (
+                "<html><body>Something went wrong, but don’t fret — let’s give it another shot. "
+                "Try again Some privacy related extensions may cause issues on x.com.</body></html>"
+            )
+
+            def raise_for_status(self):
+                pass
+
+        class FakeReaderResponse:
+            url = reader_url
+            headers = {"content-type": "text/plain; charset=utf-8"}
+            text = "Title: Useful X post\n\nMarkdown Content:\nA readable public X post."
+
+            def raise_for_status(self):
+                pass
+
+        def fake_get_public_url(url, **_kwargs):
+            calls.append(url)
+            if url == original_url:
+                return FakeDirectResponse()
+            return FakeReaderResponse()
+
+        with patch.object(search_service, "_validate_public_http_url", return_value=(True, "")), \
+                patch.object(search_service, "_get_public_url", side_effect=fake_get_public_url), \
+                patch.dict(os.environ, {"HIRA_JINA_READER_FALLBACK": "1"}, clear=False):
+            result = search_service.fetch_url(original_url)
+
+        self.assertEqual(calls, [original_url, reader_url])
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["reader_fallback"])
+        self.assertIn("readable public X post", result["text"])
+
+    def test_fetch_url_rejects_x_login_shell_from_jina_reader(self):
+        original_url = "https://x.com/search?q=codex"
+        reader_url = f"https://r.jina.ai/{original_url}"
+
+        class FakeReaderResponse:
+            url = reader_url
+            headers = {"content-type": "text/plain; charset=utf-8"}
+            text = (
+                "Title: X - The Everything App / X\n\n"
+                "See what's happening Continue with phone Continue with Google "
+                "or Email or username By continuing, you agree to our Terms of Service."
+            )
+
+            def raise_for_status(self):
+                pass
+
+        def fake_get_public_url(url, **_kwargs):
+            if url == original_url:
+                raise RuntimeError("timed out")
+            return FakeReaderResponse()
+
+        with patch.object(search_service, "_validate_public_http_url", return_value=(True, "")), \
+                patch.object(search_service, "_get_public_url", side_effect=fake_get_public_url), \
+                patch.dict(os.environ, {"HIRA_JINA_READER_FALLBACK": "1"}, clear=False):
+            result = search_service.fetch_url(original_url)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("Jina Reader returned no readable text", result["error"])
+
+    def test_fetch_url_does_not_proxy_private_targets_to_jina(self):
+        with patch.object(search_service, "_get_public_url") as get_public_url:
+            result = search_service.fetch_url("http://localhost/admin")
+
+        self.assertFalse(result["ok"])
+        self.assertIn("Blocked", result["error"])
+        get_public_url.assert_not_called()
+
     def test_side_effect_tool_timeout_waits_for_completion(self):
         def fake_tool(name, inp):
             time.sleep(0.02)

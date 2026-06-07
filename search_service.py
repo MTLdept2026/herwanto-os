@@ -48,6 +48,8 @@ def _env_int(name: str, default: int, minimum: int = 1, maximum: int | None = No
 
 
 URL_FETCH_MAX_BYTES = _env_int("HIRA_FETCH_URL_MAX_BYTES", 1_500_000, minimum=64_000, maximum=8_000_000)
+JINA_READER_BASE_URL = "https://r.jina.ai/"
+JINA_READER_TIMEOUT = _env_int("HIRA_JINA_READER_TIMEOUT", 12, minimum=3, maximum=30)
 
 
 @dataclass
@@ -80,6 +82,10 @@ DIGEST_TOPICS = [
 
 def search_enabled():
     return os.environ.get("HIRA_DISABLE_WEB_SEARCH", "").strip().lower() not in {"1", "true", "yes"}
+
+
+def jina_reader_fallback_enabled() -> bool:
+    return os.environ.get("HIRA_JINA_READER_FALLBACK", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _tavily_api_key() -> str:
@@ -385,6 +391,99 @@ def _read_limited_response(resp: requests.Response, max_bytes: int) -> bytes:
     return b"".join(chunks)
 
 
+def _url_fetch_result(
+    url: str,
+    content_type: str,
+    title: str,
+    text: str,
+    max_chars: int,
+    reader_fallback: bool = False,
+) -> dict:
+    text = " ".join(str(text or "").split())
+    limit = max(1000, min(int(max_chars or 6000), 12000))
+    truncated = len(text) > limit
+    if truncated:
+        text = text[:limit].rsplit(" ", 1)[0]
+    return {
+        "ok": True,
+        "url": url,
+        "title": title,
+        "content_type": content_type,
+        "text": text,
+        "truncated": truncated,
+        "reader_fallback": reader_fallback,
+    }
+
+
+def _parse_jina_reader_text(raw: str) -> tuple[str, str]:
+    lines = str(raw or "").splitlines()
+    title = ""
+    content_start = 0
+    for index, line in enumerate(lines[:30]):
+        stripped = line.strip()
+        lower = stripped.lower()
+        if lower.startswith("title:"):
+            title = stripped.split(":", 1)[1].strip()
+            content_start = max(content_start, index + 1)
+        elif lower.startswith(("url source:", "published time:", "warning:")):
+            content_start = max(content_start, index + 1)
+        elif lower in {"markdown content:", "content:"}:
+            content_start = index + 1
+            break
+    content = "\n".join(lines[content_start:]).strip() or str(raw or "").strip()
+    return title, content
+
+
+def _jina_reader_url(url: str) -> str:
+    return f"{JINA_READER_BASE_URL}{url}"
+
+
+def _fetch_url_via_jina_reader(url: str, max_chars: int = 6000) -> dict:
+    resp = _get_public_url(_jina_reader_url(url), timeout=JINA_READER_TIMEOUT)
+    resp.raise_for_status()
+    title, text = _parse_jina_reader_text(resp.text or "")
+    return _url_fetch_result(
+        url,
+        resp.headers.get("content-type", ""),
+        title,
+        text,
+        max_chars,
+        reader_fallback=True,
+    )
+
+
+def _fetch_url_with_jina_fallback(url: str, max_chars: int = 6000) -> dict:
+    try:
+        result = _fetch_url_via_jina_reader(url, max_chars=max_chars)
+        if result.get("text") and not _jina_reader_text_unusable(url, result.get("text", "")):
+            return result
+        return {"ok": False, "error": "Jina Reader returned no readable text.", "url": url}
+    except Exception as exc:
+        logger.warning(f"Jina Reader fallback error for '{url}': {exc}")
+        return {"ok": False, "error": f"Jina Reader fallback failed: {exc}", "url": url}
+
+
+def _jina_reader_text_unusable(url: str, text: str) -> bool:
+    clean = " ".join(str(text or "").split())
+    domain = _domain_from_url(url)
+    if domain in {"x.com", "twitter.com"} and "Continue with phone" in clean and "Email or username" in clean:
+        return True
+    return False
+
+
+def _should_retry_with_jina_reader(url: str, text: str) -> bool:
+    clean = " ".join(str(text or "").split())
+    if not clean:
+        return True
+    domain = _domain_from_url(url)
+    if domain in {"x.com", "twitter.com"} and (
+        "Something went wrong, but don" in clean
+        or "Try again Some privacy related extensions may cause issues" in clean
+    ):
+        return True
+    return False
+
+
 def fetch_url(url: str, max_chars: int = 6000) -> dict:
     """Fetch and extract readable text from a URL. Does not require Tavily."""
     url = (url or "").strip()
@@ -397,6 +496,12 @@ def fetch_url(url: str, max_chars: int = 6000) -> dict:
         resp.raise_for_status()
     except Exception as e:
         logger.warning(f"URL fetch error for '{url}': {e}")
+        if jina_reader_fallback_enabled():
+            fallback = _fetch_url_with_jina_fallback(url, max_chars=max_chars)
+            if fallback.get("ok"):
+                return fallback
+            error = f"Could not fetch URL: {e}. {fallback.get('error', '')}".strip()
+            return {"ok": False, "error": error, "url": url}
         return {"ok": False, "error": f"Could not fetch URL: {e}", "url": url}
 
     content_type = resp.headers.get("content-type", "")
@@ -412,19 +517,12 @@ def fetch_url(url: str, max_chars: int = 6000) -> dict:
             logger.warning(f"HTML parse error for '{url}': {e}")
             text = re.sub(r"<[^>]+>", " ", text)
 
-    text = " ".join(text.split())
-    limit = max(1000, min(int(max_chars or 6000), 12000))
-    truncated = len(text) > limit
-    if truncated:
-        text = text[:limit].rsplit(" ", 1)[0]
-    return {
-        "ok": True,
-        "url": resp.url,
-        "title": title,
-        "content_type": content_type,
-        "text": text,
-        "truncated": truncated,
-    }
+    result = _url_fetch_result(resp.url, content_type, title, text, max_chars)
+    if _should_retry_with_jina_reader(result.get("url") or url, result.get("text", "")) and jina_reader_fallback_enabled():
+        fallback = _fetch_url_with_jina_fallback(result.get("url") or url, max_chars=max_chars)
+        if fallback.get("ok"):
+            return fallback
+    return result
 
 
 def format_url_fetch(result: dict) -> str:
@@ -435,6 +533,10 @@ def format_url_fetch(result: dict) -> str:
         lines.append(f"Title: {result['title']}")
     if result.get("content_type"):
         lines.append(f"Content-Type: {result['content_type']}")
+    if result.get("reader_fallback"):
+        lines.append(
+            "Note: Direct fetch failed or had no readable text, so H.I.R.A used Jina Reader for this public page."
+        )
     if result.get("truncated"):
         lines.append("Note: Content was truncated to the first readable portion.")
     lines.append("")
