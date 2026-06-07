@@ -1992,6 +1992,88 @@ def _pwa_digest_entry_is_social(entry: dict) -> bool:
     )
 
 
+_PWA_TRANSFER_INTENT_RE = re.compile(r"\b(?:transfers?|rumou?rs?|gossip|signings?|loans?|contracts?|deals?|bid|sale|target)\b", re.I)
+_PWA_TRANSFER_BOARD_RE = re.compile(
+    r"\b(?:transfers?|rumou?rs?|gossip|signings?|loans?|contracts?|deal|bid|sale|target|moved on|"
+    r"lfc transfer room)\b",
+    re.I,
+)
+
+
+def _pwa_social_fallback_tool(topics: list[tuple[str, str]]) -> tuple[str, dict]:
+    labels = " ".join(label for label, _query in topics).lower()
+    queries = " ".join(query for _label, query in topics).lower()
+    combined = f"{labels} {queries}"
+    if "liverpool" in combined or "lfc" in combined:
+        return "get_liverpool_brief", {"focus": "latest Liverpool transfer news rumours", "max_items": 2}
+    if "f1" in combined or "formula 1" in combined or "mercedes" in combined:
+        return "get_f1_brief", {"focus": "latest F1 Mercedes social trend news", "max_items": 2}
+    query = next((query for _label, query in topics if str(query or "").strip()), "")
+    if query:
+        return "get_latest_news", {"query": query, "max_items": 3, "max_age_hours": bot.NEWS_MAX_AGE_HOURS}
+    return "", {}
+
+
+def _pwa_transfer_board_items(result: str, limit: int = 3, topic_scope: str = "") -> list[str]:
+    items: list[str] = []
+    seen: set[str] = set()
+    lines = [line.strip() for line in str(result or "").splitlines()]
+    liverpool_scope = bool(re.search(r"\b(?:liverpool|lfc)\b", str(topic_scope or ""), re.I))
+    for index, line in enumerate(lines):
+        if not line.startswith("-"):
+            continue
+        clean = re.sub(r"^\-\s*", "", line).replace("*", "").strip()
+        if not clean or clean.lower().startswith(("http", "latest completed:", "source:")):
+            continue
+        if not _PWA_TRANSFER_BOARD_RE.search(clean):
+            continue
+        if liverpool_scope and not re.search(r"\b(?:liverpool|lfc|transfer centre)\b", clean, re.I):
+            continue
+        if re.search(r"https?://", clean):
+            clean = re.sub(r"\s*https?://\S+", "", clean).strip()
+        key = clean.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(clean)
+        if len(items) >= max(1, int(limit or 3)):
+            break
+    return items
+
+
+def _pwa_social_entry_matches_prompt(message: str, entry: dict) -> bool:
+    if not _PWA_TRANSFER_INTENT_RE.search(str(message or "")):
+        return True
+    item = entry.get("item") if isinstance(entry, dict) else {}
+    text = " ".join(
+        str((item or {}).get(key, "") or "")
+        for key in ("title", "description", "url", "source")
+    )
+    return bool(_PWA_TRANSFER_BOARD_RE.search(text))
+
+
+async def _pwa_social_thin_fallback_reply(message: str, topics: list[tuple[str, str]], scope: str) -> str:
+    tool_name, tool_input = _pwa_social_fallback_tool(topics)
+    if not tool_name:
+        return ""
+    try:
+        result = await bot._execute_tool_offloop(tool_name, tool_input)
+    except Exception as exc:
+        bot.logger.warning(f"PWA social thin fallback failed for {scope}: {exc}")
+        return ""
+    items = _pwa_transfer_board_items(result, limit=3, topic_scope=scope)
+    if not items:
+        items = _fallback_news_items(result, limit=2)
+    if not items:
+        return ""
+    bullets = "\n".join(f"- {item}" for item in items)
+    return (
+        f"X scan was thin for {scope}: no fresh direct X post/trend came back usable.\n\n"
+        f"*Fallback board, not X-sourced unless marked*\n{bullets}\n\n"
+        "Treat this as reported/rumour unless a club or official source confirms it."
+    )
+
+
 async def _pwa_topic_news_social_first_reply(message: str, topics: list[tuple[str, str]]) -> str:
     if not _pwa_social_trend_news_requested(message) or not topics:
         return ""
@@ -2009,17 +2091,17 @@ async def _pwa_topic_news_social_first_reply(message: str, topics: list[tuple[st
             )
         social_entries = [
             entry for entry in bot._fresh_news_entries(entries, max_age_hours=int(bot.NEWS_MAX_AGE_HOURS))
-            if _pwa_digest_entry_is_social(entry)
+            if _pwa_digest_entry_is_social(entry) and _pwa_social_entry_matches_prompt(message, entry)
         ][:4]
         body = bot.format_curated_digest(social_entries)
     except Exception as exc:
         bot.logger.warning(f"PWA X-first shortlist digest failed: {exc}")
         body = ""
     if not body:
-        return (
-            f"I checked X/social trend reads for {scope}, but no fresh public X status/trend item "
-            "came back usable. I’m not padding that with RSS headlines."
-        )
+        fallback = await _pwa_social_thin_fallback_reply(message, topics, scope)
+        if fallback:
+            return fallback
+        return f"X scan was thin for {scope}: no fresh direct X post/trend came back usable."
     return (
         f"I checked {scope} and prioritized X/social trend reads.\n\n"
         f"*X/social radar*\n{body}"

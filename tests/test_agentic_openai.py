@@ -4496,6 +4496,46 @@ class AgenticOpenAITests(unittest.TestCase):
         tavily_search.assert_not_called()
         web_search.assert_not_called()
 
+    def test_social_digest_expands_x_profile_to_direct_status_read(self):
+        def fake_fetch_url(url, max_chars=6000):
+            if url == "https://x.com/LFCTransferRoom":
+                return {
+                    "ok": True,
+                    "title": "LFC Transfer Room (@LFCTransferRoom) / X",
+                    "text": "[post](https://x.com/LFCTransferRoom/status/2046249571882500354/photo/1)",
+                    "reader_fallback": True,
+                }
+            self.assertEqual(url, "https://x.com/LFCTransferRoom/status/2046249571882500354")
+            return {
+                "ok": True,
+                "title": "LFC Transfer Room on X: Liverpool transfer update",
+                "text": "Liverpool are monitoring a summer transfer target. 9:14 PM · Jun 7, 2026",
+                "reader_fallback": True,
+            }
+
+        with (
+            patch("search_service.social_search", return_value=[{
+                "title": "LFC Transfer Room (@LFCTransferRoom) / Posts / X",
+                "url": "https://x.com/LFCTransferRoom",
+                "description": "",
+            }]),
+            patch("search_service.fetch_url", side_effect=fake_fetch_url),
+            patch.dict(os.environ, {
+                "HIRA_DIGEST_SOCIAL_SEARCH": "1",
+                "HIRA_DIGEST_SOCIAL_DOMAINS": "x.com",
+                "HIRA_DIGEST_SOCIAL_READ": "1",
+                "HIRA_DIGEST_SOCIAL_PROFILE_READ": "1",
+            }),
+        ):
+            items = bot._digest_social_items(
+                "⚽ Liverpool / EPL",
+                "Liverpool FC latest result match report fixture line-up injury transfer",
+            )
+
+        self.assertEqual(items[0]["url"], "https://x.com/LFCTransferRoom/status/2046249571882500354")
+        self.assertEqual(items[0]["published"], "2026-06-07T21:14:00+08:00")
+        self.assertTrue(items[0]["social_read"])
+
     def test_social_digest_topic_limit_counts_eligible_topics_only(self):
         with (
             patch("bot._news_topics", return_value=[
@@ -7225,8 +7265,8 @@ class AgenticOpenAITests(unittest.TestCase):
                 "Brief me on ny fav topics. Use X for latest trends pls"
             ))
 
-        self.assertIn("no fresh public X status/trend item", reply)
-        self.assertIn("not padding", reply)
+        self.assertIn("X scan was thin", reply)
+        self.assertIn("no fresh direct X post/trend", reply)
         self.assertNotIn("Latest from your shortlist", reply)
 
     def test_lfc_x_prompt_uses_topic_specific_social_digest(self):
@@ -7259,16 +7299,60 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertIn("Liverpool transfer thread on X", reply)
         self.assertIn("Liverpool", reply)
 
-    def test_lfc_x_prompt_refuses_non_x_padding_when_social_empty(self):
+    def test_lfc_x_prompt_uses_labelled_fallback_board_when_social_empty(self):
+        fallback_result = "\n".join([
+            "Liverpool FC structured live brief",
+            "- Latest completed: Liverpool 1-1 Brentford | 2026-05-24 | Premier League | Full Time",
+            "- Liverpool FC Match Reports - This Is Anfield",
+            "- Liverpool transfer news, rumours and gossip: Live updates and latest on deals - Sky Sports",
+            "- Brentford transfers, latest news, rumours and gossip - Sky Sports",
+            "- LFC Transfer Room (@LFCTransferRoom) / Posts / X - Twitter",
+        ])
+
         with (
             patch.object(bot, "build_social_digest_entries_for_topics", return_value=[]),
-            patch.object(bot, "_execute_tool_offloop", side_effect=AssertionError("RSS/Liverpool fallback should not run")),
+            patch.object(bot, "_execute_tool_offloop", return_value=fallback_result) as execute_tool,
         ):
             reply = asyncio.run(web_app._pwa_topic_news_reply("Any latest LFC transfer news on X?"))
 
+        execute_tool.assert_called_once_with(
+            "get_liverpool_brief",
+            {"focus": "latest Liverpool transfer news rumours", "max_items": 2},
+        )
         self.assertIn("⚽ Liverpool / EPL", reply)
-        self.assertIn("no fresh public X status/trend item", reply)
-        self.assertIn("not padding", reply)
+        self.assertIn("X scan was thin", reply)
+        self.assertIn("Fallback board", reply)
+        self.assertIn("Liverpool transfer news, rumours and gossip", reply)
+        self.assertNotIn("Latest completed", reply)
+        self.assertNotIn("Match Reports", reply)
+        self.assertNotIn("Brentford transfers", reply)
+
+    def test_lfc_transfer_x_prompt_filters_non_transfer_social_posts(self):
+        now = datetime.now(bot.SGT)
+        birthday_entry = {
+            "label": "⚽ Liverpool / EPL",
+            "item": {
+                "title": "Liverpool FC remember Ian St John on his birthday",
+                "url": "https://x.com/LFC/status/2046249571882500354",
+                "source": "Social: x.com",
+                "published": now.isoformat(),
+                "observed_at": now.isoformat(),
+                "social": True,
+                "social_read": True,
+            },
+            "why": "Liverpool relevance",
+        }
+        fallback_result = "- Liverpool transfer news, rumours and gossip: Live updates and latest on deals - Sky Sports"
+
+        with (
+            patch.object(bot, "build_social_digest_entries_for_topics", return_value=[birthday_entry]),
+            patch.object(bot, "_execute_tool_offloop", return_value=fallback_result),
+        ):
+            reply = asyncio.run(web_app._pwa_topic_news_reply("Any latest LFC transfer news on X?"))
+
+        self.assertIn("Fallback board", reply)
+        self.assertIn("Liverpool transfer news, rumours and gossip", reply)
+        self.assertNotIn("Ian St John", reply)
 
     def test_topic_news_followup_bypasses_model_route(self):
         fresh_stamp = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")

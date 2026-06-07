@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, time as dt_time, date
 from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
 from types import SimpleNamespace
+from urllib.parse import urlparse
 import pytz
 
 from openai import OpenAI, AsyncOpenAI
@@ -9121,6 +9122,10 @@ def _digest_social_read_enabled() -> bool:
     return os.environ.get("HIRA_DIGEST_SOCIAL_READ", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _digest_social_profile_read_enabled() -> bool:
+    return os.environ.get("HIRA_DIGEST_SOCIAL_PROFILE_READ", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
 def _digest_social_topic_allowed(label: str, query: str) -> bool:
     clean = f"{label} {query}".lower()
     return any(term in clean for term in DIGEST_SOCIAL_TOPIC_TERMS)
@@ -9237,31 +9242,34 @@ def _digest_social_items(label: str, query: str, max_items: int = 1) -> list[dic
         for result in results:
             url = str(result.get("url", "") or "").strip()
             title = str(result.get("title", "") or "").strip()
-            if not url or not title or domain not in url.lower() or not _digest_social_direct_url(url):
+            if not url or not title or domain not in url.lower():
                 continue
-            key = url.lower().rstrip("/")
-            if key in seen_urls:
-                continue
-            seen_urls.add(key)
-            description = str(result.get("description", "") or "").strip()[:500]
-            read_result = _digest_social_read(url) if _digest_social_read_enabled() else {}
-            if read_result:
-                title = read_result.get("title") or title
-                description = read_result.get("description") or description
-            item = {
-                "title": title,
-                "url": url,
-                "published": "",
-                "source": f"Social: {domain}",
-                "description": description,
-                "social": True,
-                "social_kind": _digest_social_kind(url),
-            }
-            if read_result:
-                item.update(read_result)
-            items.append(item)
-            if len(items) >= limit:
-                return items
+            candidate_urls = _digest_social_candidate_urls(url)
+            for candidate_url in candidate_urls:
+                key = candidate_url.lower().rstrip("/")
+                if key in seen_urls:
+                    continue
+                seen_urls.add(key)
+                description = str(result.get("description", "") or "").strip()[:500]
+                item_title = title
+                read_result = _digest_social_read(candidate_url) if _digest_social_read_enabled() else {}
+                if read_result:
+                    item_title = read_result.get("title") or item_title
+                    description = read_result.get("description") or description
+                item = {
+                    "title": item_title,
+                    "url": candidate_url,
+                    "published": "",
+                    "source": f"Social: {domain}",
+                    "description": description,
+                    "social": True,
+                    "social_kind": _digest_social_kind(candidate_url),
+                }
+                if read_result:
+                    item.update(read_result)
+                items.append(item)
+                if len(items) >= limit:
+                    return items
     return items
 
 
@@ -9270,8 +9278,64 @@ def _digest_social_direct_url(url: str) -> bool:
     return bool(re.search(r"/(?:i/)?status/|/[^/?#]+/status/|/i/trending/", clean))
 
 
+def _digest_social_profile_url(url: str) -> bool:
+    parsed = urlparse(str(url or ""))
+    host = parsed.netloc.lower().removeprefix("www.")
+    if host not in {"x.com", "twitter.com"}:
+        return False
+    path = parsed.path.strip("/")
+    if not path or "/" in path:
+        return path.endswith("/with_replies")
+    return not path.lower().startswith(("i/", "search", "explore", "home", "login", "signup"))
+
+
+def _digest_social_status_urls_from_profile(url: str, max_urls: int = 3) -> list[str]:
+    if not _digest_social_profile_read_enabled():
+        return []
+    try:
+        fetched = ss.fetch_url(url, max_chars=5000)
+    except Exception as exc:
+        logger.warning(f"Social profile read failed for {url}: {exc}")
+        return []
+    text = str((fetched or {}).get("text", "") or "")
+    seen = set()
+    urls = []
+    for match in re.finditer(r"https://(?:x|twitter)\.com/[^)\]\s/]+/status/\d+", text, re.I):
+        candidate = re.sub(r"/(?:photo|video)/\d+$", "", match.group(0)).strip()
+        key = candidate.lower().rstrip("/")
+        if key in seen:
+            continue
+        seen.add(key)
+        urls.append(candidate)
+        if len(urls) >= max(1, int(max_urls or 3)):
+            break
+    return urls
+
+
+def _digest_social_candidate_urls(url: str) -> list[str]:
+    if _digest_social_direct_url(url):
+        return [url]
+    if _digest_social_profile_url(url):
+        return _digest_social_status_urls_from_profile(url)
+    return []
+
+
 def _digest_social_kind(url: str) -> str:
     return "trend" if "/i/trending/" in str(url or "").lower() else "post"
+
+
+def _digest_social_published_at(text: str) -> str:
+    match = re.search(
+        r"\b(\d{1,2}:\d{2}\s+[AP]M)\s+·\s+([A-Z][a-z]{2}\s+\d{1,2},\s+20\d{2})\b",
+        str(text or ""),
+    )
+    if not match:
+        return ""
+    try:
+        parsed = datetime.strptime(f"{match.group(2)} {match.group(1)}", "%b %d, %Y %I:%M %p")
+    except ValueError:
+        return ""
+    return SGT.localize(parsed).isoformat()
 
 
 def _digest_social_read(url: str) -> dict:
@@ -9288,6 +9352,7 @@ def _digest_social_read(url: str) -> dict:
     return {
         "title": str(fetched.get("title", "") or "").strip(),
         "description": text[:500],
+        "published": _digest_social_published_at(text),
         "observed_at": datetime.now(SGT).isoformat(),
         "social_read": True,
         "reader_fallback": bool(fetched.get("reader_fallback")),
