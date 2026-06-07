@@ -7229,6 +7229,47 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertIn("not padding", reply)
         self.assertNotIn("Latest from your shortlist", reply)
 
+    def test_lfc_x_prompt_uses_topic_specific_social_digest(self):
+        now = datetime.now(bot.SGT)
+        social_entry = {
+            "label": "⚽ Liverpool / EPL",
+            "item": {
+                "title": "Liverpool transfer thread on X",
+                "url": "https://x.com/lfcwatch/status/2046249571882500354",
+                "source": "Social: x.com",
+                "published": "",
+                "observed_at": now.isoformat(),
+                "social": True,
+                "social_read": True,
+            },
+            "why": "Liverpool relevance",
+        }
+
+        with (
+            patch.object(bot, "build_social_digest_entries_for_topics", return_value=[social_entry]) as social_digest,
+            patch.object(bot, "build_social_digest_entries", side_effect=AssertionError("shortlist social digest should not run")),
+            patch.object(bot, "_execute_tool_offloop", side_effect=AssertionError("RSS/Liverpool fallback should not run")),
+        ):
+            reply = asyncio.run(web_app._pwa_topic_news_reply("Any latest LFC transfer news on X?"))
+
+        social_digest.assert_called_once()
+        called_topics = social_digest.call_args.args[0]
+        self.assertEqual(called_topics[0][0], "⚽ Liverpool / EPL")
+        self.assertIn("X/social radar", reply)
+        self.assertIn("Liverpool transfer thread on X", reply)
+        self.assertIn("Liverpool", reply)
+
+    def test_lfc_x_prompt_refuses_non_x_padding_when_social_empty(self):
+        with (
+            patch.object(bot, "build_social_digest_entries_for_topics", return_value=[]),
+            patch.object(bot, "_execute_tool_offloop", side_effect=AssertionError("RSS/Liverpool fallback should not run")),
+        ):
+            reply = asyncio.run(web_app._pwa_topic_news_reply("Any latest LFC transfer news on X?"))
+
+        self.assertIn("⚽ Liverpool / EPL", reply)
+        self.assertIn("no fresh public X status/trend item", reply)
+        self.assertIn("not padding", reply)
+
     def test_topic_news_followup_bypasses_model_route(self):
         fresh_stamp = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
 

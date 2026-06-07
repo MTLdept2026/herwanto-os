@@ -9520,13 +9520,18 @@ def build_curated_digest_entries(now: datetime | None = None, limit: int = 4, fe
     return chosen[: max(1, int(limit or 4))]
 
 
-def build_social_digest_entries(now: datetime | None = None, limit: int = 4, fetch_limit: int = 1) -> list[dict]:
+def build_social_digest_entries_for_topics(
+    topics: list[tuple[str, str]],
+    now: datetime | None = None,
+    limit: int = 4,
+    fetch_limit: int = 1,
+) -> list[dict]:
     current = now or datetime.now(SGT)
     candidates = []
     used_keys = set()
     social_topic_limit = _digest_social_topic_limit()
     social_topics_checked = 0
-    for label, query in _news_topics(now=current):
+    for label, query in _dedupe_news_topics(topics or []):
         if social_topics_checked >= social_topic_limit:
             break
         if not _digest_social_topic_allowed(label, query):
@@ -9549,6 +9554,16 @@ def build_social_digest_entries(now: datetime | None = None, limit: int = 4, fet
             used_keys.add(key)
     candidates.sort(key=lambda entry: (-int(entry.get("score", 0) or 0), str(entry.get("label", "")), str(entry.get("key", ""))))
     return candidates[: max(1, int(limit or 4))]
+
+
+def build_social_digest_entries(now: datetime | None = None, limit: int = 4, fetch_limit: int = 1) -> list[dict]:
+    current = now or datetime.now(SGT)
+    return build_social_digest_entries_for_topics(
+        _news_topics(now=current),
+        now=current,
+        limit=limit,
+        fetch_limit=fetch_limit,
+    )
 
 
 def format_curated_digest(entries: list[dict]) -> str:

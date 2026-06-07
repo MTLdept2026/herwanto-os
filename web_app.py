@@ -1954,6 +1954,29 @@ def _pwa_shortlist_topic_request(topics: list[tuple[str, str]]) -> bool:
     return [(str(label), str(query)) for label, query in topics] == [("Latest from your shortlist", "")]
 
 
+def _pwa_builtin_digest_topic(label_fragment: str) -> tuple[str, str]:
+    fragment = str(label_fragment or "").lower()
+    for label, query in bot.ss.DIGEST_TOPICS:
+        if fragment in str(label or "").lower():
+            return str(label), str(query)
+    return "", ""
+
+
+def _pwa_social_trend_topics(message: str, recent_context: str = "") -> list[tuple[str, str]]:
+    topics = _pwa_topic_news_queries(message, recent_context)
+    if topics:
+        return topics
+    if not _pwa_social_trend_news_requested(message):
+        return []
+    clean = " ".join(str(message or "").lower().split())
+    resolved: list[tuple[str, str]] = []
+    if re.search(r"\b(?:lfc|liverpool|anfield)\b", clean):
+        resolved.append(_pwa_builtin_digest_topic("liverpool"))
+    if re.search(r"\b(?:f1|formula 1|mercedes|grand prix|russell|antonelli|hamilton)\b", clean):
+        resolved.append(_pwa_builtin_digest_topic("f1"))
+    return [(label, query) for label, query in resolved if label and query]
+
+
 def _pwa_digest_entry_is_social(entry: dict) -> bool:
     item = entry.get("item") if isinstance(entry, dict) else {}
     if not isinstance(item, dict):
@@ -1970,10 +1993,20 @@ def _pwa_digest_entry_is_social(entry: dict) -> bool:
 
 
 async def _pwa_topic_news_social_first_reply(message: str, topics: list[tuple[str, str]]) -> str:
-    if not _pwa_social_trend_news_requested(message) or not _pwa_shortlist_topic_request(topics):
+    if not _pwa_social_trend_news_requested(message) or not topics:
         return ""
+    labels = [label for label, _query in topics]
+    scope = "your shortlist" if _pwa_shortlist_topic_request(topics) else ", ".join(labels)
     try:
-        entries = await asyncio.to_thread(bot.build_social_digest_entries, limit=8, fetch_limit=1)
+        if _pwa_shortlist_topic_request(topics):
+            entries = await asyncio.to_thread(bot.build_social_digest_entries, limit=8, fetch_limit=1)
+        else:
+            entries = await asyncio.to_thread(
+                bot.build_social_digest_entries_for_topics,
+                topics,
+                limit=8,
+                fetch_limit=1,
+            )
         social_entries = [
             entry for entry in bot._fresh_news_entries(entries, max_age_hours=int(bot.NEWS_MAX_AGE_HOURS))
             if _pwa_digest_entry_is_social(entry)
@@ -1984,11 +2017,11 @@ async def _pwa_topic_news_social_first_reply(message: str, topics: list[tuple[st
         body = ""
     if not body:
         return (
-            "I checked X/social trend reads across your shortlist, but no fresh public X status/trend item "
+            f"I checked X/social trend reads for {scope}, but no fresh public X status/trend item "
             "came back usable. I’m not padding that with RSS headlines."
         )
     return (
-        "I widened the radar across your shortlist and prioritized X/social trend reads.\n\n"
+        f"I checked {scope} and prioritized X/social trend reads.\n\n"
         f"*X/social radar*\n{body}"
     )
 
@@ -2167,7 +2200,7 @@ async def _pwa_topic_news_reply_rss_for_topics(topics: list[tuple[str, str]]) ->
 
 
 async def _pwa_topic_news_reply_rss(message: str, recent_context: str = "") -> str:
-    topics = _pwa_topic_news_queries(message, recent_context)
+    topics = _pwa_social_trend_topics(message, recent_context) or _pwa_topic_news_queries(message, recent_context)
     social_first_reply = await _pwa_topic_news_social_first_reply(message, topics)
     if social_first_reply:
         return social_first_reply
@@ -2175,9 +2208,12 @@ async def _pwa_topic_news_reply_rss(message: str, recent_context: str = "") -> s
 
 
 async def _pwa_topic_news_reply(message: str, recent_context: str = "") -> str:
-    topics = _pwa_topic_news_queries(message, recent_context)
+    topics = _pwa_social_trend_topics(message, recent_context) or _pwa_topic_news_queries(message, recent_context)
     if not topics:
         return ""
+    social_first_reply = await _pwa_topic_news_social_first_reply(message, topics)
+    if social_first_reply:
+        return social_first_reply
     if not ss.search_enabled() or not str(getattr(bot, "OPENAI_API_KEY", "") or "").strip():
         return await _pwa_topic_news_reply_rss(message, recent_context)
     if any(not str(query or "").strip() for _label, query in topics):
