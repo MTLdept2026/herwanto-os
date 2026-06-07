@@ -1977,6 +1977,20 @@ def _pwa_social_trend_topics(message: str, recent_context: str = "") -> list[tup
     return [(label, query) for label, query in resolved if label and query]
 
 
+def _pwa_social_search_topics(message: str, topics: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    if not _PWA_TRANSFER_INTENT_RE.search(str(message or "")):
+        return topics
+    labels = " ".join(label for label, _query in topics).lower()
+    if "liverpool" not in labels and "lfc" not in labels:
+        return topics
+    variants = [
+        ("⚽ Liverpool / EPL", "lfc transfers"),
+        ("⚽ Liverpool / EPL", "lfc transfer rumours"),
+        ("⚽ Liverpool / EPL", "Liverpool transfer rumours"),
+    ]
+    return _pwa_topic_news_dedupe_topics(variants + topics)
+
+
 def _pwa_digest_entry_is_social(entry: dict) -> bool:
     item = entry.get("item") if isinstance(entry, dict) else {}
     if not isinstance(item, dict):
@@ -1994,8 +2008,7 @@ def _pwa_digest_entry_is_social(entry: dict) -> bool:
 
 _PWA_TRANSFER_INTENT_RE = re.compile(r"\b(?:transfers?|rumou?rs?|gossip|signings?|loans?|contracts?|deals?|bid|sale|target)\b", re.I)
 _PWA_TRANSFER_BOARD_RE = re.compile(
-    r"\b(?:transfers?|rumou?rs?|gossip|signings?|loans?|contracts?|deal|bid|sale|target|moved on|"
-    r"lfc transfer room)\b",
+    r"\b(?:transfers?|rumou?rs?|gossip|signings?|loans?|contracts?|deal|bid|sale|target|moved on)\b",
     re.I,
 )
 
@@ -2077,15 +2090,16 @@ async def _pwa_social_thin_fallback_reply(message: str, topics: list[tuple[str, 
 async def _pwa_topic_news_social_first_reply(message: str, topics: list[tuple[str, str]]) -> str:
     if not _pwa_social_trend_news_requested(message) or not topics:
         return ""
-    labels = [label for label, _query in topics]
+    labels = list(dict.fromkeys(label for label, _query in topics))
     scope = "your shortlist" if _pwa_shortlist_topic_request(topics) else ", ".join(labels)
+    search_topics = _pwa_social_search_topics(message, topics)
     try:
         if _pwa_shortlist_topic_request(topics):
             entries = await asyncio.to_thread(bot.build_social_digest_entries, limit=8, fetch_limit=1)
         else:
             entries = await asyncio.to_thread(
                 bot.build_social_digest_entries_for_topics,
-                topics,
+                search_topics,
                 limit=8,
                 fetch_limit=1,
             )

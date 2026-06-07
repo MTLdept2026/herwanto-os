@@ -12,9 +12,11 @@ import logging
 import re
 import hashlib
 import ipaddress
+import json
 import requests
 import feedparser
 import socket
+import html
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -762,6 +764,52 @@ def _jina_search(query: str, max_results: int = 5) -> list[dict]:
         return []
 
 
+def _decode_js_string(value: str) -> str:
+    try:
+        return json.loads(f'"{value}"')
+    except Exception:
+        return html.unescape(str(value or "").replace('\\"', '"').replace("\\/", "/"))
+
+
+def _brave_search_items_from_html(raw: str) -> list[dict]:
+    items = []
+    pattern = re.compile(
+        r'title:"(?P<title>(?:\\.|[^"\\])*)",url:"(?P<url>https?://(?P<host>[^/"\\]+)[^"\\]*)"'
+        r'.{0,2500}?description:(?:"(?P<description>(?:\\.|[^"\\])*)"|void 0)',
+        re.S,
+    )
+    for match in pattern.finditer(str(raw or "")):
+        title = _decode_js_string(match.group("title"))
+        url = _decode_js_string(match.group("url"))
+        description = _decode_js_string(match.group("description") or "")
+        if title and url:
+            items.append({
+                "title": title,
+                "description": description[:500],
+                "url": url,
+                "source": "Brave Search",
+            })
+    return items
+
+
+def _brave_search(query: str, max_results: int = 5) -> list[dict]:
+    clean = " ".join(str(query or "").split())
+    if not clean:
+        return []
+    try:
+        resp = requests.get(
+            "https://search.brave.com/search",
+            params={"q": clean},
+            headers={"User-Agent": "Mozilla/5.0 (compatible; HIRA/1.0; +https://example.com/hira)"},
+            timeout=WEB_SEARCH_TIMEOUT,
+        )
+        resp.raise_for_status()
+        return _dedupe_results(_brave_search_items_from_html(resp.text or ""), max_results)
+    except Exception as e:
+        logger.warning(f"Brave search error for '{query}': {e}")
+        return []
+
+
 def _google_news_search_results(query: str, max_results: int = 5) -> list[dict]:
     return [
         {
@@ -799,6 +847,8 @@ def social_search(query: str, max_results: int = 5) -> list[dict]:
     results.extend(_tavily_search(clean, max_results=limit))
     if len(results) < limit:
         results.extend(_duckduckgo_search(clean, max_results=limit * 2))
+    if len(results) < limit:
+        results.extend(_brave_search(clean, max_results=limit * 2))
     if len(results) < limit:
         results.extend(_jina_search(clean, max_results=limit * 2))
     return _dedupe_results(results, limit)

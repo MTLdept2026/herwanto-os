@@ -9099,6 +9099,11 @@ DIGEST_SOCIAL_TOPIC_TERMS = (
     "apple",
 )
 
+_DIGEST_SOCIAL_TRANSFER_SEARCH_RE = re.compile(
+    r"\b(?:transfers?|rumou?rs?|gossip|signings?|loans?|contracts?|deals?|bid|sale|target)\b",
+    re.I,
+)
+
 
 def _digest_social_enabled() -> bool:
     return os.environ.get("HIRA_DIGEST_SOCIAL_SEARCH", "1").strip().lower() not in {"0", "false", "no", "off"}
@@ -9226,6 +9231,12 @@ def _digest_free_source_items(
     return items
 
 
+def _digest_social_search_query(domain: str, query: str) -> str:
+    clean = " ".join(str(query or "").split())
+    suffix = "" if _DIGEST_SOCIAL_TRANSFER_SEARCH_RE.search(clean) else " latest update"
+    return f"site:{domain} {clean}{suffix}".strip()
+
+
 def _digest_social_items(label: str, query: str, max_items: int = 1) -> list[dict]:
     if not _digest_social_enabled() or not ss.search_enabled() or not _digest_social_topic_allowed(label, query):
         return []
@@ -9233,13 +9244,17 @@ def _digest_social_items(label: str, query: str, max_items: int = 1) -> list[dic
     items: list[dict] = []
     seen_urls: set[str] = set()
     for domain in _digest_social_domains():
-        social_query = f"site:{domain} {query} latest update"
+        social_query = _digest_social_search_query(domain, query)
         try:
             results = ss.social_search(social_query, max_results=limit + 4)
         except Exception as exc:
             logger.warning(f"Social digest search failed for {domain} / {label}: {exc}")
             continue
-        for result in results:
+        ordered_results = sorted(
+            results,
+            key=lambda result: 0 if _digest_social_direct_url(str(result.get("url", "") or "")) else 1,
+        )
+        for result in ordered_results:
             url = str(result.get("url", "") or "").strip()
             title = str(result.get("title", "") or "").strip()
             if not url or not title or domain not in url.lower():
@@ -9250,12 +9265,20 @@ def _digest_social_items(label: str, query: str, max_items: int = 1) -> list[dic
                 if key in seen_urls:
                     continue
                 seen_urls.add(key)
+                expanded_from_profile = candidate_url != url
                 description = str(result.get("description", "") or "").strip()[:500]
                 item_title = title
                 read_result = _digest_social_read(candidate_url) if _digest_social_read_enabled() else {}
+                if expanded_from_profile and read_result and not read_result.get("published"):
+                    continue
                 if read_result:
                     item_title = read_result.get("title") or item_title
                     description = read_result.get("description") or description
+                elif not expanded_from_profile and _digest_social_direct_url(candidate_url):
+                    read_result = {
+                        "observed_at": datetime.now(SGT).isoformat(),
+                        "social_search_result": True,
+                    }
                 item = {
                     "title": item_title,
                     "url": candidate_url,
@@ -9264,6 +9287,7 @@ def _digest_social_items(label: str, query: str, max_items: int = 1) -> list[dic
                     "description": description,
                     "social": True,
                     "social_kind": _digest_social_kind(candidate_url),
+                    "profile_expanded": expanded_from_profile,
                 }
                 if read_result:
                     item.update(read_result)
@@ -9405,7 +9429,7 @@ def _digest_topic_rule(label: str) -> dict:
 
 def _digest_item_age_hours(item: dict, now: datetime | None = None) -> float | None:
     published = str((item or {}).get("published", "") or "").strip()
-    if not published and item.get("social_read"):
+    if not published and (item.get("social_read") or item.get("social_search_result")):
         published = str((item or {}).get("observed_at", "") or "").strip()
     if not published:
         return None

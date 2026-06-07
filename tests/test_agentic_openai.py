@@ -4536,6 +4536,82 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertEqual(items[0]["published"], "2026-06-07T21:14:00+08:00")
         self.assertTrue(items[0]["social_read"])
 
+    def test_social_digest_prioritizes_direct_status_over_profile_expansion(self):
+        def fake_fetch_url(url, max_chars=6000):
+            if url == "https://x.com/LFCTransferRoom/status/2062874151090610459":
+                return {
+                    "ok": True,
+                    "title": "LFC Transfer Room on X: Roberto de Zerbi transfer update",
+                    "text": "According to Soccernews, Liverpool transfer talks are moving. 9:14 PM · Jun 7, 2026",
+                    "reader_fallback": True,
+                }
+            return {
+                "ok": True,
+                "title": "Old LFC Transfer Room profile",
+                "text": "[old](https://x.com/LFCTransferRoom/status/1947695474485432369/photo/1)",
+                "reader_fallback": True,
+            }
+
+        with (
+            patch("search_service.social_search", return_value=[
+                {
+                    "title": "LFC Transfer Room (@LFCTransferRoom) / Posts / X",
+                    "url": "https://x.com/LFCTransferRoom",
+                    "description": "",
+                },
+                {
+                    "title": "According to Soccernews, Roberto de Zerbi is hoping to sign a Liverpool player",
+                    "url": "https://x.com/LFCTransferRoom/status/2062874151090610459",
+                    "description": "",
+                },
+            ]),
+            patch("search_service.fetch_url", side_effect=fake_fetch_url),
+            patch.dict(os.environ, {
+                "HIRA_DIGEST_SOCIAL_SEARCH": "1",
+                "HIRA_DIGEST_SOCIAL_DOMAINS": "x.com",
+                "HIRA_DIGEST_SOCIAL_READ": "1",
+                "HIRA_DIGEST_SOCIAL_PROFILE_READ": "1",
+            }),
+        ):
+            items = bot._digest_social_items("⚽ Liverpool / EPL", "lfc transfers", max_items=1)
+
+        self.assertEqual(items[0]["url"], "https://x.com/LFCTransferRoom/status/2062874151090610459")
+        self.assertIn("Roberto de Zerbi transfer update", items[0]["title"])
+
+    def test_social_digest_keeps_direct_status_search_result_when_read_is_thin(self):
+        with (
+            patch("search_service.social_search", return_value=[{
+                "title": "Nicolò Schira on X: Liverpool are ready to submit a bid",
+                "url": "https://x.com/NicoSchira/status/2062874151090610459",
+                "description": "#Liverpool are ready to submit a bid. #LFC #transfers",
+            }]) as social_search,
+            patch("search_service.fetch_url", return_value={"ok": False, "text": ""}),
+            patch.dict(os.environ, {
+                "HIRA_DIGEST_SOCIAL_SEARCH": "1",
+                "HIRA_DIGEST_SOCIAL_DOMAINS": "x.com",
+                "HIRA_DIGEST_SOCIAL_READ": "1",
+            }),
+        ):
+            items = bot._digest_social_items("⚽ Liverpool / EPL", "lfc transfers", max_items=1)
+
+        self.assertEqual(items[0]["url"], "https://x.com/NicoSchira/status/2062874151090610459")
+        self.assertTrue(items[0]["social_search_result"])
+        self.assertIn("submit a bid", items[0]["description"])
+        self.assertEqual(social_search.call_args.args[0], "site:x.com lfc transfers")
+
+        with (
+            patch("bot._digest_social_items", return_value=items),
+            patch.dict(os.environ, {"HIRA_DIGEST_SOCIAL_TOPIC_LIMIT": "1"}),
+        ):
+            entries = bot.build_social_digest_entries_for_topics(
+                [("⚽ Liverpool / EPL", "lfc transfers")],
+                now=datetime.now(bot.SGT),
+                limit=1,
+                fetch_limit=1,
+            )
+
+        self.assertEqual(entries[0]["item"]["url"], "https://x.com/NicoSchira/status/2062874151090610459")
+
     def test_social_digest_topic_limit_counts_eligible_topics_only(self):
         with (
             patch("bot._news_topics", return_value=[
@@ -7295,6 +7371,8 @@ class AgenticOpenAITests(unittest.TestCase):
         social_digest.assert_called_once()
         called_topics = social_digest.call_args.args[0]
         self.assertEqual(called_topics[0][0], "⚽ Liverpool / EPL")
+        self.assertEqual(called_topics[0][1], "lfc transfers")
+        self.assertIn(("⚽ Liverpool / EPL", "lfc transfer rumours"), called_topics)
         self.assertIn("X/social radar", reply)
         self.assertIn("Liverpool transfer thread on X", reply)
         self.assertIn("Liverpool", reply)
@@ -8288,6 +8366,7 @@ class AgenticOpenAITests(unittest.TestCase):
         with (
             patch.dict(os.environ, {"TAVILY_API_KEY": "", "JINA_API_KEY": "jina-test-key"}, clear=False),
             patch.object(search_service, "_duckduckgo_search", return_value=[]) as duckduckgo,
+            patch.object(search_service, "_brave_search", return_value=[]) as brave_search,
             patch.object(search_service, "_jina_search", return_value=[
                 {"title": "Android update post", "description": "", "url": "https://x.com/android/status/123"},
             ]) as jina_search,
@@ -8296,9 +8375,55 @@ class AgenticOpenAITests(unittest.TestCase):
             results = search_service.social_search("site:x.com Android update", max_results=3)
 
         duckduckgo.assert_called_once()
+        brave_search.assert_called_once()
         jina_search.assert_called_once()
         google_news_results.assert_not_called()
         self.assertEqual(results[0]["url"], "https://x.com/android/status/123")
+
+    def test_social_search_uses_brave_when_duckduckgo_has_no_results(self):
+        with (
+            patch.dict(os.environ, {"TAVILY_API_KEY": "", "JINA_API_KEY": ""}, clear=False),
+            patch.object(search_service, "_duckduckgo_search", return_value=[]) as duckduckgo,
+            patch.object(search_service, "_brave_search", return_value=[
+                {
+                    "title": "Nicolò Schira on X: Liverpool transfer update",
+                    "description": "#Liverpool talks in progress. #transfers",
+                    "url": "https://x.com/NicoSchira/status/2062874151090610459",
+                },
+                {
+                    "title": "LFC Transfer Room on X: Liverpool bid update",
+                    "description": "Liverpool transfer rumour.",
+                    "url": "https://x.com/LFCTransferRoom/status/2062874151090610460",
+                },
+                {
+                    "title": "Fabrizio Romano on X: Liverpool deal update",
+                    "description": "Liverpool deal rumour.",
+                    "url": "https://x.com/FabrizioRomano/status/2062874151090610461",
+                },
+            ]) as brave_search,
+            patch.object(search_service, "_jina_search") as jina_search,
+            patch.object(search_service, "_google_news_search_results") as google_news_results,
+        ):
+            results = search_service.social_search("site:x.com lfc transfers", max_results=3)
+
+        duckduckgo.assert_called_once()
+        brave_search.assert_called_once()
+        jina_search.assert_not_called()
+        google_news_results.assert_not_called()
+        self.assertEqual(results[0]["url"], "https://x.com/NicoSchira/status/2062874151090610459")
+
+    def test_brave_search_parser_extracts_x_status_results(self):
+        html = (
+            'title:"Nicolò Schira on X: \\"#Liverpool are in talks\\"",'
+            'url:"https://x.com/NicoSchira/status/2062874151090610459",'
+            'full_title:void 0,description:"Talks in progress for #LFC. #transfers",page_age:void 0'
+        )
+
+        results = search_service._brave_search_items_from_html(html)
+
+        self.assertEqual(results[0]["title"], 'Nicolò Schira on X: "#Liverpool are in talks"')
+        self.assertEqual(results[0]["url"], "https://x.com/NicoSchira/status/2062874151090610459")
+        self.assertIn("#transfers", results[0]["description"])
 
     def test_duckduckgo_redirect_url_is_cleaned(self):
         raw = "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.formula1.com%2Fen%2Fracing%2F2026"
