@@ -13605,6 +13605,18 @@ def _backend_claim_guardrail(reply_text: str, tool_results: list[dict]) -> str:
         re.I,
     ):
         return text
+    source_access_claim = re.search(
+        r"\b(?:url|link|web|website|page|site|source|search|x\.com|twitter|jina|fetch|read|access|browse|browsing|post|tweet)\b",
+        text,
+        re.I,
+    )
+    source_fetch_evidence = re.search(
+        r"\b(?:URL:\s*https?://|Content-Type:|Jina Reader|Could not fetch URL|No readable text found|Direct fetch failed)\b",
+        evidence,
+        re.I,
+    )
+    if source_access_claim and source_fetch_evidence:
+        return text
     return (
         "I lost the clean answer path for that turn, so I’m not going to guess at the cause. "
         "Send that once more and I’ll retry cleanly."

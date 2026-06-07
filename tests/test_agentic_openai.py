@@ -2927,6 +2927,34 @@ class AgenticOpenAITests(unittest.TestCase):
 
         self.assertEqual(guarded, reply)
 
+    def test_source_access_claim_allowed_with_fetch_url_evidence(self):
+        reply = (
+            "I could not read the X page directly, but the Jina Reader fallback returned the public post text."
+        )
+        guarded = bot._backend_claim_guardrail(
+            reply,
+            [{
+                "content": (
+                    "URL: https://x.com/i/status/2063461664222286020\n"
+                    "Content-Type: text/plain; charset=utf-8\n"
+                    "Note: Direct fetch failed or had no readable text, so H.I.R.A used Jina Reader for this public page.\n\n"
+                    "Post text..."
+                )
+            }],
+        )
+
+        self.assertEqual(guarded, reply)
+
+    def test_non_source_backend_claim_still_blocked_with_url_evidence(self):
+        reply = "Google Sheets hit a rate limit because the service account lacks permission."
+        guarded = bot._backend_claim_guardrail(
+            reply,
+            [{"content": "URL: https://example.com/source\nContent-Type: text/html"}],
+        )
+
+        self.assertIn("retry cleanly", guarded)
+        self.assertNotIn("service account", guarded)
+
     def test_unsupported_google_sheets_rate_limit_claim_is_blocked(self):
         reply = "Rate limit — Google Sheets hit its per-minute quota cap. Try again in about 60 seconds."
 
