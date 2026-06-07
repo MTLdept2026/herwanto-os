@@ -46,6 +46,35 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("apscheduler.executors.default").setLevel(logging.WARNING)
 logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
 
+
+def _load_local_env_file(filename: str) -> None:
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+    if not os.path.isfile(path):
+        return
+    try:
+        with open(path, encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                if line.startswith("export "):
+                    line = line[len("export "):].strip()
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if not key or key in os.environ:
+                    continue
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                    value = value[1:-1]
+                os.environ[key] = value
+    except OSError as exc:
+        logger.warning("Could not load %s: %s", filename, exc)
+
+
+_load_local_env_file(".env.local")
+_load_local_env_file(".env")
+
+
 def _daily_time_from_env(key: str, default_hour: int, default_minute: int = 0) -> tuple[int, int]:
     raw = os.environ.get(key, "").strip()
     if not raw:
@@ -9267,18 +9296,22 @@ def _digest_social_items(label: str, query: str, max_items: int = 1) -> list[dic
                 seen_urls.add(key)
                 expanded_from_profile = candidate_url != url
                 description = str(result.get("description", "") or "").strip()[:500]
-                item_title = title
+                item_title = _digest_display_title(title)
                 read_result = _digest_social_read(candidate_url) if _digest_social_read_enabled() else {}
                 if expanded_from_profile and read_result and not read_result.get("published"):
                     continue
                 if read_result:
-                    item_title = read_result.get("title") or item_title
+                    item_title = _digest_display_title(read_result.get("title")) or item_title
                     description = read_result.get("description") or description
                 elif not expanded_from_profile and _digest_social_direct_url(candidate_url):
                     read_result = {
                         "observed_at": datetime.now(SGT).isoformat(),
                         "social_search_result": True,
                     }
+                if not item_title:
+                    item_title = _digest_display_title(description[:160])
+                if not item_title:
+                    continue
                 item = {
                     "title": item_title,
                     "url": candidate_url,
@@ -9291,6 +9324,7 @@ def _digest_social_items(label: str, query: str, max_items: int = 1) -> list[dic
                 }
                 if read_result:
                     item.update(read_result)
+                    item["title"] = item_title
                 items.append(item)
                 if len(items) >= limit:
                     return items
@@ -9346,6 +9380,25 @@ def _digest_social_candidate_urls(url: str) -> list[str]:
 
 def _digest_social_kind(url: str) -> str:
     return "trend" if "/i/trending/" in str(url or "").lower() else "post"
+
+
+def _digest_display_title(title: str) -> str:
+    clean = re.sub(r"https?://\S+", "", " ".join(str(title or "").split()), flags=re.I)
+    clean = clean.strip(" -|:·")
+    if not clean or not re.search(r"[A-Za-z0-9]", clean):
+        return ""
+    generic = clean.lower().strip(" .-/")
+    if generic in {
+        "x",
+        "x.com",
+        "twitter",
+        "twitter.com",
+        "log in to x",
+        "x. it's what's happening",
+        "x. it's what's happening / x",
+    }:
+        return ""
+    return clean
 
 
 def _digest_social_published_at(text: str) -> str:
@@ -9660,7 +9713,7 @@ def format_curated_digest(entries: list[dict]) -> str:
     for entry in entries or []:
         label = str(entry.get("label", "")).strip()
         item = entry.get("item") if isinstance(entry.get("item"), dict) else {}
-        title = str(item.get("title", "")).strip()
+        title = _digest_display_title(str(item.get("title", "")).strip())
         source = str(item.get("source", "")).strip()
         published = str(item.get("published", "")).strip()
         why = str(entry.get("why", "")).strip()

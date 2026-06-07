@@ -4612,6 +4612,37 @@ class AgenticOpenAITests(unittest.TestCase):
 
         self.assertEqual(entries[0]["item"]["url"], "https://x.com/NicoSchira/status/2062874151090610459")
 
+    def test_social_digest_keeps_search_title_when_reader_title_is_url_only(self):
+        with (
+            patch("search_service.social_search", return_value=[{
+                "title": "Nicolò Schira on X: Liverpool are ready to submit a bid",
+                "url": "https://x.com/NicoSchira/status/2062874151090610459",
+                "description": "#Liverpool are ready to submit a bid. #LFC #transfers",
+            }]),
+            patch("search_service.fetch_url", return_value={
+                "ok": True,
+                "title": "https://x.com/NicoSchira/status/2062874151090610459",
+                "text": "#Liverpool are ready to submit a bid. 9:14 PM · Jun 7, 2026",
+                "reader_fallback": True,
+            }),
+            patch.dict(os.environ, {
+                "HIRA_DIGEST_SOCIAL_SEARCH": "1",
+                "HIRA_DIGEST_SOCIAL_DOMAINS": "x.com",
+                "HIRA_DIGEST_SOCIAL_READ": "1",
+            }),
+        ):
+            items = bot._digest_social_items("⚽ Liverpool / EPL", "lfc transfers", max_items=1)
+
+        self.assertEqual(items[0]["title"], "Nicolò Schira on X: Liverpool are ready to submit a bid")
+        text = bot.format_curated_digest([{
+            "label": "⚽ Liverpool / EPL",
+            "item": items[0],
+            "why": "Liverpool relevance",
+        }])
+        self.assertIn("Nicolò Schira", text)
+        self.assertIn("Why it matters", text)
+        self.assertNotIn("https://x.com", text)
+
     def test_social_digest_topic_limit_counts_eligible_topics_only(self):
         with (
             patch("bot._news_topics", return_value=[
@@ -7384,6 +7415,7 @@ class AgenticOpenAITests(unittest.TestCase):
             "- Liverpool FC Match Reports - This Is Anfield",
             "- Liverpool transfer news, rumours and gossip: Live updates and latest on deals - Sky Sports",
             "- Brentford transfers, latest news, rumours and gossip - Sky Sports",
+            "- Old Liverpool transfer rumour - Example Blog (Example Blog · Sat, 23 May 2025 07:00:00 GMT)",
             "- LFC Transfer Room (@LFCTransferRoom) / Posts / X - Twitter",
         ])
 
@@ -7404,6 +7436,36 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertNotIn("Latest completed", reply)
         self.assertNotIn("Match Reports", reply)
         self.assertNotIn("Brentford transfers", reply)
+        self.assertNotIn("Old Liverpool transfer rumour", reply)
+
+    def test_lfc_x_prompt_falls_back_when_social_title_is_url_only(self):
+        now = datetime.now(bot.SGT)
+        social_entry = {
+            "label": "⚽ Liverpool / EPL",
+            "item": {
+                "title": "https://x.com/NicoSchira/status/2062874151090610459",
+                "description": "#Liverpool transfer bid update. #LFC #transfers",
+                "url": "https://x.com/NicoSchira/status/2062874151090610459",
+                "source": "Social: x.com",
+                "published": "",
+                "observed_at": now.isoformat(),
+                "social": True,
+                "social_read": True,
+            },
+            "why": "Liverpool relevance",
+        }
+        fallback_result = "- Liverpool transfer news, rumours and gossip: Live updates and latest on deals - Sky Sports"
+
+        with (
+            patch.object(bot, "build_social_digest_entries_for_topics", return_value=[social_entry]),
+            patch.object(bot, "_execute_tool_offloop", return_value=fallback_result),
+        ):
+            reply = asyncio.run(web_app._pwa_topic_news_reply("Any latest LFC transfer news on X?"))
+
+        self.assertIn("Fallback board", reply)
+        self.assertIn("Liverpool transfer news, rumours and gossip", reply)
+        self.assertNotIn("X/social radar", reply)
+        self.assertNotIn("Why it matters", reply)
 
     def test_lfc_transfer_x_prompt_filters_non_transfer_social_posts(self):
         now = datetime.now(bot.SGT)

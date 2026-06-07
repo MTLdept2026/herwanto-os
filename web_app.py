@@ -2042,6 +2042,8 @@ def _pwa_transfer_board_items(result: str, limit: int = 3, topic_scope: str = ""
             continue
         if liverpool_scope and not re.search(r"\b(?:liverpool|lfc|transfer centre)\b", clean, re.I):
             continue
+        if _pwa_news_item_is_stale(clean, max_age_hours=bot.NEWS_MAX_AGE_HOURS):
+            continue
         if re.search(r"https?://", clean):
             clean = re.sub(r"\s*https?://\S+", "", clean).strip()
         key = clean.lower()
