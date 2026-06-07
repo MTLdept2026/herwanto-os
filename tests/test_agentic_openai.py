@@ -4376,7 +4376,7 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertIn("🧠 Codex / Gemini / Kimi", labels)
 
     def test_curated_digest_can_include_x_social_lead_for_live_topic(self):
-        def fake_tavily_search(query, max_results=5):
+        def fake_social_search(query, max_results=5):
             self.assertIn("site:x.com", query)
             return [{
                 "title": "Android 17 beta update rolling out to Pixel users",
@@ -4388,12 +4388,18 @@ class AgenticOpenAITests(unittest.TestCase):
             patch("bot._news_topics", return_value=[("🤖 Android", "Android 17 Pixel beta update")]),
             patch("bot._recent_news_digest_keys", return_value=set()),
             patch("search_service.google_news", return_value=[]),
-            patch("search_service.tavily_configured", return_value=True),
-            patch("search_service.tavily_search", side_effect=fake_tavily_search),
+            patch("search_service.social_search", side_effect=fake_social_search),
+            patch("search_service.fetch_url", return_value={
+                "ok": True,
+                "title": "Android 17 beta thread / X",
+                "text": "Android 17 beta is rolling out to Pixel users with a new privacy panel.",
+                "reader_fallback": True,
+            }),
             patch.dict(os.environ, {
                 "HIRA_DIGEST_SOCIAL_SEARCH": "1",
                 "HIRA_DIGEST_SOCIAL_DOMAINS": "x.com",
                 "HIRA_DIGEST_SOCIAL_TOPIC_LIMIT": "1",
+                "HIRA_DIGEST_SOCIAL_READ": "1",
                 "HIRA_DIGEST_FREE_SOURCE_SUPPLEMENTS": "0",
             }),
         ):
@@ -4407,24 +4413,74 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertEqual(entries[0]["label"], "🤖 Android")
         self.assertEqual(entries[0]["item"]["source"], "Social: x.com")
         self.assertTrue(entries[0]["item"]["social"])
+        self.assertTrue(entries[0]["item"]["social_read"])
+        self.assertTrue(entries[0]["item"]["reader_fallback"])
 
-    def test_social_digest_skips_fast_without_tavily_key(self):
+    def test_social_digest_uses_public_search_without_tavily_key(self):
         with (
             patch("search_service.tavily_configured", return_value=False),
             patch("search_service.tavily_search") as tavily_search,
             patch("search_service.web_search") as web_search,
-            patch.object(bot.logger, "info") as logger_info,
+            patch("search_service.social_search", return_value=[{
+                "title": "Android 17 beta update rolling out to Pixel users",
+                "url": "https://x.com/android/status/123",
+                "description": "Fresh Android update thread.",
+            }]) as social_search,
+            patch("search_service.fetch_url", return_value={
+                "ok": True,
+                "title": "Android 17 beta thread / X",
+                "text": "Android 17 beta is rolling out to Pixel users with a new privacy panel.",
+                "reader_fallback": True,
+            }),
             patch.dict(os.environ, {
                 "HIRA_DIGEST_SOCIAL_SEARCH": "1",
-                "HIRA_DIGEST_SOCIAL_DOMAINS": "x.com,twitter.com",
+                "HIRA_DIGEST_SOCIAL_DOMAINS": "x.com",
+                "HIRA_DIGEST_SOCIAL_READ": "1",
             }),
         ):
             items = bot._digest_social_items("🤖 Android", "Android 17 Pixel beta update")
 
-        self.assertEqual(items, [])
+        self.assertEqual(items[0]["url"], "https://x.com/android/status/123")
+        self.assertTrue(items[0]["social_read"])
+        social_search.assert_called_once()
         tavily_search.assert_not_called()
         web_search.assert_not_called()
-        logger_info.assert_not_called()
+
+    def test_social_digest_topic_limit_counts_eligible_topics_only(self):
+        with (
+            patch("bot._news_topics", return_value=[
+                ("General Admin", "admin notices"),
+                ("🤖 Android", "Android 17 Pixel beta update"),
+            ]),
+            patch("bot._recent_news_digest_keys", return_value=set()),
+            patch("search_service.google_news", return_value=[]),
+            patch("bot._digest_free_source_items", return_value=[]),
+            patch("search_service.social_search", return_value=[{
+                "title": "Android 17 beta update rolling out to Pixel users",
+                "url": "https://x.com/android/status/123",
+                "description": "Fresh Android update thread.",
+            }]) as social_search,
+            patch("search_service.fetch_url", return_value={
+                "ok": True,
+                "title": "Android 17 beta thread / X",
+                "text": "Android 17 beta is rolling out to Pixel users with a new privacy panel.",
+                "reader_fallback": True,
+            }),
+            patch.dict(os.environ, {
+                "HIRA_DIGEST_SOCIAL_SEARCH": "1",
+                "HIRA_DIGEST_SOCIAL_DOMAINS": "x.com",
+                "HIRA_DIGEST_SOCIAL_TOPIC_LIMIT": "1",
+            }),
+        ):
+            entries = bot.build_curated_digest_entries(
+                now=bot.SGT.localize(datetime(2026, 5, 13, 8, 0)),
+                limit=1,
+                fetch_limit=2,
+                record=False,
+            )
+
+        social_search.assert_called_once()
+        self.assertEqual(entries[0]["label"], "🤖 Android")
 
     def test_free_source_digest_adds_rss_items_without_paid_search(self):
         def fake_rss_feed_items(url, source_label="", max_items=3):
@@ -4447,7 +4503,7 @@ class AgenticOpenAITests(unittest.TestCase):
             patch.dict(os.environ, {
                 "HIRA_DIGEST_FREE_SOURCE_SUPPLEMENTS": "1",
                 "HIRA_DIGEST_FREE_SOURCE_TOPIC_LIMIT": "1",
-                "HIRA_DIGEST_SOCIAL_SEARCH": "1",
+                "HIRA_DIGEST_SOCIAL_SEARCH": "0",
             }),
         ):
             entries = bot.build_curated_digest_entries(
@@ -7980,6 +8036,20 @@ class AgenticOpenAITests(unittest.TestCase):
 
         duckduckgo.assert_called_once()
         self.assertEqual(results[0]["url"], "https://www.formula1.com/en/racing/2026")
+
+    def test_social_search_uses_duckduckgo_without_google_news_fallback(self):
+        with (
+            patch.dict(os.environ, {"TAVILY_API_KEY": ""}, clear=False),
+            patch.object(search_service, "_duckduckgo_search", return_value=[
+                {"title": "Android update post", "description": "", "url": "https://x.com/android/status/123"},
+            ]) as duckduckgo,
+            patch.object(search_service, "_google_news_search_results") as google_news_results,
+        ):
+            results = search_service.social_search("site:x.com Android update", max_results=3)
+
+        duckduckgo.assert_called_once()
+        google_news_results.assert_not_called()
+        self.assertEqual(results[0]["url"], "https://x.com/android/status/123")
 
     def test_duckduckgo_redirect_url_is_cleaned(self):
         raw = "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.formula1.com%2Fen%2Fracing%2F2026"

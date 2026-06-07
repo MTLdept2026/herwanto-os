@@ -9083,8 +9083,19 @@ DIGEST_SOCIAL_TOPIC_TERMS = (
     "nothing",
     "cmf",
     "teenage",
+    "op-xy",
+    "op-1",
     "islam",
     "muis",
+    "moe",
+    "education",
+    "singapore",
+    "developer",
+    "design",
+    "ui",
+    "ux",
+    "macos",
+    "apple",
 )
 
 
@@ -9101,9 +9112,13 @@ def _digest_social_domains() -> list[str]:
 
 def _digest_social_topic_limit() -> int:
     try:
-        return max(0, min(12, int(os.environ.get("HIRA_DIGEST_SOCIAL_TOPIC_LIMIT", "6") or 6)))
+        return max(0, min(20, int(os.environ.get("HIRA_DIGEST_SOCIAL_TOPIC_LIMIT", "16") or 16)))
     except ValueError:
-        return 6
+        return 16
+
+
+def _digest_social_read_enabled() -> bool:
+    return os.environ.get("HIRA_DIGEST_SOCIAL_READ", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _digest_social_topic_allowed(label: str, query: str) -> bool:
@@ -9209,38 +9224,73 @@ def _digest_free_source_items(
 def _digest_social_items(label: str, query: str, max_items: int = 1) -> list[dict]:
     if not _digest_social_enabled() or not ss.search_enabled() or not _digest_social_topic_allowed(label, query):
         return []
-    if not ss.tavily_configured():
-        return []
     limit = max(1, min(int(max_items or 1), 2))
     items: list[dict] = []
     seen_urls: set[str] = set()
     for domain in _digest_social_domains():
         social_query = f"site:{domain} {query} latest update"
         try:
-            results = ss.tavily_search(social_query, max_results=limit + 2)
+            results = ss.social_search(social_query, max_results=limit + 4)
         except Exception as exc:
             logger.warning(f"Social digest search failed for {domain} / {label}: {exc}")
             continue
         for result in results:
             url = str(result.get("url", "") or "").strip()
             title = str(result.get("title", "") or "").strip()
-            if not url or not title or domain not in url.lower():
+            if not url or not title or domain not in url.lower() or not _digest_social_direct_url(url):
                 continue
             key = url.lower().rstrip("/")
             if key in seen_urls:
                 continue
             seen_urls.add(key)
-            items.append({
+            description = str(result.get("description", "") or "").strip()[:500]
+            read_result = _digest_social_read(url) if _digest_social_read_enabled() else {}
+            if read_result:
+                title = read_result.get("title") or title
+                description = read_result.get("description") or description
+            item = {
                 "title": title,
                 "url": url,
                 "published": "",
                 "source": f"Social: {domain}",
-                "description": str(result.get("description", "") or "").strip()[:500],
+                "description": description,
                 "social": True,
-            })
+                "social_kind": _digest_social_kind(url),
+            }
+            if read_result:
+                item.update(read_result)
+            items.append(item)
             if len(items) >= limit:
                 return items
     return items
+
+
+def _digest_social_direct_url(url: str) -> bool:
+    clean = str(url or "").lower()
+    return bool(re.search(r"/(?:i/)?status/|/[^/?#]+/status/|/i/trending/", clean))
+
+
+def _digest_social_kind(url: str) -> str:
+    return "trend" if "/i/trending/" in str(url or "").lower() else "post"
+
+
+def _digest_social_read(url: str) -> dict:
+    try:
+        fetched = ss.fetch_url(url, max_chars=1200)
+    except Exception as exc:
+        logger.warning(f"Social digest read failed for {url}: {exc}")
+        return {}
+    if not fetched.get("ok") or not fetched.get("text"):
+        return {}
+    text = " ".join(str(fetched.get("text", "") or "").split())
+    if not text:
+        return {}
+    return {
+        "title": str(fetched.get("title", "") or "").strip(),
+        "description": text[:500],
+        "social_read": True,
+        "reader_fallback": bool(fetched.get("reader_fallback")),
+    }
 
 
 def _digest_sports_kind(label: str) -> str:
@@ -9361,6 +9411,10 @@ def _curated_digest_score(label: str, item: dict, slot_index: int = 0, now: date
     title_text = str(item.get("title", "")).lower()
     if item.get("social"):
         score += 3
+    if item.get("social_read"):
+        score += 12
+    if item.get("social_kind") == "trend":
+        score += 6
     if item.get("free_source"):
         score += 2
     if any(term in title_text for term in ("today", "new", "launch", "update", "policy", "developer", "release", "security")):
@@ -9405,14 +9459,16 @@ def build_curated_digest_entries(now: datetime | None = None, limit: int = 4, fe
     used_keys = set()
     topics = _news_topics(now=current)
     social_topic_limit = _digest_social_topic_limit()
+    social_topics_checked = 0
     free_source_topic_limit = _digest_free_source_topic_limit()
     free_source_feed_cache: dict[str, list[dict]] = {}
     for topic_index, (label, query) in enumerate(topics):
         items = ss.google_news(query, max_items=max(2, int(fetch_limit or 4)))
         if topic_index < free_source_topic_limit:
             items.extend(_digest_free_source_items(label, query, max_items=1, feed_cache=free_source_feed_cache))
-        if topic_index < social_topic_limit:
+        if social_topics_checked < social_topic_limit and _digest_social_topic_allowed(label, query):
             items.extend(_digest_social_items(label, query, max_items=1))
+            social_topics_checked += 1
         for index, item in enumerate(items):
             key = ss.news_item_key(item)
             if not key or key in used_keys:

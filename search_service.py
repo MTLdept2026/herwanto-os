@@ -698,6 +698,19 @@ def web_search(query, max_results=5):
     return _dedupe_results(results, limit)
 
 
+def social_search(query: str, max_results: int = 5) -> list[dict]:
+    """Search public social pages without falling back to Google News RSS."""
+    clean = " ".join(str(query or "").split())
+    if not clean or not search_enabled():
+        return []
+    limit = max(1, min(int(max_results or 5), 10))
+    results = []
+    results.extend(_tavily_search(clean, max_results=limit))
+    if len(results) < limit:
+        results.extend(_duckduckgo_search(clean, max_results=limit * 2))
+    return _dedupe_results(results, limit)
+
+
 def format_results(results):
     if not results:
         return "No results found."
