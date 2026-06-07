@@ -4194,6 +4194,33 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertIn("No fresh usable news for Teenage Engineering in the last 24h", text)
         self.assertIn("not padding", text)
 
+    def test_build_news_digest_keeps_freshly_observed_social_reads(self):
+        now = bot.SGT.localize(datetime(2026, 6, 7, 21, 55))
+        entry = {
+            "label": "AI Tools",
+            "item": {
+                "title": "Kimi coding model update",
+                "url": "https://x.com/kimi_moonshot/status/2046249571882500354",
+                "source": "Social: x.com",
+                "description": "Kimi shared a coding model update.",
+                "published": "",
+                "observed_at": now.isoformat(),
+                "social": True,
+                "social_read": True,
+            },
+            "why": "AI tool radar",
+        }
+
+        with patch.object(bot, "build_curated_digest_entries", return_value=[entry]), \
+                patch.object(bot, "datetime") as fake_datetime:
+            fake_datetime.now.return_value = now
+            fake_datetime.fromisoformat = datetime.fromisoformat
+            text = bot.build_news_digest("", max_items=2, max_age_hours=24)
+
+        self.assertIn("Fresh news from your shortlist", text)
+        self.assertIn("Kimi coding model update", text)
+        self.assertNotIn("No fresh usable news", text)
+
     def test_curated_digest_rejects_generic_epl_for_liverpool_slot(self):
         def fake_google_news(query, max_items=4):
             if query == "lfc":
@@ -4415,6 +4442,29 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertTrue(entries[0]["item"]["social"])
         self.assertTrue(entries[0]["item"]["social_read"])
         self.assertTrue(entries[0]["item"]["reader_fallback"])
+
+    def test_social_only_digest_builder_does_not_use_google_news(self):
+        now = bot.SGT.localize(datetime(2026, 6, 7, 21, 55))
+        social_item = {
+            "title": "Kimi coding model update on X",
+            "url": "https://x.com/kimi_moonshot/status/2046249571882500354",
+            "source": "Social: x.com",
+            "published": "",
+            "observed_at": now.isoformat(),
+            "description": "Kimi shared a coding model update.",
+            "social": True,
+            "social_read": True,
+        }
+
+        with (
+            patch("bot._news_topics", return_value=[("🤖 AI Tools", "OpenAI Codex Kimi Moonshot Gemini AI tools latest model release agent")]),
+            patch("search_service.google_news", side_effect=AssertionError("Google News should not be used")),
+            patch("bot._digest_social_items", return_value=[social_item]) as social_items,
+        ):
+            entries = bot.build_social_digest_entries(now=now, limit=1, fetch_limit=1)
+
+        social_items.assert_called_once()
+        self.assertEqual(entries[0]["item"]["url"], "https://x.com/kimi_moonshot/status/2046249571882500354")
 
     def test_social_digest_uses_public_search_without_tavily_key(self):
         with (
@@ -7082,6 +7132,11 @@ class AgenticOpenAITests(unittest.TestCase):
 
         self.assertEqual(topics, [("Latest from your shortlist", "")])
 
+    def test_fav_topics_shorthand_uses_shortlist_digest_route(self):
+        topics = bot.favourite_news_topic_queries("Brief me on ny fav topics. Use X for latest trends pls")
+
+        self.assertEqual(topics, [("Latest from your shortlist", "")])
+
     def test_nothing_on_other_preferred_topics_means_shortlist_not_brand(self):
         topics = bot.favourite_news_topic_queries("Nothing on my other preferred topics?")
 
@@ -7120,6 +7175,59 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertEqual(calls, [("get_latest_news", {"query": "", "max_items": 6, "max_age_hours": bot.NEWS_MAX_AGE_HOURS})])
         self.assertIn("AI model update", reply)
         self.assertIn("Nothing OS beta", reply)
+
+    def test_x_shortlist_prompt_prioritizes_social_digest_entries(self):
+        now = datetime.now(bot.SGT)
+        rss_entry = {
+            "label": "iOS",
+            "item": {
+                "title": "Apple developer RSS item",
+                "url": "https://developer.apple.com/news/example",
+                "source": "Apple Developer News",
+                "published": now.strftime("%a, %d %b %Y %H:%M:%S GMT"),
+            },
+            "why": "developer radar",
+        }
+        social_entry = {
+            "label": "AI Tools",
+            "item": {
+                "title": "Kimi X trend update",
+                "url": "https://x.com/kimi_moonshot/status/2046249571882500354",
+                "source": "Social: x.com",
+                "published": "",
+                "observed_at": now.isoformat(),
+                "social": True,
+                "social_read": True,
+            },
+            "why": "AI tool radar",
+        }
+
+        with (
+            patch.object(bot, "build_social_digest_entries", return_value=[rss_entry, social_entry]) as social_digest,
+            patch.object(bot, "_execute_tool_offloop", side_effect=AssertionError("RSS fallback should not run")),
+        ):
+            reply = asyncio.run(web_app._pwa_topic_news_reply(
+                "Brief me on ny fav topics. Use X for latest trends pls"
+            ))
+
+        social_digest.assert_called_once_with(limit=8, fetch_limit=1)
+        self.assertIn("X/social radar", reply)
+        self.assertIn("Kimi X trend update", reply)
+        self.assertNotIn("Apple developer RSS item", reply)
+        self.assertNotIn("No fresh usable", reply)
+
+    def test_x_shortlist_prompt_refuses_rss_when_social_search_is_empty(self):
+        with (
+            patch.object(bot, "build_social_digest_entries", return_value=[]),
+            patch.object(bot, "_execute_tool_offloop", side_effect=AssertionError("RSS fallback should not run")),
+        ):
+            reply = asyncio.run(web_app._pwa_topic_news_reply(
+                "Brief me on ny fav topics. Use X for latest trends pls"
+            ))
+
+        self.assertIn("no fresh public X status/trend item", reply)
+        self.assertIn("not padding", reply)
+        self.assertNotIn("Latest from your shortlist", reply)
 
     def test_topic_news_followup_bypasses_model_route(self):
         fresh_stamp = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
@@ -8039,7 +8147,7 @@ class AgenticOpenAITests(unittest.TestCase):
 
     def test_social_search_uses_duckduckgo_without_google_news_fallback(self):
         with (
-            patch.dict(os.environ, {"TAVILY_API_KEY": ""}, clear=False),
+            patch.dict(os.environ, {"TAVILY_API_KEY": "", "JINA_API_KEY": ""}, clear=False),
             patch.object(search_service, "_duckduckgo_search", return_value=[
                 {"title": "Android update post", "description": "", "url": "https://x.com/android/status/123"},
             ]) as duckduckgo,
@@ -8048,6 +8156,22 @@ class AgenticOpenAITests(unittest.TestCase):
             results = search_service.social_search("site:x.com Android update", max_results=3)
 
         duckduckgo.assert_called_once()
+        google_news_results.assert_not_called()
+        self.assertEqual(results[0]["url"], "https://x.com/android/status/123")
+
+    def test_social_search_uses_jina_when_duckduckgo_has_no_results(self):
+        with (
+            patch.dict(os.environ, {"TAVILY_API_KEY": "", "JINA_API_KEY": "jina-test-key"}, clear=False),
+            patch.object(search_service, "_duckduckgo_search", return_value=[]) as duckduckgo,
+            patch.object(search_service, "_jina_search", return_value=[
+                {"title": "Android update post", "description": "", "url": "https://x.com/android/status/123"},
+            ]) as jina_search,
+            patch.object(search_service, "_google_news_search_results") as google_news_results,
+        ):
+            results = search_service.social_search("site:x.com Android update", max_results=3)
+
+        duckduckgo.assert_called_once()
+        jina_search.assert_called_once()
         google_news_results.assert_not_called()
         self.assertEqual(results[0]["url"], "https://x.com/android/status/123")
 

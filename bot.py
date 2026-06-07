@@ -8991,8 +8991,8 @@ FAVOURITE_NEWS_CONTEXT_RE = re.compile(
     re.I,
 )
 FAVOURITE_NEWS_ALL_TOPICS_RE = re.compile(
-    r"\b(?:favourite|favorite|preferred|shortlist|shortlisted|all|other|my)\b.{0,60}\b(?:topics?|interests?|radar|news|teams?)\b|"
-    r"\b(?:topics?|interests?|radar|news|teams?)\b.{0,60}\b(?:favourite|favorite|preferred|shortlist|shortlisted|covered|coverage)\b",
+    r"\b(?:favourite|favorite|fav|faves?|preferred|shortlist|shortlisted|all|other|my)\b.{0,60}\b(?:topics?|interests?|radar|news|teams?)\b|"
+    r"\b(?:topics?|interests?|radar|news|teams?)\b.{0,60}\b(?:favourite|favorite|fav|faves?|preferred|shortlist|shortlisted|covered|coverage)\b",
     re.I,
 )
 NOTHING_TOPIC_CUE_RE = re.compile(
@@ -9288,6 +9288,7 @@ def _digest_social_read(url: str) -> dict:
     return {
         "title": str(fetched.get("title", "") or "").strip(),
         "description": text[:500],
+        "observed_at": datetime.now(SGT).isoformat(),
         "social_read": True,
         "reader_fallback": bool(fetched.get("reader_fallback")),
     }
@@ -9339,6 +9340,8 @@ def _digest_topic_rule(label: str) -> dict:
 
 def _digest_item_age_hours(item: dict, now: datetime | None = None) -> float | None:
     published = str((item or {}).get("published", "") or "").strip()
+    if not published and item.get("social_read"):
+        published = str((item or {}).get("observed_at", "") or "").strip()
     if not published:
         return None
     try:
@@ -9515,6 +9518,37 @@ def build_curated_digest_entries(now: datetime | None = None, limit: int = 4, fe
     if record and chosen:
         _remember_news_digest_entries(chosen, now=current)
     return chosen[: max(1, int(limit or 4))]
+
+
+def build_social_digest_entries(now: datetime | None = None, limit: int = 4, fetch_limit: int = 1) -> list[dict]:
+    current = now or datetime.now(SGT)
+    candidates = []
+    used_keys = set()
+    social_topic_limit = _digest_social_topic_limit()
+    social_topics_checked = 0
+    for label, query in _news_topics(now=current):
+        if social_topics_checked >= social_topic_limit:
+            break
+        if not _digest_social_topic_allowed(label, query):
+            continue
+        social_topics_checked += 1
+        for index, item in enumerate(_digest_social_items(label, query, max_items=max(1, int(fetch_limit or 1)))):
+            key = ss.news_item_key(item)
+            if not key or key in used_keys:
+                continue
+            if not _digest_item_allowed(label, item, now=current):
+                continue
+            score, lens = _curated_digest_score(label, item, slot_index=index, now=current)
+            candidates.append({
+                "label": label,
+                "item": item,
+                "key": key,
+                "score": score,
+                "why": lens,
+            })
+            used_keys.add(key)
+    candidates.sort(key=lambda entry: (-int(entry.get("score", 0) or 0), str(entry.get("label", "")), str(entry.get("key", ""))))
+    return candidates[: max(1, int(limit or 4))]
 
 
 def format_curated_digest(entries: list[dict]) -> str:

@@ -50,6 +50,8 @@ def _env_int(name: str, default: int, minimum: int = 1, maximum: int | None = No
 URL_FETCH_MAX_BYTES = _env_int("HIRA_FETCH_URL_MAX_BYTES", 1_500_000, minimum=64_000, maximum=8_000_000)
 JINA_READER_BASE_URL = "https://r.jina.ai/"
 JINA_READER_TIMEOUT = _env_int("HIRA_JINA_READER_TIMEOUT", 12, minimum=3, maximum=30)
+JINA_SEARCH_BASE_URL = "https://s.jina.ai/"
+JINA_SEARCH_TIMEOUT = _env_int("HIRA_JINA_SEARCH_TIMEOUT", 12, minimum=3, maximum=30)
 
 
 @dataclass
@@ -90,6 +92,10 @@ def jina_reader_fallback_enabled() -> bool:
 
 def _tavily_api_key() -> str:
     return os.environ.get("TAVILY_API_KEY", "").strip()
+
+
+def _jina_api_key() -> str:
+    return os.environ.get("JINA_API_KEY", "").strip()
 
 
 def tavily_configured() -> bool:
@@ -671,6 +677,91 @@ def _duckduckgo_search(query: str, max_results: int = 5) -> list[dict]:
         return []
 
 
+def _jina_search_items_from_json(payload) -> list[dict]:
+    raw_items = payload.get("data") if isinstance(payload, dict) else payload
+    if isinstance(raw_items, dict):
+        raw_items = raw_items.get("results") or raw_items.get("items") or []
+    if not isinstance(raw_items, list):
+        return []
+    items = []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        title = str(raw.get("title", "") or raw.get("name", "") or "").strip()
+        url = str(raw.get("url", "") or raw.get("link", "") or raw.get("source", "") or "").strip()
+        description = str(
+            raw.get("description", "")
+            or raw.get("content", "")
+            or raw.get("text", "")
+            or raw.get("snippet", "")
+            or ""
+        ).strip()
+        if title and url:
+            items.append({
+                "title": title,
+                "description": description[:500],
+                "url": url,
+                "source": "Jina Search",
+            })
+    return items
+
+
+def _jina_search_items_from_text(raw: str) -> list[dict]:
+    items = []
+    current: dict[str, str] = {}
+    for line in str(raw or "").splitlines():
+        clean = line.strip()
+        if not clean:
+            continue
+        if clean.startswith("Title:"):
+            if current.get("title") and current.get("url"):
+                items.append(current)
+            current = {"title": clean.removeprefix("Title:").strip()}
+            continue
+        if clean.startswith("URL Source:") or clean.startswith("URL:"):
+            current["url"] = clean.split(":", 1)[1].strip()
+            continue
+        if clean.startswith("Description:") or clean.startswith("Snippet:") or clean.startswith("Content:"):
+            current["description"] = clean.split(":", 1)[1].strip()[:500]
+    if current.get("title") and current.get("url"):
+        items.append(current)
+    return [
+        {
+            "title": item.get("title", ""),
+            "description": item.get("description", ""),
+            "url": item.get("url", ""),
+            "source": "Jina Search",
+        }
+        for item in items
+    ]
+
+
+def _jina_search(query: str, max_results: int = 5) -> list[dict]:
+    api_key = _jina_api_key()
+    clean = " ".join(str(query or "").split())
+    if not api_key or not clean:
+        return []
+    try:
+        resp = requests.get(
+            JINA_SEARCH_BASE_URL + quote(clean, safe=""),
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Accept": "application/json",
+                "User-Agent": "HIRA/1.0",
+            },
+            timeout=JINA_SEARCH_TIMEOUT,
+        )
+        resp.raise_for_status()
+        try:
+            items = _jina_search_items_from_json(resp.json())
+        except ValueError:
+            items = _jina_search_items_from_text(resp.text or "")
+        return _dedupe_results(items, max_results)
+    except Exception as e:
+        logger.warning(f"Jina search error for '{query}': {e}")
+        return []
+
+
 def _google_news_search_results(query: str, max_results: int = 5) -> list[dict]:
     return [
         {
@@ -708,6 +799,8 @@ def social_search(query: str, max_results: int = 5) -> list[dict]:
     results.extend(_tavily_search(clean, max_results=limit))
     if len(results) < limit:
         results.extend(_duckduckgo_search(clean, max_results=limit * 2))
+    if len(results) < limit:
+        results.extend(_jina_search(clean, max_results=limit * 2))
     return _dedupe_results(results, limit)
 
 

@@ -1938,6 +1938,61 @@ def _pwa_topic_news_intro(topics: list[tuple[str, str]]) -> str:
     return f"Got it. Narrowing the lens: {', '.join(labels[:-1])} and {labels[-1]}."
 
 
+_PWA_SOCIAL_TREND_NEWS_RE = re.compile(r"\b(?:x|twitter|tweets?|social|trends?|trending)\b", re.I)
+_PWA_NEWS_INTENT_RE = re.compile(
+    r"\b(?:news|latest|brief|digest|radar|topics?|fav|faves?|favourites?|favorites?)\b",
+    re.I,
+)
+
+
+def _pwa_social_trend_news_requested(message: str) -> bool:
+    clean = " ".join(str(message or "").split())
+    return bool(_PWA_SOCIAL_TREND_NEWS_RE.search(clean)) and bool(_PWA_NEWS_INTENT_RE.search(clean))
+
+
+def _pwa_shortlist_topic_request(topics: list[tuple[str, str]]) -> bool:
+    return [(str(label), str(query)) for label, query in topics] == [("Latest from your shortlist", "")]
+
+
+def _pwa_digest_entry_is_social(entry: dict) -> bool:
+    item = entry.get("item") if isinstance(entry, dict) else {}
+    if not isinstance(item, dict):
+        return False
+    source = str(item.get("source", "") or "").lower()
+    url = str(item.get("url", "") or "").lower()
+    return bool(
+        item.get("social")
+        or item.get("social_read")
+        or source.startswith("social:")
+        or "x.com/" in url
+        or "twitter.com/" in url
+    )
+
+
+async def _pwa_topic_news_social_first_reply(message: str, topics: list[tuple[str, str]]) -> str:
+    if not _pwa_social_trend_news_requested(message) or not _pwa_shortlist_topic_request(topics):
+        return ""
+    try:
+        entries = await asyncio.to_thread(bot.build_social_digest_entries, limit=8, fetch_limit=1)
+        social_entries = [
+            entry for entry in bot._fresh_news_entries(entries, max_age_hours=int(bot.NEWS_MAX_AGE_HOURS))
+            if _pwa_digest_entry_is_social(entry)
+        ][:4]
+        body = bot.format_curated_digest(social_entries)
+    except Exception as exc:
+        bot.logger.warning(f"PWA X-first shortlist digest failed: {exc}")
+        body = ""
+    if not body:
+        return (
+            "I checked X/social trend reads across your shortlist, but no fresh public X status/trend item "
+            "came back usable. I’m not padding that with RSS headlines."
+        )
+    return (
+        "I widened the radar across your shortlist and prioritized X/social trend reads.\n\n"
+        f"*X/social radar*\n{body}"
+    )
+
+
 def _pwa_topic_news_research_failed(result: str) -> bool:
     clean = " ".join(str(result or "").strip().split()).lower()
     return (
@@ -2112,7 +2167,11 @@ async def _pwa_topic_news_reply_rss_for_topics(topics: list[tuple[str, str]]) ->
 
 
 async def _pwa_topic_news_reply_rss(message: str, recent_context: str = "") -> str:
-    return await _pwa_topic_news_reply_rss_for_topics(_pwa_topic_news_queries(message, recent_context))
+    topics = _pwa_topic_news_queries(message, recent_context)
+    social_first_reply = await _pwa_topic_news_social_first_reply(message, topics)
+    if social_first_reply:
+        return social_first_reply
+    return await _pwa_topic_news_reply_rss_for_topics(topics)
 
 
 async def _pwa_topic_news_reply(message: str, recent_context: str = "") -> str:
