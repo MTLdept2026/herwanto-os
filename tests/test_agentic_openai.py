@@ -4496,6 +4496,32 @@ class AgenticOpenAITests(unittest.TestCase):
         tavily_search.assert_not_called()
         web_search.assert_not_called()
 
+    def test_social_proxy_digest_uses_aggregator_search_for_lfc_transfers(self):
+        with (
+            patch("search_service.web_search", return_value=[{
+                "title": "Romano shares Liverpool transfer claim quoted by TEAMtalk",
+                "url": "https://www.teamtalk.com/liverpool/romano-liverpool-transfer-update",
+                "description": "TEAMtalk quotes Romano's X post about an #LFC transfer rumour.",
+            }]) as web_search,
+            patch("search_service.social_search") as social_search,
+            patch.dict(os.environ, {
+                "HIRA_DIGEST_SOCIAL_PROXY_SEARCH": "1",
+                "HIRA_DIGEST_SOCIAL_PROXY_DOMAINS": "teamtalk.com",
+            }),
+        ):
+            entries = bot.build_social_proxy_digest_entries_for_topics(
+                [("⚽ Liverpool / EPL", "lfc transfers")],
+                now=datetime.now(bot.SGT),
+                limit=1,
+                fetch_limit=1,
+            )
+
+        self.assertEqual(entries[0]["item"]["source"], "Social proxy: TEAMtalk")
+        self.assertTrue(entries[0]["item"]["social_proxy"])
+        self.assertIn("Romano shares Liverpool", entries[0]["item"]["title"])
+        self.assertIn("site:teamtalk.com", web_search.call_args.args[0])
+        social_search.assert_not_called()
+
     def test_social_digest_expands_x_profile_to_direct_status_read(self):
         def fake_fetch_url(url, max_chars=6000):
             if url == "https://x.com/LFCTransferRoom":
@@ -7429,6 +7455,7 @@ class AgenticOpenAITests(unittest.TestCase):
         }
 
         with (
+            patch.object(bot, "build_social_proxy_digest_entries_for_topics", return_value=[]),
             patch.object(bot, "build_social_digest_entries_for_topics", return_value=[social_entry]) as social_digest,
             patch.object(bot, "build_social_digest_entries", side_effect=AssertionError("shortlist social digest should not run")),
             patch.object(bot, "_execute_tool_offloop", side_effect=AssertionError("RSS/Liverpool fallback should not run")),
@@ -7444,6 +7471,38 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertIn("Liverpool transfer thread on X", reply)
         self.assertIn("Liverpool", reply)
 
+    def test_lfc_x_prompt_uses_proxy_sources_before_direct_x(self):
+        now = datetime.now(bot.SGT)
+        proxy_entry = {
+            "label": "⚽ Liverpool / EPL",
+            "item": {
+                "title": "Romano shares Liverpool transfer claim quoted by TEAMtalk",
+                "description": "TEAMtalk quotes Romano's X post about an #LFC transfer rumour.",
+                "url": "https://www.teamtalk.com/liverpool/romano-liverpool-transfer-update",
+                "source": "Social proxy: TEAMtalk",
+                "published": "",
+                "observed_at": now.isoformat(),
+                "social_proxy": True,
+            },
+            "why": "Liverpool relevance via quoted X/social coverage",
+        }
+
+        with (
+            patch.object(bot, "build_social_proxy_digest_entries_for_topics", return_value=[proxy_entry]) as proxy_digest,
+            patch.object(bot, "build_social_digest_entries_for_topics", side_effect=AssertionError("direct X should not run first")),
+            patch.object(bot, "_execute_tool_offloop", side_effect=AssertionError("fallback board should not run")),
+        ):
+            reply = asyncio.run(web_app._pwa_topic_news_reply(
+                "Any LFC news or transfer rumours on X or social media?"
+            ))
+
+        proxy_digest.assert_called_once()
+        self.assertIn("X-post proxy sources", reply)
+        self.assertIn("X/social proxy radar", reply)
+        self.assertIn("TEAMtalk", reply)
+        self.assertIn("Romano shares Liverpool", reply)
+        self.assertNotIn("Fallback board", reply)
+
     def test_lfc_x_prompt_uses_labelled_fallback_board_when_social_empty(self):
         fallback_result = "\n".join([
             "Liverpool FC structured live brief",
@@ -7456,6 +7515,7 @@ class AgenticOpenAITests(unittest.TestCase):
         ])
 
         with (
+            patch.object(bot, "build_social_proxy_digest_entries_for_topics", return_value=[]),
             patch.object(bot, "build_social_digest_entries_for_topics", return_value=[]),
             patch.object(bot, "_execute_tool_offloop", return_value=fallback_result) as execute_tool,
         ):
@@ -7493,6 +7553,7 @@ class AgenticOpenAITests(unittest.TestCase):
         fallback_result = "- Liverpool transfer news, rumours and gossip: Live updates and latest on deals - Sky Sports"
 
         with (
+            patch.object(bot, "build_social_proxy_digest_entries_for_topics", return_value=[]),
             patch.object(bot, "build_social_digest_entries_for_topics", return_value=[social_entry]),
             patch.object(bot, "_execute_tool_offloop", return_value=fallback_result) as execute_tool,
         ):
@@ -7505,6 +7566,32 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertIn("Why it matters", reply)
         self.assertNotIn("Fallback board", reply)
         self.assertNotIn("Liverpool transfer news, rumours and gossip", reply)
+
+    def test_lfc_x_prompt_accepts_generic_x_title_when_snippet_matches_topic(self):
+        with (
+            patch("search_service.social_search", return_value=[{
+                "title": "Fabrizio Romano on X",
+                "url": "https://x.com/FabrizioRomano/status/2062874151090610461",
+                "description": "#LFC are discussing a summer transfer target. #transfers",
+            }]),
+            patch("search_service.fetch_url", return_value={"ok": False, "text": ""}),
+            patch.object(bot, "build_social_proxy_digest_entries_for_topics", return_value=[]),
+            patch.object(bot, "_execute_tool_offloop", side_effect=AssertionError("fallback board should not run")),
+            patch.dict(os.environ, {
+                "HIRA_DIGEST_SOCIAL_SEARCH": "1",
+                "HIRA_DIGEST_SOCIAL_DOMAINS": "x.com",
+                "HIRA_DIGEST_SOCIAL_READ": "1",
+            }),
+        ):
+            reply = asyncio.run(web_app._pwa_topic_news_reply(
+                "Any LFC news or transfer rumours on X or social media?"
+            ))
+
+        self.assertIn("X/social radar", reply)
+        self.assertIn("Fabrizio Romano", reply)
+        self.assertIn("#LFC are discussing", reply)
+        self.assertNotIn("X scan was thin", reply)
+        self.assertNotIn("Fallback board", reply)
 
     def test_chat_api_lfc_social_transfer_prompt_returns_rich_topic_news(self):
         now = datetime.now(bot.SGT)
@@ -7539,6 +7626,7 @@ class AgenticOpenAITests(unittest.TestCase):
             patch.object(bot, "save_history"),
             patch.object(web_app, "_update_working_memory", return_value={}),
             patch.object(web_app, "_schedule_background_call"),
+            patch.object(bot, "build_social_proxy_digest_entries_for_topics", return_value=[]),
             patch.object(bot, "build_social_digest_entries_for_topics", return_value=[social_entry]),
             patch.object(bot, "build_social_digest_entries", side_effect=AssertionError("shortlist social digest should not run")),
             patch.object(bot, "_execute_tool_offloop", side_effect=AssertionError("fallback board should not run")),
@@ -7572,6 +7660,7 @@ class AgenticOpenAITests(unittest.TestCase):
         fallback_result = "- Liverpool transfer news, rumours and gossip: Live updates and latest on deals - Sky Sports"
 
         with (
+            patch.object(bot, "build_social_proxy_digest_entries_for_topics", return_value=[]),
             patch.object(bot, "build_social_digest_entries_for_topics", return_value=[birthday_entry]),
             patch.object(bot, "_execute_tool_offloop", return_value=fallback_result),
         ):

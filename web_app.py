@@ -2074,7 +2074,9 @@ def _pwa_digest_entry_is_social(entry: dict) -> bool:
     return bool(
         item.get("social")
         or item.get("social_read")
+        or item.get("social_proxy")
         or source.startswith("social:")
+        or source.startswith("social proxy:")
         or "x.com/" in url
         or "twitter.com/" in url
     )
@@ -2141,6 +2143,16 @@ def _pwa_social_entry_matches_prompt(message: str, entry: dict) -> bool:
     return bool(_PWA_TRANSFER_BOARD_RE.search(text))
 
 
+def _pwa_social_proxy_first_requested(message: str, topics: list[tuple[str, str]]) -> bool:
+    if not _PWA_TRANSFER_INTENT_RE.search(str(message or "")):
+        return False
+    combined = " ".join(
+        f"{label} {query}"
+        for label, query in topics or []
+    ).lower()
+    return "liverpool" in combined or "lfc" in combined
+
+
 async def _pwa_social_thin_fallback_reply(message: str, topics: list[tuple[str, str]], scope: str) -> str:
     tool_name, tool_input = _pwa_social_fallback_tool(topics)
     if not tool_name:
@@ -2169,6 +2181,31 @@ async def _pwa_topic_news_social_first_reply(message: str, topics: list[tuple[st
     labels = list(dict.fromkeys(label for label, _query in topics))
     scope = "your shortlist" if _pwa_shortlist_topic_request(topics) else ", ".join(labels)
     search_topics = _pwa_social_search_topics(message, topics)
+    recent_window = _pwa_social_recent_window_hours(search_topics)
+    if _pwa_social_proxy_first_requested(message, search_topics):
+        try:
+            proxy_entries = await asyncio.to_thread(
+                bot.build_social_proxy_digest_entries_for_topics,
+                search_topics,
+                limit=8,
+                fetch_limit=2,
+            )
+            proxy_social_entries = [
+                entry for entry in bot._fresh_news_entries(proxy_entries, max_age_hours=recent_window)
+                if (
+                    _pwa_digest_entry_is_social(entry)
+                    and _pwa_social_entry_matches_prompt(message, entry)
+                    and _pwa_social_entry_rich_enough(entry)
+                )
+            ][:4]
+            proxy_body = _pwa_format_social_digest(proxy_social_entries)
+            if proxy_body:
+                return (
+                    f"I checked {scope} through X-post proxy sources because direct X is unreliable here.\n\n"
+                    f"*X/social proxy radar*\n{proxy_body}"
+                )
+        except Exception as exc:
+            bot.logger.warning(f"PWA X-proxy digest failed: {exc}")
     try:
         if _pwa_shortlist_topic_request(topics):
             entries = await asyncio.to_thread(bot.build_social_digest_entries, limit=8, fetch_limit=1)
@@ -2179,7 +2216,6 @@ async def _pwa_topic_news_social_first_reply(message: str, topics: list[tuple[st
                 limit=8,
                 fetch_limit=1,
             )
-        recent_window = _pwa_social_recent_window_hours(search_topics)
         social_entries = [
             entry for entry in bot._fresh_news_entries(entries, max_age_hours=recent_window)
             if (

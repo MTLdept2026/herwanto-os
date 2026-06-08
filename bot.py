@@ -9165,6 +9165,108 @@ def _digest_social_topic_allowed(label: str, query: str) -> bool:
     return any(term in clean for term in DIGEST_SOCIAL_TOPIC_TERMS)
 
 
+SOCIAL_PROXY_DOMAINS = {
+    "teamtalk.com": "TEAMtalk",
+    "empireofthekop.com": "Empire of the Kop",
+    "thisisanfield.com": "This Is Anfield",
+    "anfieldwatch.co.uk": "Anfield Watch",
+    "newsnow.co.uk": "NewsNow",
+}
+
+
+def _digest_social_proxy_enabled() -> bool:
+    return os.environ.get("HIRA_DIGEST_SOCIAL_PROXY_SEARCH", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def _digest_social_proxy_domains() -> list[str]:
+    raw = os.environ.get("HIRA_DIGEST_SOCIAL_PROXY_DOMAINS", "").strip()
+    domains = [
+        item.strip().lower()
+        .removeprefix("https://")
+        .removeprefix("http://")
+        .removeprefix("www.")
+        .strip("/")
+        for item in raw.split(",")
+    ]
+    clean = [domain for domain in domains if domain]
+    return clean[:8] or list(SOCIAL_PROXY_DOMAINS)
+
+
+def _digest_social_proxy_topic_allowed(label: str, query: str) -> bool:
+    clean = f"{label} {query}".lower()
+    return bool(
+        ("liverpool" in clean or "lfc" in clean)
+        and _DIGEST_SOCIAL_TRANSFER_SEARCH_RE.search(clean)
+    )
+
+
+def _digest_social_proxy_query(domain: str, query: str) -> str:
+    clean = " ".join(str(query or "").split())
+    lowered = clean.lower()
+    if not clean or ("liverpool" not in lowered and "lfc" not in lowered):
+        clean = f"Liverpool {clean}".strip()
+    return f"site:{domain} {clean} Romano X post transfer rumour".strip()
+
+
+def _digest_social_proxy_items(label: str, query: str, max_items: int = 1) -> list[dict]:
+    if (
+        not _digest_social_proxy_enabled()
+        or not ss.search_enabled()
+        or not _digest_social_proxy_topic_allowed(label, query)
+    ):
+        return []
+    limit = max(1, min(int(max_items or 1), 3))
+    items: list[dict] = []
+    seen_urls: set[str] = set()
+    for domain in _digest_social_proxy_domains():
+        proxy_query = _digest_social_proxy_query(domain, query)
+        try:
+            results = ss.web_search(proxy_query, max_results=limit + 3)
+        except Exception as exc:
+            logger.warning(f"Social proxy search failed for {domain} / {label}: {exc}")
+            continue
+        for result in results:
+            url = str(result.get("url", "") or "").strip()
+            title = str(result.get("title", "") or "").strip()
+            description = str(result.get("description", "") or "").strip()[:500]
+            lowered = f"{title} {description} {url}".lower()
+            if not url or not title or domain not in url.lower():
+                continue
+            if "liverpool" not in lowered and "lfc" not in lowered:
+                continue
+            if (
+                _DIGEST_SOCIAL_TRANSFER_SEARCH_RE.search(query)
+                and not _DIGEST_SOCIAL_TRANSFER_SEARCH_RE.search(lowered)
+            ):
+                continue
+            key = url.lower().rstrip("/")
+            if key in seen_urls:
+                continue
+            seen_urls.add(key)
+            source = SOCIAL_PROXY_DOMAINS.get(domain, domain)
+            item_title = _digest_display_title(title) or _digest_display_title(description[:160])
+            if not item_title:
+                continue
+            items.append({
+                "title": item_title,
+                "url": url,
+                "published": "",
+                "observed_at": datetime.now(SGT).isoformat(),
+                "source": f"Social proxy: {source}",
+                "description": description,
+                "social_proxy": True,
+                "social_kind": "proxy",
+            })
+            if len(items) >= limit:
+                return items
+    return items
+
+
 def _digest_free_sources_enabled() -> bool:
     return os.environ.get("HIRA_DIGEST_FREE_SOURCE_SUPPLEMENTS", "1").strip().lower() not in {"0", "false", "no", "off"}
 
@@ -9488,7 +9590,7 @@ def _digest_topic_rule(label: str) -> dict:
 
 def _digest_item_age_hours(item: dict, now: datetime | None = None) -> float | None:
     published = str((item or {}).get("published", "") or "").strip()
-    if not published and (item.get("social_read") or item.get("social_search_result")):
+    if not published and (item.get("social_read") or item.get("social_search_result") or item.get("social_proxy")):
         published = str((item or {}).get("observed_at", "") or "").strip()
     if not published:
         return None
@@ -9507,6 +9609,13 @@ def _digest_item_age_hours(item: dict, now: datetime | None = None) -> float | N
 
 def _digest_item_text(item: dict) -> str:
     return f"{(item or {}).get('title', '')} {(item or {}).get('source', '')}".lower()
+
+
+def _digest_social_item_text(item: dict) -> str:
+    return " ".join(
+        str((item or {}).get(key, "") or "")
+        for key in ("title", "description", "source", "url")
+    ).lower()
 
 
 def _digest_item_title_text(item: dict) -> str:
@@ -9528,7 +9637,18 @@ def _digest_item_allowed(label: str, item: dict, now: datetime | None = None) ->
     if not sports_kind and _digest_item_has_any(title_text, NON_SPORTS_DIGEST_SPORTS_NOISE_TERMS):
         return False
     if terms:
-        match_text = title_text if sports_kind else text
+        is_social = bool(
+            item.get("social")
+            or item.get("social_read")
+            or item.get("social_search_result")
+            or item.get("social_proxy")
+        )
+        if sports_kind and is_social:
+            match_text = _digest_social_item_text(item)
+        elif sports_kind:
+            match_text = title_text
+        else:
+            match_text = text
         if not _digest_item_has_any(match_text, terms):
             return False
     age_hours = _digest_item_age_hours(item, now=now)
@@ -9562,6 +9682,8 @@ def _curated_digest_score(label: str, item: dict, slot_index: int = 0, now: date
     title_text = str(item.get("title", "")).lower()
     if item.get("social"):
         score += 3
+    if item.get("social_proxy"):
+        score += 8
     if item.get("social_read"):
         score += 12
     if item.get("social_kind") == "trend":
@@ -9698,6 +9820,37 @@ def build_social_digest_entries_for_topics(
                 "key": key,
                 "score": score,
                 "why": lens,
+            })
+            used_keys.add(key)
+    candidates.sort(key=lambda entry: (-int(entry.get("score", 0) or 0), str(entry.get("label", "")), str(entry.get("key", ""))))
+    return candidates[: max(1, int(limit or 4))]
+
+
+def build_social_proxy_digest_entries_for_topics(
+    topics: list[tuple[str, str]],
+    now: datetime | None = None,
+    limit: int = 4,
+    fetch_limit: int = 1,
+) -> list[dict]:
+    current = now or datetime.now(SGT)
+    candidates = []
+    used_keys = set()
+    for label, query in _dedupe_news_topics(topics or []):
+        if not _digest_social_proxy_topic_allowed(label, query):
+            continue
+        for index, item in enumerate(_digest_social_proxy_items(label, query, max_items=max(1, int(fetch_limit or 1)))):
+            key = ss.news_item_key(item)
+            if not key or key in used_keys:
+                continue
+            if not _digest_item_allowed(label, item, now=current):
+                continue
+            score, lens = _curated_digest_score(label, item, slot_index=index, now=current)
+            candidates.append({
+                "label": label,
+                "item": item,
+                "key": key,
+                "score": score,
+                "why": f"{lens} via quoted X/social coverage",
             })
             used_keys.add(key)
     candidates.sort(key=lambda entry: (-int(entry.get("score", 0) or 0), str(entry.get("label", "")), str(entry.get("key", ""))))
