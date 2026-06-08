@@ -7438,38 +7438,18 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertIn("no fresh direct X post/trend", reply)
         self.assertNotIn("Latest from your shortlist", reply)
 
-    def test_lfc_x_prompt_uses_topic_specific_social_digest(self):
-        now = datetime.now(bot.SGT)
-        social_entry = {
-            "label": "⚽ Liverpool / EPL",
-            "item": {
-                "title": "Liverpool transfer thread on X",
-                "url": "https://x.com/lfcwatch/status/2046249571882500354",
-                "source": "Social: x.com",
-                "published": "",
-                "observed_at": now.isoformat(),
-                "social": True,
-                "social_read": True,
-            },
-            "why": "Liverpool relevance",
-        }
-
+    def test_lfc_x_prompt_does_not_wait_on_direct_x_when_proxy_is_thin(self):
         with (
             patch.object(bot, "build_social_proxy_digest_entries_for_topics", return_value=[]),
-            patch.object(bot, "build_social_digest_entries_for_topics", return_value=[social_entry]) as social_digest,
+            patch.object(bot, "build_social_digest_entries_for_topics", side_effect=AssertionError("direct X should not run")),
             patch.object(bot, "build_social_digest_entries", side_effect=AssertionError("shortlist social digest should not run")),
-            patch.object(bot, "_execute_tool_offloop", side_effect=AssertionError("RSS/Liverpool fallback should not run")),
+            patch.object(bot, "_execute_tool_offloop", side_effect=AssertionError("fallback board should not run")),
         ):
             reply = asyncio.run(web_app._pwa_topic_news_reply("Any latest LFC transfer news on X?"))
 
-        social_digest.assert_called_once()
-        called_topics = social_digest.call_args.args[0]
-        self.assertEqual(called_topics[0][0], "⚽ Liverpool / EPL")
-        self.assertEqual(called_topics[0][1], "lfc transfers")
-        self.assertIn(("⚽ Liverpool / EPL", "lfc transfer rumours"), called_topics)
-        self.assertIn("X/social radar", reply)
-        self.assertIn("Liverpool transfer thread on X", reply)
-        self.assertIn("Liverpool", reply)
+        self.assertIn("no fresh usable item came back quickly", reply)
+        self.assertIn("not waiting", reply)
+        self.assertNotIn("Fallback board", reply)
 
     def test_lfc_x_prompt_uses_proxy_sources_before_direct_x(self):
         now = datetime.now(bot.SGT)
@@ -7547,22 +7527,50 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertNotIn("usable H.I.R.A response", body)
         self.assertNotIn('"name": "agentic"', body)
 
-    def test_plain_lfc_transfer_prompt_returns_bounded_fallback_on_proxy_timeout(self):
-        fallback = "X scan was thin for ⚽ Liverpool / EPL: no fresh direct X post/trend came back usable."
-
+    def test_plain_lfc_transfer_prompt_returns_fast_reply_on_proxy_timeout(self):
         with (
             patch.object(web_app, "_pwa_social_proxy_digest_entries", side_effect=asyncio.TimeoutError),
-            patch.object(web_app, "_pwa_social_thin_fallback_reply", return_value=fallback),
+            patch.object(web_app, "_pwa_social_thin_fallback_reply", side_effect=AssertionError("fallback board should not run")),
         ):
             reply = asyncio.run(web_app._pwa_lfc_transfer_news_reply(
                 "Any recent LFC transfer news or rumours?"
             ))
 
-        self.assertIn("proxy-source check timed out", reply)
-        self.assertIn(fallback, reply)
+        self.assertIn("stopped the LFC transfer proxy check", reply)
+        self.assertIn("not waiting", reply)
         self.assertNotIn("usable H.I.R.A response", reply)
 
-    def test_lfc_x_prompt_uses_labelled_fallback_board_when_social_empty(self):
+    def test_chat_api_lfc_social_transfer_prompt_returns_fast_timeout_reply(self):
+        async def run():
+            response = await web_app._chat_stream_response(
+                "any recent lfc transfer news or rumours on social media?",
+                None,
+                "lfc-social-timeout",
+            )
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(web_app, "_pwa_social_proxy_digest_entries", side_effect=asyncio.TimeoutError),
+            patch.object(web_app, "_pwa_social_thin_fallback_reply", side_effect=AssertionError("fallback board should not run")),
+            patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("social LFC transfer prompt should bypass model route")),
+            patch.object(bot, "build_social_digest_entries_for_topics", side_effect=AssertionError("direct X should not run")),
+            patch.object(bot, "_execute_tool_offloop", side_effect=AssertionError("slow fallback tool should not run")),
+        ):
+            body = asyncio.run(run())
+
+        self.assertIn('"name": "topic_news"', body)
+        self.assertIn("stopped the LFC transfer proxy check", body)
+        self.assertIn("not waiting", body)
+        self.assertNotIn("usable H.I.R.A response", body)
+        self.assertNotIn("this is taking longer", body.lower())
+        self.assertNotIn('"name": "agentic"', body)
+
+    def test_lfc_x_prompt_skips_fallback_board_when_proxy_empty(self):
         fallback_result = "\n".join([
             "Liverpool FC structured live brief",
             "- Latest completed: Liverpool 1-1 Brentford | 2026-05-24 | Premier League | Full Time",
@@ -7575,25 +7583,18 @@ class AgenticOpenAITests(unittest.TestCase):
 
         with (
             patch.object(bot, "build_social_proxy_digest_entries_for_topics", return_value=[]),
-            patch.object(bot, "build_social_digest_entries_for_topics", return_value=[]),
+            patch.object(bot, "build_social_digest_entries_for_topics", side_effect=AssertionError("direct X should not run")),
             patch.object(bot, "_execute_tool_offloop", return_value=fallback_result) as execute_tool,
         ):
             reply = asyncio.run(web_app._pwa_topic_news_reply("Any latest LFC transfer news on X?"))
 
-        execute_tool.assert_called_once_with(
-            "get_liverpool_brief",
-            {"focus": "latest Liverpool transfer news rumours", "max_items": 4},
-        )
-        self.assertIn("⚽ Liverpool / EPL", reply)
-        self.assertIn("X scan was thin", reply)
-        self.assertIn("Fallback board", reply)
-        self.assertIn("Liverpool transfer news, rumours and gossip", reply)
-        self.assertNotIn("Latest completed", reply)
-        self.assertNotIn("Match Reports", reply)
-        self.assertNotIn("Brentford transfers", reply)
-        self.assertNotIn("Old Liverpool transfer rumour", reply)
+        execute_tool.assert_not_called()
+        self.assertIn("no fresh usable item came back quickly", reply)
+        self.assertIn("not waiting", reply)
+        self.assertNotIn("Fallback board", reply)
+        self.assertNotIn("Liverpool transfer news, rumours and gossip", reply)
 
-    def test_lfc_x_prompt_salvages_url_only_social_title_from_description(self):
+    def test_lfc_x_prompt_ignores_direct_x_even_if_search_would_have_result(self):
         now = datetime.now(bot.SGT)
         social_entry = {
             "label": "⚽ Liverpool / EPL",
@@ -7613,20 +7614,19 @@ class AgenticOpenAITests(unittest.TestCase):
 
         with (
             patch.object(bot, "build_social_proxy_digest_entries_for_topics", return_value=[]),
-            patch.object(bot, "build_social_digest_entries_for_topics", return_value=[social_entry]),
+            patch.object(bot, "build_social_digest_entries_for_topics", side_effect=AssertionError("direct X should not run")),
             patch.object(bot, "_execute_tool_offloop", return_value=fallback_result) as execute_tool,
         ):
             reply = asyncio.run(web_app._pwa_topic_news_reply("Any latest LFC transfer news on X?"))
 
         execute_tool.assert_not_called()
-        self.assertIn("X/social radar", reply)
-        self.assertIn("#Liverpool transfer bid update", reply)
-        self.assertIn("Social: x.com", reply)
-        self.assertIn("Why it matters", reply)
+        self.assertIn("no fresh usable item came back quickly", reply)
+        self.assertIn("not waiting", reply)
+        self.assertNotIn("#Liverpool transfer bid update", reply)
         self.assertNotIn("Fallback board", reply)
         self.assertNotIn("Liverpool transfer news, rumours and gossip", reply)
 
-    def test_lfc_x_prompt_accepts_generic_x_title_when_snippet_matches_topic(self):
+    def test_lfc_social_prompt_ignores_generic_x_search_result_when_proxy_is_thin(self):
         with (
             patch("search_service.social_search", return_value=[{
                 "title": "Fabrizio Romano on X",
@@ -7646,27 +7646,25 @@ class AgenticOpenAITests(unittest.TestCase):
                 "Any LFC news or transfer rumours on X or social media?"
             ))
 
-        self.assertIn("X/social radar", reply)
-        self.assertIn("Fabrizio Romano", reply)
-        self.assertIn("#LFC are discussing", reply)
-        self.assertNotIn("X scan was thin", reply)
+        self.assertIn("no fresh usable item came back quickly", reply)
+        self.assertIn("not waiting", reply)
+        self.assertNotIn("Fabrizio Romano", reply)
         self.assertNotIn("Fallback board", reply)
 
     def test_chat_api_lfc_social_transfer_prompt_returns_rich_topic_news(self):
         now = datetime.now(bot.SGT)
-        social_entry = {
+        proxy_entry = {
             "label": "⚽ Liverpool / EPL",
             "item": {
-                "title": "Nicolò Schira on X: Liverpool are ready to submit a bid",
-                "description": "#Liverpool are ready to submit a bid. #LFC #transfers",
-                "url": "https://x.com/NicoSchira/status/2062874151090610459",
-                "source": "Social: x.com",
+                "title": "Romano shares Liverpool transfer claim quoted by TEAMtalk",
+                "description": "TEAMtalk quotes Romano's X post about an #LFC transfer rumour.",
+                "url": "https://www.teamtalk.com/liverpool/romano-liverpool-transfer-update",
+                "source": "Social proxy: TEAMtalk",
                 "published": "",
                 "observed_at": now.isoformat(),
-                "social": True,
-                "social_read": True,
+                "social_proxy": True,
             },
-            "why": "Liverpool relevance",
+            "why": "Liverpool relevance via quoted X/social coverage",
         }
 
         async def run():
@@ -7685,8 +7683,8 @@ class AgenticOpenAITests(unittest.TestCase):
             patch.object(bot, "save_history"),
             patch.object(web_app, "_update_working_memory", return_value={}),
             patch.object(web_app, "_schedule_background_call"),
-            patch.object(bot, "build_social_proxy_digest_entries_for_topics", return_value=[]),
-            patch.object(bot, "build_social_digest_entries_for_topics", return_value=[social_entry]),
+            patch.object(bot, "build_social_proxy_digest_entries_for_topics", return_value=[proxy_entry]),
+            patch.object(bot, "build_social_digest_entries_for_topics", side_effect=AssertionError("direct X should not run")),
             patch.object(bot, "build_social_digest_entries", side_effect=AssertionError("shortlist social digest should not run")),
             patch.object(bot, "_execute_tool_offloop", side_effect=AssertionError("fallback board should not run")),
             patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("topic news should bypass model route")),
@@ -7694,9 +7692,9 @@ class AgenticOpenAITests(unittest.TestCase):
             body = asyncio.run(run())
 
         self.assertIn('"name": "topic_news"', body)
-        self.assertIn("X/social radar", body)
-        self.assertIn("Nicolò Schira", body)
-        self.assertIn("Social: x.com", body)
+        self.assertIn("LFC transfer proxy radar", body)
+        self.assertIn("Romano shares Liverpool", body)
+        self.assertIn("Social proxy: TEAMtalk", body)
         self.assertNotIn("X scan was thin", body)
         self.assertNotIn("Fallback board", body)
         self.assertNotIn('"name": "agentic"', body)
@@ -7720,13 +7718,15 @@ class AgenticOpenAITests(unittest.TestCase):
 
         with (
             patch.object(bot, "build_social_proxy_digest_entries_for_topics", return_value=[]),
-            patch.object(bot, "build_social_digest_entries_for_topics", return_value=[birthday_entry]),
+            patch.object(bot, "build_social_digest_entries_for_topics", side_effect=AssertionError("direct X should not run")),
             patch.object(bot, "_execute_tool_offloop", return_value=fallback_result),
         ):
             reply = asyncio.run(web_app._pwa_topic_news_reply("Any latest LFC transfer news on X?"))
 
-        self.assertIn("Fallback board", reply)
-        self.assertIn("Liverpool transfer news, rumours and gossip", reply)
+        self.assertIn("no fresh usable item came back quickly", reply)
+        self.assertIn("not waiting", reply)
+        self.assertNotIn("Fallback board", reply)
+        self.assertNotIn("Liverpool transfer news, rumours and gossip", reply)
         self.assertNotIn("Ian St John", reply)
 
     def test_topic_news_followup_bypasses_model_route(self):

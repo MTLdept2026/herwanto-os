@@ -2087,7 +2087,7 @@ _PWA_TRANSFER_BOARD_RE = re.compile(
     r"\b(?:transfers?|rumou?rs?|gossip|signings?|loans?|contracts?|deal|bid|sale|target|moved on)\b",
     re.I,
 )
-_PWA_SOCIAL_PROXY_TIMEOUT_SECONDS = max(2.0, min(12.0, _env_float("HIRA_PWA_SOCIAL_PROXY_TIMEOUT_SECONDS", 8.0)))
+_PWA_SOCIAL_PROXY_TIMEOUT_SECONDS = max(2.0, min(8.0, _env_float("HIRA_PWA_SOCIAL_PROXY_TIMEOUT_SECONDS", 5.0)))
 
 
 def _pwa_social_fallback_tool(topics: list[tuple[str, str]]) -> tuple[str, dict]:
@@ -2156,8 +2156,6 @@ def _pwa_social_proxy_first_requested(message: str, topics: list[tuple[str, str]
 
 def _pwa_lfc_transfer_news_requested(message: str) -> bool:
     clean = " ".join(str(message or "").lower().split())
-    if _pwa_social_trend_news_requested(clean):
-        return False
     return bool(
         re.search(r"\b(?:liverpool|lfc|anfield)\b", clean)
         and _PWA_TRANSFER_INTENT_RE.search(clean)
@@ -2199,6 +2197,18 @@ async def _pwa_social_thin_fallback_reply(message: str, topics: list[tuple[str, 
     )
 
 
+def _pwa_lfc_proxy_thin_reply(timed_out: bool = False) -> str:
+    if timed_out:
+        return (
+            f"I stopped the LFC transfer proxy check after {int(_PWA_SOCIAL_PROXY_TIMEOUT_SECONDS)}s. "
+            "Direct X/social scraping is unreliable here, so I’m not waiting on it. Try again later."
+        )
+    return (
+        "I checked LFC transfer proxy sources, but no fresh usable item came back quickly. "
+        "Direct X/social scraping is unreliable here, so I’m not waiting on it."
+    )
+
+
 async def _pwa_topic_news_social_first_reply(message: str, topics: list[tuple[str, str]]) -> str:
     if not _pwa_social_trend_news_requested(message) or not topics:
         return ""
@@ -2207,6 +2217,7 @@ async def _pwa_topic_news_social_first_reply(message: str, topics: list[tuple[st
     search_topics = _pwa_social_search_topics(message, topics)
     recent_window = _pwa_social_recent_window_hours(search_topics)
     if _pwa_social_proxy_first_requested(message, search_topics):
+        proxy_timed_out = False
         try:
             proxy_entries = await _pwa_social_proxy_digest_entries(search_topics, limit=8, fetch_limit=2)
             proxy_social_entries = [
@@ -2224,9 +2235,11 @@ async def _pwa_topic_news_social_first_reply(message: str, topics: list[tuple[st
                     f"*X/social proxy radar*\n{proxy_body}"
                 )
         except asyncio.TimeoutError:
+            proxy_timed_out = True
             bot.logger.warning("PWA X-proxy digest timed out after %.1fs", _PWA_SOCIAL_PROXY_TIMEOUT_SECONDS)
         except Exception as exc:
             bot.logger.warning(f"PWA X-proxy digest failed: {exc}")
+        return _pwa_lfc_proxy_thin_reply(timed_out=proxy_timed_out)
     try:
         if _pwa_shortlist_topic_request(topics):
             entries = await asyncio.to_thread(bot.build_social_digest_entries, limit=8, fetch_limit=1)
@@ -2293,21 +2306,7 @@ async def _pwa_lfc_transfer_news_reply(message: str) -> str:
         bot.logger.warning("PWA LFC transfer proxy digest timed out after %.1fs", _PWA_SOCIAL_PROXY_TIMEOUT_SECONDS)
     except Exception as exc:
         bot.logger.warning(f"PWA LFC transfer proxy digest failed: {exc}")
-
-    fallback = await _pwa_social_thin_fallback_reply(message, topics, scope)
-    if fallback:
-        prefix = (
-            f"LFC proxy-source check timed out after {int(_PWA_SOCIAL_PROXY_TIMEOUT_SECONDS)}s, so I’m using the bounded fallback board.\n\n"
-            if proxy_timed_out else
-            "LFC proxy-source check was thin, so I’m using the bounded fallback board.\n\n"
-        )
-        return prefix + fallback
-    if proxy_timed_out:
-        return (
-            f"LFC proxy-source check timed out after {int(_PWA_SOCIAL_PROXY_TIMEOUT_SECONDS)}s. "
-            "Direct X is unreliable here, and I’m not going to pad this with stale memory. Try again in a moment."
-        )
-    return "I checked LFC transfer proxy sources, but no fresh usable item came back. I’m not going to guess from memory."
+    return _pwa_lfc_proxy_thin_reply(timed_out=proxy_timed_out)
 
 
 def _pwa_topic_news_research_failed(result: str) -> bool:
