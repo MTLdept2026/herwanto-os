@@ -9205,12 +9205,33 @@ def _digest_social_proxy_topic_allowed(label: str, query: str) -> bool:
     )
 
 
-def _digest_social_proxy_query(domain: str, query: str) -> str:
+def _digest_social_proxy_query(query: str, domains: list[str] | None = None) -> str:
     clean = " ".join(str(query or "").split())
     lowered = clean.lower()
     if not clean or ("liverpool" not in lowered and "lfc" not in lowered):
         clean = f"Liverpool {clean}".strip()
-    return f"site:{domain} {clean} Romano X post transfer rumour".strip()
+    if not _DIGEST_SOCIAL_TRANSFER_SEARCH_RE.search(clean):
+        clean = f"{clean} transfer rumour".strip()
+    source_terms: list[str] = []
+    for domain in domains or _digest_social_proxy_domains():
+        label = SOCIAL_PROXY_DOMAINS.get(domain, domain)
+        term = f'"{label}"' if " " in label else label
+        if term not in source_terms:
+            source_terms.append(term)
+    proxy_terms = ['Romano', '"X post"', 'Twitter', '"social media"', *source_terms]
+    return f"{clean} ({' OR '.join(proxy_terms[:12])})".strip()
+
+
+def _digest_social_proxy_source_label(item: dict, domains: list[str]) -> str:
+    text = " ".join(
+        str((item or {}).get(key, "") or "")
+        for key in ("source", "title", "description", "url")
+    ).lower()
+    for domain in domains:
+        label = SOCIAL_PROXY_DOMAINS.get(domain, domain)
+        if domain in text or label.lower() in text:
+            return label
+    return ""
 
 
 def _digest_social_proxy_items(label: str, query: str, max_items: int = 1) -> list[dict]:
@@ -9223,47 +9244,47 @@ def _digest_social_proxy_items(label: str, query: str, max_items: int = 1) -> li
     limit = max(1, min(int(max_items or 1), 3))
     items: list[dict] = []
     seen_urls: set[str] = set()
-    for domain in _digest_social_proxy_domains():
-        proxy_query = _digest_social_proxy_query(domain, query)
-        try:
-            results = ss.web_search(proxy_query, max_results=limit + 3)
-        except Exception as exc:
-            logger.warning(f"Social proxy search failed for {domain} / {label}: {exc}")
+    domains = _digest_social_proxy_domains()
+    proxy_query = _digest_social_proxy_query(query, domains=domains)
+    try:
+        results = ss.google_news(proxy_query, max_items=max(limit + 6, 8))
+    except Exception as exc:
+        logger.warning(f"Social proxy news search failed for {label}: {exc}")
+        return []
+    for result in results:
+        url = str(result.get("url", "") or "").strip()
+        title = str(result.get("title", "") or "").strip()
+        description = str(result.get("description", "") or "").strip()[:500]
+        source = _digest_social_proxy_source_label(result, domains)
+        lowered = f"{title} {description} {url} {source}".lower()
+        if not url or not title or not source:
             continue
-        for result in results:
-            url = str(result.get("url", "") or "").strip()
-            title = str(result.get("title", "") or "").strip()
-            description = str(result.get("description", "") or "").strip()[:500]
-            lowered = f"{title} {description} {url}".lower()
-            if not url or not title or domain not in url.lower():
-                continue
-            if "liverpool" not in lowered and "lfc" not in lowered:
-                continue
-            if (
-                _DIGEST_SOCIAL_TRANSFER_SEARCH_RE.search(query)
-                and not _DIGEST_SOCIAL_TRANSFER_SEARCH_RE.search(lowered)
-            ):
-                continue
-            key = url.lower().rstrip("/")
-            if key in seen_urls:
-                continue
-            seen_urls.add(key)
-            source = SOCIAL_PROXY_DOMAINS.get(domain, domain)
-            item_title = _digest_display_title(title) or _digest_display_title(description[:160])
-            if not item_title:
-                continue
-            items.append({
-                "title": item_title,
-                "url": url,
-                "published": "",
-                "observed_at": datetime.now(SGT).isoformat(),
-                "source": f"Social proxy: {source}",
-                "description": description,
-                "social_proxy": True,
-                "social_kind": "proxy",
-            })
-            if len(items) >= limit:
-                return items
+        if "liverpool" not in lowered and "lfc" not in lowered:
+            continue
+        if (
+            _DIGEST_SOCIAL_TRANSFER_SEARCH_RE.search(query)
+            and not _DIGEST_SOCIAL_TRANSFER_SEARCH_RE.search(lowered)
+        ):
+            continue
+        key = url.lower().rstrip("/")
+        if key in seen_urls:
+            continue
+        seen_urls.add(key)
+        item_title = _digest_display_title(title) or _digest_display_title(description[:160])
+        if not item_title:
+            continue
+        items.append({
+            "title": item_title,
+            "url": url,
+            "published": str(result.get("published", "") or "").strip(),
+            "observed_at": datetime.now(SGT).isoformat(),
+            "source": f"Social proxy: {source}",
+            "description": description,
+            "social_proxy": True,
+            "social_kind": "proxy",
+        })
+        if len(items) >= limit:
+            return items
     return items
 
 

@@ -2200,12 +2200,12 @@ async def _pwa_social_thin_fallback_reply(message: str, topics: list[tuple[str, 
 def _pwa_lfc_proxy_thin_reply(timed_out: bool = False) -> str:
     if timed_out:
         return (
-            f"I stopped the LFC transfer proxy check after {int(_PWA_SOCIAL_PROXY_TIMEOUT_SECONDS)}s. "
-            "Direct X/social scraping is unreliable here, so I’m not waiting on it. Try again later."
+            f"The LFC transfer proxy-source check hit {int(_PWA_SOCIAL_PROXY_TIMEOUT_SECONDS)}s, "
+            "so I stopped before hanging the chat. I did not try direct X/social scraping."
         )
     return (
-        "I checked LFC transfer proxy sources, but no fresh usable item came back quickly. "
-        "Direct X/social scraping is unreliable here, so I’m not waiting on it."
+        "I checked LFC transfer proxy sources, but no transfer-specific proxy item came back in the fast pass. "
+        "I did not fall back to direct X/social scraping."
     )
 
 
