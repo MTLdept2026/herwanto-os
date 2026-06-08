@@ -7503,6 +7503,65 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertIn("Romano shares Liverpool", reply)
         self.assertNotIn("Fallback board", reply)
 
+    def test_plain_lfc_transfer_prompt_uses_proxy_shortcut(self):
+        now = datetime.now(bot.SGT)
+        proxy_entry = {
+            "label": "⚽ Liverpool / EPL",
+            "item": {
+                "title": "Romano shares Liverpool transfer claim quoted by TEAMtalk",
+                "description": "TEAMtalk quotes Romano's X post about an #LFC transfer rumour.",
+                "url": "https://www.teamtalk.com/liverpool/romano-liverpool-transfer-update",
+                "source": "Social proxy: TEAMtalk",
+                "published": "",
+                "observed_at": now.isoformat(),
+                "social_proxy": True,
+            },
+            "why": "Liverpool relevance via quoted X/social coverage",
+        }
+
+        async def run():
+            response = await web_app._chat_stream_response(
+                "Any recent LFC transfer news or rumours?",
+                None,
+                "lfc-transfer-plain",
+            )
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(bot, "build_social_proxy_digest_entries_for_topics", return_value=[proxy_entry]),
+            patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("plain LFC transfer prompt should bypass model route")),
+            patch.object(bot, "_execute_tool_offloop", side_effect=AssertionError("fallback board should not run")),
+        ):
+            body = asyncio.run(run())
+
+        self.assertIn('"name": "topic_news"', body)
+        self.assertIn('"name": "web_search"', body)
+        self.assertIn("LFC transfer proxy radar", body)
+        self.assertIn("TEAMtalk", body)
+        self.assertNotIn("I didn", body)
+        self.assertNotIn("usable H.I.R.A response", body)
+        self.assertNotIn('"name": "agentic"', body)
+
+    def test_plain_lfc_transfer_prompt_returns_bounded_fallback_on_proxy_timeout(self):
+        fallback = "X scan was thin for ⚽ Liverpool / EPL: no fresh direct X post/trend came back usable."
+
+        with (
+            patch.object(web_app, "_pwa_social_proxy_digest_entries", side_effect=asyncio.TimeoutError),
+            patch.object(web_app, "_pwa_social_thin_fallback_reply", return_value=fallback),
+        ):
+            reply = asyncio.run(web_app._pwa_lfc_transfer_news_reply(
+                "Any recent LFC transfer news or rumours?"
+            ))
+
+        self.assertIn("proxy-source check timed out", reply)
+        self.assertIn(fallback, reply)
+        self.assertNotIn("usable H.I.R.A response", reply)
+
     def test_lfc_x_prompt_uses_labelled_fallback_board_when_social_empty(self):
         fallback_result = "\n".join([
             "Liverpool FC structured live brief",

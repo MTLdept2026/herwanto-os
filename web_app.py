@@ -2087,6 +2087,7 @@ _PWA_TRANSFER_BOARD_RE = re.compile(
     r"\b(?:transfers?|rumou?rs?|gossip|signings?|loans?|contracts?|deal|bid|sale|target|moved on)\b",
     re.I,
 )
+_PWA_SOCIAL_PROXY_TIMEOUT_SECONDS = max(2.0, min(12.0, _env_float("HIRA_PWA_SOCIAL_PROXY_TIMEOUT_SECONDS", 8.0)))
 
 
 def _pwa_social_fallback_tool(topics: list[tuple[str, str]]) -> tuple[str, dict]:
@@ -2153,6 +2154,29 @@ def _pwa_social_proxy_first_requested(message: str, topics: list[tuple[str, str]
     return "liverpool" in combined or "lfc" in combined
 
 
+def _pwa_lfc_transfer_news_requested(message: str) -> bool:
+    clean = " ".join(str(message or "").lower().split())
+    if _pwa_social_trend_news_requested(clean):
+        return False
+    return bool(
+        re.search(r"\b(?:liverpool|lfc|anfield)\b", clean)
+        and _PWA_TRANSFER_INTENT_RE.search(clean)
+        and re.search(r"\b(?:news|latest|recent|updates?|anything|any|rumou?rs?|gossip)\b", clean)
+    )
+
+
+async def _pwa_social_proxy_digest_entries(search_topics: list[tuple[str, str]], limit: int = 8, fetch_limit: int = 2) -> list[dict]:
+    return await asyncio.wait_for(
+        asyncio.to_thread(
+            bot.build_social_proxy_digest_entries_for_topics,
+            search_topics,
+            limit=limit,
+            fetch_limit=fetch_limit,
+        ),
+        timeout=_PWA_SOCIAL_PROXY_TIMEOUT_SECONDS,
+    )
+
+
 async def _pwa_social_thin_fallback_reply(message: str, topics: list[tuple[str, str]], scope: str) -> str:
     tool_name, tool_input = _pwa_social_fallback_tool(topics)
     if not tool_name:
@@ -2184,12 +2208,7 @@ async def _pwa_topic_news_social_first_reply(message: str, topics: list[tuple[st
     recent_window = _pwa_social_recent_window_hours(search_topics)
     if _pwa_social_proxy_first_requested(message, search_topics):
         try:
-            proxy_entries = await asyncio.to_thread(
-                bot.build_social_proxy_digest_entries_for_topics,
-                search_topics,
-                limit=8,
-                fetch_limit=2,
-            )
+            proxy_entries = await _pwa_social_proxy_digest_entries(search_topics, limit=8, fetch_limit=2)
             proxy_social_entries = [
                 entry for entry in bot._fresh_news_entries(proxy_entries, max_age_hours=recent_window)
                 if (
@@ -2204,6 +2223,8 @@ async def _pwa_topic_news_social_first_reply(message: str, topics: list[tuple[st
                     f"I checked {scope} through X-post proxy sources because direct X is unreliable here.\n\n"
                     f"*X/social proxy radar*\n{proxy_body}"
                 )
+        except asyncio.TimeoutError:
+            bot.logger.warning("PWA X-proxy digest timed out after %.1fs", _PWA_SOCIAL_PROXY_TIMEOUT_SECONDS)
         except Exception as exc:
             bot.logger.warning(f"PWA X-proxy digest failed: {exc}")
     try:
@@ -2237,6 +2258,56 @@ async def _pwa_topic_news_social_first_reply(message: str, topics: list[tuple[st
         f"I checked {scope} and prioritized X/social trend reads.\n\n"
         f"*X/social radar*\n{body}"
     )
+
+
+async def _pwa_lfc_transfer_news_reply(message: str) -> str:
+    if not _pwa_lfc_transfer_news_requested(message):
+        return ""
+    topic = _pwa_builtin_digest_topic("liverpool")
+    topics = _pwa_social_search_topics(message, [topic]) if topic[0] and topic[1] else [
+        ("⚽ Liverpool / EPL", "lfc transfers"),
+        ("⚽ Liverpool / EPL", "lfc transfer rumours"),
+        ("⚽ Liverpool / EPL", "Liverpool transfer rumours"),
+    ]
+    scope = "⚽ Liverpool / EPL"
+    recent_window = _pwa_social_recent_window_hours(topics)
+    proxy_timed_out = False
+    try:
+        proxy_entries = await _pwa_social_proxy_digest_entries(topics, limit=8, fetch_limit=2)
+        proxy_social_entries = [
+            entry for entry in bot._fresh_news_entries(proxy_entries, max_age_hours=recent_window)
+            if (
+                _pwa_digest_entry_is_social(entry)
+                and _pwa_social_entry_matches_prompt(message, entry)
+                and _pwa_social_entry_rich_enough(entry)
+            )
+        ][:4]
+        proxy_body = _pwa_format_social_digest(proxy_social_entries)
+        if proxy_body:
+            return (
+                f"I checked {scope} through Liverpool transfer proxy sources because direct X is unreliable here.\n\n"
+                f"*LFC transfer proxy radar*\n{proxy_body}"
+            )
+    except asyncio.TimeoutError:
+        proxy_timed_out = True
+        bot.logger.warning("PWA LFC transfer proxy digest timed out after %.1fs", _PWA_SOCIAL_PROXY_TIMEOUT_SECONDS)
+    except Exception as exc:
+        bot.logger.warning(f"PWA LFC transfer proxy digest failed: {exc}")
+
+    fallback = await _pwa_social_thin_fallback_reply(message, topics, scope)
+    if fallback:
+        prefix = (
+            f"LFC proxy-source check timed out after {int(_PWA_SOCIAL_PROXY_TIMEOUT_SECONDS)}s, so I’m using the bounded fallback board.\n\n"
+            if proxy_timed_out else
+            "LFC proxy-source check was thin, so I’m using the bounded fallback board.\n\n"
+        )
+        return prefix + fallback
+    if proxy_timed_out:
+        return (
+            f"LFC proxy-source check timed out after {int(_PWA_SOCIAL_PROXY_TIMEOUT_SECONDS)}s. "
+            "Direct X is unreliable here, and I’m not going to pad this with stale memory. Try again in a moment."
+        )
+    return "I checked LFC transfer proxy sources, but no fresh usable item came back. I’m not going to guess from memory."
 
 
 def _pwa_topic_news_research_failed(result: str) -> bool:
@@ -5729,6 +5800,17 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             quick_history,
             route_name="direct_source",
             tool_name="get_f1_brief",
+        )
+
+    lfc_transfer_reply = await _run_with_chat_slot(_pwa_lfc_transfer_news_reply(message))
+    if lfc_transfer_reply:
+        quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
+        return _quick_sse_response(
+            lfc_transfer_reply,
+            history_key,
+            quick_history,
+            route_name="topic_news",
+            tool_name="web_search",
         )
 
     direct_source_reply, direct_source_tool = await _run_with_chat_slot(_pwa_direct_source_reply(message, history))
