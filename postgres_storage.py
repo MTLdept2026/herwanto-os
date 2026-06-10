@@ -388,7 +388,28 @@ def set_memory(memory: dict[str, list], default_memory: dict[str, list]) -> dict
     return clean
 
 
-def add_memory(category: str, text: str, default_memory: dict[str, list]) -> dict[str, list[str]]:
+def append_memory_log(category: str, text: str, source: str = "postgres") -> None:
+    ensure_schema()
+    item = str(text or "").strip()
+    if not item:
+        return
+    clean_source = str(source or "postgres").strip()[:80]
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO memory_log (created_at, category, text, source) VALUES (now(), %s, %s, %s)",
+                (category, item, clean_source),
+            )
+        conn.commit()
+
+
+def add_memory(
+    category: str,
+    text: str,
+    default_memory: dict[str, list],
+    storage_caps: dict[str, int] | None = None,
+    caps_disabled: bool = False,
+) -> dict[str, list[str]]:
     ensure_schema()
     item = str(text or "").strip()
     memory = {key: list(value) for key, value in default_memory.items()}
@@ -406,6 +427,16 @@ def add_memory(category: str, text: str, default_memory: dict[str, list]) -> dic
                         "INSERT INTO memory_log (created_at, category, text, source) VALUES (now(), %s, %s, 'postgres')",
                         (category, item),
                     )
+                cap = int((storage_caps or {}).get(category, 0) or 0)
+                if not caps_disabled and cap > 0 and len(bucket) > cap:
+                    overflow = bucket[:-cap]
+                    bucket = bucket[-cap:]
+                    memory[category] = bucket
+                    for overflow_item in overflow:
+                        cur.execute(
+                            "INSERT INTO memory_log (created_at, category, text, source) VALUES (now(), %s, %s, 'cap_overflow')",
+                            (category, overflow_item),
+                        )
                 cur.execute(
                     """
                     INSERT INTO assistant_memory (category, items, updated_at)
@@ -417,6 +448,45 @@ def add_memory(category: str, text: str, default_memory: dict[str, list]) -> dic
                 )
                 _mark_initialized(cur, "assistant_memory_initialized")
     return {key: list(memory.get(key, [])) for key in default_memory}
+
+
+def remove_memory_entries(category: str, entries: list[str], default_memory: dict[str, list], source: str = "consolidation_prune") -> int:
+    ensure_schema()
+    targets = [str(item).strip() for item in entries if str(item).strip()]
+    if not targets:
+        return 0
+    clean_source = str(source or "consolidation_prune").strip()[:80]
+    removed_items: list[str] = []
+    with connect() as conn:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                cur.execute("SELECT items FROM assistant_memory WHERE category = %s FOR UPDATE", (category,))
+                row = cur.fetchone()
+                bucket = _coerce_items(row[0]) if row else list(default_memory.get(category, []))
+                for target in targets:
+                    try:
+                        index = bucket.index(target)
+                    except ValueError:
+                        continue
+                    removed_items.append(bucket.pop(index))
+                if not removed_items:
+                    return 0
+                for item in removed_items:
+                    cur.execute(
+                        "INSERT INTO memory_log (created_at, category, text, source) VALUES (now(), %s, %s, %s)",
+                        (category, item, clean_source),
+                    )
+                cur.execute(
+                    """
+                    INSERT INTO assistant_memory (category, items, updated_at)
+                    VALUES (%s, %s, now())
+                    ON CONFLICT (category)
+                    DO UPDATE SET items = EXCLUDED.items, updated_at = now()
+                    """,
+                    (category, _jsonb(bucket)),
+                )
+                _mark_initialized(cur, "assistant_memory_initialized")
+    return len(removed_items)
 
 
 def import_memory(memory: dict[str, list], default_memory: dict[str, list], source: str = "sheets_import") -> dict:

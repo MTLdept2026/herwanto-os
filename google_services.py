@@ -4643,6 +4643,27 @@ DEFAULT_MEMORY = {
     "source_notes": [],
 }
 
+MEMORY_STORAGE_CAPS = {
+    "profile": 120,
+    "preferences": 120,
+    "people": 100,
+    "places": 60,
+    "teaching": 80,
+    "business": 60,
+    "projects": 60,
+    "sports": 60,
+    "files": 30,
+    "templates": 40,
+    "constraints": 120,
+    "recent_summaries": 30,
+    "conversation_episodes": 24,
+    "topic_profiles": 80,
+    "correction_ledger": 80,
+    "self_reflections": 100,
+    "learned_preferences": 60,
+    "source_notes": 40,
+}
+
 
 def _normalise_memory_category(category: str) -> str:
     category = (category or "profile").lower().strip()
@@ -4702,6 +4723,24 @@ def _normalise_memory_category(category: str) -> str:
 
 def _copy_memory(memory: dict) -> dict:
     return {key: list(memory.get(key, [])) for key in DEFAULT_MEMORY}
+
+
+def _memory_caps_disabled() -> bool:
+    return os.environ.get("HIRA_DISABLE_MEMORY_CAPS", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _apply_storage_cap(category: str, bucket: list, archive_fn, cap: int | None = None, source: str = "cap_overflow", respect_kill_switch: bool = True) -> list:
+    clean_bucket = [str(item).strip() for item in bucket if str(item).strip()]
+    if respect_kill_switch and _memory_caps_disabled():
+        return clean_bucket
+    limit = int(cap if cap is not None else MEMORY_STORAGE_CAPS.get(category, 0) or 0)
+    if limit <= 0 or len(clean_bucket) <= limit:
+        return clean_bucket
+    overflow = clean_bucket[:-limit]
+    kept = clean_bucket[-limit:]
+    for item in overflow:
+        archive_fn(category, item, source=source)
+    return kept
 
 
 def _postgres_available() -> bool:
@@ -4822,6 +4861,13 @@ def _append_memory_log(category: str, text: str, source: str = "fallback") -> No
         ).execute()
 
 
+def _append_postgres_memory_log(category: str, text: str, source: str = "fallback") -> None:
+    if not _postgres_available() or not hasattr(pg_storage, "append_memory_log"):
+        _append_memory_log(category, text, source=source)
+        return
+    pg_storage.append_memory_log(category, text, source=source)
+
+
 def _merge_memory_log(memory: dict) -> dict:
     try:
         r = _sheets().spreadsheets().values().get(
@@ -4833,6 +4879,9 @@ def _merge_memory_log(memory: dict) -> dict:
         return memory
     for row in r.get("values", []) or []:
         if len(row) < 3:
+            continue
+        source = str(row[3] if len(row) > 3 else "" or "").strip()
+        if source in {"cap_overflow", "consolidation_prune"}:
             continue
         category = _normalise_memory_category(row[1])
         item = str(row[2] or "").strip()
@@ -4938,7 +4987,13 @@ def add_memory(category: str, text: str) -> dict:
     category = _normalise_memory_category(category)
     if _postgres_available():
         try:
-            memory = pg_storage.add_memory(category, item, DEFAULT_MEMORY)
+            memory = pg_storage.add_memory(
+                category,
+                item,
+                DEFAULT_MEMORY,
+                storage_caps=MEMORY_STORAGE_CAPS,
+                caps_disabled=_memory_caps_disabled(),
+            )
             _set_redis_memory_fallback(memory)
             _remember_memory_cache(memory, source="postgres")
             return memory
@@ -4958,10 +5013,12 @@ def add_memory(category: str, text: str) -> dict:
         memory = cached or {k: list(v) for k, v in DEFAULT_MEMORY.items()}
         if item not in memory[category]:
             memory[category].append(item)
+        memory[category] = _apply_storage_cap(category, memory.get(category, []), _append_memory_log)
         _remember_memory_cache(memory, source="sheets")
         return memory
     if item and item not in memory[category]:
         memory[category].append(item)
+    memory[category] = _apply_storage_cap(category, memory.get(category, []), _append_memory_log)
     set_memory(memory)
     return memory
 
@@ -4972,9 +5029,46 @@ def _append_memory_json(category: str, payload: dict, limit: int = 80) -> dict:
     bucket = memory.get(category, [])
     if encoded not in bucket:
         bucket.append(encoded)
-    memory[category] = bucket[-limit:]
+    archive_fn = _append_postgres_memory_log if _postgres_available() else _append_memory_log
+    memory[category] = _apply_storage_cap(
+        category,
+        bucket,
+        archive_fn,
+        cap=limit,
+        source="cap_overflow",
+        respect_kill_switch=False,
+    )
     set_memory(memory)
     return payload
+
+
+def remove_memory_entries(category: str, entries: list[str], source: str = "consolidation_prune") -> int:
+    category = _normalise_memory_category(category)
+    targets = [str(item).strip() for item in entries if str(item).strip()]
+    if not targets:
+        return 0
+    if _postgres_available():
+        removed = pg_storage.remove_memory_entries(category, targets, DEFAULT_MEMORY, source=source)
+        memory, _initialized = pg_storage.load_memory(DEFAULT_MEMORY)
+        _set_redis_memory_fallback(memory)
+        _remember_memory_cache(memory, source="postgres")
+        return removed
+    memory = get_memory()
+    bucket = list(memory.get(category, []))
+    removed_items = []
+    for target in targets:
+        try:
+            index = bucket.index(target)
+        except ValueError:
+            continue
+        removed_items.append(bucket.pop(index))
+    if not removed_items:
+        return 0
+    for item in removed_items:
+        _append_memory_log(category, item, source=source)
+    memory[category] = bucket
+    set_memory(memory)
+    return len(removed_items)
 
 
 def add_correction(entry: dict) -> dict:

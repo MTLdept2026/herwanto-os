@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import io
 import asyncio
+import contextlib
 import contextvars
 import gc
 import json
@@ -13,7 +14,8 @@ import re
 import resource
 import tempfile
 import threading
-from collections import OrderedDict, defaultdict
+import time
+from collections import OrderedDict, defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, time as dt_time, date
 from difflib import SequenceMatcher
@@ -582,6 +584,61 @@ def _quality_signals_enabled() -> bool:
     return _env_flag("HIRA_QUALITY_SIGNALS", False)
 
 
+_LATENCY_RECENT = deque(maxlen=200)
+
+
+@contextlib.contextmanager
+def _measure_latency(route: str, **fields):
+    started = time.perf_counter()
+    marks = {}
+    try:
+        yield marks
+    finally:
+        total_ms = round((time.perf_counter() - started) * 1000)
+        entry = {
+            "route": str(route or "").strip()[:80],
+            "t_total_ms": total_ms,
+            **marks,
+            **fields,
+            "ts": datetime.now(SGT).isoformat(),
+        }
+        _LATENCY_RECENT.append(entry)
+        logger.info("HIRA_LATENCY %s", json.dumps(entry, ensure_ascii=False))
+
+
+def _latency_percentile_ms(values: list[int], percentile: int) -> int | None:
+    if not values:
+        return None
+    ordered = sorted(int(value) for value in values)
+    index = max(0, min(len(ordered) - 1, ((len(ordered) * percentile + 99) // 100) - 1))
+    return ordered[index]
+
+
+def _latency_summary() -> dict:
+    routes: dict[str, list[int]] = defaultdict(list)
+    for item in list(_LATENCY_RECENT):
+        if not isinstance(item, dict):
+            continue
+        route = str(item.get("route", "") or "").strip()
+        if not route:
+            continue
+        try:
+            routes[route].append(int(item.get("t_total_ms", 0) or 0))
+        except Exception:
+            continue
+    return {
+        "count": sum(len(values) for values in routes.values()),
+        "routes": {
+            route: {
+                "count": len(values),
+                "p50_ms": _latency_percentile_ms(values, 50),
+                "p95_ms": _latency_percentile_ms(values, 95),
+            }
+            for route, values in sorted(routes.items())
+        },
+    }
+
+
 def _quality_week_key(current: datetime | None = None) -> str:
     current = current or datetime.now(SGT)
     if getattr(current, "tzinfo", None):
@@ -865,6 +922,7 @@ def build_runtime_status() -> dict:
         "openai_usage": openai_usage_status(),
         "api_usage": api_usage_status(),
         "quality": quality_trend,
+        "latency": _latency_summary(),
         "memory_buckets": memory_counts,
         "memory_error": memory_error,
         "learned_preferences": {
@@ -6371,21 +6429,7 @@ async def _detect_implicit_correction(user_text: str, history: list[dict]) -> No
         ) or "").strip()
         if verdict.upper().startswith("CORRECTION:"):
             correction_text = verdict[len("CORRECTION:"):].strip()
-            now_str = datetime.now(SGT).strftime("%Y-%m-%d %H:%M SGT")
-            gs.add_correction({
-                "date": now_str,
-                "source": "implicit_detection",
-                "correction": correction_text,
-                "assistant_response": prev_assistant[:200],
-                "priority": "medium",
-            })
-            gs.add_self_reflection({
-                "date": now_str,
-                "source": "implicit_detection",
-                "trigger": f"User implicitly corrected: {clean[:200]}",
-                "learned": correction_text,
-                "next_behavior": "Verify this fact type with live tools before stating it as truth.",
-            })
+            await asyncio.to_thread(_record_implicit_correction, user_text, prev_assistant, correction_text)
             logger.info(f"Implicit correction detected and logged: {correction_text[:100]}")
     except Exception as exc:
         logger.debug(f"Implicit correction detection failed: {exc}")
@@ -8468,6 +8512,100 @@ def _calendar_candidate_is_stale(candidate: dict, now: datetime | None = None) -
     return current > start_dt + timedelta(minutes=catchup)
 
 
+def _dispatch_candidate_payload(candidate: dict, current: datetime) -> dict | None:
+    title = str(candidate.get("title", "H.I.R.A")).strip() or "H.I.R.A"
+    body = str(candidate.get("body", "")).strip()
+    if not body:
+        return None
+    kind = str(candidate.get("kind", "update")).strip() or "update"
+    source = str(candidate.get("source", "")).strip()
+    family = str(candidate.get("family", "")).strip()
+    mute_reason = _temporary_notification_mute_reason(source, title, body, now=current)
+    if mute_reason:
+        logger.info(f"Notification suppressed by temporary mute for source={source or family}: {mute_reason}")
+        _record_notification_outcome(
+            "muted_temporary",
+            source=source,
+            kind=kind,
+            title=title,
+        )
+        return None
+    if _notification_is_learned_muted(source or family, kind):
+        logger.info(f"Notification suppressed by learned mute for source={source or family}")
+        return None
+    devotional_block = _devotional_notification_block_reason(source, title, body)
+    if devotional_block:
+        logger.info(f"Notification blocked at dispatch for source={source}: {devotional_block}")
+        _record_notification_outcome(
+            "blocked_devotional",
+            source=source,
+            kind=kind,
+            title=title,
+        )
+        return None
+    block_reason = _calendar_notification_block_reason(source, title, body, now=current)
+    if block_reason:
+        logger.info(f"Calendar notification blocked at dispatch for source={source}: {block_reason}")
+        _record_notification_outcome(
+            "blocked_day_state",
+            source=source,
+            kind=kind,
+            title=title,
+        )
+        return None
+    confidence = str(candidate.get("confidence", "probably_remind")).strip() or "probably_remind"
+    if kind == "reminder" and confidence in {"ignore", "digest_only"}:
+        return None
+    if family == "checkin":
+        telegram_text = f"*{title}*\n\n{body}\n\nReply `yes`, `done`, or `alhamdulillah` once it is done and I’ll stop asking for today."
+    elif family == "followup":
+        followup_id = candidate.get("metadata", {}).get("followup_id", "")
+        telegram_text = f"*{title}*\n\n{body}\n\nUse `/donefollowup {followup_id}` when settled." if followup_id else f"*{title}*\n\n{body}"
+    else:
+        telegram_text = f"*{title}*\n\n{body}"
+    return {
+        "kind": kind,
+        "title": title,
+        "body": body,
+        "source": source,
+        "family": family,
+        "telegram_text": telegram_text,
+    }
+
+
+def _dispatch_candidate_queue(candidate: dict, payload: dict, has_telegram_context: bool, current: datetime) -> bool:
+    kind = payload["kind"]
+    title = payload["title"]
+    body = payload["body"]
+    source = payload["source"]
+    family = payload["family"]
+    queued = _queue_app_notification(kind, title, body, source=source)
+    if not queued:
+        return False
+    push_sent = int(queued.get("_push_sent", 0) or 0)
+    metadata = candidate.get("metadata", {}) if isinstance(candidate.get("metadata", {}), dict) else {}
+    if family == "nudge":
+        if has_telegram_context or push_sent > 0 or queued.get("_already_active"):
+            gs.mark_nudge_sent(metadata.get("nudge_id", ""))
+        else:
+            logger.warning("Nudge %s kept pending until phone push is confirmed", metadata.get("nudge_id", ""))
+    elif family == "checkin":
+        gs.mark_checkin_prompted(
+            metadata.get("checkin_id", ""),
+            metadata.get("due_slot", ""),
+            datetime.now(SGT),
+        )
+    elif family == "followup":
+        gs.mark_followup_prompted(metadata.get("followup_id", ""), datetime.now(SGT).strftime("%Y-%m-%d"))
+    elif family == "intelligence":
+        _mark_proactive_seen(metadata.get("insight_id", ""), datetime.now(SGT))
+    elif family == "carryover":
+        mark_conversation_carryover_prompted(metadata.get("carryover_id", ""), now=current, via="proactive")
+    elif family in {"calendar_reminder", "task"} and push_sent > 0:
+        _mark_action_reminder_delivered(source, datetime.now(SGT))
+    return True
+
+
 async def _dispatch_proactive_candidates(context, candidates: list[dict], limit: int = 3) -> int:
     sent_count = 0
     current = datetime.now(SGT)
@@ -8478,81 +8616,14 @@ async def _dispatch_proactive_candidates(context, candidates: list[dict], limit:
             continue
         if sent_count >= max(1, int(limit or 3)):
             break
-        title = str(candidate.get("title", "H.I.R.A")).strip() or "H.I.R.A"
-        body = str(candidate.get("body", "")).strip()
-        if not body:
+        payload = await asyncio.to_thread(_dispatch_candidate_payload, candidate, current)
+        if not payload:
             continue
-        kind = str(candidate.get("kind", "update")).strip() or "update"
-        source = str(candidate.get("source", "")).strip()
-        family = str(candidate.get("family", "")).strip()
-        mute_reason = _temporary_notification_mute_reason(source, title, body, now=current)
-        if mute_reason:
-            logger.info(f"Notification suppressed by temporary mute for source={source or family}: {mute_reason}")
-            _record_notification_outcome(
-                "muted_temporary",
-                source=source,
-                kind=kind,
-                title=title,
-            )
-            continue
-        if _notification_is_learned_muted(source or family, kind):
-            logger.info(f"Notification suppressed by learned mute for source={source or family}")
-            continue
-        devotional_block = _devotional_notification_block_reason(source, title, body)
-        if devotional_block:
-            logger.info(f"Notification blocked at dispatch for source={source}: {devotional_block}")
-            _record_notification_outcome(
-                "blocked_devotional",
-                source=source,
-                kind=kind,
-                title=title,
-            )
-            continue
-        block_reason = _calendar_notification_block_reason(source, title, body, now=current)
-        if block_reason:
-            logger.info(f"Calendar notification blocked at dispatch for source={source}: {block_reason}")
-            _record_notification_outcome(
-                "blocked_day_state",
-                source=source,
-                kind=kind,
-                title=title,
-            )
-            continue
-        confidence = str(candidate.get("confidence", "probably_remind")).strip() or "probably_remind"
-        if kind == "reminder" and confidence in {"ignore", "digest_only"}:
-            continue
-        if family == "checkin":
-            telegram_text = f"*{title}*\n\n{body}\n\nReply `yes`, `done`, or `alhamdulillah` once it is done and I’ll stop asking for today."
-        elif family == "followup":
-            followup_id = candidate.get("metadata", {}).get("followup_id", "")
-            telegram_text = f"*{title}*\n\n{body}\n\nUse `/donefollowup {followup_id}` when settled." if followup_id else f"*{title}*\n\n{body}"
-        else:
-            telegram_text = f"*{title}*\n\n{body}"
         if context is not None:
-            await _send_telegram_notification(context, telegram_text)
-        queued = _queue_app_notification(kind, title, body, source=source)
+            await _send_telegram_notification(context, payload["telegram_text"])
+        queued = await asyncio.to_thread(_dispatch_candidate_queue, candidate, payload, context is not None, current)
         if not queued:
             continue
-        push_sent = int(queued.get("_push_sent", 0) or 0)
-        if family == "nudge":
-            if context is not None or push_sent > 0 or queued.get("_already_active"):
-                gs.mark_nudge_sent(candidate.get("metadata", {}).get("nudge_id", ""))
-            else:
-                logger.warning("Nudge %s kept pending until phone push is confirmed", candidate.get("metadata", {}).get("nudge_id", ""))
-        elif family == "checkin":
-            gs.mark_checkin_prompted(
-                candidate.get("metadata", {}).get("checkin_id", ""),
-                candidate.get("metadata", {}).get("due_slot", ""),
-                datetime.now(SGT),
-            )
-        elif family == "followup":
-            gs.mark_followup_prompted(candidate.get("metadata", {}).get("followup_id", ""), datetime.now(SGT).strftime("%Y-%m-%d"))
-        elif family == "intelligence":
-            _mark_proactive_seen(candidate.get("metadata", {}).get("insight_id", ""), datetime.now(SGT))
-        elif family == "carryover":
-            mark_conversation_carryover_prompted(candidate.get("metadata", {}).get("carryover_id", ""), now=current, via="proactive")
-        elif family in {"calendar_reminder", "task"} and push_sent > 0:
-            _mark_action_reminder_delivered(source, datetime.now(SGT))
         sent_count += 1
     return sent_count
 
@@ -14470,10 +14541,22 @@ def _format_project_line(p: dict, include_updated: bool = True) -> str:
     updated = f" _(updated {p['last_update']})_" if include_updated and p.get("last_update") else ""
     return f"- *{p.get('project', '')}* - {p.get('status', '')}.{detail_text}{updated}"
 
-# ─── COMMANDS ────────────────────────────────────────────────────────────────
 
-async def start(update, context):
-    chat_id = str(update.effective_chat.id)
+def _text_payload(text: str, parse_mode: str | None = None, via: str = "message") -> dict:
+    return {"text": text, "parse_mode": parse_mode, "via": via}
+
+
+async def _send_text_payload(update, payload: dict) -> None:
+    kwargs = {}
+    if payload.get("parse_mode") is not None:
+        kwargs["parse_mode"] = payload.get("parse_mode")
+    if payload.get("via") == "reply":
+        await reply(update, payload.get("text", ""), **kwargs)
+    else:
+        await update.message.reply_text(payload.get("text", ""), **kwargs)
+
+
+def _start_payload(chat_id: str) -> dict:
     if google_ok():
         try:
             gs.set_config("chat_id", chat_id)
@@ -14482,7 +14565,7 @@ async def start(update, context):
     redis_status = "Redis connected" if _get_redis() else "Redis not connected (in-memory only)"
     search_status = "Web search enabled" if ss.search_enabled() else "Web search disabled by HIRA_DISABLE_WEB_SEARCH"
     g = "Google connected" if google_ok() else "Google not connected"
-    await reply(update,
+    return _text_payload(
         f"Assalamualaikum Herwanto\n\n"
         f"{g}\n{redis_status}\n{search_status}\n\n"
         f"*School timetable*\n/lessons /setweek odd|even\n\n"
@@ -14502,7 +14585,475 @@ async def start(update, context):
         f"*News*\n/news [topic] /watch /watchlist /unwatch\n\n"
         f"*Briefing*\n/briefing (auto 7am SGT)\n\n"
         f"/clear - reset AI chat\nOr just talk to me.",
-        parse_mode="Markdown")
+        parse_mode="Markdown",
+        via="reply",
+    )
+
+
+def _today_payload(today) -> dict:
+    day_str = today.strftime("%A, %-d %B %Y")
+    lines = [f"*{day_str}*\n"]
+    lessons, wt_label = _lessons_for_date(today)
+    if wt_label:
+        lines.append(f"*Lessons ({_week_display(wt_label, today)}):*")
+        lines.append(tt.format_lessons(lessons))
+    else:
+        lines.append("_Timetable: use /setweek to activate_")
+    lines.append("")
+    if google_ok():
+        try:
+            events = gs.get_today_events()
+            formatted = gs.format_events(events)
+            if "Nothing" not in formatted:
+                lines.append("*Calendar:*")
+                lines.append(formatted)
+        except Exception as e:
+            lines.append(f"_(Calendar error: {e})_")
+    return _text_payload("\n".join(lines), parse_mode="Markdown", via="reply")
+
+
+def _tomorrow_payload(tomorrow) -> dict:
+    day_str = tomorrow.strftime("%A, %-d %B %Y")
+    lines = [f"*{day_str}*\n"]
+    lessons, wt_label = _lessons_for_date(tomorrow)
+    if wt_label:
+        lines.append(f"*Lessons ({_week_display(wt_label, tomorrow)}):*")
+        lines.append(tt.format_lessons(lessons))
+    else:
+        lines.append("_Timetable: use /setweek to activate_")
+    lines.append("")
+    if google_ok():
+        try:
+            events = gs.get_tomorrow_events()
+            formatted = gs.format_events(events)
+            if "Nothing" not in formatted:
+                lines.append("*Calendar:*")
+                lines.append(formatted)
+        except Exception as e:
+            lines.append(f"_(Calendar error: {e})_")
+    return _text_payload("\n".join(lines), parse_mode="Markdown", via="reply")
+
+
+def _week_payload() -> dict:
+    try:
+        events = gs.get_week_events()
+        return _text_payload(f"*Next 7 days*\n\n{gs.format_events(events, show_date=True)}", parse_mode="Markdown", via="reply")
+    except Exception as e:
+        return _text_payload(f"Calendar error: {e}")
+
+
+def _due_payload() -> dict:
+    try:
+        reminders = gs.get_reminders()
+        if not reminders:
+            return _text_payload("Nothing due. All clear.")
+        lines = ["*All reminders*\n"]
+        for r in sorted(reminders, key=lambda x: x["due"]):
+            lines.append(f"`[{r['id']}]` *{r['due']}* - {r['description']} _{r['category']}_")
+        lines.append("\n/done <id> to mark complete")
+        return _text_payload("\n".join(lines), parse_mode="Markdown", via="reply")
+    except Exception as e:
+        return _text_payload(f"Error: {e}")
+
+
+def _remind_payload(parts: list[str]) -> dict:
+    try:
+        category = parts[2] if len(parts) > 2 else "General"
+        blocked = _reminder_add_block_reason(parts[0], parts[1], category)
+        if blocked:
+            return _text_payload(blocked)
+        rid = gs.add_reminder(parts[0], parts[1], category)
+        return _text_payload(f"Reminder #{rid} added: {parts[0]} by {parts[1]}")
+    except Exception as e:
+        return _text_payload(f"Error: {e}")
+
+
+def _nudges_payload() -> dict:
+    try:
+        nudges = sorted(gs.get_nudges(), key=lambda n: n["send_at"])
+        if not nudges:
+            return _text_payload("No pending nudges.")
+        lines = ["*Pending nudges*\n"]
+        for nudge in nudges:
+            lines.append(_format_nudge(nudge))
+        lines.append("\n/cancelnudge <id> to cancel")
+        return _text_payload("\n".join(lines), parse_mode="Markdown", via="reply")
+    except Exception as e:
+        return _text_payload(f"Nudges error: {e}")
+
+
+def _cancelnudge_payload(nudge_id: str) -> dict:
+    try:
+        ok, _archived = gs.cancel_nudge_and_archive(nudge_id)
+        return _text_payload(f"Nudge #{nudge_id} cancelled." if ok else f"Nudge #{nudge_id} not found.")
+    except Exception as e:
+        return _text_payload(f"Nudges error: {e}")
+
+
+def _checkin_payload(parts: list[str]) -> dict:
+    try:
+        timing = parts[1].strip().lower()
+        if timing in ("break", "breaks", "smart", "schedule", "schedule-aware", "calendar"):
+            checkin = gs.add_checkin(parts[0], parts[2], [], schedule_aware=True)
+        else:
+            times = _parse_checkin_times(parts[1])
+            checkin = gs.add_checkin(parts[0], parts[2], times)
+        return _text_payload(f"Daily check-in added:\n{_format_checkin(checkin)}", parse_mode="Markdown", via="reply")
+    except Exception as e:
+        return _text_payload(f"Check-in error: {e}")
+
+
+def _checkins_payload() -> dict:
+    try:
+        checkins = gs.get_checkins()
+        if not checkins:
+            return _text_payload("No active daily check-ins.")
+        lines = ["*Daily check-ins*\n"]
+        for checkin in checkins:
+            lines.append(_format_checkin(checkin))
+            lines.append("")
+        lines.append("/cancelcheckin <id> to stop one")
+        return _text_payload("\n".join(lines), parse_mode="Markdown", via="reply")
+    except Exception as e:
+        return _text_payload(f"Check-in error: {e}")
+
+
+def _cancelcheckin_payload(checkin_id: str) -> dict:
+    try:
+        ok = gs.cancel_checkin(checkin_id)
+        return _text_payload(f"Check-in #{checkin_id} cancelled." if ok else f"Check-in #{checkin_id} not found.")
+    except Exception as e:
+        return _text_payload(f"Check-in error: {e}")
+
+
+def _projects_payload() -> dict:
+    try:
+        projs = gs.get_projects()
+        if not projs:
+            return _text_payload("No projects. Use /update to add one.")
+        lines = ["*Projects*\n"]
+        for p in projs:
+            lines.append(f"*{p['project']}* - {p['status']}")
+            if p["next_milestone"]:
+                lines.append(f"  Next: {p['next_milestone']} ({p['milestone_date']})")
+            if p["notes"]:
+                lines.append(f"  {p['notes']}")
+            lines.append(f"  _{p['last_update']}_\n")
+        return _text_payload("\n".join(lines), parse_mode="Markdown", via="reply")
+    except Exception as e:
+        return _text_payload(f"Error: {e}")
+
+
+def _update_payload(parts: list[str]) -> dict:
+    try:
+        gs.update_project(
+            parts[0],
+            parts[1],
+            parts[2] if len(parts) > 2 else "",
+            parts[3] if len(parts) > 3 else "",
+            parts[4] if len(parts) > 4 else "",
+        )
+        return _text_payload(f"{parts[0]} updated.")
+    except Exception as e:
+        return _text_payload(f"Error: {e}")
+
+
+def _templates_payload() -> dict:
+    try:
+        templates = gs.get_memory().get("templates", [])
+        if not templates:
+            return _text_payload("No artifact templates remembered yet.")
+        lines = ["*Artifact templates*\n"]
+        for item in templates:
+            lines.append(f"- {item}")
+        return _text_payload("\n".join(lines), parse_mode="Markdown", via="reply")
+    except Exception as e:
+        return _text_payload(f"Template memory error: {e}")
+
+
+def _classlists_payload(query: str) -> dict:
+    try:
+        return _text_payload(gs.format_mtl_classlists(class_query=query), via="reply")
+    except Exception as e:
+        return _text_payload(f"Classlist lookup failed: {e}", via="reply")
+
+
+def _marking_add_payload(parts: list[str]) -> dict:
+    try:
+        total_scripts = int(parts[1]) if len(parts) > 1 and parts[1] else 0
+        collected_date = parts[2] if len(parts) > 2 else ""
+        notes = parts[3] if len(parts) > 3 else ""
+        task = gs.add_marking_task(parts[0], total_scripts=total_scripts, collected_date=collected_date, notes=notes)
+        return _text_payload(f"Added to your marking tracker. {_format_marking_task(task)}", parse_mode="Markdown", via="reply")
+    except Exception as e:
+        return _text_payload(f"Marking task error: {e}")
+
+
+def _marked_payload(parts: list[str]) -> dict:
+    try:
+        task, score = _find_best_marking_task(parts[0])
+        if not task or score < 0.35:
+            return _text_payload("I could not confidently match that to an active marking stack.")
+        value = parts[1].lower()
+        done = value in ("done", "complete", "completed", "settled")
+        marked_count = None if done else int(parts[1])
+        updated = gs.update_marking_progress(task["id"], marked_count=marked_count, done=done)
+        return _text_payload(f"Updated. {_format_marking_task(updated)}", parse_mode="Markdown", via="reply")
+    except Exception as e:
+        return _text_payload(f"Marking update error: {e}")
+
+
+def _taskmeta_payload(parts: list[str]) -> dict:
+    try:
+        meta = gs.update_task_metadata(
+            parts[0],
+            priority=parts[1] if len(parts) > 1 else "",
+            effort=parts[2] if len(parts) > 2 else "",
+            next_action=parts[3] if len(parts) > 3 else "",
+        )
+        return _text_payload(f"Task #{parts[0]} updated: {meta}")
+    except Exception as e:
+        return _text_payload(f"Task metadata error: {e}")
+
+
+def _followup_payload(parts: list[str]) -> dict:
+    try:
+        followup = gs.add_followup(
+            parts[0],
+            parts[1],
+            parts[2],
+            parts[3] if len(parts) > 3 else "",
+            parts[4] if len(parts) > 4 else "",
+        )
+        return _text_payload(f"Follow-up added:\n{_format_followup(followup)}", parse_mode="Markdown", via="reply")
+    except Exception as e:
+        return _text_payload(f"Follow-up error: {e}")
+
+
+def _followups_payload() -> dict:
+    try:
+        followups = gs.get_followups()
+        if not followups:
+            return _text_payload("No open follow-ups.")
+        lines = ["*Follow-ups*\n"]
+        for followup in sorted(followups, key=lambda f: f["due_date"]):
+            lines.append(_format_followup(followup))
+        return _text_payload("\n".join(lines), parse_mode="Markdown", via="reply")
+    except Exception as e:
+        return _text_payload(f"Follow-up error: {e}")
+
+
+def _donefollowup_payload(query: str) -> dict:
+    try:
+        if query.isdigit():
+            ok = gs.complete_followup(query)
+            return _text_payload(f"Follow-up #{query} done." if ok else f"Follow-up #{query} not found.")
+        followup, score = _find_best_followup(query)
+        if not followup or score < 0.35:
+            return _text_payload("I could not confidently match that to an open follow-up.")
+        gs.complete_followup(followup["id"])
+        return _text_payload(f"Follow-up done: {followup['topic']}")
+    except Exception as e:
+        return _text_payload(f"Could not mark follow-up done: {e}")
+
+
+def _gmail_payload(account: str, query: str) -> dict:
+    try:
+        if not gs.gmail_ok(account):
+            return _text_payload(f"{gs.gmail_label(account).title()} not connected.")
+        messages = gs.list_gmail_messages(query=query, max_results=10, account=account)
+        if account == "work":
+            record_work_gmail_success("telegram_gmail", messages_scanned=len(messages))
+        if not messages:
+            detail = f" for `{query}`" if query else ""
+            return _text_payload(f"No {gs.gmail_label(account)} messages found{detail}.", parse_mode="Markdown", via="reply")
+        title = query if query else "latest messages"
+        lines = [f"*{gs.gmail_label(account).title()}: {title}*\n"]
+        for msg in messages:
+            lines.append(f"- *{msg['subject']}*")
+            lines.append(f"  From: {msg['from']}")
+            lines.append(f"  {msg['snippet']}")
+        return _text_payload("\n".join(lines), parse_mode="Markdown", via="reply")
+    except Exception as e:
+        return _text_payload(f"Gmail error: {e}")
+
+
+def _gmaildraft_payload(account: str, parts: list[str]) -> dict:
+    try:
+        if not gs.gmail_ok(account):
+            return _text_payload(f"{gs.gmail_label(account).title()} not connected.")
+        draft = gs.create_gmail_draft(parts[0], parts[1], parts[2], parts[3] if len(parts) > 3 else "", account=account)
+        if account == "work":
+            record_work_gmail_success("telegram_gmail_draft")
+        return _text_payload(f"{gs.gmail_label(account).title()} draft created: {draft.get('id', '')}")
+    except Exception as e:
+        return _text_payload(f"Gmail draft error: {e}")
+
+
+def _memory_payload() -> dict:
+    if not google_ok():
+        return _text_payload("Google not connected.")
+    try:
+        return _text_payload(f"*Assistant memory*\n\n{_format_memory(gs.get_memory())}", parse_mode="Markdown", via="reply")
+    except Exception as e:
+        return _text_payload(f"Memory error: {e}")
+
+
+def _memcheck_payload() -> dict:
+    if not memory_ok():
+        return _text_payload("Assistant memory storage is not connected.")
+    try:
+        memory = gs.get_memory()
+    except Exception as e:
+        return _text_payload(
+            f"Failed to read assistant memory: {e}\n\n"
+            "This means /remember writes are also failing until storage recovers."
+        )
+    status = gs.memory_storage_status()
+    source_label = {
+        "postgres": "Postgres -> assistant_memory",
+        "sheets": "Google Sheet -> Config tab -> assistant_memory",
+        "sheets_fallback": "Sheets fallback while Postgres is unavailable",
+        "redis_fallback": "Redis fallback",
+    }.get(str(status.get("source", "")), str(status.get("source", "unknown")))
+    total_stored = sum(len(memory.get(cat, [])) for cat in MEMORY_DISPLAY_CATEGORIES)
+    total_in_prompt = 0
+    lines = [
+        "Memory diagnostic",
+        f"Source of truth: {source_label}.",
+        f"Total items stored: {total_stored}",
+        "",
+        "Per-category: stored / shown to active model / limit",
+    ]
+    hidden_categories: list[str] = []
+    for category in MEMORY_DISPLAY_CATEGORIES:
+        items = memory.get(category, []) or []
+        stored = len(items)
+        limit = MEMORY_PROMPT_LIMITS.get(category, 8)
+        shown = stored if limit is None else min(stored, limit)
+        total_in_prompt += shown
+        limit_label = "all" if limit is None else str(limit)
+        marker = ""
+        if stored > 0 and shown < stored:
+            marker = f"  WARNING: {stored - shown} hidden from prompt"
+            hidden_categories.append(category)
+        if stored == 0:
+            continue
+        lines.append(f"- {category}: {stored} / {shown} / {limit_label}{marker}")
+    lines.append("")
+    lines.append(f"Total shown to active model per chat: {total_in_prompt} of {total_stored}.")
+    if hidden_categories:
+        lines.append(
+            "\nSome categories have items the prompt does not include. They are still "
+            "retrievable on-demand via the relevance retriever when your message overlaps "
+            f"keywords. Hidden: {', '.join(hidden_categories)}."
+        )
+    else:
+        lines.append("\nEvery stored memory currently fits in the active model's prompt window.")
+    lines.append(
+        "\nTo verify a fresh /remember landed: run /remember <a fact>, then /memcheck. "
+        "The count for the matched category should go up by 1."
+    )
+    return _text_payload("\n".join(lines))
+
+
+def _search_payload(query: str) -> dict:
+    if not ss.search_enabled():
+        return _text_payload("Web search is disabled by HIRA_DISABLE_WEB_SEARCH.")
+    results = ss.web_search(query, max_results=5)
+    if not results:
+        return _text_payload("No results found.")
+    lines = [f"*Search: {query}*\n"]
+    for r in results:
+        lines.append(f"*{r['title']}*")
+        lines.append(f"{r['description'][:150]}")
+        lines.append(f"_{r['url']}_\n")
+    return _text_payload("\n".join(lines), parse_mode="Markdown", via="reply")
+
+
+def _weather_payload(area: str, include_4day: bool) -> dict:
+    try:
+        return _text_payload(ws.build_weather_brief(area, include_24h=True, include_4day=include_4day), parse_mode="Markdown", via="reply")
+    except Exception as e:
+        return _text_payload(f"Weather error: {e}")
+
+
+def _watch_payload(label: str, query: str) -> dict:
+    try:
+        gs.add_news_topic(label, query)
+        return _text_payload(f"Added to news shortlist: {label}")
+    except Exception as e:
+        return _text_payload(f"Watchlist error: {e}")
+
+
+def _watchlist_payload() -> dict:
+    try:
+        topics = gs.get_news_topics()
+        lines = ["*News shortlist*\n"]
+        for topic in topics:
+            lines.append(f"- *{topic['label']}* — `{topic['query']}`")
+        return _text_payload("\n".join(lines), parse_mode="Markdown", via="reply")
+    except Exception as e:
+        return _text_payload(f"Watchlist error: {e}")
+
+
+def _unwatch_payload(label: str) -> dict:
+    try:
+        before = len(gs.get_news_topics())
+        topics = gs.remove_news_topic(label)
+        after = len(topics)
+        msg = f"Removed from news shortlist: {label}" if after < before else f"Not found: {label}"
+        return _text_payload(msg)
+    except Exception as e:
+        return _text_payload(f"Watchlist error: {e}")
+
+
+def _addcal_payload(user_text: str, today_str: str) -> dict:
+    parse_prompt = f"""Today is {today_str} (Singapore time).
+Extract calendar event details from this text and return ONLY valid JSON, nothing else.
+Text: "{user_text}"
+
+Return exactly:
+{{"title":"event title","date":"YYYY-MM-DD","start_time":"HH:MM","end_time":"HH:MM","location":"location or empty","description":"notes or empty"}}
+
+Rules: the current year is 2026 — ALWAYS use 2026 if no year is mentioned, 24hr time, add 1hr if no end time specified. Return ONLY the JSON."""
+    try:
+        raw = _llm_text(
+            model=STRUCTURED_MODEL,
+            max_tokens=200,
+            messages=[{"role": "user", "content": parse_prompt}],
+        )
+        raw = raw.strip()
+        raw = raw.replace("```json", "").replace("```", "").strip()
+        start = min((raw.find(c) for c in ["{", "["] if c in raw), default=0)
+        raw = raw[start:]
+        event_data = json.loads(raw)
+        if isinstance(event_data, list):
+            event_data = event_data[0]
+        start_dt = SGT.localize(datetime.strptime(f"{event_data['date']} {event_data['start_time']}", "%Y-%m-%d %H:%M"))
+        end_dt = SGT.localize(datetime.strptime(f"{event_data['date']} {event_data['end_time']}", "%Y-%m-%d %H:%M"))
+        gs.create_event(
+            event_data["title"],
+            start_dt,
+            end_dt,
+            event_data.get("location", ""),
+            event_data.get("description", ""),
+        )
+        loc = f"\n📍 {event_data['location']}" if event_data.get("location") else ""
+        return _text_payload(
+            f"Added to calendar:\n\n*{event_data['title']}*\n"
+            f"📅 {event_data['date']}\n🕐 {event_data['start_time']} – {event_data['end_time']}{loc}",
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        logger.error(f"addcal error: {e}")
+        return _text_payload(f"Could not create event: {e}")
+
+# ─── COMMANDS ────────────────────────────────────────────────────────────────
+
+async def start(update, context):
+    chat_id = str(update.effective_chat.id)
+    await _send_text_payload(update, await asyncio.to_thread(_start_payload, chat_id))
 
 async def lessons_cmd(update, context):
     today = datetime.now(SGT).date()
@@ -14534,74 +15085,23 @@ async def setweek_cmd(update, context):
 
 async def today_cmd(update, context):
     today = datetime.now(SGT).date()
-    day_str = datetime.now(SGT).strftime("%A, %-d %B %Y")
-    lines = [f"*{day_str}*\n"]
-    lessons, wt_label = _lessons_for_date(today)
-    if wt_label:
-        lines.append(f"*Lessons ({_week_display(wt_label, today)}):*")
-        lines.append(tt.format_lessons(lessons))
-    else:
-        lines.append("_Timetable: use /setweek to activate_")
-    lines.append("")
-    if google_ok():
-        try:
-            events = gs.get_today_events()
-            formatted = gs.format_events(events)
-            if "Nothing" not in formatted:
-                lines.append("*Calendar:*")
-                lines.append(formatted)
-        except Exception as e:
-            lines.append(f"_(Calendar error: {e})_")
-    await reply(update, "\n".join(lines), parse_mode="Markdown")
+    await _send_text_payload(update, await asyncio.to_thread(_today_payload, today))
 
 async def tomorrow_cmd(update, context):
     tomorrow = datetime.now(SGT).date() + timedelta(days=1)
-    day_str = (datetime.now(SGT) + timedelta(days=1)).strftime("%A, %-d %B %Y")
-    lines = [f"*{day_str}*\n"]
-    lessons, wt_label = _lessons_for_date(tomorrow)
-    if wt_label:
-        lines.append(f"*Lessons ({_week_display(wt_label, tomorrow)}):*")
-        lines.append(tt.format_lessons(lessons))
-    else:
-        lines.append("_Timetable: use /setweek to activate_")
-    lines.append("")
-    if google_ok():
-        try:
-            events = gs.get_tomorrow_events()
-            formatted = gs.format_events(events)
-            if "Nothing" not in formatted:
-                lines.append("*Calendar:*")
-                lines.append(formatted)
-        except Exception as e:
-            lines.append(f"_(Calendar error: {e})_")
-    await reply(update, "\n".join(lines), parse_mode="Markdown")
+    await _send_text_payload(update, await asyncio.to_thread(_tomorrow_payload, tomorrow))
 
 async def week_cmd(update, context):
     if not google_ok():
         await update.message.reply_text("Google not connected.")
         return
-    try:
-        events = gs.get_week_events()
-        await reply(update, f"*Next 7 days*\n\n{gs.format_events(events, show_date=True)}", parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"Calendar error: {e}")
+    await _send_text_payload(update, await asyncio.to_thread(_week_payload))
 
 async def due_cmd(update, context):
     if not google_ok():
         await update.message.reply_text("Google not connected.")
         return
-    try:
-        reminders = gs.get_reminders()
-        if not reminders:
-            await update.message.reply_text("Nothing due. All clear.")
-            return
-        lines = ["*All reminders*\n"]
-        for r in sorted(reminders, key=lambda x: x["due"]):
-            lines.append(f"`[{r['id']}]` *{r['due']}* - {r['description']} _{r['category']}_")
-        lines.append("\n/done <id> to mark complete")
-        await reply(update, "\n".join(lines), parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"Error: {e}")
+    await _send_text_payload(update, await asyncio.to_thread(_due_payload))
 
 async def remind_cmd(update, context):
     if not google_ok():
@@ -14612,16 +15112,7 @@ async def remind_cmd(update, context):
     if len(parts) < 2:
         await reply(update, "Usage: `/remind Description | YYYY-MM-DD | Category`", parse_mode="Markdown")
         return
-    try:
-        category = parts[2] if len(parts) > 2 else "General"
-        blocked = _reminder_add_block_reason(parts[0], parts[1], category)
-        if blocked:
-            await update.message.reply_text(blocked)
-            return
-        rid = gs.add_reminder(parts[0], parts[1], category)
-        await update.message.reply_text(f"Reminder #{rid} added: {parts[0]} by {parts[1]}")
-    except Exception as e:
-        await update.message.reply_text(f"Error: {e}")
+    await _send_text_payload(update, await asyncio.to_thread(_remind_payload, parts))
 
 async def done_cmd(update, context):
     if not google_ok():
@@ -14685,18 +15176,7 @@ async def nudges_cmd(update, context):
     if not google_ok():
         await update.message.reply_text("Google not connected.")
         return
-    try:
-        nudges = sorted(gs.get_nudges(), key=lambda n: n["send_at"])
-        if not nudges:
-            await update.message.reply_text("No pending nudges.")
-            return
-        lines = ["*Pending nudges*\n"]
-        for nudge in nudges:
-            lines.append(_format_nudge(nudge))
-        lines.append("\n/cancelnudge <id> to cancel")
-        await reply(update, "\n".join(lines), parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"Nudges error: {e}")
+    await _send_text_payload(update, await asyncio.to_thread(_nudges_payload))
 
 async def cancelnudge_cmd(update, context):
     if not google_ok():
@@ -14705,12 +15185,7 @@ async def cancelnudge_cmd(update, context):
     if not context.args:
         await update.message.reply_text("Usage: /cancelnudge <id>")
         return
-    try:
-        nudge_id = context.args[0]
-        ok, _archived = gs.cancel_nudge_and_archive(nudge_id)
-        await update.message.reply_text(f"Nudge #{nudge_id} cancelled." if ok else f"Nudge #{nudge_id} not found.")
-    except Exception as e:
-        await update.message.reply_text(f"Nudges error: {e}")
+    await _send_text_payload(update, await asyncio.to_thread(_cancelnudge_payload, context.args[0]))
 
 async def checkin_cmd(update, context):
     if not google_ok():
@@ -14724,38 +15199,17 @@ async def checkin_cmd(update, context):
             "Example: `/checkin Istigfar & Salawat | breaks | Have you done your istigfar and salawat today?`",
             parse_mode="Markdown")
         return
-    try:
-        parts = [p.strip() for p in text.split("|")]
-        if len(parts) < 3:
-            await update.message.reply_text("I need a name, time(s), and question.")
-            return
-        timing = parts[1].strip().lower()
-        if timing in ("break", "breaks", "smart", "schedule", "schedule-aware", "calendar"):
-            checkin = gs.add_checkin(parts[0], parts[2], [], schedule_aware=True)
-        else:
-            times = _parse_checkin_times(parts[1])
-            checkin = gs.add_checkin(parts[0], parts[2], times)
-        await reply(update, f"Daily check-in added:\n{_format_checkin(checkin)}", parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"Check-in error: {e}")
+    parts = [p.strip() for p in text.split("|")]
+    if len(parts) < 3:
+        await update.message.reply_text("I need a name, time(s), and question.")
+        return
+    await _send_text_payload(update, await asyncio.to_thread(_checkin_payload, parts))
 
 async def checkins_cmd(update, context):
     if not google_ok():
         await update.message.reply_text("Google not connected.")
         return
-    try:
-        checkins = gs.get_checkins()
-        if not checkins:
-            await update.message.reply_text("No active daily check-ins.")
-            return
-        lines = ["*Daily check-ins*\n"]
-        for checkin in checkins:
-            lines.append(_format_checkin(checkin))
-            lines.append("")
-        lines.append("/cancelcheckin <id> to stop one")
-        await reply(update, "\n".join(lines), parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"Check-in error: {e}")
+    await _send_text_payload(update, await asyncio.to_thread(_checkins_payload))
 
 async def cancelcheckin_cmd(update, context):
     if not google_ok():
@@ -14764,33 +15218,13 @@ async def cancelcheckin_cmd(update, context):
     if not context.args:
         await update.message.reply_text("Usage: /cancelcheckin <id>")
         return
-    try:
-        checkin_id = context.args[0]
-        ok = gs.cancel_checkin(checkin_id)
-        await update.message.reply_text(f"Check-in #{checkin_id} cancelled." if ok else f"Check-in #{checkin_id} not found.")
-    except Exception as e:
-        await update.message.reply_text(f"Check-in error: {e}")
+    await _send_text_payload(update, await asyncio.to_thread(_cancelcheckin_payload, context.args[0]))
 
 async def projects_cmd(update, context):
     if not google_ok():
         await update.message.reply_text("Google not connected.")
         return
-    try:
-        projs = gs.get_projects()
-        if not projs:
-            await update.message.reply_text("No projects. Use /update to add one.")
-            return
-        lines = ["*Projects*\n"]
-        for p in projs:
-            lines.append(f"*{p['project']}* - {p['status']}")
-            if p["next_milestone"]:
-                lines.append(f"  Next: {p['next_milestone']} ({p['milestone_date']})")
-            if p["notes"]:
-                lines.append(f"  {p['notes']}")
-            lines.append(f"  _{p['last_update']}_\n")
-        await reply(update, "\n".join(lines), parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"Error: {e}")
+    await _send_text_payload(update, await asyncio.to_thread(_projects_payload))
 
 async def update_cmd(update, context):
     if not google_ok():
@@ -14801,14 +15235,7 @@ async def update_cmd(update, context):
     if len(parts) < 2:
         await reply(update, "Usage: `/update Project | Status | Milestone | Date | Notes`", parse_mode="Markdown")
         return
-    try:
-        gs.update_project(parts[0], parts[1],
-            parts[2] if len(parts) > 2 else "",
-            parts[3] if len(parts) > 3 else "",
-            parts[4] if len(parts) > 4 else "")
-        await update.message.reply_text(f"{parts[0]} updated.")
-    except Exception as e:
-        await update.message.reply_text(f"Error: {e}")
+    await _send_text_payload(update, await asyncio.to_thread(_update_payload, parts))
 
 async def doc_cmd(update, context):
     text = " ".join(context.args).strip()
@@ -14888,17 +15315,7 @@ async def templates_cmd(update, context):
     if not google_ok():
         await update.message.reply_text("Google not connected.")
         return
-    try:
-        templates = gs.get_memory().get("templates", [])
-        if not templates:
-            await update.message.reply_text("No artifact templates remembered yet.")
-            return
-        lines = ["*Artifact templates*\n"]
-        for item in templates:
-            lines.append(f"- {item}")
-        await reply(update, "\n".join(lines), parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"Template memory error: {e}")
+    await _send_text_payload(update, await asyncio.to_thread(_templates_payload))
 
 async def artifacts_cmd(update, context):
     await reply(update, build_artifact_index(), parse_mode="Markdown")
@@ -14908,10 +15325,7 @@ async def files_cmd(update, context):
 
 async def classlists_cmd(update, context):
     query = " ".join(context.args).strip()
-    try:
-        await reply(update, gs.format_mtl_classlists(class_query=query), parse_mode=None)
-    except Exception as e:
-        await reply(update, f"Classlist lookup failed: {e}")
+    await _send_text_payload(update, await asyncio.to_thread(_classlists_payload, query))
 
 async def tasks_cmd(update, context):
     days = 7
@@ -14932,7 +15346,7 @@ async def marking_cmd(update, context):
         return
     text = " ".join(context.args).strip()
     if not text:
-        await reply(update, build_marking_brief(), parse_mode="Markdown")
+        await reply(update, await asyncio.to_thread(build_marking_brief), parse_mode="Markdown")
         return
     parts = [p.strip() for p in text.split("|")]
     title = parts[0]
@@ -14943,14 +15357,7 @@ async def marking_cmd(update, context):
             parse_mode="Markdown",
         )
         return
-    try:
-        total_scripts = int(parts[1]) if len(parts) > 1 and parts[1] else 0
-        collected_date = parts[2] if len(parts) > 2 else ""
-        notes = parts[3] if len(parts) > 3 else ""
-        task = gs.add_marking_task(title, total_scripts=total_scripts, collected_date=collected_date, notes=notes)
-        await reply(update, f"Added to your marking tracker. {_format_marking_task(task)}", parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"Marking task error: {e}")
+    await _send_text_payload(update, await asyncio.to_thread(_marking_add_payload, parts))
 
 async def marked_cmd(update, context):
     if not google_ok():
@@ -14961,18 +15368,7 @@ async def marked_cmd(update, context):
     if len(parts) < 2:
         await reply(update, "Tell me naturally, like: “I’ve marked 12 scripts for Kefahaman 2G3.”", parse_mode="Markdown")
         return
-    try:
-        task, score = _find_best_marking_task(parts[0])
-        if not task or score < 0.35:
-            await update.message.reply_text("I could not confidently match that to an active marking stack.")
-            return
-        value = parts[1].lower()
-        done = value in ("done", "complete", "completed", "settled")
-        marked_count = None if done else int(parts[1])
-        updated = gs.update_marking_progress(task["id"], marked_count=marked_count, done=done)
-        await reply(update, f"Updated. {_format_marking_task(updated)}", parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"Marking update error: {e}")
+    await _send_text_payload(update, await asyncio.to_thread(_marked_payload, parts))
 
 async def taskmeta_cmd(update, context):
     if not google_ok():
@@ -14986,16 +15382,7 @@ async def taskmeta_cmd(update, context):
             "Priority: urgent/high/medium/low. Effort: quick/small/medium/deep.",
             parse_mode="Markdown")
         return
-    try:
-        meta = gs.update_task_metadata(
-            parts[0],
-            priority=parts[1] if len(parts) > 1 else "",
-            effort=parts[2] if len(parts) > 2 else "",
-            next_action=parts[3] if len(parts) > 3 else "",
-        )
-        await update.message.reply_text(f"Task #{parts[0]} updated: {meta}")
-    except Exception as e:
-        await update.message.reply_text(f"Task metadata error: {e}")
+    await _send_text_payload(update, await asyncio.to_thread(_taskmeta_payload, parts))
 
 async def done_text_cmd(update, context):
     if not google_ok():
@@ -15026,33 +15413,13 @@ async def followup_cmd(update, context):
             "Usage: `/followup Person | Topic | YYYY-MM-DD | Channel | Notes`",
             parse_mode="Markdown")
         return
-    try:
-        followup = gs.add_followup(
-            parts[0],
-            parts[1],
-            parts[2],
-            parts[3] if len(parts) > 3 else "",
-            parts[4] if len(parts) > 4 else "",
-        )
-        await reply(update, f"Follow-up added:\n{_format_followup(followup)}", parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"Follow-up error: {e}")
+    await _send_text_payload(update, await asyncio.to_thread(_followup_payload, parts))
 
 async def followups_cmd(update, context):
     if not google_ok():
         await update.message.reply_text("Google not connected.")
         return
-    try:
-        followups = gs.get_followups()
-        if not followups:
-            await update.message.reply_text("No open follow-ups.")
-            return
-        lines = ["*Follow-ups*\n"]
-        for followup in sorted(followups, key=lambda f: f["due_date"]):
-            lines.append(_format_followup(followup))
-        await reply(update, "\n".join(lines), parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"Follow-up error: {e}")
+    await _send_text_payload(update, await asyncio.to_thread(_followups_payload))
 
 async def donefollowup_cmd(update, context):
     if not google_ok():
@@ -15062,19 +15429,7 @@ async def donefollowup_cmd(update, context):
     if not query:
         await reply(update, "Usage: `/donefollowup id or text`", parse_mode="Markdown")
         return
-    try:
-        if query.isdigit():
-            ok = gs.complete_followup(query)
-            await update.message.reply_text(f"Follow-up #{query} done." if ok else f"Follow-up #{query} not found.")
-            return
-        followup, score = _find_best_followup(query)
-        if not followup or score < 0.35:
-            await update.message.reply_text("I could not confidently match that to an open follow-up.")
-            return
-        gs.complete_followup(followup["id"])
-        await update.message.reply_text(f"Follow-up done: {followup['topic']}")
-    except Exception as e:
-        await update.message.reply_text(f"Could not mark follow-up done: {e}")
+    await _send_text_payload(update, await asyncio.to_thread(_donefollowup_payload, query))
 
 async def evening_cmd(update, context):
     await reply(update, build_evening_briefing(), parse_mode="Markdown")
@@ -15088,47 +15443,19 @@ async def gmail_cmd(update, context):
     if args and args[0].lower() in ("personal", "personal2", "secondary", "second", "work", "moe", "school"):
         account = _normalise_gmail_account(args.pop(0))
     query = " ".join(args).strip()
-    if not gs.gmail_ok(account):
-        await update.message.reply_text(f"{gs.gmail_label(account).title()} not connected.")
-        return
-    try:
-        messages = gs.list_gmail_messages(query=query, max_results=10, account=account)
-        if account == "work":
-            record_work_gmail_success("telegram_gmail", messages_scanned=len(messages))
-        if not messages:
-            detail = f" for `{query}`" if query else ""
-            await reply(update, f"No {gs.gmail_label(account)} messages found{detail}.", parse_mode="Markdown")
-            return
-        title = query if query else "latest messages"
-        lines = [f"*{gs.gmail_label(account).title()}: {title}*\n"]
-        for msg in messages:
-            lines.append(f"- *{msg['subject']}*")
-            lines.append(f"  From: {msg['from']}")
-            lines.append(f"  {msg['snippet']}")
-        await reply(update, "\n".join(lines), parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"Gmail error: {e}")
+    await _send_text_payload(update, await asyncio.to_thread(_gmail_payload, account, query))
 
 async def gmaildraft_cmd(update, context):
     account = "personal"
     args = list(context.args)
     if args and args[0].lower() in ("personal", "personal2", "secondary", "second", "work", "moe", "school"):
         account = _normalise_gmail_account(args.pop(0))
-    if not gs.gmail_ok(account):
-        await update.message.reply_text(f"{gs.gmail_label(account).title()} not connected.")
-        return
     text = " ".join(args).strip()
     parts = [p.strip() for p in text.split("|")]
     if len(parts) < 3:
         await reply(update, "Usage: `/gmaildraft [personal|personal2|work] to | subject | body | cc`", parse_mode="Markdown")
         return
-    try:
-        draft = gs.create_gmail_draft(parts[0], parts[1], parts[2], parts[3] if len(parts) > 3 else "", account=account)
-        if account == "work":
-            record_work_gmail_success("telegram_gmail_draft")
-        await update.message.reply_text(f"{gs.gmail_label(account).title()} draft created: {draft.get('id', '')}")
-    except Exception as e:
-        await update.message.reply_text(f"Gmail draft error: {e}")
+    await _send_text_payload(update, await asyncio.to_thread(_gmaildraft_payload, account, parts))
 
 async def briefing_cmd(update, context):
     await reply(update, build_briefing(), parse_mode="Markdown")
@@ -15197,13 +15524,7 @@ async def remember_cmd(update, context):
         await update.message.reply_text(f"Memory error: {e}")
 
 async def memory_cmd(update, context):
-    if not google_ok():
-        await update.message.reply_text("Google not connected.")
-        return
-    try:
-        await reply(update, f"*Assistant memory*\n\n{_format_memory(gs.get_memory())}", parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"Memory error: {e}")
+    await _send_text_payload(update, await asyncio.to_thread(_memory_payload))
 
 
 async def memcheck_cmd(update, context):
@@ -15214,67 +15535,7 @@ async def memcheck_cmd(update, context):
     persisted in the Sheet. Run this when the bot "seems to forget" something to verify
     where the gap is: storage, prompt-window, or retrieval.
     """
-    if not memory_ok():
-        await update.message.reply_text("Assistant memory storage is not connected.")
-        return
-    try:
-        memory = gs.get_memory()
-    except Exception as e:
-        await update.message.reply_text(
-            f"Failed to read assistant memory: {e}\n\n"
-            "This means /remember writes are also failing until storage recovers."
-        )
-        return
-
-    status = gs.memory_storage_status()
-    source_label = {
-        "postgres": "Postgres -> assistant_memory",
-        "sheets": "Google Sheet -> Config tab -> assistant_memory",
-        "sheets_fallback": "Sheets fallback while Postgres is unavailable",
-        "redis_fallback": "Redis fallback",
-    }.get(str(status.get("source", "")), str(status.get("source", "unknown")))
-    total_stored = sum(len(memory.get(cat, [])) for cat in MEMORY_DISPLAY_CATEGORIES)
-    total_in_prompt = 0
-    lines = [
-        "Memory diagnostic",
-        f"Source of truth: {source_label}.",
-        f"Total items stored: {total_stored}",
-        "",
-        "Per-category: stored / shown to active model / limit",
-    ]
-    hidden_categories: list[str] = []
-    for category in MEMORY_DISPLAY_CATEGORIES:
-        items = memory.get(category, []) or []
-        stored = len(items)
-        limit = MEMORY_PROMPT_LIMITS.get(category, 8)
-        shown = stored if limit is None else min(stored, limit)
-        total_in_prompt += shown
-        limit_label = "all" if limit is None else str(limit)
-        marker = ""
-        if stored > 0 and shown < stored:
-            marker = f"  WARNING: {stored - shown} hidden from prompt"
-            hidden_categories.append(category)
-        if stored == 0:
-            continue
-        lines.append(f"- {category}: {stored} / {shown} / {limit_label}{marker}")
-
-    lines.append("")
-    lines.append(f"Total shown to active model per chat: {total_in_prompt} of {total_stored}.")
-    if hidden_categories:
-        lines.append(
-            "\nSome categories have items the prompt does not include. They are still "
-            "retrievable on-demand via the relevance retriever when your message overlaps "
-            f"keywords. Hidden: {', '.join(hidden_categories)}."
-        )
-    else:
-        lines.append("\nEvery stored memory currently fits in the active model's prompt window.")
-
-    lines.append(
-        "\nTo verify a fresh /remember landed: run /remember <a fact>, then /memcheck. "
-        "The count for the matched category should go up by 1."
-    )
-
-    await update.message.reply_text("\n".join(lines))
+    await _send_text_payload(update, await asyncio.to_thread(_memcheck_payload))
 
 async def forget_cmd(update, context):
     if not google_ok():
@@ -15318,20 +15579,8 @@ async def search_cmd(update, context):
     if not query:
         await update.message.reply_text("Usage: /search [query]")
         return
-    if not ss.search_enabled():
-        await update.message.reply_text("Web search is disabled by HIRA_DISABLE_WEB_SEARCH.")
-        return
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    results = ss.web_search(query, max_results=5)
-    if not results:
-        await update.message.reply_text("No results found.")
-        return
-    lines = [f"*Search: {query}*\n"]
-    for r in results:
-        lines.append(f"*{r['title']}*")
-        lines.append(f"{r['description'][:150]}")
-        lines.append(f"_{r['url']}_\n")
-    await reply(update, "\n".join(lines), parse_mode="Markdown")
+    await _send_text_payload(update, await asyncio.to_thread(_search_payload, query))
 
 async def news_cmd(update, context):
     """Show latest news for a query, or the shortlisted topics."""
@@ -15345,10 +15594,7 @@ async def weather_cmd(update, context):
     """Show latest NEA weather for a Singapore area."""
     area = " ".join(context.args).strip() or "Yishun"
     include_4day = bool(re.search(r"\b(week|days|outlook|4|four)\b", area.lower()))
-    try:
-        await reply(update, ws.build_weather_brief(area, include_24h=True, include_4day=include_4day), parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"Weather error: {e}")
+    await _send_text_payload(update, await asyncio.to_thread(_weather_payload, area, include_4day))
 
 async def watch_cmd(update, context):
     if not google_ok():
@@ -15364,24 +15610,13 @@ async def watch_cmd(update, context):
         label, query = [p.strip() for p in text.split("|", 1)]
     else:
         label, query = text, text
-    try:
-        gs.add_news_topic(label, query)
-        await update.message.reply_text(f"Added to news shortlist: {label}")
-    except Exception as e:
-        await update.message.reply_text(f"Watchlist error: {e}")
+    await _send_text_payload(update, await asyncio.to_thread(_watch_payload, label, query))
 
 async def watchlist_cmd(update, context):
     if not google_ok():
         await update.message.reply_text("Google not connected.")
         return
-    try:
-        topics = gs.get_news_topics()
-        lines = ["*News shortlist*\n"]
-        for topic in topics:
-            lines.append(f"- *{topic['label']}* — `{topic['query']}`")
-        await reply(update, "\n".join(lines), parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"Watchlist error: {e}")
+    await _send_text_payload(update, await asyncio.to_thread(_watchlist_payload))
 
 async def unwatch_cmd(update, context):
     if not google_ok():
@@ -15391,14 +15626,7 @@ async def unwatch_cmd(update, context):
     if not label:
         await reply(update, "Usage: `/unwatch Label`", parse_mode="Markdown")
         return
-    try:
-        before = len(gs.get_news_topics())
-        topics = gs.remove_news_topic(label)
-        after = len(topics)
-        msg = f"Removed from news shortlist: {label}" if after < before else f"Not found: {label}"
-        await update.message.reply_text(msg)
-    except Exception as e:
-        await update.message.reply_text(f"Watchlist error: {e}")
+    await _send_text_payload(update, await asyncio.to_thread(_unwatch_payload, label))
 
 async def clear_cmd(update, context):
     history = get_history(update.effective_user.id)
@@ -15421,42 +15649,7 @@ async def addcal_cmd(update, context):
         return
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     today_str = datetime.now(SGT).strftime("%Y-%m-%d")
-    parse_prompt = f"""Today is {today_str} (Singapore time).
-Extract calendar event details from this text and return ONLY valid JSON, nothing else.
-Text: "{user_text}"
-
-Return exactly:
-{{"title":"event title","date":"YYYY-MM-DD","start_time":"HH:MM","end_time":"HH:MM","location":"location or empty","description":"notes or empty"}}
-
-Rules: the current year is 2026 — ALWAYS use 2026 if no year is mentioned, 24hr time, add 1hr if no end time specified. Return ONLY the JSON."""
-    try:
-        raw = _llm_text(
-            model=STRUCTURED_MODEL,
-            max_tokens=200,
-            messages=[{"role": "user", "content": parse_prompt}]
-        )
-        raw = raw.strip()
-        # Strip markdown fences
-        raw = raw.replace("```json","").replace("```","").strip()
-        # Strip anything before first { or [
-        start = min((raw.find(c) for c in ["{","["] if c in raw), default=0)
-        raw = raw[start:]
-        event_data = json.loads(raw)
-        # Handle if the model returned a list instead of a dict.
-        if isinstance(event_data, list):
-            event_data = event_data[0]
-        start_dt = SGT.localize(datetime.strptime(f"{event_data['date']} {event_data['start_time']}", "%Y-%m-%d %H:%M"))
-        end_dt   = SGT.localize(datetime.strptime(f"{event_data['date']} {event_data['end_time']}",   "%Y-%m-%d %H:%M"))
-        gs.create_event(event_data["title"], start_dt, end_dt,
-                        event_data.get("location",""), event_data.get("description",""))
-        loc = f"\n📍 {event_data['location']}" if event_data.get("location") else ""
-        await update.message.reply_text(
-            f"Added to calendar:\n\n*{event_data['title']}*\n"
-            f"📅 {event_data['date']}\n🕐 {event_data['start_time']} – {event_data['end_time']}{loc}",
-            parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"addcal error: {e}")
-        await update.message.reply_text(f"Could not create event: {e}")
+    await _send_text_payload(update, await asyncio.to_thread(_addcal_payload, user_text, today_str))
 
 # ─── MEDIA HANDLERS ──────────────────────────────────────────────────────────
 
@@ -15776,26 +15969,27 @@ def _execute_tool_in_thread(name: str, inp: dict) -> str:
 
 
 async def _execute_tool_offloop(name: str, inp: dict) -> str:
-    task = asyncio.create_task(asyncio.to_thread(_execute_tool_in_thread, name, inp))
-    try:
-        return await asyncio.wait_for(asyncio.shield(task), timeout=_tool_timeout_seconds())
-    except asyncio.TimeoutError:
-        if _tool_has_side_effect(name):
-            logger.warning(
-                "Side-effecting tool %s exceeded %s seconds; waiting for completion to avoid hidden late mutation.",
-                name,
-                _tool_timeout_seconds(),
-            )
-            return await task
+    with _measure_latency("tool", tool=name):
+        task = asyncio.create_task(asyncio.to_thread(_execute_tool_in_thread, name, inp))
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), timeout=_tool_timeout_seconds())
+        except asyncio.TimeoutError:
+            if _tool_has_side_effect(name):
+                logger.warning(
+                    "Side-effecting tool %s exceeded %s seconds; waiting for completion to avoid hidden late mutation.",
+                    name,
+                    _tool_timeout_seconds(),
+                )
+                return await task
 
-        def _log_late_tool_result(done: asyncio.Task) -> None:
-            try:
-                done.result()
-            except Exception as exc:
-                logger.warning("Timed-out read-only tool %s later failed: %s", name, exc)
+            def _log_late_tool_result(done: asyncio.Task) -> None:
+                try:
+                    done.result()
+                except Exception as exc:
+                    logger.warning("Timed-out read-only tool %s later failed: %s", name, exc)
 
-        task.add_done_callback(_log_late_tool_result)
-        return f"Failed to run {name}: tool timed out after {_tool_timeout_seconds()} seconds."
+            task.add_done_callback(_log_late_tool_result)
+            return f"Failed to run {name}: tool timed out after {_tool_timeout_seconds()} seconds."
 
 
 def _latest_user_text(messages: list[dict]) -> str:
@@ -17861,11 +18055,26 @@ async def _execute_tool(name: str, inp: dict) -> str:
     return "Unknown tool."
 
 
-async def handle_message(update, context):
-    await _process_user_text(update, context, update.message.text)
+def _record_implicit_correction(user_text: str, previous_assistant: str, correction_text: str) -> None:
+    clean = " ".join(str(user_text or "").split())
+    now_str = datetime.now(SGT).strftime("%Y-%m-%d %H:%M SGT")
+    gs.add_correction({
+        "date": now_str,
+        "source": "implicit_detection",
+        "correction": correction_text,
+        "assistant_response": previous_assistant[:200],
+        "priority": "medium",
+    })
+    gs.add_self_reflection({
+        "date": now_str,
+        "source": "implicit_detection",
+        "trigger": f"User implicitly corrected: {clean[:200]}",
+        "learned": correction_text,
+        "next_behavior": "Verify this fact type with live tools before stating it as truth.",
+    })
 
-async def _process_user_text(update, context, text: str):
-    user_id = update.effective_user.id
+
+def _process_user_text_preflight(user_id, text: str) -> dict:
     history = get_history(user_id)
     absorb_taste_hint(text)
     inferred_week_type, inferred_week_number = _school_week_from_text(text)
@@ -17873,11 +18082,13 @@ async def _process_user_text(update, context, text: str):
         try:
             _set_current_school_week(inferred_week_type, inferred_week_number)
             number_note = f" Week {inferred_week_number}," if inferred_week_number else ""
-            await update.message.reply_text(
-                f"Locked in.{number_note} this week is *{inferred_week_type.upper()}* week for the timetable.",
-                parse_mode="Markdown"
-            )
-            return
+            return {
+                "history": history,
+                "early": _text_payload(
+                    f"Locked in.{number_note} this week is *{inferred_week_type.upper()}* week for the timetable.",
+                    parse_mode="Markdown",
+                ),
+            }
         except Exception as e:
             logger.warning(f"School week update error: {e}")
 
@@ -17890,10 +18101,12 @@ async def _process_user_text(update, context, text: str):
                     if gs.complete_checkin_today(checkin["id"]):
                         completed.append(checkin["name"])
                 if completed:
-                    await update.message.reply_text(
-                        f"Marked done for today: {', '.join(completed)}. I’ll leave you in peace until tomorrow."
-                    )
-                    return
+                    return {
+                        "history": history,
+                        "early": _text_payload(
+                            f"Marked done for today: {', '.join(completed)}. I’ll leave you in peace until tomorrow."
+                        ),
+                    }
         except Exception as e:
             logger.warning(f"Check-in affirmation error: {e}")
 
@@ -17908,21 +18121,23 @@ async def _process_user_text(update, context, text: str):
                 event, e_score = _find_best_calendar_event(query)
                 if marking and m_score >= max(0.35, r_score, f_score, e_score):
                     updated = gs.update_marking_progress(marking["id"], done=True)
-                    await update.message.reply_text(f"Completed marking: {updated['title']}")
-                    return
+                    return {"history": history, "early": _text_payload(f"Completed marking: {updated['title']}")}
                 if reminder and r_score >= max(0.35, f_score, e_score):
                     _, synced_marking = complete_reminder_by_id(reminder["id"])
                     marking_note = f" Also completed marking: {synced_marking['title']}." if synced_marking else ""
-                    await update.message.reply_text(f"Marked done: [{reminder['id']}] {reminder['description']}.{marking_note}")
-                    return
+                    return {
+                        "history": history,
+                        "early": _text_payload(f"Marked done: [{reminder['id']}] {reminder['description']}.{marking_note}"),
+                    }
                 if followup and f_score >= max(0.35, e_score):
                     gs.complete_followup(followup["id"])
-                    await update.message.reply_text(f"Follow-up done: {followup['topic']}")
-                    return
+                    return {"history": history, "early": _text_payload(f"Follow-up done: {followup['topic']}")}
                 if event and e_score >= 0.5:
                     gs.delete_event(event["id"], event.get("_calendar_id", ""))
-                    await update.message.reply_text(f"Removed from calendar: {event.get('summary', '(No title)')} ({_event_when_text(event)})")
-                    return
+                    return {
+                        "history": history,
+                        "early": _text_payload(f"Removed from calendar: {event.get('summary', '(No title)')} ({_event_when_text(event)})"),
+                    }
             except Exception as e:
                 logger.warning(f"Natural done handling error: {e}")
 
@@ -17936,11 +18151,17 @@ async def _process_user_text(update, context, text: str):
             try:
                 event, score = _resolve_calendar_event_for_deletion(query)
                 if not event or score < 0.45:
-                    await update.message.reply_text("I could not confidently match that to a calendar event. Give me the event title or date so I do not delete the wrong thing.")
-                    return
+                    return {
+                        "history": history,
+                        "early": _text_payload(
+                            "I could not confidently match that to a calendar event. Give me the event title or date so I do not delete the wrong thing."
+                        ),
+                    }
                 gs.delete_event(event["id"], event.get("_calendar_id", ""))
-                await update.message.reply_text(f"Removed from calendar: {event.get('summary', '(No title)')} ({_event_when_text(event)})")
-                return
+                return {
+                    "history": history,
+                    "early": _text_payload(f"Removed from calendar: {event.get('summary', '(No title)')} ({_event_when_text(event)})"),
+                }
             except Exception as e:
                 logger.warning(f"Natural calendar delete error: {e}")
 
@@ -17969,39 +18190,72 @@ async def _process_user_text(update, context, text: str):
     )
     history.append({"role": "user", "content": user_content})
     if len(history) > MAX_TURNS:
-        # Summarise the about-to-be-dropped portion before trimming
         try:
             _summarise_conversation_to_memory(history[:-MAX_TURNS + 2])
         except Exception:
             pass
         history = history[-MAX_TURNS:]
+    return {
+        "history": history,
+        "frame": frame,
+        "style_profile": style_profile,
+        "operator_state": operator_state,
+        "reply_plan": reply_plan,
+    }
 
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
-    try:
-        messages = list(history)
-        reply_text = await _run_agentic_chat(messages, max_tokens=1024, direct_user_text=text)
-        reply_text, _repair_meta = await maybe_self_repair_reply(
-            text,
-            reply_text,
-            frame=frame,
-            response_plan=reply_plan,
-            style_profile=style_profile,
-            relevant_arcs=operator_state.get("relevant_arcs", []),
-        )
-        record_self_repair_quality_signal(text, _repair_meta, surface="telegram", route="chat")
+def _process_user_text_persist(user_id, history: list[dict], text: str, reply_text: str, repair_meta: dict) -> list[dict]:
+    record_self_repair_quality_signal(text, repair_meta, surface="telegram", route="chat")
+    history.append({"role": "assistant", "content": reply_text})
+    save_history(user_id, history)
+    record_chat_learning_event(text, reply_text, source="telegram")
+    return history
 
-        # Save only user message + final reply to persistent history
-        history.append({"role": "assistant", "content": reply_text})
-        save_history(user_id, history)
-        record_chat_learning_event(text, reply_text, source="telegram")
-        # Detect implicit corrections in background — does not block the reply
-        asyncio.create_task(_detect_implicit_correction(text, history))
-        await reply(update, reply_text)
 
-    except Exception as e:
-        logger.error(f"OpenAI chat error: {e}")
-        await update.message.reply_text("Error. Try again.")
+async def handle_message(update, context):
+    await _process_user_text(update, context, update.message.text)
+
+async def _process_user_text(update, context, text: str):
+    with _measure_latency("telegram_chat", chars=len(text or "")):
+        user_id = update.effective_user.id
+        preflight = await asyncio.to_thread(_process_user_text_preflight, user_id, text)
+        if preflight.get("early"):
+            await _send_text_payload(update, preflight["early"])
+            return
+
+        history = preflight["history"]
+        frame = preflight["frame"]
+        style_profile = preflight["style_profile"]
+        operator_state = preflight["operator_state"]
+        reply_plan = preflight["reply_plan"]
+
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+
+        try:
+            messages = list(history)
+            reply_text = await _run_agentic_chat(messages, max_tokens=1024, direct_user_text=text)
+            reply_text, _repair_meta = await maybe_self_repair_reply(
+                text,
+                reply_text,
+                frame=frame,
+                response_plan=reply_plan,
+                style_profile=style_profile,
+                relevant_arcs=operator_state.get("relevant_arcs", []),
+            )
+            history = await asyncio.to_thread(
+                _process_user_text_persist,
+                user_id,
+                history,
+                text,
+                reply_text,
+                _repair_meta,
+            )
+            asyncio.create_task(_detect_implicit_correction(text, history))
+            await reply(update, reply_text)
+
+        except Exception as e:
+            logger.error(f"OpenAI chat error: {e}")
+            await update.message.reply_text("Error. Try again.")
 
 def _openai_ok() -> bool:
     return bool(os.environ.get("OPENAI_API_KEY", "").strip())
@@ -19345,7 +19599,7 @@ def _work_gmail_notification_body(message: dict, reasons: list[str]) -> str:
     return "\n".join(lines)
 
 
-async def work_gmail_monitor_job(context):
+def _work_gmail_monitor_job_payload() -> None:
     if not _work_gmail_monitor_enabled():
         if google_ok():
             _save_work_gmail_monitor_status("skipped", "Work Gmail monitor disabled.")
@@ -19420,6 +19674,10 @@ async def work_gmail_monitor_job(context):
         logger.error(f"Work Gmail monitor error: {e}")
     finally:
         _finish_background_job("work_gmail_monitor")
+
+
+async def work_gmail_monitor_job(context):
+    await asyncio.to_thread(_work_gmail_monitor_job_payload)
 
 
 def _get_news_digest_history() -> list[dict]:
@@ -19505,6 +19763,43 @@ def _commit_pending_morning_digest_entries():
     _PENDING_NEWS_DIGEST_BUILT_AT = None
 
 
+def _morning_briefing_prepare(force: bool, source_key: str, today_key: str) -> dict:
+    if not force and gs.get_config(MORNING_BRIEFING_SENT_KEY) == today_key and _web_push_delivered_for_source(source_key):
+        return {"done": True}
+    return {"text": build_briefing(record_news_digest=False)}
+
+
+def _morning_briefing_commit(text: str, source_key: str, today_key: str) -> bool:
+    item = _queue_app_notification("briefing", "Morning briefing", text, source=source_key)
+    if not item:
+        logger.warning("Morning briefing queued no app notification; will retry during catch-up window")
+        return False
+    if int(item.get("_push_sent", 0) or 0) <= 0:
+        logger.warning("Morning briefing push had no confirmed phone deliveries; will retry during catch-up window")
+        return False
+    _commit_pending_morning_digest_entries()
+    gs.set_config(MORNING_BRIEFING_SENT_KEY, today_key)
+    return True
+
+
+def _evening_briefing_prepare(force: bool, source_key: str, today_key: str) -> dict:
+    if not force and gs.get_config(EVENING_BRIEFING_SENT_KEY) == today_key and _web_push_delivered_for_source(source_key):
+        return {"done": True}
+    return {"text": build_evening_briefing()}
+
+
+def _evening_briefing_commit(text: str, source_key: str, today_key: str) -> bool:
+    item = _queue_app_notification("briefing", "Evening roundup", text, source=source_key)
+    if not item:
+        logger.warning("Evening briefing queued no app notification; will retry during catch-up window")
+        return False
+    if int(item.get("_push_sent", 0) or 0) <= 0:
+        logger.warning("Evening briefing push had no confirmed phone deliveries; will retry during catch-up window")
+        return False
+    gs.set_config(EVENING_BRIEFING_SENT_KEY, today_key)
+    return True
+
+
 async def send_morning_briefing_once(context=None, force: bool = False, source: str = "morning_briefing") -> bool:
     if not force and not _acquire_job_lock(source, 900):
         return False
@@ -19514,21 +19809,13 @@ async def send_morning_briefing_once(context=None, force: bool = False, source: 
     today_key = datetime.now(SGT).strftime("%Y-%m-%d")
     source_key = f"{source}:{today_key}"
     try:
-        if not force and gs.get_config(MORNING_BRIEFING_SENT_KEY) == today_key and _web_push_delivered_for_source(source_key):
+        prepared = await asyncio.to_thread(_morning_briefing_prepare, force, source_key, today_key)
+        if prepared.get("done"):
             return True
-        text = build_briefing(record_news_digest=False)
+        text = prepared["text"]
         if context is not None:
             await _send_telegram_notification(context, text)
-        item = _queue_app_notification("briefing", "Morning briefing", text, source=source_key)
-        if not item:
-            logger.warning("Morning briefing queued no app notification; will retry during catch-up window")
-            return False
-        if int(item.get("_push_sent", 0) or 0) <= 0:
-            logger.warning("Morning briefing push had no confirmed phone deliveries; will retry during catch-up window")
-            return False
-        _commit_pending_morning_digest_entries()
-        gs.set_config(MORNING_BRIEFING_SENT_KEY, today_key)
-        return True
+        return await asyncio.to_thread(_morning_briefing_commit, text, source_key, today_key)
     except Exception as e:
         logger.error(f"Morning briefing error: {e}")
         return False
@@ -19543,32 +19830,29 @@ async def send_evening_briefing_once(context=None, force: bool = False, source: 
     today_key = datetime.now(SGT).strftime("%Y-%m-%d")
     source_key = f"{source}:{today_key}"
     try:
-        if not force and gs.get_config(EVENING_BRIEFING_SENT_KEY) == today_key and _web_push_delivered_for_source(source_key):
+        prepared = await asyncio.to_thread(_evening_briefing_prepare, force, source_key, today_key)
+        if prepared.get("done"):
             return True
-        text = build_evening_briefing()
+        text = prepared["text"]
         if context is not None:
             await _send_telegram_notification(context, text)
-        item = _queue_app_notification("briefing", "Evening roundup", text, source=source_key)
-        if not item:
-            logger.warning("Evening briefing queued no app notification; will retry during catch-up window")
-            return False
-        if int(item.get("_push_sent", 0) or 0) <= 0:
-            logger.warning("Evening briefing push had no confirmed phone deliveries; will retry during catch-up window")
-            return False
-        gs.set_config(EVENING_BRIEFING_SENT_KEY, today_key)
-        return True
+        return await asyncio.to_thread(_evening_briefing_commit, text, source_key, today_key)
     except Exception as e:
         logger.error(f"Evening briefing error: {e}")
         return False
+
+
+def _telegram_notification_chat_id() -> str:
+    if _quiet_hours_active():
+        return ""
+    return gs.get_config("chat_id") or ""
 
 
 async def _send_telegram_notification(context, text: str):
     try:
         if context is None:
             return False
-        if _quiet_hours_active():
-            return False
-        chat_id = gs.get_config("chat_id")
+        chat_id = await asyncio.to_thread(_telegram_notification_chat_id)
         if not chat_id:
             return False
         await context.bot.send_message(chat_id=int(chat_id), text=text, parse_mode="Markdown")
@@ -19581,27 +19865,45 @@ async def _send_telegram_notification(context, text: str):
 async def morning_briefing_job(context):
     return await send_morning_briefing_once(context, source="morning_briefing")
 
+
+def _friday_checkin_text() -> str:
+    projs = gs.get_projects()
+    lines = ["*Weekly project check-in*\n"]
+    for p in projs:
+        lines.append(_format_project_line(p, include_updated=True))
+    if not projs:
+        lines.append("No projects tracked yet.")
+    lines.append("\nTell H.I.R.A naturally or use /update to log progress.")
+    return "\n".join(lines)
+
+
+def _queue_friday_checkin(text: str):
+    return _queue_app_notification("update", "Weekly project check-in", text, source="friday_checkin")
+
+
 async def friday_checkin_job(context):
     if not google_ok():
         return
     if not _acquire_job_lock("friday_checkin", 900):
         return
     try:
-        sent = await _dispatch_proactive_candidates(context, build_proactive_v2_queue(now=datetime.now(SGT), families={"friday_checkin"}), limit=1)
+        queue = await asyncio.to_thread(build_proactive_v2_queue, now=datetime.now(SGT), families={"friday_checkin"})
+        sent = await _dispatch_proactive_candidates(context, queue, limit=1)
         if sent:
             return
-        projs = gs.get_projects()
-        lines = ["*Weekly project check-in*\n"]
-        for p in projs:
-            lines.append(_format_project_line(p, include_updated=True))
-        if not projs:
-            lines.append("No projects tracked yet.")
-        lines.append("\nTell H.I.R.A naturally or use /update to log progress.")
-        text = "\n".join(lines)
+        text = await asyncio.to_thread(_friday_checkin_text)
         await _send_telegram_notification(context, text)
-        _queue_app_notification("update", "Weekly project check-in", text, source="friday_checkin")
+        await asyncio.to_thread(_queue_friday_checkin, text)
     except Exception as e:
         logger.error(f"Friday check-in error: {e}")
+
+
+def _self_audit_job_payload(current: datetime, week_id: str) -> None:
+    if (gs.get_config(SELF_AUDIT_WEEK_KEY) or "").strip() == week_id:
+        return
+    result = run_self_audit(current)
+    if not result.get("error"):
+        gs.set_config(SELF_AUDIT_WEEK_KEY, week_id)
 
 
 async def self_audit_job(context=None):
@@ -19612,11 +19914,7 @@ async def self_audit_job(context=None):
     current = datetime.now(SGT)
     week_id = f"{current.isocalendar().year}-W{current.isocalendar().week:02d}"
     try:
-        if (gs.get_config(SELF_AUDIT_WEEK_KEY) or "").strip() == week_id:
-            return
-        result = await asyncio.to_thread(run_self_audit, current)
-        if not result.get("error"):
-            gs.set_config(SELF_AUDIT_WEEK_KEY, week_id)
+        await asyncio.to_thread(_self_audit_job_payload, current, week_id)
     except Exception as e:
         logger.error(f"Self-audit error: {e}")
 
@@ -19751,25 +20049,151 @@ async def followups_job(context):
         _finish_background_job("followups")
 
 
-async def memory_consolidation_job(context=None):
-    """Weekly job: ask the active chat model to review corrections + reflections, promote durable
-    learnings into preferences/constraints, and prune stale entries.
-    Runs Friday night at 22:30 SGT. Safe to call manually for a forced pass."""
-    if not google_ok():
-        return
-    if not _acquire_job_lock("memory_consolidation", 3600):
-        return
-    try:
-        _log_memory("before memory_consolidation")
-        memory = gs.get_memory()
-        corrections = memory.get("correction_ledger", [])
-        reflections = memory.get("self_reflections", [])
-        if not corrections and not reflections:
-            logger.info("Memory consolidation: nothing to consolidate.")
-            return
+CONSOLIDATION_PRUNE_LIMIT = 10
+CONSOLIDATION_MIN_PRUNE_AGE_DAYS = 14
 
-        now_str = datetime.now(SGT).strftime("%Y-%m-%d %H:%M SGT")
-        prompt = f"""You are H.I.R.A doing a weekly self-improvement pass on your own memory.
+
+def _memory_entry_json_text(entry) -> str:
+    if isinstance(entry, str):
+        return entry
+    return json.dumps(entry, ensure_ascii=False, sort_keys=True)
+
+
+def _memory_entry_date(entry) -> date | None:
+    parsed = {}
+    if isinstance(entry, str):
+        try:
+            parsed = json.loads(entry)
+        except Exception:
+            parsed = {}
+    elif isinstance(entry, dict):
+        parsed = entry
+    raw = str(parsed.get("date", "") if isinstance(parsed, dict) else "").strip()
+    if len(raw) < 10:
+        return None
+    try:
+        return datetime.fromisoformat(raw[:10]).date()
+    except Exception:
+        return None
+
+
+def _too_recent_for_consolidation_prune(entry, current: datetime) -> bool:
+    entry_date = _memory_entry_date(entry)
+    if entry_date is None:
+        return True
+    return (current.date() - entry_date).days < CONSOLIDATION_MIN_PRUNE_AGE_DAYS
+
+
+def _apply_consolidation_prunes(memory: dict, prune_items: list, current: datetime, remaining_budget: int) -> tuple[int, int, int]:
+    pruned = 0
+    skipped = 0
+    for item in prune_items:
+        if remaining_budget <= 0:
+            skipped += 1
+            continue
+        if not isinstance(item, dict):
+            skipped += 1
+            continue
+        kind = str(item.get("kind", "") or "").strip().lower()
+        category = {
+            "correction": "correction_ledger",
+            "reflection": "self_reflections",
+        }.get(kind)
+        snippet = str(item.get("snippet", "") or "").strip()
+        if not category or not snippet:
+            skipped += 1
+            continue
+        matched = None
+        for entry in memory.get(category, []):
+            if snippet in _memory_entry_json_text(entry):
+                matched = entry
+                break
+        if matched is None or _too_recent_for_consolidation_prune(matched, current):
+            skipped += 1
+            continue
+        removed = gs.remove_memory_entries(category, [matched], source="consolidation_prune")
+        if removed:
+            try:
+                memory[category].remove(matched)
+            except ValueError:
+                pass
+            pruned += removed
+            remaining_budget -= removed
+        else:
+            skipped += 1
+    return pruned, skipped, remaining_budget
+
+
+_CONSOLIDATED_MEMORY_RE = re.compile(r"^\[consolidated\s+(\d{4}-\d{2}-\d{2})\]\s*(.+)$", re.I)
+
+
+def _consolidated_memory_parts(entry: str) -> tuple[date, str] | None:
+    match = _CONSOLIDATED_MEMORY_RE.match(str(entry or "").strip())
+    if not match:
+        return None
+    try:
+        entry_date = datetime.fromisoformat(match.group(1)).date()
+    except Exception:
+        entry_date = date.min
+    return entry_date, " ".join(match.group(2).split()).lower()
+
+
+def _apply_consolidated_dedup(memory: dict, remaining_budget: int) -> tuple[int, int, int]:
+    pruned = 0
+    skipped = 0
+    for category in ("preferences", "constraints"):
+        candidates = []
+        for entry in memory.get(category, []):
+            parts = _consolidated_memory_parts(entry)
+            if parts:
+                candidates.append({"entry": entry, "date": parts[0], "text": parts[1]})
+        clusters: list[list[dict]] = []
+        for candidate in candidates:
+            for cluster in clusters:
+                if any(SequenceMatcher(None, candidate["text"], other["text"]).ratio() >= 0.92 for other in cluster):
+                    cluster.append(candidate)
+                    break
+            else:
+                clusters.append([candidate])
+        for cluster in clusters:
+            if len(cluster) <= 1:
+                continue
+            keep = max(cluster, key=lambda item: item["date"])
+            for duplicate in cluster:
+                if duplicate is keep:
+                    continue
+                if remaining_budget <= 0:
+                    skipped += 1
+                    continue
+                removed = gs.remove_memory_entries(category, [duplicate["entry"]], source="consolidation_prune")
+                if removed:
+                    try:
+                        memory[category].remove(duplicate["entry"])
+                    except ValueError:
+                        pass
+                    pruned += removed
+                    remaining_budget -= removed
+                else:
+                    skipped += 1
+    return pruned, skipped, remaining_budget
+
+
+def _memory_consolidation_payload() -> dict:
+    _log_memory("before memory_consolidation")
+    current = datetime.now(SGT)
+    memory = gs.get_memory()
+    corrections = memory.get("correction_ledger", [])
+    reflections = memory.get("self_reflections", [])
+    if not corrections and not reflections:
+        pruned, skipped, _remaining_budget = _apply_consolidated_dedup(memory, CONSOLIDATION_PRUNE_LIMIT)
+        if pruned or skipped:
+            logger.info("Memory consolidation pruned %s entr(ies), skipped %s (unmatched/too-recent/over-limit).", pruned, skipped)
+            return {"promoted": [], "growth_note": "", "pruned": pruned, "skipped": skipped}
+        logger.info("Memory consolidation: nothing to consolidate.")
+        return {"promoted": [], "growth_note": "", "pruned": 0, "skipped": 0}
+
+    now_str = current.strftime("%Y-%m-%d %H:%M SGT")
+    prompt = f"""You are H.I.R.A doing a weekly self-improvement pass on your own memory.
 
 Today: {now_str}
 
@@ -19784,7 +20208,7 @@ SELF-REFLECTIONS ({len(reflections)} items):
 Your tasks:
 1. Identify any correction or reflection that represents a STABLE, DURABLE rule (not a one-off fact) — e.g. "always call get_muis_prayer_times before giving prayer times", "Herwanto prefers direct answers without preamble", "never guess weekdays".
 2. For each durable rule, produce a concise preference or constraint to add to memory.
-3. Identify any corrections/reflections that are now stale, superseded, or already captured as a preference — mark them for pruning.
+3. List corrections/reflections that are stale, superseded, or already captured as a promoted preference. Use an exact substring so the entry can be matched. Be conservative; when unsure, do not prune.
 
 Return ONLY valid JSON:
 {{
@@ -19792,38 +20216,67 @@ Return ONLY valid JSON:
     {{"category": "preferences|constraints", "text": "concise rule to remember"}}
   ],
   "growth_note": "One sentence summary of what H.I.R.A learned this cycle.",
-  "prune_count": 0
+  "prune": [
+    {{"kind": "correction|reflection", "date": "YYYY-MM-DD", "snippet": "exact distinctive substring of the entry to prune"}}
+  ]
 }}
 
 Rules: be conservative — only promote genuinely durable rules. Return ONLY JSON."""
 
-        raw = _llm_text(
-            model=QUICK_MODEL,
-            max_tokens=800,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        result = _json_from_llm_text(raw)
-        promoted = result.get("promote") or []
+    raw = _llm_text(
+        model=QUICK_MODEL,
+        max_tokens=800,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    result = _json_from_llm_text(raw)
+    promoted = result.get("promote") or []
+    growth_note = result.get("growth_note", "")
+
+    for item in promoted:
+        category = item.get("category", "preferences")
+        text = item.get("text", "").strip()
+        if text and category in MEMORY_DISPLAY_CATEGORIES:
+            _add_memory(category, f"[consolidated {current.strftime('%Y-%m-%d')}] {text}")
+
+    memory = gs.get_memory()
+    pruned, skipped, remaining_budget = _apply_consolidation_prunes(
+        memory,
+        result.get("prune") if isinstance(result.get("prune"), list) else [],
+        current,
+        CONSOLIDATION_PRUNE_LIMIT,
+    )
+    deduped, dedup_skipped, _remaining_budget = _apply_consolidated_dedup(memory, remaining_budget)
+    pruned += deduped
+    skipped += dedup_skipped
+
+    if growth_note:
+        gs.add_self_reflection({
+            "date": now_str,
+            "source": "memory_consolidation_job",
+            "trigger": "Weekly self-improvement pass",
+            "learned": f"{growth_note} (pruned={pruned})",
+            "next_behavior": "Apply promoted preferences and constraints in future answers.",
+        })
+
+    logger.info(
+        f"Memory consolidation complete: {len(promoted)} rule(s) promoted. Note: {growth_note}"
+    )
+    logger.info("Memory consolidation pruned %s entr(ies), skipped %s (unmatched/too-recent/over-limit).", pruned, skipped)
+    return {"promoted": promoted, "growth_note": growth_note, "pruned": pruned, "skipped": skipped}
+
+
+async def memory_consolidation_job(context=None):
+    """Weekly job: ask the active chat model to review corrections + reflections, promote durable
+    learnings into preferences/constraints, and prune stale entries.
+    Runs Friday night at 22:30 SGT. Safe to call manually for a forced pass."""
+    if not google_ok():
+        return
+    if not _acquire_job_lock("memory_consolidation", 3600):
+        return
+    try:
+        result = await asyncio.to_thread(_memory_consolidation_payload)
+        promoted = result.get("promoted") or []
         growth_note = result.get("growth_note", "")
-
-        for item in promoted:
-            category = item.get("category", "preferences")
-            text = item.get("text", "").strip()
-            if text and category in MEMORY_DISPLAY_CATEGORIES:
-                _add_memory(category, f"[consolidated {datetime.now(SGT).strftime('%Y-%m-%d')}] {text}")
-
-        if growth_note:
-            gs.add_self_reflection({
-                "date": now_str,
-                "source": "memory_consolidation_job",
-                "trigger": "Weekly self-improvement pass",
-                "learned": growth_note,
-                "next_behavior": "Apply promoted preferences and constraints in future answers.",
-            })
-
-        logger.info(
-            f"Memory consolidation complete: {len(promoted)} rule(s) promoted. Note: {growth_note}"
-        )
         if context and promoted:
             summary = "\n".join(f"- [{item['category']}] {item['text']}" for item in promoted)
             await _send_telegram_notification(

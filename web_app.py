@@ -4708,15 +4708,15 @@ def _quick_sse_response(reply: str, history_key: str, history: list, route_name:
     history.append({"role": "assistant", "content": reply})
     _save_history_best_effort(history_key, history)
     _clear_openai_state_for_local_reply(history_key)
+    user_text = next(
+        (
+            bot._strip_injected_chat_context(str(item.get("content", "")))
+            for item in reversed(history[:-1])
+            if isinstance(item, dict) and item.get("role") == "user" and isinstance(item.get("content"), str)
+        ),
+        "",
+    )
     if route_name == "quick" and bot.google_ok():
-        user_text = next(
-            (
-                bot._strip_injected_chat_context(str(item.get("content", "")))
-                for item in reversed(history[:-1])
-                if isinstance(item, dict) and item.get("role") == "user" and isinstance(item.get("content"), str)
-            ),
-            "",
-        )
         if user_text:
             _schedule_background_call(
                 "quick chat learning event",
@@ -4731,6 +4731,10 @@ def _quick_sse_response(reply: str, history_key: str, history: list, route_name:
     _finalise_chat_trace(trace)
 
     async def events():
+        latency_cm = bot._measure_latency("pwa_chat_stream", chars=len(user_text or ""))
+        latency_marks = latency_cm.__enter__()
+        started = time.perf_counter()
+
         def sse(payload: dict) -> str:
             return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
@@ -4740,12 +4744,16 @@ def _quick_sse_response(reply: str, history_key: str, history: list, route_name:
             yield sse({"type": "trace", "trace": trace})
             if tool_name:
                 yield sse({"type": "tool", "name": tool_name})
+            latency_marks["first_token_ms"] = round((time.perf_counter() - started) * 1000)
             yield sse({"type": "text", "text": reply})
             yield sse({"type": "done", "text": reply})
             yield sse({"type": "saved"})
         finally:
-            _CHAT_SEMAPHORE.release()
-            bot._log_memory(f"after pwa {route_name}")
+            try:
+                _CHAT_SEMAPHORE.release()
+                bot._log_memory(f"after pwa {route_name}")
+            finally:
+                latency_cm.__exit__(None, None, None)
 
     return StreamingResponse(events(), media_type="text/event-stream")
 
@@ -5993,6 +6001,10 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
         _clear_openai_state_for_local_reply(history_key)
 
         async def quick_checkin_events():
+            latency_cm = bot._measure_latency("pwa_chat_stream", chars=len(message or ""))
+            latency_marks = latency_cm.__enter__()
+            started = time.perf_counter()
+
             def sse(payload: dict) -> str:
                 return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
@@ -6001,12 +6013,16 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                 yield sse({"type": "route", "name": "quick"})
                 if archived_checkin_notification_ids:
                     yield sse({"type": "notifications_archived", "ids": archived_checkin_notification_ids})
+                latency_marks["first_token_ms"] = round((time.perf_counter() - started) * 1000)
                 yield sse({"type": "text", "text": quick_checkin_reply})
                 yield sse({"type": "done", "text": quick_checkin_reply})
                 yield sse({"type": "saved"})
             finally:
-                _CHAT_SEMAPHORE.release()
-                bot._log_memory("after pwa quick checkin")
+                try:
+                    _CHAT_SEMAPHORE.release()
+                    bot._log_memory("after pwa quick checkin")
+                finally:
+                    latency_cm.__exit__(None, None, None)
 
         return StreamingResponse(quick_checkin_events(), media_type="text/event-stream")
 
@@ -6025,6 +6041,10 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
         _clear_openai_state_for_local_reply(history_key)
 
         async def delayed_digest_events():
+            latency_cm = bot._measure_latency("pwa_chat_stream", chars=len(message or ""))
+            latency_marks = latency_cm.__enter__()
+            started = time.perf_counter()
+
             def sse(payload: dict) -> str:
                 return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
@@ -6032,16 +6052,22 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             try:
                 yield sse({"type": "route", "name": "quick"})
                 yield sse({"type": "tool", "name": "create_proactive_nudge"})
+                latency_marks["first_token_ms"] = round((time.perf_counter() - started) * 1000)
                 yield sse({"type": "text", "text": delayed_digest_reply})
                 yield sse({"type": "done", "text": delayed_digest_reply})
                 yield sse({"type": "saved"})
             finally:
-                _CHAT_SEMAPHORE.release()
-                bot._log_memory("after pwa delayed digest schedule")
+                try:
+                    _CHAT_SEMAPHORE.release()
+                    bot._log_memory("after pwa delayed digest schedule")
+                finally:
+                    latency_cm.__exit__(None, None, None)
 
         return StreamingResponse(delayed_digest_events(), media_type="text/event-stream")
 
     async def events():
+        latency_cm = bot._measure_latency("pwa_chat_stream", chars=len(message or ""))
+        latency_marks = latency_cm.__enter__()
         reply_parts: list[str] = []
         final_text = ""
         started = time.perf_counter()
@@ -6156,7 +6182,9 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             async for event in stream:
                 if first_text and event.get("type") == "text":
                     first_text = False
-                    yield sse(timing("first_token"))
+                    first_token_timing = timing("first_token")
+                    latency_marks["first_token_ms"] = first_token_timing["elapsed_ms"]
+                    yield sse(first_token_timing)
                 if event.get("type") == "text":
                     reply_parts.append(event.get("text", ""))
                 elif event.get("type") == "replace":
@@ -6341,8 +6369,11 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                 yield sse({"type": "done", "text": reply_text})
                 yield sse({"type": "saved"})
         finally:
-            _CHAT_SEMAPHORE.release()
-            bot._log_memory("after pwa chat")
+            try:
+                _CHAT_SEMAPHORE.release()
+                bot._log_memory("after pwa chat")
+            finally:
+                latency_cm.__exit__(None, None, None)
 
     return StreamingResponse(events(), media_type="text/event-stream")
 

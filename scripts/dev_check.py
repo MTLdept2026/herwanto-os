@@ -49,6 +49,8 @@ CRITICAL_UNIT_TESTS = [
     "tests.test_self_audit",
     "tests.test_stage8_phase0",
     "tests.test_stage8_phase1",
+    "tests.test_tranche_a",
+    "tests.test_tranche_b",
 ]
 
 
