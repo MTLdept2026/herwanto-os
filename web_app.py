@@ -892,6 +892,7 @@ async def start_web_scheduler():
     if not bot.require_redis_for_service("H.I.R.A PWA web service"):
         raise RuntimeError("Redis required but unavailable")
     bot._log_memory("web startup", force=True)
+    _schedule_background_call("Playbook seed", bot.seed_playbooks_if_needed)
     _schedule_background_call("OpenAI vector memory startup sync", bot.sync_openai_vector_memory, reason="web_startup")
     if _WEB_MEMORY_WATCHDOG_TASK is None:
         _WEB_MEMORY_WATCHDOG_TASK = asyncio.create_task(_web_memory_watchdog())
@@ -5960,6 +5961,11 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
         reply, tool_name = checkin_command
         return _quick_sse_response(reply, history_key, history, route_name="checkin_admin", tool_name=tool_name)
 
+    playbook_command = await _run_with_chat_slot(asyncio.to_thread(bot.pwa_playbook_command_reply, message))
+    if playbook_command:
+        reply, tool_name = playbook_command
+        return _quick_sse_response(reply, history_key, history, route_name="playbook_admin", tool_name=tool_name)
+
     nudge_command = _pwa_nudge_command_reply(message)
     if nudge_command:
         reply, tool_name = nudge_command
@@ -6113,6 +6119,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             route_name = "quick" if quick else "agentic"
             _merge_chat_trace(trace, {"route": route_name})
             yield sse({"type": "route", "name": route_name})
+            playbook_task = None if quick else asyncio.create_task(bot._select_playbooks(message))
             recent_context = "\n".join(
                 str(item.get("content", ""))[:600]
                 for item in history[-6:-1]
@@ -6137,9 +6144,13 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                 {tool["name"] for tool in tools},
             )
             model_policy = bot.model_policy_for_messages(list(history))
+            selected_playbooks = await playbook_task if playbook_task else []
+            if selected_playbooks:
+                model_policy = dict(model_policy)
+                model_policy["playbooks"] = selected_playbooks
             _merge_chat_trace(trace, {
                 "thread_state": thread_state,
-                "model_policy": model_policy,
+                "model_policy": bot._model_policy_trace_payload(model_policy),
             })
             if thread_state.get("needs_live_check"):
                 _merge_chat_trace(trace, {
@@ -6176,6 +6187,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
                     tools=tools,
                     openai_state_key=history_key,
                     direct_user_text=message,
+                    playbooks=selected_playbooks,
                 )
             )
             first_text = True

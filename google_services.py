@@ -4641,6 +4641,7 @@ DEFAULT_MEMORY = {
     "self_reflections": [],
     "learned_preferences": [],
     "source_notes": [],
+    "playbooks": [],
 }
 
 MEMORY_STORAGE_CAPS = {
@@ -4662,6 +4663,7 @@ MEMORY_STORAGE_CAPS = {
     "self_reflections": 100,
     "learned_preferences": 60,
     "source_notes": 40,
+    "playbooks": 12,
 }
 
 
@@ -4715,6 +4717,8 @@ def _normalise_memory_category(category: str) -> str:
         "sources": "source_notes",
         "source_note": "source_notes",
         "source_notes": "source_notes",
+        "playbook": "playbooks",
+        "playbooks": "playbooks",
         "knowledge": "source_notes",
     }
     category = aliases.get(category, category)
@@ -4881,7 +4885,7 @@ def _merge_memory_log(memory: dict) -> dict:
         if len(row) < 3:
             continue
         source = str(row[3] if len(row) > 3 else "" or "").strip()
-        if source in {"cap_overflow", "consolidation_prune"}:
+        if source in {"cap_overflow", "consolidation_prune", "playbook_replace", "playbook_delete"}:
             continue
         category = _normalise_memory_category(row[1])
         item = str(row[2] or "").strip()
@@ -5069,6 +5073,120 @@ def remove_memory_entries(category: str, entries: list[str], source: str = "cons
     memory[category] = bucket
     set_memory(memory)
     return len(removed_items)
+
+
+PLAYBOOK_PENDING_PROPOSAL_KEY = "playbook_pending_proposal"
+
+
+def _playbook_slug(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", str(name or "").strip().lower()).strip("-")
+    return slug or "playbook"
+
+
+def _playbook_entries() -> list[tuple[str, dict]]:
+    entries: list[tuple[str, dict]] = []
+    for raw in get_memory().get("playbooks", []):
+        try:
+            parsed = json.loads(str(raw))
+        except Exception:
+            logger.warning("Skipping malformed playbook memory entry: %s", str(raw)[:160])
+            continue
+        if not isinstance(parsed, dict):
+            logger.warning("Skipping non-object playbook memory entry: %s", str(raw)[:160])
+            continue
+        name = str(parsed.get("name", "")).strip()
+        body = str(parsed.get("body", "")).strip()
+        if not name or not body:
+            logger.warning("Skipping incomplete playbook memory entry: %s", str(raw)[:160])
+            continue
+        clean = {
+            "name": _playbook_slug(name),
+            "description": str(parsed.get("description", "")).strip(),
+            "body": body,
+            "updated": str(parsed.get("updated", "")).strip(),
+        }
+        entries.append((str(raw), clean))
+    return entries
+
+
+def get_playbooks() -> list[dict]:
+    return [dict(parsed) for _raw, parsed in _playbook_entries()]
+
+
+def upsert_playbook(name: str, description: str = "", body: str = "") -> dict:
+    slug = _playbook_slug(name)
+    body = str(body or "").strip()
+    if not body:
+        raise ValueError("Playbook body is required")
+    existing = [
+        raw
+        for raw, parsed in _playbook_entries()
+        if _playbook_slug(parsed.get("name", "")) == slug
+    ]
+    if existing:
+        remove_memory_entries("playbooks", existing, source="playbook_replace")
+    payload = {
+        "name": slug,
+        "description": str(description or "").strip(),
+        "body": body,
+        "updated": datetime.now(SGT).strftime("%Y-%m-%d"),
+    }
+    return _append_memory_json("playbooks", payload, limit=MEMORY_STORAGE_CAPS["playbooks"])
+
+
+def delete_playbook(name: str) -> bool:
+    slug = _playbook_slug(name)
+    targets = [
+        raw
+        for raw, parsed in _playbook_entries()
+        if _playbook_slug(parsed.get("name", "")) == slug
+    ]
+    if not targets:
+        return False
+    return remove_memory_entries("playbooks", targets, source="playbook_delete") > 0
+
+
+def get_pending_playbook_proposal() -> dict | None:
+    raw = (get_config(PLAYBOOK_PENDING_PROPOSAL_KEY) or "").strip()
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        logger.warning("Ignoring malformed pending playbook proposal")
+        return None
+    if not isinstance(payload, dict):
+        return None
+    name = str(payload.get("name", "")).strip()
+    body = str(payload.get("body", "")).strip()
+    if not name or not body:
+        return None
+    return {
+        "name": _playbook_slug(name),
+        "description": str(payload.get("description", "")).strip(),
+        "body": body,
+        "summary": str(payload.get("summary", "")).strip(),
+        "proposed_at": str(payload.get("proposed_at", "")).strip(),
+    }
+
+
+def set_pending_playbook_proposal(name: str, description: str = "", body: str = "", summary: str = "") -> dict:
+    body = str(body or "").strip()
+    if not body:
+        raise ValueError("Playbook body is required")
+    payload = {
+        "name": _playbook_slug(name),
+        "description": str(description or "").strip(),
+        "body": body,
+        "summary": str(summary or "").strip(),
+        "proposed_at": datetime.now(SGT).isoformat(),
+    }
+    set_config(PLAYBOOK_PENDING_PROPOSAL_KEY, json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    return payload
+
+
+def clear_pending_playbook_proposal() -> None:
+    set_config(PLAYBOOK_PENDING_PROPOSAL_KEY, "")
 
 
 def add_correction(entry: dict) -> dict:

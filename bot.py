@@ -532,6 +532,7 @@ MEMORY_DISPLAY_CATEGORIES = (
     "self_reflections",
     "learned_preferences",
     "source_notes",
+    "playbooks",
 )
 
 # 2026-05-12: lifted from inside SYSTEM_PROMPT so /memcheck can render the same
@@ -555,7 +556,17 @@ MEMORY_PROMPT_LIMITS: dict[str, int | None] = {
     "conversation_episodes": 12,
     "templates":          20,
     "files":              15,
+    "playbooks":          0,
 }
+
+PLAYBOOK_MAX_SELECTED = 2
+PLAYBOOK_BODY_BUDGET = 4000
+PLAYBOOK_PENDING_TTL = timedelta(hours=24)
+PLAYBOOK_SEEDED_CONFIG_KEY = "playbooks_seeded"
+PLAYBOOK_SEED_DESCRIPTION = (
+    "LFC / Liverpool / football transfer and X (Twitter) news: sourcing rules, reliability tiers, output format"
+)
+PLAYBOOK_SEED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hira-lfc-news-playbook.md")
 
 def get_history(user_id):
     r = _get_redis()
@@ -3484,7 +3495,7 @@ Rules:
 - Never invent mosque or place locations. If a place location affects the answer and you do not have a verified source/tool result, say what you know and what is unverified. Be especially careful with Singapore masjid names that sound similar.
 - Known mosque correction: Masjid Al-Muttaqin is at 5140 Ang Mo Kio Ave 6, Singapore 569844, not Kovan.
 - For journey-time estimates, use the current device location context when it is provided. If it is not provided, use only explicit user-provided origin/destination or stable stored memory, and label any estimate as rough.
-- You have tools: create_calendar_event, delete_calendar_event_by_text, bulk_delete_duplicate_calendar_events, find_available_training_slots, get_cca_schedule, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, get_classops_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_mtl_classlists, analyze_mtl_scores, generate_mtl_score_trend_report, apply_mtl_failure_highlighting, update_mtl_class_score, fill_mtl_percentage_scores, get_gmail_brief, create_gmail_draft, search_vault, read_note, list_recent_notes, append_to_inbox, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, create_topic_profile, remember_source_insight, update_project_status, get_nea_weather, get_muis_prayer_times, get_muis_friday_khutbah, get_latest_news, get_liverpool_brief, get_f1_brief, web_search, and fetch_url. Use them proactively.
+- You have tools: create_calendar_event, delete_calendar_event_by_text, bulk_delete_duplicate_calendar_events, find_available_training_slots, get_cca_schedule, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, get_classops_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_mtl_classlists, analyze_mtl_scores, generate_mtl_score_trend_report, apply_mtl_failure_highlighting, update_mtl_class_score, fill_mtl_percentage_scores, get_gmail_brief, create_gmail_draft, search_vault, read_note, list_recent_notes, append_to_inbox, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, create_topic_profile, propose_playbook_update, remember_source_insight, update_project_status, get_nea_weather, get_muis_prayer_times, get_muis_friday_khutbah, get_latest_news, get_liverpool_brief, get_f1_brief, web_search, and fetch_url. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking, but do not recreate tasks that are already in the task brief or recently marked done. If a scanned email/screenshot repeats a completed or already-tracked item, report that it is already handled instead of adding a new reminder.
 - When the user mentions marking scripts, papers, compositions, kefahaman, karangan, worksheets, or a marking stack, use marking tools instead of ordinary reminders: add_marking_task for a new stack, update_marking_progress when he says how many scripts are marked, reset_marking_load when he asks to reset/clear the marking load or board, and get_marking_brief when he asks what marking is outstanding. Marking tasks are mission-critical and must persist even at 0 outstanding; only complete one when he explicitly says that marking stack is done, completed, can be closed, reset, or cleared.
@@ -3527,6 +3538,7 @@ Rules:
 - Treat Source_Notes as source-backed research memory. Use them as leads and context, but live-check anything marked live_check, rumour, temporary, or time-sensitive.
 - When the user says they have a new interest, are getting into a topic, want H.I.R.A to track/learn/follow something, or asks to build a beginner map for a new topic — call create_topic_profile. Store what to track, preferred angle, which facts should be live-checked, and stable background context. Do not store volatile standings/results/prices as permanent facts; mark those as live_facts.
 - When the user says he bought, ordered, owns, picked up, upgraded to, or is a new owner of an item — treat that as an ownership-aware interest. Create or update a topic profile with category="ownership", kind="ownership", a practical new-owner angle, setup tips, hidden features, maintenance, accessories, firmware/software updates, current issues, community tips, and a 2-4 week high-curiosity window that later tapers to major/useful updates only.
+- Durable topic-behaviour coaching belongs in playbooks. When the user asks to change how H.I.R.A handles a topic, draft the full updated playbook and call propose_playbook_update. Never claim the playbook changed until Herwanto explicitly confirms the pending proposal.
 - When the user gives a project progress update — call update_project_status.
 - When the user asks to follow up with someone later, call create_followup.
 - When the user asks to follow up based on an email, Gmail, inbox, or a recent message, call get_gmail_brief first and use the returned sender, subject, date, snippet/body excerpt to create the follow-up. Do not ask him to paste email details unless Gmail is not connected or the matching email cannot be found.
@@ -3822,6 +3834,56 @@ def clear_openai_response_state(state_key: str | None = None) -> None:
             logger.warning("OpenAI response state Redis delete failed: %s", exc)
 
 
+def _playbook_slug(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", str(name or "").strip().lower()).strip("-")
+
+
+def _playbook_trace_items(playbooks: list[dict] | None) -> list[dict]:
+    items = []
+    for playbook in (playbooks or [])[:PLAYBOOK_MAX_SELECTED]:
+        items.append({
+            "name": str(playbook.get("name", "") or ""),
+            "description": str(playbook.get("description", "") or ""),
+            "body_chars": len(str(playbook.get("body", "") or "")),
+        })
+    return items
+
+
+def _model_policy_trace_payload(policy: dict | None = None) -> dict:
+    payload = dict(policy or {})
+    if payload.get("playbooks"):
+        payload["playbooks"] = _playbook_trace_items(payload.get("playbooks") or [])
+    return payload
+
+
+def _openai_playbook_instruction(policy: dict | None = None) -> str:
+    selected = list((policy or {}).get("playbooks") or [])[:PLAYBOOK_MAX_SELECTED]
+    blocks: list[str] = []
+    used_body_chars = 0
+    for playbook in selected:
+        name = str(playbook.get("name", "") or "").strip()
+        body = str(playbook.get("body", "") or "").strip()
+        if not name or not body:
+            continue
+        remaining = PLAYBOOK_BODY_BUDGET - used_body_chars
+        if remaining <= 0:
+            break
+        if len(body) > remaining:
+            marker = "\n[playbook truncated]"
+            keep = max(0, remaining - len(marker))
+            body = f"{body[:keep].rstrip()}{marker}" if keep else marker[:remaining]
+            used_body_chars = PLAYBOOK_BODY_BUDGET
+        else:
+            used_body_chars += len(body)
+        blocks.append(
+            "Active playbook — "
+            f"{name} (user-authored, follow strictly; on conflict with general instructions, "
+            f"the playbook wins for its topic):\n{body}"
+        )
+    joined = "\n\n".join(blocks)
+    return f"\n\n{joined}" if joined else ""
+
+
 def _openai_supports_reasoning(model: str = "") -> bool:
     clean = str(model or "").lower()
     return clean.startswith(("gpt-5", "o1", "o3", "o4"))
@@ -3870,7 +3932,7 @@ def _openai_specialist_instruction(policy: dict | None = None) -> str:
 
 
 def _openai_instructions_for_policy(policy: dict | None = None) -> str:
-    return f"{SYSTEM_PROMPT()}{_openai_specialist_instruction(policy)}"
+    return f"{SYSTEM_PROMPT()}{_openai_specialist_instruction(policy)}{_openai_playbook_instruction(policy)}"
 
 
 def _openai_request_options(
@@ -5046,6 +5108,21 @@ TOPIC_PROFILE_TOOL = {
             "update_cadence": {"type": "string", "description": "Optional cadence, e.g. race weekends, weekly, when I ask, major news only."}
         },
         "required": ["topic"]
+    }
+}
+
+PROPOSE_PLAYBOOK_UPDATE_TOOL = {
+    "name": "propose_playbook_update",
+    "description": "Draft a complete playbook update for durable topic-specific behavior. This stores a pending proposal only; Herwanto must explicitly confirm before it becomes active.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Playbook slug or topic name, e.g. lfc-news."},
+            "description": {"type": "string", "description": "Short one-line description of the playbook scope."},
+            "body": {"type": "string", "description": "The full proposed playbook body to store if confirmed."},
+            "summary": {"type": "string", "description": "Concise summary of what changed for Herwanto to confirm."},
+        },
+        "required": ["name", "body", "summary"]
     }
 }
 
@@ -15537,6 +15614,146 @@ async def memcheck_cmd(update, context):
     """
     await _send_text_payload(update, await asyncio.to_thread(_memcheck_payload))
 
+
+def _pending_playbook_expired(proposal: dict, now: datetime | None = None) -> bool:
+    raw = str((proposal or {}).get("proposed_at", "") or "").strip()
+    if not raw:
+        return True
+    try:
+        proposed_at = datetime.fromisoformat(raw)
+    except Exception:
+        return True
+    if proposed_at.tzinfo is None:
+        proposed_at = SGT.localize(proposed_at)
+    current = now or datetime.now(SGT)
+    if current.tzinfo is None:
+        current = SGT.localize(current)
+    return current - proposed_at > PLAYBOOK_PENDING_TTL
+
+
+def apply_pending_playbook_update() -> str:
+    proposal = gs.get_pending_playbook_proposal()
+    if not proposal:
+        return "No pending playbook proposal."
+    if _pending_playbook_expired(proposal):
+        gs.clear_pending_playbook_proposal()
+        return "Pending playbook proposal expired. Ask H.I.R.A to propose it again."
+    saved = gs.upsert_playbook(
+        proposal["name"],
+        proposal.get("description", ""),
+        proposal.get("body", ""),
+    )
+    gs.clear_pending_playbook_proposal()
+    summary = proposal.get("summary") or "Applied the pending playbook update."
+    return f"Applied playbook: {saved['name']}\nSummary: {summary}"
+
+
+def discard_pending_playbook_update() -> str:
+    proposal = gs.get_pending_playbook_proposal()
+    gs.clear_pending_playbook_proposal()
+    if not proposal:
+        return "No pending playbook proposal to discard."
+    return f"Discarded pending playbook proposal: {proposal['name']}"
+
+
+def pwa_playbook_command_reply(text: str) -> tuple[str, str] | None:
+    clean = re.sub(r"\s+", " ", str(text or "").strip().lower())
+    if clean == "/playbook apply":
+        return apply_pending_playbook_update(), "propose_playbook_update"
+    if clean == "/playbook discard":
+        return discard_pending_playbook_update(), "propose_playbook_update"
+    return None
+
+
+def seed_playbooks_if_needed() -> dict:
+    try:
+        seeded_flag = str(gs.get_config(PLAYBOOK_SEEDED_CONFIG_KEY) or "").strip().lower()
+        if seeded_flag in {"1", "true", "yes", "done"}:
+            return {"seeded": False, "reason": "already_seeded"}
+        if gs.get_playbooks():
+            gs.set_config(PLAYBOOK_SEEDED_CONFIG_KEY, "1")
+            return {"seeded": False, "reason": "playbooks_exist"}
+        if not os.path.exists(PLAYBOOK_SEED_FILE):
+            logger.warning("Playbook seed file missing: %s", PLAYBOOK_SEED_FILE)
+            return {"seeded": False, "reason": "seed_file_missing"}
+        with open(PLAYBOOK_SEED_FILE, encoding="utf-8") as handle:
+            body = handle.read().strip()
+        if not body:
+            logger.warning("Playbook seed file is empty: %s", PLAYBOOK_SEED_FILE)
+            return {"seeded": False, "reason": "seed_file_empty"}
+        playbook = gs.upsert_playbook("lfc-news", PLAYBOOK_SEED_DESCRIPTION, body)
+        gs.set_config(PLAYBOOK_SEEDED_CONFIG_KEY, "1")
+        logger.info("Seeded playbook: %s", playbook.get("name"))
+        return {"seeded": True, "name": playbook.get("name", "lfc-news")}
+    except Exception as exc:
+        logger.warning("Playbook seed skipped: %s", exc)
+        return {"seeded": False, "reason": str(exc)}
+
+
+def _playbooks_payload() -> dict:
+    try:
+        playbooks = gs.get_playbooks()
+        pending = gs.get_pending_playbook_proposal()
+    except Exception as exc:
+        return _text_payload(f"Playbook error: {exc}")
+    lines = ["Playbooks:"]
+    if not playbooks:
+        lines.append("- None stored.")
+    for playbook in playbooks:
+        desc = playbook.get("description") or "No description"
+        lines.append(
+            f"- {playbook['name']} — {desc} "
+            f"(updated {playbook.get('updated') or 'unknown'}, {len(playbook.get('body', ''))} chars)"
+        )
+    if pending:
+        status = "expired" if _pending_playbook_expired(pending) else "pending"
+        summary = pending.get("summary") or "No summary"
+        lines.extend([
+            "",
+            f"Pending proposal ({status}): {pending['name']}",
+            f"Summary: {summary}",
+        ])
+    return _text_payload("\n".join(lines))
+
+
+def _playbook_chunks(name: str) -> list[str]:
+    slug = _playbook_slug(name)
+    for playbook in gs.get_playbooks():
+        if _playbook_slug(playbook.get("name", "")) != slug:
+            continue
+        header = (
+            f"Playbook: {playbook['name']}\n"
+            f"Description: {playbook.get('description') or 'No description'}\n"
+            f"Updated: {playbook.get('updated') or 'unknown'}\n\n"
+        )
+        text = f"{header}{playbook.get('body', '')}"
+        return [text[index:index + 3900] for index in range(0, len(text), 3900)] or [header]
+    return [f"No playbook named {slug}."]
+
+
+async def playbooks_cmd(update, context):
+    await _send_text_payload(update, await asyncio.to_thread(_playbooks_payload))
+
+
+async def playbook_cmd(update, context):
+    arg_text = " ".join(context.args).strip()
+    if not arg_text:
+        await _send_text_payload(update, await asyncio.to_thread(_playbooks_payload))
+        return
+    clean = arg_text.lower().strip()
+    if clean == "apply":
+        await update.message.reply_text(await asyncio.to_thread(apply_pending_playbook_update))
+        return
+    if clean == "discard":
+        await update.message.reply_text(await asyncio.to_thread(discard_pending_playbook_update))
+        return
+    try:
+        chunks = await asyncio.to_thread(_playbook_chunks, arg_text)
+    except Exception as exc:
+        chunks = [f"Playbook error: {exc}"]
+    for chunk in chunks:
+        await update.message.reply_text(chunk)
+
 async def forget_cmd(update, context):
     if not google_ok():
         await update.message.reply_text("Google not connected.")
@@ -15679,6 +15896,7 @@ def _core_tools():
         SLIDE_ARTIFACT_TOOL,
         TEMPLATE_MEMORY_TOOL,
         TOPIC_PROFILE_TOOL,
+        PROPOSE_PLAYBOOK_UPDATE_TOOL,
         FOLLOWUP_TOOL,
         COMPLETE_TASK_TOOL,
         COMPLETE_FOLLOWUP_TOOL,
@@ -15765,7 +15983,7 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
                 tools.append(item)
 
     if is_hira_capability_feedback(effective_text):
-        add(CONTEXT_TOOL, MEMORY_TOOL)
+        add(CONTEXT_TOOL, MEMORY_TOOL, PROPOSE_PLAYBOOK_UPDATE_TOOL)
         return tools
 
     blocked_action = _latest_blocked_action_from_context(context)
@@ -15910,8 +16128,13 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         add(SLIDE_ARTIFACT_TOOL, TEMPLATE_MEMORY_TOOL)
     if re.search(r"\b(new interest|new topic|getting into|got into|picked up|i'?m into|i am into|deep dive|beginner map|track this|follow this|learn this|teach me about)\b", effective_text):
         add(TOPIC_PROFILE_TOOL, MEMORY_TOOL)
+    if re.search(
+        r"\b(?:playbook|topic[- ]behaviou?r|how you handle|when i ask about|next time)\b",
+        effective_text,
+    ):
+        add(PROPOSE_PLAYBOOK_UPDATE_TOOL, MEMORY_TOOL)
     if _is_memory_commit_query_text(text) or re.search(r"\b(preference|prefer|template|style|project status|milestone)\b", effective_text) or "memory" in semantic_flags:
-        add(MEMORY_TOOL, PROJECT_TOOL, TEMPLATE_MEMORY_TOOL, TOPIC_PROFILE_TOOL)
+        add(MEMORY_TOOL, PROJECT_TOOL, TEMPLATE_MEMORY_TOOL, TOPIC_PROFILE_TOOL, PROPOSE_PLAYBOOK_UPDATE_TOOL)
     if re.search(r"\b(gameplan|ruh|rūḥ|app|apps|project|projects|product|products|app store|play store|review|approved|rejected|submitted|launched|shipped|released|blocked|progress|status|milestone|client|demo)\b", effective_text):
         add(CONTEXT_TOOL, PROJECT_TOOL, MEMORY_TOOL)
 
@@ -15934,6 +16157,7 @@ _SIDE_EFFECT_TOOL_PREFIXES = (
     "delete_",
     "fill_",
     "generate_",
+    "propose_",
     "remember_",
     "reset_",
     "set_",
@@ -16336,12 +16560,15 @@ def _openai_effective_response_model(resp, request_kwargs: dict | None = None) -
     return str((request_kwargs or {}).get("model") or "").strip()
 
 
-async def _run_agentic_openai(messages, max_tokens=2048, tools=None, openai_state_key: str | None = None):
+async def _run_agentic_openai(messages, max_tokens=2048, tools=None, openai_state_key: str | None = None, playbooks: list[dict] | None = None):
     tools = tools or _core_tools()
     reply_text = ""
     max_iterations = 8
     all_tool_results: list[dict] = []
     policy = model_policy_for_messages(messages)
+    if playbooks:
+        policy = dict(policy)
+        policy["playbooks"] = list(playbooks)[:PLAYBOOK_MAX_SELECTED]
     model = str(policy.get("model") or _agentic_model_for_messages(messages))
     previous_response_id = _openai_previous_response_id(openai_state_key)
     openai_input = _openai_latest_input(messages) if previous_response_id else _openai_input_from_messages(messages)
@@ -16464,13 +16691,20 @@ async def _run_agentic_chat(
     tools=None,
     openai_state_key: str | None = None,
     direct_user_text: str | None = None,
+    playbooks: list[dict] | None = None,
 ):
     token = _TOOL_DIRECT_USER_TEXT.set(_tool_direct_user_text_from_messages(messages, direct_user_text))
     try:
         provider_status = _llm_provider_status_reply(messages)
         if provider_status:
             return provider_status
-        return await _run_agentic_openai(messages, max_tokens=max_tokens, tools=tools, openai_state_key=openai_state_key)
+        return await _run_agentic_openai(
+            messages,
+            max_tokens=max_tokens,
+            tools=tools,
+            openai_state_key=openai_state_key,
+            playbooks=playbooks,
+        )
     finally:
         _TOOL_DIRECT_USER_TEXT.reset(token)
 
@@ -16536,6 +16770,68 @@ def _safe_short_quick_chat(text: str, recent_context: str = "") -> bool:
     if len(clean.split()) <= 10 and re.search(r"\b(?:switched|changed|tweaked|moved|set)\b.*\b(?:backend|model|provider|api)\b", clean):
         return True
     return _obvious_quick_chat(text)
+
+
+def _skip_playbook_selection_text(text: str) -> bool:
+    clean = str(text or "").strip()
+    if not clean or _obvious_quick_chat(clean):
+        return True
+    week_type, _week_number = _school_week_from_text(clean)
+    if week_type and re.search(r"\b(?:this|current)?\s*week\s+(?:is|=)\s*(?:odd|even|o|e)\b", clean, re.I):
+        return True
+    return False
+
+
+async def _select_playbooks(text: str) -> list[dict]:
+    clean = str(text or "").strip()
+    if _skip_playbook_selection_text(clean):
+        return []
+    try:
+        playbooks = await asyncio.to_thread(gs.get_playbooks)
+    except Exception as exc:
+        logger.warning("Playbook load failed; continuing without playbook: %s", exc)
+        return []
+    if not playbooks:
+        return []
+    descriptions = "\n".join(
+        f"- {playbook.get('name', '')}: {str(playbook.get('description', '') or '')[:300]}"
+        for playbook in playbooks
+        if playbook.get("name")
+    )
+    if not descriptions.strip():
+        return []
+    prompt = (
+        "Choose up to two playbooks that should guide this user message. "
+        "Reply with NONE or a comma-separated list of playbook names only. "
+        "Do not explain.\n\n"
+        f"Available playbooks:\n{descriptions}\n\n"
+        f"Message:\n{clean[:2000]}"
+    )
+    try:
+        raw = await asyncio.wait_for(
+            _llm_text_async(
+                model=ROUTER_MODEL,
+                max_tokens=40,
+                messages=[{"role": "user", "content": prompt}],
+            ),
+            timeout=4.0,
+        )
+    except Exception as exc:
+        logger.warning("Playbook router failed; continuing without playbook: %s", exc)
+        return []
+    verdict = str(raw or "").strip()
+    if not verdict or verdict.upper().startswith("NONE"):
+        return []
+    by_slug = {_playbook_slug(playbook.get("name", "")): playbook for playbook in playbooks}
+    selected: list[dict] = []
+    for token in re.split(r"[,;\n]+", verdict):
+        slug = _playbook_slug(token)
+        if slug in by_slug and by_slug[slug] not in selected:
+            selected.append(by_slug[slug])
+        if len(selected) >= PLAYBOOK_MAX_SELECTED:
+            break
+    return selected
+
 
 _CONTEXTUAL_FOLLOWUP_REPLIES = {
     "yes",
@@ -16952,6 +17248,7 @@ async def stream_agentic_openai(
     max_tokens=650,
     tools=None,
     openai_state_key: str | None = None,
+    playbooks: list[dict] | None = None,
 ):
     tools = tools or _core_tools()
     reply_text = ""
@@ -16959,10 +17256,13 @@ async def stream_agentic_openai(
     all_tool_results: list[dict] = []
     native_tool_events_seen: set[str] = set()
     policy = model_policy_for_messages(messages)
+    if playbooks:
+        policy = dict(policy)
+        policy["playbooks"] = list(playbooks)[:PLAYBOOK_MAX_SELECTED]
     model = str(policy.get("model") or _agentic_model_for_messages(messages))
     previous_response_id = _openai_previous_response_id(openai_state_key)
     openai_input = _openai_latest_input(messages) if previous_response_id else _openai_input_from_messages(messages)
-    yield {"type": "trace", "patch": {"model_policy": policy, "openai_stateful": bool(previous_response_id)}}
+    yield {"type": "trace", "patch": {"model_policy": _model_policy_trace_payload(policy), "openai_stateful": bool(previous_response_id)}}
     action_preflight = await _openai_action_preflight(messages, tools)
     if action_preflight:
         yield {"type": "trace", "patch": {"action_preflight": action_preflight}}
@@ -17148,6 +17448,7 @@ async def stream_agentic_chat(
     tools=None,
     openai_state_key: str | None = None,
     direct_user_text: str | None = None,
+    playbooks: list[dict] | None = None,
 ):
     token = _TOOL_DIRECT_USER_TEXT.set(_tool_direct_user_text_from_messages(messages, direct_user_text))
     try:
@@ -17156,7 +17457,13 @@ async def stream_agentic_chat(
             yield {"type": "text", "text": provider_status}
             yield {"type": "done", "text": provider_status}
             return
-        async for event in stream_agentic_openai(messages, max_tokens=max_tokens, tools=tools, openai_state_key=openai_state_key):
+        async for event in stream_agentic_openai(
+            messages,
+            max_tokens=max_tokens,
+            tools=tools,
+            openai_state_key=openai_state_key,
+            playbooks=playbooks,
+        ):
             yield event
     finally:
         _TOOL_DIRECT_USER_TEXT.reset(token)
@@ -17526,6 +17833,26 @@ async def _execute_tool(name: str, inp: dict) -> str:
             )
         except Exception as e:
             return f"Failed to fill MTL percentage scores: {e}"
+
+    elif name == "propose_playbook_update":
+        try:
+            blocked = _validated_action_failure(name, inp)
+            if blocked:
+                return blocked
+            proposal = gs.set_pending_playbook_proposal(
+                inp.get("name", ""),
+                inp.get("description", ""),
+                inp.get("body", ""),
+                inp.get("summary", ""),
+            )
+            summary = proposal.get("summary") or "No summary provided."
+            return (
+                f"Stored pending playbook proposal for {proposal['name']}.\n"
+                f"Summary: {summary}\n\n"
+                "Show Herwanto this summary and ask him to confirm with /playbook apply or discard with /playbook discard."
+            )
+        except Exception as e:
+            return f"Failed to propose playbook update: {e}"
 
     elif name == "remember_user_info":
         try:
@@ -18218,7 +18545,13 @@ async def handle_message(update, context):
 async def _process_user_text(update, context, text: str):
     with _measure_latency("telegram_chat", chars=len(text or "")):
         user_id = update.effective_user.id
-        preflight = await asyncio.to_thread(_process_user_text_preflight, user_id, text)
+        preflight_task = asyncio.to_thread(_process_user_text_preflight, user_id, text)
+        playbook_task = None if _skip_playbook_selection_text(text or "") else asyncio.create_task(_select_playbooks(text))
+        if playbook_task:
+            preflight, selected_playbooks = await asyncio.gather(preflight_task, playbook_task)
+        else:
+            preflight = await preflight_task
+            selected_playbooks = []
         if preflight.get("early"):
             await _send_text_payload(update, preflight["early"])
             return
@@ -18233,7 +18566,12 @@ async def _process_user_text(update, context, text: str):
 
         try:
             messages = list(history)
-            reply_text = await _run_agentic_chat(messages, max_tokens=1024, direct_user_text=text)
+            reply_text = await _run_agentic_chat(
+                messages,
+                max_tokens=1024,
+                direct_user_text=text,
+                playbooks=selected_playbooks,
+            )
             reply_text, _repair_meta = await maybe_self_repair_reply(
                 text,
                 reply_text,
@@ -20347,6 +20685,7 @@ async def _pwa_worker_repeating_loop(name: str, interval: int, first: int, job):
 async def run_pwa_notification_worker():
     logger.info("H.I.R.A PWA notification worker running.")
     _log_memory("pwa_worker startup", force=True)
+    await asyncio.to_thread(seed_playbooks_if_needed)
     await asyncio.to_thread(sync_openai_vector_memory, reason="pwa_worker_startup")
     morning_hour, morning_minute = MORNING_BRIEFING_TIME
     evening_hour, evening_minute = EVENING_BRIEFING_TIME
@@ -20489,6 +20828,8 @@ def main():
     app.add_handler(_cmd("remember", remember_cmd))
     app.add_handler(_cmd("memory",   memory_cmd))
     app.add_handler(_cmd("memcheck", memcheck_cmd))
+    app.add_handler(_cmd("playbooks", playbooks_cmd))
+    app.add_handler(_cmd("playbook", playbook_cmd))
     app.add_handler(_cmd("forget",   forget_cmd))
     app.add_handler(_cmd("search",   search_cmd))
     app.add_handler(_cmd("weather",  weather_cmd))
@@ -20565,6 +20906,7 @@ def main():
     )
     logger.info("Herwanto OS running — all systems active.")
     _log_memory("startup", force=True)
+    seed_playbooks_if_needed()
     sync_openai_vector_memory(reason="telegram_startup")
     app.run_polling(drop_pending_updates=True)
 
