@@ -3330,7 +3330,7 @@ def _home_agenda_text(days: int, structured: dict, snapshot: dict) -> str:
         today_relief = bool((structured.get("days") or [{}])[0].get("relieved"))
         visible_lessons = [] if today_relief else list(lessons or [])
         lines.append(f"*Today at school ({bot._week_display(wt_label, today)})*")
-        lines.append(bot.tt.format_lessons(visible_lessons))
+        lines.append(bot.tt.format_lessons(visible_lessons, hbl=bot._hbl_for_date(today)))
         lines.append("")
     if not snapshot.get("google"):
         lines.append("_Google not connected._")

@@ -3472,7 +3472,7 @@ Rules:
 - For data lookups, use the user's words as intent: "last 5 emails" means latest 5 Gmail messages; "what's on today" means schedule/context; "anything due" means reminders/tasks; "who do I owe replies/follow-ups to" means Gmail/follow-up/task context as relevant.
 - For timetable or lesson lookups, use get_timetable. TIMETABLE in timetable.py is the source of truth for lessons; Google Calendar is only for events/appointments.
 - For recurring school timetable items such as PLT, FTCT/CCE, ML lessons, classes, or periods: never answer from memory alone when the question is dated ("today", "tomorrow", a weekday) or phrased as verification ("are you sure", "confirm", "do I have"). Call get_timetable first, then answer using the exact date, weekday, week type, and whether that item appears in the returned timetable. If it is absent, say it is absent; do not add it to calendar or imply a commitment.
-- HBL guardrail: Never infer HBL from Friday, Even-week Friday, a free day, or "no timetabled lessons". Say it is HBL only when a dated source explicitly marks that date as HBL. If the assistant context says "HBL status: Not HBL", treat that as authoritative over stale/general HBL memories or generic recurring labels.
+- HBL guardrail: The Semester 2 timetable explicitly marks Odd Friday as HBL. Never infer HBL from any other Friday, a free day, or "no timetabled lessons". Say it is HBL only when a dated source or the Semester 2 Odd-Friday timetable rule marks that date as HBL. If the assistant context says "HBL status: Not HBL", treat that as authoritative over stale/general HBL memories or generic recurring labels.
 - If Stored memory says Herwanto's lessons/classes are covered by relief for a date, treat those timetable lessons as covered for workload and overlap warnings. Do not warn that a calendar item clashes with relieved lessons unless newer user/calendar information clearly contradicts the relief memory.
 - For CCA schedule/duty questions, use get_cca_schedule. The canonical source is Herwanto's CCA schedule Google Sheet. Select the tab by the requested/current date and school week. If Herwanto's name is not on that day's schedule, do not prompt him and do not add a CCA duty/event to his calendar.
 - For availability planning ("best slots", "free slots", "when can I schedule", "after school", "not during CCA day"), call find_available_training_slots before suggesting times. Do not suggest a slot until timetable lessons and Google Calendar conflicts have been checked.
@@ -5726,7 +5726,8 @@ def _timetable_for_lookup(day: str | None = "", week_type: str | None = "") -> s
         wt_code = "O" if wt == "odd" else "E"
         wt_label = tt.week_type_label(wt_code)
         lessons = tt.TIMETABLE.get((day_name, wt_code), [])
-        return f"{day_name} {wt_label} week timetable:\n{tt.format_lessons(lessons)}"
+        hbl = tt.is_timetable_hbl(day_name, wt_code)
+        return f"{day_name} {wt_label} week timetable:\n{tt.format_lessons(lessons, hbl=hbl)}"
 
     lessons, wt_label = _lessons_for_date(today)
     if _normalise_timetable_day(day):
@@ -5740,7 +5741,8 @@ def _timetable_for_lookup(day: str | None = "", week_type: str | None = "") -> s
             wt_code = tt.get_week_type(ref_date, ref_type, today)
         lessons = tt.TIMETABLE.get((day_name, wt_code), [])
         wt_label = tt.week_type_label(wt_code)
-    return f"{day_name} {wt_label} week timetable:\n{tt.format_lessons(lessons)}"
+    hbl = tt.is_timetable_hbl(day_name, "O" if wt_label == "Odd" else "E")
+    return f"{day_name} {wt_label} week timetable:\n{tt.format_lessons(lessons, hbl=hbl)}"
 
 def _lessons_for_date(target):
     official_week = tt.get_school_week_info(target)
@@ -5787,6 +5789,11 @@ def _agenda_week_display(target: date) -> str:
     return f"{tt.week_type_label(official_week['week_type'])} week, {base}"
 
 
+def _hbl_for_date(target: date) -> bool:
+    official_week = tt.get_school_week_info(target)
+    return bool(official_week and official_week.get("is_hbl"))
+
+
 def build_cca_schedule_brief(target_date: str = "") -> str:
     if not google_ok():
         return "Google is not connected, so I cannot read the CCA schedule sheet."
@@ -5821,10 +5828,10 @@ def _hbl_status_line(target: date) -> str:
     if not official_week or target.weekday() > 4 or official_week.get("is_school_holiday"):
         return ""
     if official_week.get("is_hbl"):
-        return "HBL status: HBL is explicitly marked for this date."
+        return "HBL status: HBL is explicitly marked for this date by the Semester 2 timetable."
     return (
-        "HBL status: Not HBL. Do not infer HBL from Friday, an Even-week free day, "
-        "or no timetabled lessons."
+        "HBL status: Not HBL. Do not infer HBL from a free day or no timetabled lessons; "
+        "only explicit HBL dates or the Semester 2 Odd-Friday rule count."
     )
 
 def _format_memory(memory: dict) -> str:
@@ -6593,7 +6600,7 @@ def build_context_snapshot(days: int = 7) -> str:
     lessons, wt_label = _lessons_for_date(today)
     if wt_label:
         lines.append(f"\nToday's lessons ({_week_display(wt_label, today)}):")
-        lines.append(tt.format_lessons(lessons).replace("*", ""))
+        lines.append(tt.format_lessons(lessons, hbl=_hbl_for_date(today)).replace("*", ""))
         hbl_line = _hbl_status_line(today)
         if hbl_line:
             lines.append(hbl_line)
@@ -6704,7 +6711,7 @@ def build_agenda(days: int = 7) -> str:
     lessons, wt_label = _lessons_for_date(today)
     if wt_label and today.weekday() < 5:
         lines.append(f"*Today at school ({_week_display(wt_label, today)})*")
-        lines.append(tt.format_lessons(_visible_lessons_for_date(today, lessons)))
+        lines.append(tt.format_lessons(_visible_lessons_for_date(today, lessons), hbl=_hbl_for_date(today)))
         lines.append("")
 
     if not google_ok():
@@ -14430,7 +14437,7 @@ def build_briefing(record_news_digest: bool = False):
     lessons, wt_label = _lessons_for_date(today)
     if wt_label:
         lines.append(f"*Today's lessons ({_week_display(wt_label, today)}):*")
-        lines.append(tt.format_lessons(lessons))
+        lines.append(tt.format_lessons(lessons, hbl=_hbl_for_date(today)))
     elif google_ok():
         lines.append("_Timetable: use /setweek to activate_")
     lines.append("")
@@ -14509,8 +14516,8 @@ def build_evening_briefing():
     if wt_label:
         lesson_count = len(lessons)
         lines.append(f"- Lessons: {lesson_count} block{'s' if lesson_count != 1 else ''} ({_week_display(wt_label, today)})")
-        if lessons:
-            lines.append(tt.format_lessons(lessons))
+        if lessons or _hbl_for_date(today):
+            lines.append(tt.format_lessons(lessons, hbl=_hbl_for_date(today)))
     else:
         lines.append("- Lessons: no active timetable reference.")
     if google_ok():
@@ -14539,7 +14546,7 @@ def build_evening_briefing():
     lines.append("")
     if tomorrow_wt_label:
         lines.append(f"Lessons ({_week_display(tomorrow_wt_label, tomorrow)}):")
-        lines.append(tt.format_lessons(tomorrow_lessons))
+        lines.append(tt.format_lessons(tomorrow_lessons, hbl=_hbl_for_date(tomorrow)))
     else:
         lines.append("No timetable reference for tomorrow.")
     lines.append("")
@@ -14673,7 +14680,7 @@ def _today_payload(today) -> dict:
     lessons, wt_label = _lessons_for_date(today)
     if wt_label:
         lines.append(f"*Lessons ({_week_display(wt_label, today)}):*")
-        lines.append(tt.format_lessons(lessons))
+        lines.append(tt.format_lessons(lessons, hbl=_hbl_for_date(today)))
     else:
         lines.append("_Timetable: use /setweek to activate_")
     lines.append("")
@@ -14695,7 +14702,7 @@ def _tomorrow_payload(tomorrow) -> dict:
     lessons, wt_label = _lessons_for_date(tomorrow)
     if wt_label:
         lines.append(f"*Lessons ({_week_display(wt_label, tomorrow)}):*")
-        lines.append(tt.format_lessons(lessons))
+        lines.append(tt.format_lessons(lessons, hbl=_hbl_for_date(tomorrow)))
     else:
         lines.append("_Timetable: use /setweek to activate_")
     lines.append("")
@@ -15143,7 +15150,7 @@ async def lessons_cmd(update, context):
         return
     lessons, wt_label = _lessons_for_date(today)
     day_str = datetime.now(SGT).strftime("%A, %-d %B")
-    await reply(update, f"*{day_str} ({_week_display(wt_label, today)})*\n\n{tt.format_lessons(lessons)}", parse_mode="Markdown")
+    await reply(update, f"*{day_str} ({_week_display(wt_label, today)})*\n\n{tt.format_lessons(lessons, hbl=_hbl_for_date(today))}", parse_mode="Markdown")
 
 async def setweek_cmd(update, context):
     if not google_ok():

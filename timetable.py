@@ -1,7 +1,7 @@
 """
 Herwanto's NBSS timetable data.
-Source: Master teaching timetable supplied by Herwanto.
-Timetable generated: 13/3/2026 | aSc Timetables.
+Source: Semester 2 master teaching timetable supplied by Herwanto.
+Timetable generated: 25/6/2026 | aSc Timetables.
 
 Week types: O = Odd, E = Even
 Use /setweek to set the current week type once — bot calculates all future weeks.
@@ -45,6 +45,8 @@ SCHOOL_TERMS_2026 = [
     ("Term IV", date(2026, 9, 14), date(2026, 11, 20)),
 ]
 
+TIMETABLE_EFFECTIVE_FROM = date(2026, 6, 29)
+
 SCHOOL_CLOSURE_DATES_2026 = {
     date(2026, 1, 1),   # New Year's Day
     date(2026, 2, 17),  # Chinese New Year
@@ -60,22 +62,36 @@ SCHOOL_CLOSURE_DATES_2026 = {
     date(2026, 11, 9),  # Deepavali public holiday
 }
 
-# NBSS HBL dates are school-specific and must be explicit. Do not infer HBL
-# from a Friday, an Even-week free day, or the absence of timetabled lessons.
+# NBSS HBL dates/rules are school-specific and must be explicit. Semester 2's
+# user-supplied timetable marks Odd Friday as HBL.
 HBL_DATES_2026: set[date] = set()
+HBL_TIMETABLE_RULES_2026 = {("Fri", "O")}
+
+
+def is_timetable_hbl(day_name: str | None, week_type: str | None) -> bool:
+    return (day_name, week_type) in HBL_TIMETABLE_RULES_2026
+
+
+def _is_hbl_date(query_date: date, week_type: str, is_school_holiday: bool) -> bool:
+    if query_date in HBL_DATES_2026:
+        return True
+    if query_date < TIMETABLE_EFFECTIVE_FROM or is_school_holiday:
+        return False
+    return is_timetable_hbl(DAY_MAP.get(query_date.weekday()), week_type)
 
 SCHOOL_CALENDAR_MEMORY_2026 = (
     "MOE 2026 MK/Primary/Secondary calendar: Term I 2 Jan-13 Mar; "
     "Term II 23 Mar-29 May; Term III 29 Jun-4 Sep; Term IV 14 Sep-20 Nov. "
     "Timetable week numbers reset at each term start; odd-numbered weeks use Odd timetable, "
-    "even-numbered weeks use Even timetable. HBL is not inferred from Friday/free-day timetable; "
-    "only explicit HBL dates count."
+    "even-numbered weeks use Even timetable. HBL is not inferred from a free timetable day; "
+    "only explicit HBL dates or the Semester 2 Odd-Friday timetable rule count."
 )
 
 TIMETABLE_MEMORY_2026 = (
     "Herwanto's 2026 NBSS odd/even master teaching timetable is hardcoded from "
-    "the user-supplied TIMETABLE - T. MTL MUHAMMAD HERWANTO JOHARI "
-    "(generated 13 Mar 2026 via aSc Timetables). "
+    "the user-supplied Semester 2 TIMETABLE - Teacher MTL Muhammad Herwanto Johari "
+    "(generated 25 Jun 2026 via aSc Timetables). Odd Friday is HBL; "
+    "Even Friday has scheduled FTCT/CCE, CCE, and 3G3 ML blocks. "
     "Use TIMETABLE in timetable.py as the source of truth for lesson periods, rooms, and week parity."
 )
 
@@ -105,6 +121,7 @@ def _b(periods, subject, desc, room, code=""):
 #   ML     = Bahasa Melayu lesson
 #   IPW    = Interdisciplinary Project Work
 #   PLT    = Professional Learning Teams
+#   AI     = Applied/AI block as labelled in the timetable
 #
 # Class naming: keep 1 Flagship for form class. Malay groups are shortened
 # for app display: Sec 1G2, 2G3, 3G3, 4BML.
@@ -115,16 +132,17 @@ TIMETABLE = {
 
     ("Mon", "O"): [
         _b([1],       "FTCT",  "1 Flagship",                "L4-08"),
-        _b([2, 3],    "ML",    "3G3", "L3-10", "MLG33A"),
+        _b([2, 3],    "ML",    "Sec 1G2", "L4-11", "MLG21A"),
+        _b([7, 8],    "ML",    "3G3", "L3-10", "MLG33A"),
         _b([10, 11],  "ML",    "2G3", "L4-12", "MLG31"),
-        _b([12, 13],  "ML",    "Sec 1G2", "L4-11", "MLG21"),
     ],
 
     ("Mon", "E"): [
         _b([1],       "FTCT",  "1 Flagship",                "L4-08"),
-        _b([2, 3],    "ML",    "Sec 1G2", "L4-11", "MLG21A"),
-        _b([7, 8],    "ML",    "3G3", "L3-10", "MLG33A"),
+        _b([2, 3],    "ML",    "3G3", "L3-10", "MLG33A"),
+        _b([7, 8],    "ML",    "4BML", "L4-12", "BMLA"),
         _b([10, 11],  "ML",    "2G3", "L4-12", "MLG31"),
+        _b([12, 13],  "ML",    "Sec 1G2", "L4-11", "MLG21"),
     ],
 
     # ── TUESDAY ───────────────────────────────────────────────────────────────
@@ -132,15 +150,16 @@ TIMETABLE = {
     ("Tue", "O"): [
         _b([1],       "FTCT",  "1 Flagship",                "L4-08"),
         _b([2, 3],    "CCE",   "1 Flagship",                "L4-08"),
-        _b([5, 6],    "ML",    "2G3", "L4-12", "MLG31A"),
-        _b([10, 11],  "ML",    "Sec 1G2", "L4-11", "MLG21A"),
+        _b([5, 6],    "ML",    "Sec 1G2", "L4-11", "MLG21"),
+        _b([7, 8],    "ML",    "3G3", "L3-24", "MLG33"),
     ],
 
     ("Tue", "E"): [
         _b([1],       "FTCT",  "1 Flagship",                "L4-08"),
         _b([2, 3],    "CCE",   "1 Flagship",                "L4-08"),
-        _b([5, 6],    "ML",    "Sec 1G2", "L4-11", "MLG21"),
-        _b([12, 13],  "ML",    "3G3", "L3-10", "MLG33"),
+        _b([5, 6],    "ML",    "2G3", "L4-12", "MLG31A"),
+        _b([7, 8],    "AI",    "2 Expedition", "L3-06"),
+        _b([10, 11],  "ML",    "Sec 1G2", "L4-11", "MLG21A"),
     ],
 
     # ── WEDNESDAY ─────────────────────────────────────────────────────────────
@@ -154,34 +173,33 @@ TIMETABLE = {
 
     ("Wed", "E"): [
         _b([2],       "FTCT",  "1 Flagship",                "L4-08"),
-        _b([4, 5],    "PLT",   "MTL Department",            "-"),
         _b([8, 9],    "ML",    "2G3", "L4-12", "MLG31A"),
-        _b([10, 11],  "ML",    "4BML", "L4-12", "BMLA"),
+        _b([10, 11],  "ML",    "4BML", "L3-11", "BMLA"),
     ],
 
     # ── THURSDAY ──────────────────────────────────────────────────────────────
 
     ("Thu", "O"): [
-        _b([1],       "FTCT",  "1 Flagship",                "L4-08"),
-        _b([5, 6],    "IPW",   "2 Compass",                 "L3-03"),
-        _b([12, 13],  "ML",    "3G3", "L3-10", "MLG33"),
+        _b([1],       "FTCT/CCE", "1 Flagship",             "L4-08"),
+        _b([2],       "CCE",   "1 Flagship",                "L4-08"),
+        _b([3, 4],    "ML",    "3G3", "L3-24", "MLG33"),
+        _b([8, 9],    "ML",    "Sec 1G2", "L4-11", "MLG21A"),
     ],
 
     ("Thu", "E"): [
-        _b([1],       "FTCT/CCE", "1 Flagship",             "L4-08"),
-        _b([2],       "CCE",   "1 Flagship",                "L4-08"),
-        _b([8, 9],    "ML",    "Sec 1G2", "L4-11", "MLG21A"),
+        _b([1],       "FTCT",  "1 Flagship",                "L4-08"),
+        _b([2, 3],    "PLT",   "MTL Department",            "-"),
     ],
 
     # ── FRIDAY ────────────────────────────────────────────────────────────────
 
-    ("Fri", "O"): [
+    ("Fri", "O"): [],  # HBL — no timetabled lessons
+
+    ("Fri", "E"): [
         _b([1],       "FTCT/CCE", "1 Flagship",             "L4-08"),
         _b([2],       "CCE",   "1 Flagship",                "L4-08"),
         _b([8, 9],    "ML",    "3G3", "L3-10", "MLG33A"),
     ],
-
-    ("Fri", "E"): [],  # Free day — no lessons
 }
 
 
@@ -219,12 +237,13 @@ def get_school_week_info(query_date: date) -> dict | None:
         if start <= query_date <= end:
             week_number = ((query_date - start).days // 7) + 1
             week_type = "O" if week_number % 2 else "E"
+            is_school_holiday = query_date in SCHOOL_CLOSURE_DATES_2026
             return {
                 "term": term_name,
                 "week_number": week_number,
                 "week_type": week_type,
-                "is_school_holiday": query_date in SCHOOL_CLOSURE_DATES_2026,
-                "is_hbl": query_date in HBL_DATES_2026,
+                "is_school_holiday": is_school_holiday,
+                "is_hbl": _is_hbl_date(query_date, week_type, is_school_holiday),
             }
     return None
 
@@ -246,9 +265,11 @@ def get_lessons(target_date: date, ref_date_str: str, ref_type: str) -> list:
     return TIMETABLE.get((day_name, week_type), [])
 
 
-def format_lessons(lessons: list, week_type: str = "") -> str:
+def format_lessons(lessons: list, week_type: str = "", hbl: bool = False) -> str:
     """Format lesson list for Telegram display."""
     if not lessons:
+        if hbl:
+            return "HBL (home-based learning) — no timetabled lessons."
         return "No timetabled lessons — free day."
 
     lines = []
