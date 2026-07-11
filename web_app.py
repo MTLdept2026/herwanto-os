@@ -44,8 +44,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260711-upgrade-1"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v159"
+PWA_APP_VERSION = "20260711-upgrade-2"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v160"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -56,6 +56,8 @@ _HOME_EXECUTOR = ThreadPoolExecutor(max_workers=_HOME_EXECUTOR_WORKERS)
 _HOME_DIGEST_CACHE: dict = {}
 _HOME_DIGEST_CACHE_LOCK = threading.Lock()
 _HOME_DIGEST_CACHE_SECONDS = 15 * 60
+_HOME_JOB_HEALTH: dict[str, dict] = {}
+_HOME_JOB_HEALTH_LOCK = threading.Lock()
 _CLASSOPS_REFRESH_FUTURE = None
 _WEB_SCHEDULER_TASKS: list[asyncio.Task] = []
 _WEB_MEMORY_WATCHDOG_TASK: asyncio.Task | None = None
@@ -106,6 +108,19 @@ _WEB_PUSH_RECOVERY_MAX_AGE_HOURS = _env_int("HIRA_WEB_PUSH_RECOVERY_MAX_AGE_HOUR
 _WEB_PUSH_RECOVERY_LIMIT = _env_int("HIRA_WEB_PUSH_RECOVERY_LIMIT", 3, minimum=1)
 _HOME_PRIMARY_TIMEOUT_SECONDS = max(2.0, min(15.0, _env_float("HIRA_HOME_PRIMARY_TIMEOUT_SECONDS", 8.0)))
 _HOME_SECONDARY_TIMEOUT_SECONDS = max(2.0, min(15.0, _env_float("HIRA_HOME_SECONDARY_TIMEOUT_SECONDS", 8.0)))
+_HOME_JOB_FAILURE_THRESHOLD = _env_int("HIRA_HOME_PROVIDER_FAILURE_THRESHOLD", 3, minimum=1)
+_HOME_JOB_COOLDOWN_SECONDS = _env_int("HIRA_HOME_PROVIDER_COOLDOWN_SECONDS", 120, minimum=10)
+_GROWTH_PUBLIC = _env_bool("HIRA_GROWTH_PUBLIC", True)
+_GROWTH_PATHS = {
+    "/growth",
+    "/hira-growth",
+    "/hira-growth.css",
+    "/hira-growth.js",
+    "/hira-growth-data.json",
+    "/static/hira-growth.css",
+    "/static/hira-growth.js",
+    "/static/hira-growth-data.json",
+}
 _STATIC_PATHS = {
     "/",
     "/growth",
@@ -237,6 +252,8 @@ async def add_static_cache_headers(request: Request, call_next):
                 {"detail": f"Request is too large. Limit is {_MAX_REQUEST_BYTES // (1024 * 1024)} MB."},
                 status_code=413,
             ))
+        if request.url.path in _GROWTH_PATHS and not _GROWTH_PUBLIC:
+            return _apply_security_headers(JSONResponse({"detail": "Not found"}, status_code=404))
         if request.url.path.startswith("/api/") and request.url.path not in {"/api/auth/session"}:
             expected = _expected_web_token()
             if not expected:
@@ -3208,6 +3225,54 @@ def _home_timing(timings: list[dict] | None, phase: str, started: float, status:
     _record_home_timing(timings, phase, round((time.perf_counter() - started) * 1000), status, detail)
 
 
+def _home_job_circuit(phase: str) -> dict:
+    with _HOME_JOB_HEALTH_LOCK:
+        return dict(_HOME_JOB_HEALTH.get(phase) or {})
+
+
+def _home_job_succeeded(phase: str, value) -> None:
+    with _HOME_JOB_HEALTH_LOCK:
+        _HOME_JOB_HEALTH[phase] = {
+            "failures": 0,
+            "open_until": 0.0,
+            "last_error": "",
+            "last_success_at": time.time(),
+            "last_good": value,
+        }
+
+
+def _home_job_failed(phase: str, detail: str) -> None:
+    now = time.time()
+    with _HOME_JOB_HEALTH_LOCK:
+        current = dict(_HOME_JOB_HEALTH.get(phase) or {})
+        failures = int(current.get("failures", 0) or 0) + 1
+        current.update({
+            "failures": failures,
+            "last_error": str(detail or "Provider failed")[:240],
+        })
+        if failures >= _HOME_JOB_FAILURE_THRESHOLD:
+            current["open_until"] = now + _HOME_JOB_COOLDOWN_SECONDS
+        _HOME_JOB_HEALTH[phase] = current
+
+
+def _home_provider_health() -> dict:
+    now = time.time()
+    with _HOME_JOB_HEALTH_LOCK:
+        snapshot = {key: dict(value) for key, value in _HOME_JOB_HEALTH.items()}
+    health = {}
+    for phase, item in snapshot.items():
+        open_until = float(item.get("open_until", 0) or 0)
+        last_success_at = float(item.get("last_success_at", 0) or 0)
+        health[phase] = {
+            "state": "paused" if open_until > now else "ready",
+            "failures": int(item.get("failures", 0) or 0),
+            "retry_after_seconds": max(0, round(open_until - now)),
+            "last_success_at": datetime.fromtimestamp(last_success_at, tz=bot.SGT).isoformat() if last_success_at else "",
+            "last_error": str(item.get("last_error", "") or ""),
+        }
+    return health
+
+
 def _home_run_jobs(jobs: dict, fallbacks: dict, timeout: float, timings: list[dict], prefix: str = "") -> dict:
     def run_timed(builder):
         started = time.perf_counter()
@@ -3216,27 +3281,47 @@ def _home_run_jobs(jobs: dict, fallbacks: dict, timeout: float, timings: list[di
         except Exception as exc:
             return "error", None, round((time.perf_counter() - started) * 1000), str(exc)
 
-    submitted_at = {key: time.perf_counter() for key in jobs}
-    futures = {key: _HOME_EXECUTOR.submit(run_timed, builder) for key, builder in jobs.items()}
-    wait(futures.values(), timeout=timeout)
+    submitted_at = {}
+    futures = {}
     results = {}
+    now = time.time()
+    for key, builder in jobs.items():
+        phase = f"{prefix}{key}" if prefix else key
+        circuit = _home_job_circuit(phase)
+        open_until = float(circuit.get("open_until", 0) or 0)
+        if open_until > now:
+            results[key] = circuit.get("last_good", fallbacks[key])
+            remaining = max(1, round(open_until - now))
+            source = "last good result" if "last_good" in circuit else "fallback"
+            _record_home_timing(timings, phase, 0, "circuit_open", f"retry in {remaining}s; using {source}")
+            continue
+        submitted_at[key] = time.perf_counter()
+        futures[key] = _HOME_EXECUTOR.submit(run_timed, builder)
+    wait(futures.values(), timeout=timeout)
     for key, future in futures.items():
         phase = f"{prefix}{key}" if prefix else key
         if not future.done():
             future.cancel()
-            results[key] = fallbacks[key]
+            circuit = _home_job_circuit(phase)
+            results[key] = circuit.get("last_good", fallbacks[key])
+            _home_job_failed(phase, f"Timed out after {timeout:.1f}s")
             _home_timing(timings, phase, submitted_at[key], "timeout", f">{timeout:.1f}s")
             continue
         try:
             status, value, elapsed_ms, detail = future.result()
             if status == "ok":
                 results[key] = value
+                _home_job_succeeded(phase, value)
                 _record_home_timing(timings, phase, elapsed_ms)
             else:
-                results[key] = fallbacks[key]
+                circuit = _home_job_circuit(phase)
+                results[key] = circuit.get("last_good", fallbacks[key])
+                _home_job_failed(phase, detail)
                 _record_home_timing(timings, phase, elapsed_ms, "error", detail)
         except Exception as exc:
-            results[key] = fallbacks[key]
+            circuit = _home_job_circuit(phase)
+            results[key] = circuit.get("last_good", fallbacks[key])
+            _home_job_failed(phase, str(exc))
             _home_timing(timings, phase, submitted_at[key], "error", str(exc))
     return results
 
@@ -3642,6 +3727,7 @@ def _parallel_home_data(days: int, include_secondary: bool = True) -> dict:
             results[key] = fallbacks[key]
         results["secondary_pending"] = True
         results["intelligence"] = _home_intelligence(results, days)
+        results["provider_health"] = _home_provider_health()
         _home_timing(timings, "total", total_started)
         results["sync_timings"] = timings
         return results
@@ -3660,6 +3746,7 @@ def _parallel_home_data(days: int, include_secondary: bool = True) -> dict:
     results.update(_home_run_jobs(jobs, fallbacks, _HOME_SECONDARY_TIMEOUT_SECONDS, timings, prefix="extra."))
     results["secondary_pending"] = False
     results["intelligence"] = _home_intelligence(results, days)
+    results["provider_health"] = _home_provider_health()
     _home_timing(timings, "total", total_started)
     results["sync_timings"] = timings
     return results
@@ -4399,6 +4486,8 @@ def index():
 @app.get("/growth")
 @app.get("/hira-growth")
 def growth_site():
+    if not _GROWTH_PUBLIC:
+        raise HTTPException(status_code=404, detail="Not found")
     return FileResponse(PWA_DIR / "hira-growth.html")
 
 
@@ -7096,6 +7185,8 @@ def admin_status(x_hira_token: Optional[str] = Header(default=None)):
             "push_recovery": _push_recovery_summary(delivery_log, queued, subscriptions, subscription_error, queue_error),
             "prayers": bot.prayer_notification_status(),
         },
+        "home_providers": _home_provider_health(),
+        "privacy": {"growth_public": _GROWTH_PUBLIC},
     }
 
 

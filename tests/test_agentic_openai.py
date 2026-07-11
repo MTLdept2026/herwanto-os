@@ -9118,6 +9118,7 @@ class AgenticOpenAITests(unittest.TestCase):
 
     def test_chat_learning_event_marks_single_active_conversation_episode_resolved(self):
         store = {}
+        current = bot.SGT.localize(bot.datetime(2026, 5, 27, 8, 0))
         memory = {category: [] for category in bot.MEMORY_DISPLAY_CATEGORIES}
         memory["conversation_episodes"] = [json.dumps({
             "id": "episode-1",
@@ -9139,9 +9140,11 @@ class AgenticOpenAITests(unittest.TestCase):
 
         with (
             patch.object(bot, "google_ok", return_value=True),
+            patch.object(bot, "datetime", wraps=bot.datetime) as fake_datetime,
             patch.object(bot.gs, "get_config", side_effect=lambda key: store.get(key, "")),
             patch.object(bot.gs, "set_config", side_effect=lambda key, value: store.__setitem__(key, value)),
         ):
+            fake_datetime.now.return_value = current
             recorded = bot.record_chat_learning_event("All good now.", "Nice.", source="test")
 
         self.assertIn("conversation_episode", {item["type"] for item in recorded})

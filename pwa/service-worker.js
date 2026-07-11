@@ -1,18 +1,19 @@
-const CACHE_NAME = "hira-os-v159";
-const HIRA_APP_VERSION = "20260711-upgrade-1";
+const CACHE_NAME = "hira-os-v160";
+const HIRA_APP_VERSION = "20260711-upgrade-2";
 const ASSETS = [
   "/",
   "/classops",
   "/growth",
-  "/styles.css?v=20260711-upgrade-1",
-  "/static/upgrades.css?v=20260711-upgrade-1",
-  "/app.js?v=20260711-upgrade-1",
-  "/classops.css?v=20260711-upgrade-1",
-  "/classops.js?v=20260711-upgrade-1",
-  "/hira-growth.css?v=20260711-upgrade-1",
-  "/hira-growth.js?v=20260711-upgrade-1",
+  "/styles.css?v=20260711-upgrade-2",
+  "/static/upgrades.css?v=20260711-upgrade-2",
+  "/app.js?v=20260711-upgrade-2",
+  "/static/integrations.js?v=20260711-upgrade-2",
+  "/classops.css?v=20260711-upgrade-2",
+  "/classops.js?v=20260711-upgrade-2",
+  "/hira-growth.css?v=20260711-upgrade-2",
+  "/hira-growth.js?v=20260711-upgrade-2",
   "/static/hira-growth-data.json",
-  "/static/vendor/lucide.min.js?v=20260711-upgrade-1",
+  "/static/vendor/lucide.min.js?v=20260711-upgrade-2",
   "/static/icon.svg",
   "/static/icon-192.png",
   "/static/icon-512.png",
@@ -23,7 +24,11 @@ const ASSETS = [
 const standaloneClientIds = new Set();
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)));
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) =>
+      Promise.allSettled(ASSETS.map((asset) => cache.add(asset)))
+    )
+  );
   self.skipWaiting();
 });
 

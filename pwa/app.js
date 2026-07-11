@@ -1,3 +1,5 @@
+import { CONNECTIONS, integrationHealthView } from "/static/integrations.js?v=20260711-upgrade-2";
+
 function safeJsonParse(key, fallback) {
   try {
     const raw = localStorage.getItem(key);
@@ -20,9 +22,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260711-upgrade-1";
-const APP_SCRIPT = "app.js?v=20260711-upgrade-1";
-const EXPECTED_SW_CACHE = "hira-os-v159";
+const APP_VERSION = "20260711-upgrade-2";
+const APP_SCRIPT = "app.js?v=20260711-upgrade-2";
+const EXPECTED_SW_CACHE = "hira-os-v160";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
@@ -147,14 +149,6 @@ let homeGlyphDataReady = false;
 let northStarTapCount = 0;
 let northStarTapTimer = null;
 let northStarEggTimer = null;
-const CONNECTIONS = [
-  { key: "calendar", label: "Calendar", icon: "calendar" },
-  { key: "google", label: "Google", icon: "sparkles" },
-  { key: "work_drive", label: "Work Google Drive", icon: "folder" },
-  { key: "personal_gmail", label: "Personal Gmail", icon: "mail" },
-  { key: "personal_gmail2", label: "Personal Gmail 2", icon: "mail-plus" },
-  { key: "work_gmail", label: "Work Gmail", icon: "briefcase-business" },
-];
 const COMMAND_STATUS = {
   send: "Command launched.",
   fill: "Command staged. Add the missing detail and send.",
@@ -3472,7 +3466,7 @@ function renderHomeData(data = {}, { fromCache = false, savedAt = 0 } = {}) {
   $("#homeServicesLabel").textContent = warningCount ? "SERVICE NEEDS ATTENTION" : connectedCount ? "SERVICES CONNECTED" : "AWAITING CONNECTION";
   renderSegmentsAll(".services-segments", Math.round((connectedCount / CONNECTIONS.length) * 12), 12, warningCount ? "danger" : connectedCount ? "accent" : "muted");
   renderConnections(services);
-  renderIntegrationHealth(services);
+  renderIntegrationHealth(services, data.provider_health || {});
   renderDailyLoad(data.daily_load || {});
   renderBriefingDelivery(data.briefing_delivery || {});
   renderIntelligenceStack(data.intelligence || {});
@@ -3503,24 +3497,18 @@ function renderHomeData(data = {}, { fromCache = false, savedAt = 0 } = {}) {
   if (fromCache) setStatus(`Instant view from ${homeSnapshotAgeLabel(savedAt)}. Syncing quietly.`, "muted");
 }
 
-function renderIntegrationHealth(services = {}) {
+function renderIntegrationHealth(services = {}, providerHealth = {}) {
   const output = $("#integrationHealthOutput");
   if (!output) return;
-  const rows = CONNECTIONS.map(({ key, label }) => {
-    const connected = Boolean(services[key]);
-    const detail = services?._details?.[key] || {};
-    const state = String(detail.state || (connected ? "on" : "off"));
-    const stateLabel = detail.label || (connected ? "Connected" : "Needs setup");
-    return `<div class="status-row" data-state="${escapeHtml(state)}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(stateLabel)}</strong></div>`;
-  });
-  output.innerHTML = rows.join("");
-  const coreReady = Boolean(services.google || services.calendar);
+  const view = integrationHealthView(services);
+  output.innerHTML = view.rows;
   const summary = $("#integrationHealthSummary");
   if (summary) {
-    summary.textContent = coreReady
-      ? "Core calendar and task sources are connected. Optional services may still need attention."
-      : "Core calendar and task sources are disconnected. Readiness guidance is paused until they return.";
-    summary.dataset.tone = coreReady ? "ok" : "warn";
+    const pausedCount = Object.values(providerHealth).filter((item) => item?.state === "paused").length;
+    summary.textContent = pausedCount
+      ? `${view.summary} ${pausedCount} slow provider${pausedCount === 1 ? " is" : "s are"} temporarily paused.`
+      : view.summary;
+    summary.dataset.tone = view.coreReady ? "ok" : "warn";
   }
 }
 

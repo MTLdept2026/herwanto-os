@@ -12,6 +12,10 @@ from urllib.parse import unquote, urlsplit
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _browser_tests_required():
+    return os.environ.get("HIRA_REQUIRE_BROWSER_TESTS", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 class _QuietHandler(SimpleHTTPRequestHandler):
     def translate_path(self, path):
         request_path = unquote(urlsplit(path).path)
@@ -122,6 +126,8 @@ class PwaTopicNewsUiTests(unittest.TestCase):
         try:
             from playwright.sync_api import sync_playwright
         except Exception as exc:
+            if _browser_tests_required():
+                raise RuntimeError(f"Playwright is required for UI regression tests: {exc}") from exc
             raise unittest.SkipTest(f"Playwright is not installed: {exc}")
         cls._sync_playwright = staticmethod(sync_playwright)
 
@@ -134,6 +140,8 @@ class PwaTopicNewsUiTests(unittest.TestCase):
             try:
                 browser = p.chromium.launch(**launch_kwargs)
             except Exception as exc:
+                if _browser_tests_required():
+                    raise RuntimeError(f"Chromium is required for UI regression tests: {exc}") from exc
                 raise unittest.SkipTest(f"Chromium is not available for UI tests: {exc}")
             try:
                 page = browser.new_page(viewport={"width": 390, "height": 844})
@@ -257,6 +265,8 @@ class PwaTopicNewsUiTests(unittest.TestCase):
             try:
                 browser = p.chromium.launch(**launch_kwargs)
             except Exception as exc:
+                if _browser_tests_required():
+                    raise RuntimeError(f"Chromium is required for UI regression tests: {exc}") from exc
                 raise unittest.SkipTest(f"Chromium is not available for UI tests: {exc}")
             errors = []
             try:
@@ -432,3 +442,63 @@ class PwaTopicNewsUiTests(unittest.TestCase):
         self.assertNotIn("cite", messages)
         self.assertNotIn("turn0search", messages)
         self.assertNotIn("turn1search", messages)
+
+    def test_mobile_layout_and_connection_guidance_are_regression_safe(self):
+        with _static_server() as base_url, self._sync_playwright() as p:
+            executable = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+            launch_kwargs = {"headless": True}
+            if os.path.exists(executable):
+                launch_kwargs["executable_path"] = executable
+            try:
+                browser = p.chromium.launch(**launch_kwargs)
+            except Exception as exc:
+                if _browser_tests_required():
+                    raise RuntimeError(f"Chromium is required for UI regression tests: {exc}") from exc
+                raise unittest.SkipTest(f"Chromium is not available for UI tests: {exc}")
+            try:
+                page = browser.new_page(viewport={"width": 390, "height": 844})
+                page.add_init_script(
+                    """
+                    localStorage.setItem("hira_session_unlocked", "1");
+                    localStorage.setItem("hira_client_id", "ui-layout-test");
+                    localStorage.setItem("hira_pwa_chat", "[]");
+                    """
+                )
+                page.route("**/api/**", self._route_standard_api)
+                page.goto(f"{base_url}/pwa/index.html", wait_until="domcontentloaded")
+                page.wait_for_timeout(700)
+                layout = page.evaluate(
+                    """
+                    () => {
+                      const visible = (element) => {
+                        const style = getComputedStyle(element);
+                        const rect = element.getBoundingClientRect();
+                        return style.display !== "none" && style.visibility !== "hidden"
+                          && rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < innerHeight;
+                      };
+                      const small = Array.from(document.querySelectorAll("button, a, input, summary"))
+                        .filter(visible)
+                        .map((element) => {
+                          const rect = element.getBoundingClientRect();
+                          return [Math.round(rect.width), Math.round(rect.height)];
+                        })
+                        .filter(([width, height]) => width < 44 || height < 44);
+                      return {
+                        overflow: document.documentElement.scrollWidth - innerWidth,
+                        chatTop: Math.round(document.querySelector(".home-chat-mount").getBoundingClientRect().top),
+                        small,
+                      };
+                    }
+                    """
+                )
+                self.assertLessEqual(layout["overflow"], 0)
+                self.assertLess(layout["chatTop"], 844)
+                self.assertEqual(layout["small"], [])
+
+                page.locator("#settingsBtn").click()
+                self.assertEqual(page.locator(".integration-status-row").count(), 7)
+                self.assertIn("exact setup steps", page.locator("#integrationHealthSummary").inner_text())
+                self.assertIn("Railway variables", page.locator("#integrationHealthOutput").inner_text())
+                self.assertNotIn("secret values", page.locator("#integrationHealthOutput").inner_text().lower())
+            finally:
+                browser.close()

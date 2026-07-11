@@ -91,6 +91,49 @@ summary:focus-visible {
   background: var(--surface);
 }
 
+.integration-health-output .integration-status-row {
+  display: block;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.integration-status-row > summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.integration-status-row > summary::marker {
+  color: var(--text-secondary);
+}
+
+.integration-setup-copy {
+  display: grid;
+  gap: 8px;
+  padding: 10px 0 4px;
+  border-top: 1px solid var(--border-visible);
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.integration-setup-copy p,
+.integration-setup-copy small {
+  margin: 0;
+  max-width: 70ch;
+}
+
+.integration-setup-copy code {
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
 .integration-health-output .status-row[data-state="off"] strong,
 .integration-health-output .status-row[data-state="reconnect"] strong {
   color: var(--danger);

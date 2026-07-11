@@ -119,8 +119,63 @@ class CodeReviewFixesTests(unittest.TestCase):
         self.assertTrue(data["secondary_pending"])
         self.assertEqual(data["intelligence"]["data_quality"]["status"], "insufficient")
 
+    def test_home_provider_circuit_reuses_last_good_result(self):
+        calls = 0
+
+        def builder():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return {"value": "fresh"}
+            raise RuntimeError("provider down")
+
+        phase = "test.provider_circuit"
+        with web_app._HOME_JOB_HEALTH_LOCK:
+            web_app._HOME_JOB_HEALTH.pop(phase, None)
+        timings = []
+        with (
+            patch.object(web_app, "_HOME_JOB_FAILURE_THRESHOLD", 2),
+            patch.object(web_app, "_HOME_JOB_COOLDOWN_SECONDS", 60),
+        ):
+            first = web_app._home_run_jobs(
+                {"provider_circuit": builder},
+                {"provider_circuit": {"value": "fallback"}},
+                1,
+                timings,
+                prefix="test.",
+            )
+            second = web_app._home_run_jobs(
+                {"provider_circuit": builder},
+                {"provider_circuit": {"value": "fallback"}},
+                1,
+                timings,
+                prefix="test.",
+            )
+            third = web_app._home_run_jobs(
+                {"provider_circuit": builder},
+                {"provider_circuit": {"value": "fallback"}},
+                1,
+                timings,
+                prefix="test.",
+            )
+            paused = web_app._home_run_jobs(
+                {"provider_circuit": builder},
+                {"provider_circuit": {"value": "fallback"}},
+                1,
+                timings,
+                prefix="test.",
+            )
+
+        self.assertEqual(first["provider_circuit"], {"value": "fresh"})
+        self.assertEqual(second["provider_circuit"], {"value": "fresh"})
+        self.assertEqual(third["provider_circuit"], {"value": "fresh"})
+        self.assertEqual(paused["provider_circuit"], {"value": "fresh"})
+        self.assertEqual(calls, 3)
+        self.assertEqual(timings[-1]["status"], "circuit_open")
+
     def test_pwa_versions_and_accessibility_contracts_stay_aligned(self):
         app_js = (REPO_ROOT / "pwa" / "app.js").read_text()
+        integrations_js = (REPO_ROOT / "pwa" / "integrations.js").read_text()
         service_worker = (REPO_ROOT / "pwa" / "service-worker.js").read_text()
         index_html = (REPO_ROOT / "pwa" / "index.html").read_text()
 
@@ -136,8 +191,23 @@ class CodeReviewFixesTests(unittest.TestCase):
         self.assertIn("Mark done", index_html)
         self.assertIn("include_secondary=false", app_js)
         self.assertIn("needsConnection", app_js)
+        self.assertIn("integrationHealthView", app_js)
+        self.assertIn("Railway variables", integrations_js)
+        self.assertIn("Promise.allSettled", service_worker)
         self.assertIn('"/classops"', service_worker)
         self.assertIn('"/growth"', service_worker)
+
+    def test_growth_privacy_switch_can_hide_public_assets(self):
+        with patch.object(web_app, "_GROWTH_PUBLIC", False):
+            with self.assertRaises(HTTPException) as raised:
+                web_app.growth_site()
+        self.assertEqual(raised.exception.status_code, 404)
+
+    def test_ci_enforces_python_312_and_browser_regressions(self):
+        workflow = (REPO_ROOT / ".github" / "workflows" / "quality.yml").read_text()
+        self.assertIn('python-version: "3.12"', workflow)
+        self.assertIn('HIRA_REQUIRE_BROWSER_TESTS: "1"', workflow)
+        self.assertEqual((REPO_ROOT / ".python-version").read_text().strip(), "3.12")
 
     def test_upload_reader_stops_when_limit_is_exceeded(self):
         upload = _ChunkedUpload([b"aaaa", b"bbbb", b"cccc", b"dddd"])
