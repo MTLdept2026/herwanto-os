@@ -144,7 +144,10 @@ class PwaTopicNewsUiTests(unittest.TestCase):
                     raise RuntimeError(f"Chromium is required for UI regression tests: {exc}") from exc
                 raise unittest.SkipTest(f"Chromium is not available for UI tests: {exc}")
             try:
-                page = browser.new_page(viewport={"width": 390, "height": 844})
+                page = browser.new_page(
+                    viewport={"width": 390, "height": 844},
+                    service_workers="block",
+                )
                 page.add_init_script(
                     """
                     localStorage.setItem("hira_session_unlocked", "1");
@@ -181,6 +184,7 @@ class PwaTopicNewsUiTests(unittest.TestCase):
 
                 page.route("**/api/**", route_api)
                 page.goto(f"{self.base_url}/pwa/index.html", wait_until="domcontentloaded")
+                page.locator("#homeChatMount #chatForm").wait_for(timeout=6000)
                 page.locator("#messageInput").fill(prompt)
                 page.locator("#chatForm").evaluate("form => form.requestSubmit()")
                 page.locator("#messages").get_by_text(wait_for_text).wait_for(timeout=6000)
