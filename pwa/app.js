@@ -1,4 +1,4 @@
-import { CONNECTIONS, integrationHealthView } from "/static/integrations.js?v=20260711-upgrade-2";
+import { CONNECTIONS, integrationHealthView } from "/static/integrations.js?v=20260711-upgrade-3";
 
 function safeJsonParse(key, fallback) {
   try {
@@ -22,9 +22,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260711-upgrade-2";
-const APP_SCRIPT = "app.js?v=20260711-upgrade-2";
-const EXPECTED_SW_CACHE = "hira-os-v160";
+const APP_VERSION = "20260711-upgrade-3";
+const APP_SCRIPT = "app.js?v=20260711-upgrade-3";
+const EXPECTED_SW_CACHE = "hira-os-v161";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";

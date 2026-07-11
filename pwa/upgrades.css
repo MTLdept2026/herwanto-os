@@ -169,6 +169,11 @@ summary:focus-visible {
     border-radius: 16px !important;
   }
 
+  .topbar::after,
+  html[data-theme="dark"] .topbar::after {
+    display: none !important;
+  }
+
   .topbar-brand,
   html[data-theme="dark"] .topbar-brand {
     left: 26px !important;
@@ -196,10 +201,48 @@ summary:focus-visible {
     width: 96px !important;
     height: 96px !important;
     min-height: 96px !important;
+    box-sizing: border-box !important;
+  }
+
+  .nothing-glyph-display:focus-visible,
+  html[data-theme="dark"] .nothing-glyph-display:focus-visible {
+    outline: 2px solid var(--focus-ring) !important;
+    outline-offset: 2px !important;
   }
 
   .nothing-glyph-matrix {
-    padding: 12px !important;
+    gap: 1px !important;
+    padding: 10px 10px 18px !important;
+  }
+
+  .nothing-glyph-display::before {
+    opacity: 0.58 !important;
+  }
+
+  .nothing-glyph-display::after {
+    bottom: 7px !important;
+    color: rgba(247, 255, 217, 0.94) !important;
+    font-size: 10px !important;
+    text-shadow: 0 0 5px rgba(247, 255, 217, 0.5);
+  }
+
+  .nothing-glyph-dot {
+    background: rgba(247, 255, 217, 0.12) !important;
+  }
+
+  .nothing-glyph-dot.on {
+    background: #f7ffd9 !important;
+    box-shadow: 0 0 2px #ffffff, 0 0 7px rgba(247, 255, 217, 0.82) !important;
+  }
+
+  .nothing-glyph-dot.hot {
+    background: #ffffff !important;
+    box-shadow: 0 0 3px #ffffff, 0 0 9px rgba(255, 255, 255, 0.9) !important;
+  }
+
+  .nothing-glyph-dot.dim {
+    background: rgba(247, 255, 217, 0.5) !important;
+    box-shadow: 0 0 5px rgba(247, 255, 217, 0.38) !important;
   }
 
   .status-clockbar,

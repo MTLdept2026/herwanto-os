@@ -497,8 +497,10 @@ class PwaTopicNewsUiTests(unittest.TestCase):
 
                 page.locator("#settingsBtn").click()
                 self.assertEqual(page.locator(".integration-status-row").count(), 7)
-                self.assertIn("exact setup steps", page.locator("#integrationHealthSummary").inner_text())
-                self.assertIn("Railway variables", page.locator("#integrationHealthOutput").inner_text())
+                self.assertIn("exact setup steps", page.locator("#integrationHealthSummary").inner_text().lower())
+                first_integration = page.locator(".integration-status-row").first
+                first_integration.locator("summary").click()
+                self.assertIn("Railway variables", first_integration.inner_text())
                 self.assertNotIn("secret values", page.locator("#integrationHealthOutput").inner_text().lower())
             finally:
                 browser.close()

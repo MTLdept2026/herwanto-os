@@ -209,6 +209,14 @@ class CodeReviewFixesTests(unittest.TestCase):
         self.assertIn('HIRA_REQUIRE_BROWSER_TESTS: "1"', workflow)
         self.assertEqual((REPO_ROOT / ".python-version").read_text().strip(), "3.12")
 
+    def test_mobile_clock_alignment_and_visibility_contract(self):
+        upgrades_css = (REPO_ROOT / "pwa" / "upgrades.css").read_text()
+        self.assertIn('html[data-theme="dark"] .topbar::after', upgrades_css)
+        self.assertIn("display: none !important;", upgrades_css)
+        self.assertIn("gap: 1px !important;", upgrades_css)
+        self.assertIn("background: #f7ffd9 !important;", upgrades_css)
+        self.assertIn("font-size: 10px !important;", upgrades_css)
+
     def test_upload_reader_stops_when_limit_is_exceeded(self):
         upload = _ChunkedUpload([b"aaaa", b"bbbb", b"cccc", b"dddd"])
 

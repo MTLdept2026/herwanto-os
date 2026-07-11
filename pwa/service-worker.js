@@ -1,19 +1,19 @@
-const CACHE_NAME = "hira-os-v160";
-const HIRA_APP_VERSION = "20260711-upgrade-2";
+const CACHE_NAME = "hira-os-v161";
+const HIRA_APP_VERSION = "20260711-upgrade-3";
 const ASSETS = [
   "/",
   "/classops",
   "/growth",
-  "/styles.css?v=20260711-upgrade-2",
-  "/static/upgrades.css?v=20260711-upgrade-2",
-  "/app.js?v=20260711-upgrade-2",
-  "/static/integrations.js?v=20260711-upgrade-2",
-  "/classops.css?v=20260711-upgrade-2",
-  "/classops.js?v=20260711-upgrade-2",
-  "/hira-growth.css?v=20260711-upgrade-2",
-  "/hira-growth.js?v=20260711-upgrade-2",
+  "/styles.css?v=20260711-upgrade-3",
+  "/static/upgrades.css?v=20260711-upgrade-3",
+  "/app.js?v=20260711-upgrade-3",
+  "/static/integrations.js?v=20260711-upgrade-3",
+  "/classops.css?v=20260711-upgrade-3",
+  "/classops.js?v=20260711-upgrade-3",
+  "/hira-growth.css?v=20260711-upgrade-3",
+  "/hira-growth.js?v=20260711-upgrade-3",
   "/static/hira-growth-data.json",
-  "/static/vendor/lucide.min.js?v=20260711-upgrade-2",
+  "/static/vendor/lucide.min.js?v=20260711-upgrade-3",
   "/static/icon.svg",
   "/static/icon-192.png",
   "/static/icon-512.png",
