@@ -1,10 +1,18 @@
-const CACHE_NAME = "hira-os-v158";
-const HIRA_APP_VERSION = "20260530-typography-12";
+const CACHE_NAME = "hira-os-v159";
+const HIRA_APP_VERSION = "20260711-upgrade-1";
 const ASSETS = [
   "/",
-  "/styles.css?v=20260530-typography-12",
-  "/app.js?v=20260530-typography-12",
-  "/static/vendor/lucide.min.js?v=20260530-typography-12",
+  "/classops",
+  "/growth",
+  "/styles.css?v=20260711-upgrade-1",
+  "/static/upgrades.css?v=20260711-upgrade-1",
+  "/app.js?v=20260711-upgrade-1",
+  "/classops.css?v=20260711-upgrade-1",
+  "/classops.js?v=20260711-upgrade-1",
+  "/hira-growth.css?v=20260711-upgrade-1",
+  "/hira-growth.js?v=20260711-upgrade-1",
+  "/static/hira-growth-data.json",
+  "/static/vendor/lucide.min.js?v=20260711-upgrade-1",
   "/static/icon.svg",
   "/static/icon-192.png",
   "/static/icon-512.png",
@@ -51,8 +59,42 @@ self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
   const url = new URL(event.request.url);
   if (url.origin === self.location.origin && url.pathname.startsWith("/api/")) return;
+  if (url.origin !== self.location.origin) return;
+
+  if (event.request.mode === "navigate") {
+    event.respondWith(
+      fetch(event.request)
+        .then(async (response) => {
+          if (response.ok) {
+            const cache = await caches.open(CACHE_NAME);
+            await cache.put(event.request, response.clone());
+          }
+          return response;
+        })
+        .catch(async () => {
+          return await caches.match(event.request)
+            || await caches.match(url.pathname)
+            || await caches.match("/");
+        })
+    );
+    return;
+  }
+
   event.respondWith(
-    fetch(event.request).catch(() => caches.match(event.request).then((cached) => cached || caches.match("/")))
+    caches.match(event.request).then((cached) => {
+      const refreshed = fetch(event.request).then(async (response) => {
+        if (response.ok) {
+          const cache = await caches.open(CACHE_NAME);
+          await cache.put(event.request, response.clone());
+        }
+        return response;
+      });
+      if (cached) {
+        event.waitUntil(refreshed.catch(() => undefined));
+        return cached;
+      }
+      return refreshed.catch(() => caches.match("/"));
+    })
   );
 });
 

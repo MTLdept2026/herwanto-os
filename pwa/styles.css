@@ -706,20 +706,20 @@ h3 {
   gap: 8px;
   padding: 12px;
   border: 1px solid var(--border);
-  border-left: 4px solid var(--interactive);
+  border-color: color-mix(in srgb, var(--interactive) 42%, var(--border));
   background: var(--surface-raised);
 }
 
 .notification-item.reminder {
-  border-left-color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
 }
 
 .notification-item.briefing {
-  border-left-color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 48%, var(--border));
 }
 
 .notification-item.update {
-  border-left-color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 52%, var(--border));
 }
 
 .notification-item-head {
@@ -2094,16 +2094,16 @@ html[data-theme="dark"] .load-badge.load-green {
 }
 
 .forecast-item {
-  border-left: 3px solid var(--success);
+  border-color: color-mix(in srgb, var(--success) 44%, var(--border-visible));
 }
 
 .forecast-item.yellow {
-  border-left-color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 52%, var(--border-visible));
 }
 
 .forecast-item.orange,
 .forecast-item.red {
-  border-left-color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border-visible));
 }
 
 .forecast-item div,
@@ -2193,21 +2193,21 @@ html[data-theme="dark"] .load-badge.load-green {
 .intelligence-item {
   min-height: 62px;
   padding: 10px 12px;
-  border-left: 3px solid var(--success);
+  border: 1px solid color-mix(in srgb, var(--success) 44%, var(--border-visible));
   background: color-mix(in srgb, var(--surface-raised) 62%, transparent);
 }
 
 .intelligence-item.yellow {
-  border-left-color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 52%, var(--border-visible));
 }
 
 .intelligence-item.orange,
 .intelligence-item.red {
-  border-left-color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border-visible));
 }
 
 .intelligence-item.empty {
-  border-left-color: var(--border-visible);
+  border-color: var(--border-visible);
 }
 
 .intelligence-item strong {
@@ -2608,16 +2608,16 @@ html[data-theme="dark"] .load-badge.load-green {
   gap: 4px;
   padding: 10px;
   border: 1px solid var(--border-visible);
-  border-left: 4px solid var(--interactive);
+  border-color: color-mix(in srgb, var(--interactive) 42%, var(--border-visible));
   background: var(--surface-raised);
 }
 
 .classops-status-row[data-severity="critical"] {
-  border-left-color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 58%, var(--border-visible));
 }
 
 .classops-status-row[data-severity="watch"] {
-  border-left-color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 52%, var(--border-visible));
 }
 
 .classops-status-row strong {
@@ -2634,7 +2634,7 @@ html[data-theme="dark"] .load-badge.load-green {
 }
 
 .classops-status-row.is-empty {
-  border-left-color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 48%, var(--border-visible));
 }
 
 .files-grid {
@@ -3412,7 +3412,7 @@ html[data-theme="dark"] .load-badge.load-green {
   min-height: 132px;
   padding: 18px 22px;
   border: 1px solid var(--border);
-  border-left: 5px solid var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
   background: var(--surface);
   box-shadow: var(--shadow-soft);
 }
@@ -3438,18 +3438,6 @@ html[data-theme="dark"] .load-badge.load-green {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-}
-
-.agenda-card.lesson .agenda-time {
-  border-left-color: var(--accent);
-}
-
-.agenda-card.event .agenda-time {
-  border-left-color: var(--warning);
-}
-
-.agenda-card.due .agenda-time {
-  border-left-color: var(--success);
 }
 
 .agenda-time {
@@ -4973,7 +4961,6 @@ body:has(#settingsPanel:not([hidden])) .quick-action-fab {
     font-size: 11px;
   }
 }
-
 
 /* ═══════════════════════════════════════════════════════════════
    NOTHING OS TOPBAR — v3

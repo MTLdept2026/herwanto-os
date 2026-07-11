@@ -11,10 +11,11 @@
       href="https://fonts.googleapis.com/css2?family=Doto:wght@600..900&family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="manifest" href="/manifest.webmanifest?v=20260530-typography-12" />
+    <link rel="manifest" href="/manifest.webmanifest?v=20260711-upgrade-1" />
     <link rel="icon" href="/static/icon.svg?v=20260510-trace-39" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=20260510-trace-39" />
-    <link rel="stylesheet" href="./styles.css?v=20260530-typography-12" />
+    <link rel="stylesheet" href="./styles.css?v=20260711-upgrade-1" />
+    <link rel="stylesheet" href="./static/upgrades.css?v=20260711-upgrade-1" />
   </head>
   <body>
     <main class="shell">
@@ -62,7 +63,7 @@
         </div>
       </div>
 
-      <section id="notificationReader" class="notification-reader" hidden role="dialog" aria-modal="true" aria-labelledby="notificationReaderTitle">
+      <section id="notificationReader" class="notification-reader" hidden role="dialog" aria-modal="true" aria-labelledby="notificationReaderTitle" tabindex="-1">
         <div class="notification-reader-backdrop" data-reader-close></div>
         <article class="notification-reader-sheet">
           <header class="notification-reader-head">
@@ -78,7 +79,7 @@
           <footer class="notification-reader-actions">
             <button id="notificationReaderDoneBtn" type="button" class="ghost-btn">
               <span data-lucide="check-circle" aria-hidden="true"></span>
-              Done
+              Mark done
             </button>
             <button id="notificationReaderSnoozeBtn" type="button" class="ghost-btn">
               <span data-lucide="alarm-clock" aria-hidden="true"></span>
@@ -90,13 +91,13 @@
             </button>
             <button type="button" class="ghost-btn" data-reader-close>
               <span data-lucide="check" aria-hidden="true"></span>
-              Done
+              Close
             </button>
           </footer>
         </article>
       </section>
 
-      <aside id="settingsPanel" class="settings-panel" hidden>
+      <aside id="settingsPanel" class="settings-panel" aria-label="Settings" tabindex="-1" hidden>
         <label class="stacked-field">
           <span>Theme</span>
           <div class="theme-toggle" role="group" aria-label="Theme">
@@ -124,6 +125,15 @@
         </label>
         <p id="notificationStateText" class="subtle notification-state">Checking notifications...</p>
         <div id="healthOutput" class="health-output" hidden></div>
+        <div class="integration-health-panel">
+          <div class="section-head compact">
+            <h3>Integration Health</h3>
+            <button id="retryIntegrationsBtn" type="button" class="ghost-btn">Retry</button>
+          </div>
+          <p id="integrationHealthSummary" class="subtle" role="status" aria-live="polite">Open Settings to check connected services.</p>
+          <div id="integrationHealthOutput" class="integration-health-output"></div>
+          <p class="subtle">If a service stays off, update its deployment credentials and retry here.</p>
+        </div>
         <div class="api-spend-panel">
           <div class="section-head compact">
             <h3>API Spend</h3>
@@ -165,7 +175,7 @@
           <strong>UTC+8</strong>
         </div>
         <div class="clock-controls" aria-label="System controls">
-          <button id="notificationsBtn" class="icon-btn notification-btn" type="button" title="Notifications">
+          <button id="notificationsBtn" class="icon-btn notification-btn" type="button" title="Notifications" aria-label="Notifications" aria-expanded="false">
             <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M10.268 21a2 2 0 0 0 3.464 0" />
               <path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326" />
@@ -180,18 +190,18 @@
               <path d="m7 10 5 5 5-5" />
             </svg>
           </button>
-          <button id="settingsBtn" class="icon-btn" title="Settings">
+          <button id="settingsBtn" class="icon-btn" title="Settings" aria-label="Settings" aria-expanded="false">
             <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" />
               <circle cx="12" cy="12" r="3" />
             </svg>
           </button>
         </div>
-        <p id="statusLine" data-tone="muted">Ready.</p>
+        <p id="statusLine" role="status" aria-live="polite" aria-atomic="true" data-tone="muted">Ready.</p>
       </section>
 
       <nav class="nav-tabs" aria-label="H.I.R.A views">
-        <button class="nav-tab active" data-view="home">Home</button>
+        <button class="nav-tab active" data-view="home" aria-current="page">Home</button>
         <button class="nav-tab" data-view="agenda">Agenda</button>
         <button class="nav-tab" data-view="tasks">Tasks</button>
         <button class="nav-tab" data-view="gmail">Gmail</button>
@@ -335,6 +345,7 @@
                 class="sr-only"
                 type="file"
                 multiple
+                aria-label="Chat attachments"
                 accept=".pdf,.docx,.pptx,.png,.jpg,.jpeg,.webp,.gif,.ogg,.m4a,.mp3,.wav,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,image/*,audio/*"
               />
               <button id="attachBtn" type="button" class="icon-btn" title="Attach file" aria-label="Attach file">
@@ -343,7 +354,7 @@
               <button id="voiceRecordBtn" type="button" class="icon-btn voice-record-btn" title="Tap to speak" aria-label="Tap to speak">
                 <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
               </button>
-              <textarea id="messageInput" rows="1" placeholder="Message H.I.R.A"></textarea>
+              <textarea id="messageInput" rows="1" placeholder="Message H.I.R.A" aria-label="Message H.I.R.A"></textarea>
               <div id="chatAttachment" class="attachment-chip" hidden>
                 <span data-lucide="file-up" aria-hidden="true"></span>
                 <span id="chatAttachmentName"></span>
@@ -474,9 +485,10 @@
               </div>
               <div id="intelligenceReadiness" class="intelligence-readiness score-green" aria-label="H.I.R.A readiness score">
                 <strong id="intelligenceReadinessValue">0</strong>
-                <span>READINESS</span>
+                <span id="intelligenceReadinessLabel">READINESS</span>
               </div>
             </div>
+            <p id="intelligenceDataQuality" class="intelligence-data-quality" role="status">Source coverage is still being checked.</p>
             <div class="intelligence-next">
               <span data-lucide="move-right" aria-hidden="true"></span>
               <div>
@@ -485,6 +497,8 @@
                 <p id="intelligenceNextBody">H.I.R.A will synthesize the next move from agenda, tasks, marking, and proactive signals.</p>
               </div>
             </div>
+            <details id="intelligenceDetail" class="intelligence-detail">
+              <summary>View forecast, plan, and evidence</summary>
             <div class="intelligence-protocol">
               <div class="intelligence-protocol-head">
                 <p class="eyebrow">Command Protocol</p>
@@ -537,6 +551,7 @@
                 <div id="intelligenceOpportunities" class="intelligence-list"></div>
               </div>
             </div>
+            </details>
             <div id="intelligenceActions" class="intelligence-actions"></div>
           </section>
 
@@ -789,7 +804,7 @@
         </div>
         <form id="gmailForm" class="query-stack panel">
           <div class="query-row">
-            <input id="gmailQuery" placeholder="is:unread newer_than:7d" />
+            <input id="gmailQuery" placeholder="is:unread newer_than:7d" aria-label="Gmail search query" />
             <select id="gmailCount" aria-label="Email count">
               <option value="5">5</option>
               <option value="10" selected>10</option>
@@ -855,9 +870,10 @@
               <input
                 id="fileInput"
                 type="file"
+                aria-label="Document to analyse"
                 accept=".pdf,.docx,.pptx,.png,.jpg,.jpeg,.webp,.gif,.ogg,.m4a,.mp3,.wav,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,image/*,audio/*"
               />
-              <textarea id="fileNote" rows="4" placeholder="What should H.I.R.A look for? Eg deadlines, your own timetable, action items, clashes, or what to do from this voice note."></textarea>
+              <textarea id="fileNote" rows="4" placeholder="What should H.I.R.A look for? Eg deadlines, your own timetable, action items, clashes, or what to do from this voice note." aria-label="Analysis instructions"></textarea>
               <button type="submit">Analyse</button>
             </form>
             <div id="fileOutput" class="rich-output"></div>
@@ -884,16 +900,16 @@
         <div id="tasksOutput" class="rich-output panel"></div>
       </section>
     </main>
-    <button id="quickActionFab" class="quick-action-fab" type="button" aria-label="Open quick actions">
+    <button id="quickActionFab" class="quick-action-fab" type="button" aria-label="Open quick actions" aria-expanded="false">
       <span data-lucide="plus" aria-hidden="true"></span>
     </button>
-    <section id="quickActionDrawer" class="quick-action-drawer" hidden aria-label="Quick actions">
+    <section id="quickActionDrawer" class="quick-action-drawer" hidden role="dialog" aria-modal="true" aria-labelledby="quickActionTitle" tabindex="-1">
       <button type="button" class="quick-drawer-backdrop" data-quick-close aria-label="Close quick actions"></button>
       <div class="quick-drawer-sheet">
         <header class="quick-drawer-head">
           <div>
             <p class="eyebrow">Quick Actions</p>
-            <h2>Do the thing</h2>
+            <h2 id="quickActionTitle">Quick actions</h2>
           </div>
           <button type="button" class="icon-btn compact" data-quick-close aria-label="Close quick actions">
             <span data-lucide="x" aria-hidden="true"></span>
@@ -935,7 +951,7 @@
         </div>
       </div>
     </section>
-    <script src="./static/vendor/lucide.min.js?v=20260530-typography-12"></script>
-    <script src="./app.js?v=20260530-typography-12" type="module"></script>
+    <script src="./static/vendor/lucide.min.js?v=20260711-upgrade-1"></script>
+    <script src="./app.js?v=20260711-upgrade-1" type="module"></script>
   </body>
 </html>

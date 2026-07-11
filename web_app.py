@@ -13,6 +13,7 @@ import re
 import secrets
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from collections import OrderedDict, deque
@@ -43,8 +44,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260530-typography-12"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v156"
+PWA_APP_VERSION = "20260711-upgrade-1"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v159"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
@@ -52,6 +53,9 @@ except ValueError:
     _HOME_EXECUTOR_WORKERS = 4
 _HOME_EXECUTOR_WORKERS = max(1, min(4, _HOME_EXECUTOR_WORKERS))
 _HOME_EXECUTOR = ThreadPoolExecutor(max_workers=_HOME_EXECUTOR_WORKERS)
+_HOME_DIGEST_CACHE: dict = {}
+_HOME_DIGEST_CACHE_LOCK = threading.Lock()
+_HOME_DIGEST_CACHE_SECONDS = 15 * 60
 _CLASSOPS_REFRESH_FUTURE = None
 _WEB_SCHEDULER_TASKS: list[asyncio.Task] = []
 _WEB_MEMORY_WATCHDOG_TASK: asyncio.Task | None = None
@@ -2721,6 +2725,8 @@ def _home_intelligence(results: dict, days: int) -> dict:
     service_values = {key: value for key, value in services.items() if not str(key).startswith("_")}
     connected_count = sum(1 for value in service_values.values() if value)
     disconnected_count = max(0, len(service_values) - connected_count)
+    core_ready = bool(services.get("google") or services.get("calendar"))
+    data_quality_status = "ready" if core_ready and not disconnected_count else "partial" if core_ready else "insufficient"
     classops_open = int(classops.get("open_submission_count") or classops.get("pending_count") or 0)
     classops_concerns = int(classops.get("concern_count") or 0)
     classops_due_now = int(classops.get("due_today_count") or 0) + int(classops.get("overdue_count") or 0)
@@ -2875,6 +2881,7 @@ def _home_intelligence(results: dict, days: int) -> dict:
         later_step = "Review the next 7 days and schedule one pre-emptive block."
 
     evidence = [
+        "Core sources connected" if core_ready else "Core sources unavailable",
         f"Load score {load_score}",
         f"{due_count} due",
         f"{unmarked} unmarked",
@@ -3008,12 +3015,60 @@ def _home_intelligence(results: dict, days: int) -> dict:
             "prompt": "Plan a focused marking sprint from my current marking load. Give me a time-boxed plan, easiest first step, and what to postpone.",
         })
 
+    if not core_ready:
+        readiness = None
+        tone = "yellow"
+        mode = "Needs connection"
+        next_move_title = "Reconnect core services"
+        next_move_body = "Calendar and task data are unavailable, so H.I.R.A will not score or prioritise this day yet."
+        next_prompt = "Help me check which H.I.R.A services are disconnected and give me the shortest safe repair sequence."
+        risks = [{
+            "label": "Insufficient data",
+            "detail": "Calendar and task sources must reconnect before H.I.R.A can safely score the day.",
+            "severity": "yellow",
+        }]
+        opportunities = []
+        confidence = "Insufficient"
+        now_step = "Open Settings and reconnect the core Google services."
+        next_step = "Refresh Home and confirm calendar and task data have returned."
+        later_step = "Only act on readiness guidance after the source coverage check passes."
+        forecast_items = [{
+            "label": "Forecast paused",
+            "when": "Until connected",
+            "detail": "H.I.R.A is withholding the forecast because the underlying schedule is unavailable.",
+            "severity": "yellow",
+        }]
+        plan_blocks = []
+        actions = [{
+            "label": "Check Connections",
+            "icon": "plug-zap",
+            "action": "fill",
+            "prompt": next_prompt,
+        }]
+
     return {
         "generated_at": datetime.now(bot.SGT).strftime("%A, %-d %B %Y, %H:%M SGT"),
         "readiness": readiness,
         "tone": tone,
         "mode": mode,
-        "signal": f"{lesson_count} lesson(s), {event_count} event(s), {due_count} due, {unmarked} unmarked.",
+        "signal": (
+            f"{lesson_count} lesson(s), {event_count} event(s), {due_count} due, {unmarked} unmarked."
+            if core_ready
+            else "Core calendar and task telemetry is unavailable."
+        ),
+        "data_quality": {
+            "status": data_quality_status,
+            "core_ready": core_ready,
+            "connected": connected_count,
+            "total": len(service_values),
+            "label": (
+                "Core sources connected"
+                if core_ready and not disconnected_count
+                else "Core sources connected; optional blind spots remain"
+                if core_ready
+                else "Insufficient data to score this day"
+            ),
+        },
         "next_move": {
             "title": next_move_title,
             "body": next_move_body,
@@ -3504,7 +3559,20 @@ def _home_files_index(snapshot: dict) -> str:
     return "\n".join(lines)
 
 
-def _parallel_home_data(days: int) -> dict:
+def _cached_home_digest_snapshot() -> dict:
+    now = time.time()
+    with _HOME_DIGEST_CACHE_LOCK:
+        cached_at = float(_HOME_DIGEST_CACHE.get("saved_at", 0) or 0)
+        cached_data = _HOME_DIGEST_CACHE.get("data")
+        if isinstance(cached_data, dict) and now - cached_at < _HOME_DIGEST_CACHE_SECONDS:
+            return cached_data
+    data = bot.build_curated_digest_snapshot()
+    with _HOME_DIGEST_CACHE_LOCK:
+        _HOME_DIGEST_CACHE.update({"saved_at": time.time(), "data": data})
+    return data
+
+
+def _parallel_home_data(days: int, include_secondary: bool = True) -> dict:
     total_started = time.perf_counter()
     timings: list[dict] = []
     fallbacks = _home_fallbacks()
@@ -3569,6 +3637,15 @@ def _parallel_home_data(days: int) -> dict:
         results["services"] = fallbacks["services"]
         _home_timing(timings, "extra.services", services_started, "error", str(exc))
 
+    if not include_secondary:
+        for key in ("briefing_delivery", "prayers", "islamic", "digest", "proactive", "classops"):
+            results[key] = fallbacks[key]
+        results["secondary_pending"] = True
+        results["intelligence"] = _home_intelligence(results, days)
+        _home_timing(timings, "total", total_started)
+        results["sync_timings"] = timings
+        return results
+
     jobs = {
         # Keep delivery status ahead of slower enrichment jobs.
         # These cards are the first place the UI reports whether H.I.R.A is
@@ -3576,11 +3653,12 @@ def _parallel_home_data(days: int) -> dict:
         "briefing_delivery": _briefing_delivery_status,
         "prayers": bot.prayer_notification_status,
         "islamic": lambda: bot.build_islamic_brief(),
-        "digest": bot.build_curated_digest_snapshot,
+        "digest": _cached_home_digest_snapshot,
         "proactive": lambda: bot.build_proactive_v2_snapshot(days=days),
         "classops": _classops_status_summary,
     }
     results.update(_home_run_jobs(jobs, fallbacks, _HOME_SECONDARY_TIMEOUT_SECONDS, timings, prefix="extra."))
+    results["secondary_pending"] = False
     results["intelligence"] = _home_intelligence(results, days)
     _home_timing(timings, "total", total_started)
     results["sync_timings"] = timings
@@ -4375,12 +4453,12 @@ def root_classops_js():
 
 
 @app.get("/api/home")
-async def home(days: int = 7, x_hira_token: Optional[str] = Header(default=None)):
+async def home(days: int = 7, include_secondary: bool = True, x_hira_token: Optional[str] = Header(default=None)):
     _require_token(x_hira_token)
     days = max(1, min(14, days))
     now = datetime.now(bot.SGT)
     async with _HOME_SEMAPHORE:
-        data = await asyncio.to_thread(_parallel_home_data, days)
+        data = await asyncio.to_thread(_parallel_home_data, days, include_secondary)
     return {
         "greeting": now.strftime("%A, %-d %B"),
         "time_label": now.strftime("%H:%M SGT"),

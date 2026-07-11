@@ -20,9 +20,9 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260530-typography-12";
-const APP_SCRIPT = "app.js?v=20260530-typography-12";
-const EXPECTED_SW_CACHE = "hira-os-v156";
+const APP_VERSION = "20260711-upgrade-1";
+const APP_SCRIPT = "app.js?v=20260711-upgrade-1";
+const EXPECTED_SW_CACHE = "hira-os-v159";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
 const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
@@ -38,6 +38,8 @@ const RIGHT_NOW_REFRESH_MS = 60 * 1000;
 const SOURCE_PLUMBING_URL_PATTERN = /https?:\/\/(?:news\.google\.com\/rss\/articles|site\.api\.espn\.com\/apis\/|duckduckgo\.com\/l\/\?)\S+/gi;
 let legacyWebToken = localStorage.getItem("hira_web_token") || "";
 let runtimeWebToken = "";
+let notificationReaderReturnFocus = null;
+let quickDrawerReturnFocus = null;
 try {
   runtimeWebToken = sessionStorage.getItem(SESSION_TOKEN_KEY) || "";
 } catch (_) {
@@ -70,6 +72,7 @@ const state = {
   lastPushSyncEndpoint: localStorage.getItem(PUSH_SYNC_ENDPOINT_KEY) || "",
   lastInputPulseAt: 0,
   homeRefreshInFlight: null,
+  homeEnrichmentInFlight: null,
   homeLastRefreshStartedAt: 0,
   homeTimelineItems: [],
   rightNow: null,
@@ -1135,9 +1138,11 @@ function renderNotificationReader(item, loading = false) {
   done.dataset.notificationId = item?.id || "";
   snooze.dataset.notificationAction = "snooze";
   snooze.dataset.notificationId = item?.id || "";
+  if (reader.hidden) notificationReaderReturnFocus = document.activeElement;
   reader.hidden = false;
   document.body.classList.add("notification-reader-open");
   refreshIcons(reader);
+  window.requestAnimationFrame(() => reader.querySelector("[data-reader-close]")?.focus());
 }
 
 function notificationFromPayload(item = {}) {
@@ -1156,6 +1161,32 @@ function closeNotificationReader() {
   state.activeNotificationId = "";
   state.activeNotificationItem = null;
   document.body.classList.remove("notification-reader-open");
+  if (notificationReaderReturnFocus?.isConnected) notificationReaderReturnFocus.focus();
+  notificationReaderReturnFocus = null;
+}
+
+function trapDialogFocus(event, root) {
+  if (event.key !== "Tab" || !root || root.hidden) return false;
+  const focusable = [...root.querySelectorAll('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+    .filter((element) => !element.hidden && element.getClientRects().length);
+  if (!focusable.length) {
+    event.preventDefault();
+    root.focus();
+    return true;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+    return true;
+  }
+  if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+    return true;
+  }
+  return false;
 }
 
 async function fetchNotificationDetail(id) {
@@ -2280,14 +2311,20 @@ function renderTrialLoop(trial = {}) {
 }
 
 function renderIntelligenceStack(intelligence = {}) {
-  const readiness = Math.max(0, Math.min(100, Number(intelligence.readiness || 0)));
+  const hasReadiness = intelligence.readiness !== null && intelligence.readiness !== undefined && Number.isFinite(Number(intelligence.readiness));
+  const readiness = hasReadiness ? Math.max(0, Math.min(100, Number(intelligence.readiness))) : 0;
   const tone = intelligenceSeverityClass(intelligence.tone || "green");
   $("#intelligenceMode").textContent = intelligence.mode || "Standby";
   $("#intelligenceSignal").textContent = intelligence.signal || "Waiting for telemetry.";
-  $("#intelligenceReadinessValue").textContent = String(Math.round(readiness));
+  $("#intelligenceReadinessValue").textContent = hasReadiness ? String(Math.round(readiness)) : "--";
   const readinessEl = $("#intelligenceReadiness");
   readinessEl.className = `intelligence-readiness score-${tone}`;
   readinessEl.style.setProperty("--score-arc", `${readiness * 2.7}deg`);
+  const dataQuality = intelligence.data_quality || {};
+  readinessEl.setAttribute("aria-label", hasReadiness ? `H.I.R.A readiness score ${Math.round(readiness)}` : "H.I.R.A readiness unavailable because core data is disconnected");
+  $("#intelligenceReadinessLabel").textContent = hasReadiness ? "READINESS" : "NEEDS DATA";
+  $("#intelligenceDataQuality").textContent = dataQuality.label || "Source coverage is still being checked.";
+  $("#intelligenceDataQuality").dataset.state = dataQuality.status || "unknown";
   const next = intelligence.next_move || {};
   $("#intelligenceNextTitle").textContent = next.title || "Protect a clean block";
   $("#intelligenceNextBody").textContent = next.body || "No critical signal is dominating right now.";
@@ -3323,7 +3360,10 @@ function restoreHomeSections() {
 function setView(name) {
   state.currentView = name;
   document.querySelectorAll(".nav-tab").forEach((tab) => {
-    tab.classList.toggle("active", tab.dataset.view === name);
+    const active = tab.dataset.view === name;
+    tab.classList.toggle("active", active);
+    if (active) tab.setAttribute("aria-current", "page");
+    else tab.removeAttribute("aria-current");
   });
   document.querySelectorAll(".view").forEach((view) => {
     view.classList.toggle("active", view.id === `${name}View`);
@@ -3432,6 +3472,7 @@ function renderHomeData(data = {}, { fromCache = false, savedAt = 0 } = {}) {
   $("#homeServicesLabel").textContent = warningCount ? "SERVICE NEEDS ATTENTION" : connectedCount ? "SERVICES CONNECTED" : "AWAITING CONNECTION";
   renderSegmentsAll(".services-segments", Math.round((connectedCount / CONNECTIONS.length) * 12), 12, warningCount ? "danger" : connectedCount ? "accent" : "muted");
   renderConnections(services);
+  renderIntegrationHealth(services);
   renderDailyLoad(data.daily_load || {});
   renderBriefingDelivery(data.briefing_delivery || {});
   renderIntelligenceStack(data.intelligence || {});
@@ -3460,6 +3501,27 @@ function renderHomeData(data = {}, { fromCache = false, savedAt = 0 } = {}) {
   renderSegmentsAll(".marked-segments", markingSegments(markedScripts, totalScripts), 12, "success");
   renderSegmentsAll(".unmarked-segments", markingSegments(unmarkedScripts, totalScripts), 12, unmarkedScripts > markedScripts ? "warning" : "accent");
   if (fromCache) setStatus(`Instant view from ${homeSnapshotAgeLabel(savedAt)}. Syncing quietly.`, "muted");
+}
+
+function renderIntegrationHealth(services = {}) {
+  const output = $("#integrationHealthOutput");
+  if (!output) return;
+  const rows = CONNECTIONS.map(({ key, label }) => {
+    const connected = Boolean(services[key]);
+    const detail = services?._details?.[key] || {};
+    const state = String(detail.state || (connected ? "on" : "off"));
+    const stateLabel = detail.label || (connected ? "Connected" : "Needs setup");
+    return `<div class="status-row" data-state="${escapeHtml(state)}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(stateLabel)}</strong></div>`;
+  });
+  output.innerHTML = rows.join("");
+  const coreReady = Boolean(services.google || services.calendar);
+  const summary = $("#integrationHealthSummary");
+  if (summary) {
+    summary.textContent = coreReady
+      ? "Core calendar and task sources are connected. Optional services may still need attention."
+      : "Core calendar and task sources are disconnected. Readiness guidance is paused until they return.";
+    summary.dataset.tone = coreReady ? "ok" : "warn";
+  }
 }
 
 function renderHomeLoadingState() {
@@ -3506,6 +3568,39 @@ function homeSlowSyncNote(timings = []) {
   return `${label} ${slow.status === "timeout" ? "timed out" : "was slow"} (${seconds}s)`;
 }
 
+function mergeCoreHomeData(core = {}, existing = null) {
+  if (!core.secondary_pending || !existing) return core;
+  const merged = { ...core };
+  for (const key of ["briefing_delivery", "prayers", "islamic", "digest", "proactive", "classops"]) {
+    if (existing[key] !== undefined) merged[key] = existing[key];
+  }
+  return merged;
+}
+
+async function loadHomeEnrichment(coreData = {}) {
+  if (state.homeEnrichmentInFlight) return state.homeEnrichmentInFlight;
+  state.homeEnrichmentInFlight = (async () => {
+    const controller = new AbortController();
+    const hardTimeout = window.setTimeout(() => controller.abort(), 14000);
+    try {
+      const data = await api(`/api/home?days=${state.homeDays}`, { headers: headers(false), signal: controller.signal });
+      saveHomeSnapshot(data);
+      renderHomeData(data);
+      const slowNote = homeSlowSyncNote(data.sync_timings);
+      setStatus(slowNote ? `Day ready. One optional source needs attention: ${slowNote}.` : "Day ready. Briefings and supporting signals are up to date.", slowNote ? "warn" : "ok");
+      return data;
+    } catch (error) {
+      const message = error.name === "AbortError" ? "Optional sources timed out." : error.message;
+      setStatus(`Core day view is ready. ${message}`, "warn");
+      return coreData;
+    } finally {
+      window.clearTimeout(hardTimeout);
+      state.homeEnrichmentInFlight = null;
+    }
+  })();
+  return state.homeEnrichmentInFlight;
+}
+
 async function loadHome({ force = false, background = false, useCache = true } = {}) {
   if (state.homeRefreshInFlight && !force) return state.homeRefreshInFlight;
   const refreshButton = $("#refreshHomeBtn");
@@ -3526,15 +3621,16 @@ async function loadHome({ force = false, background = false, useCache = true } =
     const controller = new AbortController();
     const slowNotice = window.setTimeout(() => {
       if (refreshButton) refreshButton.textContent = "Still Syncing";
-      setStatus("Still syncing live sources. Cached view stays usable meanwhile.", "muted");
-    }, 7000);
-    const hardTimeout = window.setTimeout(() => controller.abort(), 28000);
+      setStatus("Still syncing the core day view. Cached information stays usable meanwhile.", "muted");
+    }, 3000);
+    const hardTimeout = window.setTimeout(() => controller.abort(), 9000);
     try {
-      const data = await api(`/api/home?days=${state.homeDays}`, { headers: headers(false), signal: controller.signal });
-      saveHomeSnapshot(data);
-      renderHomeData(data);
+      const data = await api(`/api/home?days=${state.homeDays}&include_secondary=false`, { headers: headers(false), signal: controller.signal });
+      const mergedData = mergeCoreHomeData(data, snapshot?.data || null);
+      saveHomeSnapshot(mergedData);
+      renderHomeData(mergedData);
       const slowNote = homeSlowSyncNote(data.sync_timings);
-      setStatus(slowNote ? `Synced ${state.homeDays}-day view. Slow source: ${slowNote}.` : `Synced ${state.homeDays}-day view.`, slowNote ? "warn" : "ok");
+      setStatus(slowNote ? `Core day view ready. Slow source: ${slowNote}.` : "Core day view ready. Supporting signals are syncing quietly.", slowNote ? "warn" : "ok");
       if (refreshButton) {
         refreshButton.textContent = "Updated";
         refreshButton.classList.add("is-updated");
@@ -3544,9 +3640,10 @@ async function loadHome({ force = false, background = false, useCache = true } =
           refreshButton.classList.remove("is-updated");
         }, 1400);
       }
+      if (data.secondary_pending) loadHomeEnrichment(mergedData);
     } catch (error) {
       if (!canShowCache) renderHomeErrorState(error);
-      const message = error.name === "AbortError" ? "Live sync timed out after 28s." : error.message;
+      const message = error.name === "AbortError" ? "Core sync timed out after 9s." : error.message;
       setStatus(canShowCache ? `Live sync failed; cached view kept: ${message}` : message, canShowCache ? "warn" : "error");
       if (refreshButton) refreshButton.textContent = canShowCache ? "Retry Sync" : "Try again";
     } finally {
@@ -3616,15 +3713,31 @@ async function loadAgenda(days = 7, { force = false, useCache = true } = {}) {
   }
 }
 
+function integrationRecoveryState(message) {
+  return `
+    <div class="empty-state recovery-state">
+      <strong>Connection needed</strong>
+      <p>${escapeHtml(message)}</p>
+      <button type="button" class="ghost-btn" data-open-integration-settings>Open integration health</button>
+    </div>
+  `;
+}
+
 async function loadTasks(days = 30) {
   $("#tasksOutput").innerHTML = "<div>Loading...</div>";
   try {
     const data = await api(`/api/tasks?days=${days}`, { headers: headers(false) });
-    $("#tasksOutput").innerHTML = data.structured ? renderTaskList(data.structured) : renderTaskBriefFromText(data.text);
+    const message = String(data.text || "");
+    const needsConnection = !data.structured && /(?:unavailable until .* connected|not connected)/i.test(message);
+    $("#tasksOutput").innerHTML = needsConnection
+      ? integrationRecoveryState(message)
+      : data.structured
+        ? renderTaskList(data.structured)
+        : renderTaskBriefFromText(message);
     refreshIcons($("#tasksOutput"));
-    setStatus("Tasks refreshed.", "ok");
+    setStatus(needsConnection ? message : "Tasks refreshed.", needsConnection ? "warn" : "ok");
   } catch (error) {
-    $("#tasksOutput").textContent = `Error: ${error.message}`;
+    $("#tasksOutput").innerHTML = integrationRecoveryState(error.message);
     setStatus(error.message, "error");
   }
 }
@@ -3677,7 +3790,7 @@ async function loadGmail(event) {
     renderMailList(data.messages || []);
     setStatus(`${(data.messages || []).length} emails loaded from ${data.account}.`, "ok");
   } catch (error) {
-    output.textContent = `Error: ${error.message}`;
+    output.innerHTML = integrationRecoveryState(error.message);
     setStatus(error.message, "error");
   }
 }
@@ -3925,9 +4038,12 @@ function runQuickCommand(button) {
 function openQuickDrawer() {
   const drawer = $("#quickActionDrawer");
   if (!drawer) return;
+  quickDrawerReturnFocus = document.activeElement;
   drawer.hidden = false;
   document.body.classList.add("quick-drawer-open");
+  $("#quickActionFab")?.setAttribute("aria-expanded", "true");
   refreshIcons(drawer);
+  window.requestAnimationFrame(() => drawer.querySelector("[data-quick-close]")?.focus());
 }
 
 function closeQuickDrawer() {
@@ -3935,6 +4051,9 @@ function closeQuickDrawer() {
   if (!drawer) return;
   drawer.hidden = true;
   document.body.classList.remove("quick-drawer-open");
+  $("#quickActionFab")?.setAttribute("aria-expanded", "false");
+  if (quickDrawerReturnFocus?.isConnected) quickDrawerReturnFocus.focus();
+  quickDrawerReturnFocus = null;
 }
 
 async function jumpToQuickView(view) {
@@ -4209,6 +4328,7 @@ function setSettingsPanelOpen(open, { scroll = false } = {}) {
   const panel = $("#settingsPanel");
   panel.hidden = !open;
   $("#settingsBtn").classList.toggle("is-open", open);
+  $("#settingsBtn").setAttribute("aria-expanded", String(open));
   updateNotificationControls();
   if (open) {
     renderAppVersion();
@@ -4225,6 +4345,7 @@ $("#notificationsBtn").addEventListener("click", () => {
   const panel = $("#notificationsPanel");
   panel.hidden = !panel.hidden;
   $("#notificationsBtn").classList.toggle("is-open", !panel.hidden);
+  $("#notificationsBtn").setAttribute("aria-expanded", String(!panel.hidden));
   renderNotifications();
   updateNotificationControls();
 });
@@ -4280,6 +4401,8 @@ $("#notificationReader").addEventListener("click", (event) => {
   }
 });
 document.addEventListener("keydown", (event) => {
+  if (trapDialogFocus(event, $("#notificationReader"))) return;
+  if (trapDialogFocus(event, $("#quickActionDrawer"))) return;
   if (event.key === "Escape" && !$("#notificationReader").hidden) closeNotificationReader();
   if (event.key === "Escape" && !$("#quickActionDrawer")?.hidden) closeQuickDrawer();
 });
@@ -4287,6 +4410,10 @@ $("#enableNotificationsBtn").addEventListener("click", enableNotifications);
 $("#settingsEnableNotificationsBtn").addEventListener("click", enableNotifications);
 $("#testNotificationsBtn").addEventListener("click", sendTestNotification);
 $("#checkHealthBtn").addEventListener("click", checkNotificationHealth);
+$("#retryIntegrationsBtn").addEventListener("click", async () => {
+  setStatus("Checking connected services...", "muted");
+  await loadHome({ force: true, background: true, useCache: false });
+});
 $("#checkApiSpendBtn").addEventListener("click", () => loadApiSpend());
 $("#refreshActionLedgerBtn").addEventListener("click", () => loadActionLedger());
 $("#actionLedgerList").addEventListener("click", (event) => {
@@ -4379,6 +4506,13 @@ document.querySelectorAll(".nav-tab").forEach((tab) => {
 });
 
 document.addEventListener("click", (event) => {
+  const integrationSettings = event.target.closest("[data-open-integration-settings]");
+  if (integrationSettings) {
+    setView("home");
+    setSettingsPanelOpen(true, { scroll: true });
+    $("#settingsPanel")?.focus({ preventScroll: true });
+    return;
+  }
   const speakMessage = event.target.closest("[data-speak-message]");
   if (speakMessage) {
     event.preventDefault();
@@ -4575,6 +4709,9 @@ $("#tokenInput").value = state.token;
 if ($("#autoSpeakToggle")) $("#autoSpeakToggle").checked = state.autoSpeak;
 localStorage.setItem("hira_client_id", state.clientId);
 applyTheme();
+if (window.matchMedia("(min-width: 641px)").matches && $("#intelligenceDetail")) {
+  $("#intelligenceDetail").open = true;
+}
 refreshIcons();
 mountChatInHome();
 applyHomeSectionDismissals();

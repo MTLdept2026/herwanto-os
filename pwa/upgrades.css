@@ -1,0 +1,286 @@
+:root {
+  --text-secondary: #595951;
+  --text-disabled: #66665f;
+  --text-dark-dim: #9c9c92;
+  --focus-ring: #c90018;
+}
+
+html[data-theme="dark"] {
+  --text-secondary: #b5b6b0;
+  --text-disabled: #9a9b95;
+  --hira-muted: #b5b6b0;
+  --hira-faint: #a3a49e;
+  --focus-ring: #ff6b7a;
+}
+
+.clock-live-label span {
+  color: var(--text-secondary);
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+summary:focus-visible {
+  outline: 3px solid var(--focus-ring) !important;
+  outline-offset: 3px !important;
+  box-shadow: none !important;
+}
+
+.intelligence-data-quality {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-visible);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.intelligence-data-quality[data-state="insufficient"] {
+  border-color: var(--warning);
+  color: var(--text-primary);
+}
+
+.intelligence-detail {
+  margin-top: 14px;
+}
+
+.intelligence-detail > summary {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px;
+  border: 1px solid var(--border-visible);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.intelligence-detail[open] > summary {
+  margin-bottom: 14px;
+  background: var(--surface);
+}
+
+.integration-health-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid var(--border-visible);
+  background: var(--surface-raised);
+}
+
+.integration-health-output {
+  display: grid;
+  gap: 1px;
+  border: 1px solid var(--border-visible);
+  background: var(--border-visible);
+}
+
+.integration-health-output .status-row {
+  min-height: 44px;
+  margin: 0;
+  padding: 9px 12px;
+  background: var(--surface);
+}
+
+.integration-health-output .status-row[data-state="off"] strong,
+.integration-health-output .status-row[data-state="reconnect"] strong {
+  color: var(--danger);
+}
+
+.recovery-state {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+  min-height: 160px;
+  align-content: center;
+  padding: 20px;
+}
+
+.recovery-state p {
+  max-width: 56ch;
+  color: var(--text-secondary);
+}
+
+.ops-grid > * {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
+}
+
+@media (max-width: 640px) {
+  .shell {
+    padding: max(10px, env(safe-area-inset-top)) 16px calc(92px + env(safe-area-inset-bottom)) !important;
+  }
+
+  .topbar,
+  html[data-theme="dark"] .topbar {
+    min-height: 132px !important;
+    border-radius: 16px !important;
+  }
+
+  .topbar-brand,
+  html[data-theme="dark"] .topbar-brand {
+    left: 26px !important;
+    top: 44px !important;
+    width: 146px !important;
+  }
+
+  .topbar h1,
+  html[data-theme="dark"] .topbar h1 {
+    font-size: 31px !important;
+  }
+
+  .topbar-brand::after,
+  html[data-theme="dark"] .topbar-brand::after {
+    left: 108px !important;
+    top: 29px !important;
+    width: 13px !important;
+    height: 13px !important;
+  }
+
+  .nothing-glyph-display,
+  html[data-theme="dark"] .nothing-glyph-display {
+    top: 18px !important;
+    right: 18px !important;
+    width: 96px !important;
+    height: 96px !important;
+    min-height: 96px !important;
+  }
+
+  .nothing-glyph-matrix {
+    padding: 12px !important;
+  }
+
+  .status-clockbar,
+  html[data-theme="dark"] .status-clockbar {
+    min-height: 112px !important;
+    grid-template-columns: minmax(0, 1fr) 92px !important;
+    padding: 14px 16px !important;
+  }
+
+  .status-clockbar .status-label,
+  .status-clockbar #greetingDate,
+  .clock-live-label,
+  html[data-theme="dark"] .status-clockbar .status-label,
+  html[data-theme="dark"] .status-clockbar #greetingDate,
+  html[data-theme="dark"] .clock-live-label {
+    font-size: 10px !important;
+  }
+
+  .clock-live-label strong {
+    font-size: 15px !important;
+  }
+
+  .clock-controls,
+  html[data-theme="dark"] .clock-controls {
+    right: 10px !important;
+    bottom: 8px !important;
+    width: 92px !important;
+    flex-direction: row !important;
+    gap: 4px !important;
+  }
+
+  .clock-controls .icon-btn,
+  .clock-controls .notification-btn,
+  .clock-controls .icon-btn.is-open,
+  .clock-controls .notification-btn.is-open {
+    width: 44px !important;
+    min-width: 44px !important;
+    height: 44px !important;
+    min-height: 44px !important;
+  }
+
+  .nav-tabs {
+    position: fixed !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    z-index: 40 !important;
+    width: 100% !important;
+    max-width: none !important;
+    margin: 0 !important;
+    padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left) !important;
+    background: var(--surface-raised) !important;
+    border-top: 1px solid var(--border-visible) !important;
+    box-shadow: 0 -4px 8px rgba(0, 0, 0, 0.08) !important;
+  }
+
+  .nav-tab {
+    min-height: 56px !important;
+    border-top: 0 !important;
+    border-bottom: 0 !important;
+  }
+
+  #homeView.active {
+    display: flex;
+    flex-direction: column;
+  }
+
+  #rightNowStrip { order: 1; }
+  .today-focus-strip { order: 2; }
+  .home-actions {
+    order: 3;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .home-chat-mount { order: 4; }
+  .ops-grid { order: 5; }
+
+  .home-action-btn {
+    min-height: 48px;
+    padding: 6px 8px;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+  }
+
+  .quick-action-fab {
+    bottom: calc(70px + env(safe-area-inset-bottom)) !important;
+  }
+
+  .message-speak-btn,
+  .drawer-actions .icon-btn.compact,
+  .drawer-close,
+  .speak-target-btn {
+    width: 44px !important;
+    min-width: 44px !important;
+    height: 44px !important;
+    min-height: 44px !important;
+  }
+
+  .home-drawer .drawer-actions .icon-btn.compact,
+  .home-drawer .drawer-actions .speak-target-btn,
+  .home-drawer .drawer-close,
+  .classops-card-head .ghost-btn {
+    width: auto !important;
+    min-width: 44px !important;
+    height: 44px !important;
+    min-height: 44px !important;
+  }
+
+  .composer {
+    grid-template-columns: 44px 44px minmax(0, 1fr) 68px !important;
+  }
+
+  #attachBtn,
+  #voiceRecordBtn {
+    width: 44px !important;
+    min-width: 44px !important;
+  }
+}
+
+@media (pointer: coarse) {
+  button,
+  a.ghost-btn,
+  .chip,
+  summary {
+    min-height: 44px;
+  }
+}

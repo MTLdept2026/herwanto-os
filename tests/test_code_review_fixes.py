@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import os
+from pathlib import Path
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -14,6 +15,9 @@ import dropbox_service
 import google_services
 import postgres_storage
 import web_app
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class _ChunkedUpload:
@@ -53,6 +57,88 @@ class _DropboxTokenResponse:
 
 
 class CodeReviewFixesTests(unittest.TestCase):
+    def test_home_intelligence_refuses_score_without_core_services(self):
+        intelligence = web_app._home_intelligence({
+            "daily_load": {"today": {"score": 0}, "days": []},
+            "agenda_structured": {"days": [{"due": [], "lessons": [], "events": []}]},
+            "proactive": {},
+            "marking": {},
+            "services": {
+                "google": False,
+                "calendar": False,
+                "work_drive": False,
+                "personal_gmail": False,
+                "personal_gmail2": False,
+                "work_gmail": False,
+                "dropbox": False,
+            },
+            "tasks_structured": {"items": []},
+            "classops": {},
+        }, 7)
+
+        self.assertIsNone(intelligence["readiness"])
+        self.assertEqual(intelligence["mode"], "Needs connection")
+        self.assertEqual(intelligence["protocol"]["confidence"], "Insufficient")
+        self.assertEqual(intelligence["data_quality"]["status"], "insufficient")
+        self.assertIn("Reconnect", intelligence["next_move"]["title"])
+
+    def test_home_core_mode_skips_secondary_builders(self):
+        snapshot = {
+            "google": False,
+            "events": [],
+            "reminders": [],
+            "task_metadata": {},
+            "marking_tasks": [],
+            "memory": {},
+        }
+        services = {
+            "google": False,
+            "calendar": False,
+            "work_drive": False,
+            "personal_gmail": False,
+            "personal_gmail2": False,
+            "work_gmail": False,
+            "dropbox": False,
+        }
+        with (
+            patch.object(web_app, "_home_snapshot", return_value=snapshot),
+            patch.object(web_app, "_home_agenda_structured", return_value={"days": []}),
+            patch.object(web_app, "_home_enriched_tasks", return_value=[]),
+            patch.object(web_app, "_home_agenda_text", return_value=""),
+            patch.object(web_app, "_home_daily_load", return_value={"today": {"score": 0}, "days": []}),
+            patch.object(web_app, "_home_task_text", return_value=""),
+            patch.object(web_app, "_home_task_structured", return_value={"items": []}),
+            patch.object(web_app, "_home_files_index", return_value=""),
+            patch.object(web_app, "_marking_summary_from_tasks", return_value={}),
+            patch.object(web_app, "_service_status", return_value=services),
+            patch.object(web_app.bot, "build_curated_digest_snapshot") as digest,
+        ):
+            data = web_app._parallel_home_data(7, include_secondary=False)
+
+        digest.assert_not_called()
+        self.assertTrue(data["secondary_pending"])
+        self.assertEqual(data["intelligence"]["data_quality"]["status"], "insufficient")
+
+    def test_pwa_versions_and_accessibility_contracts_stay_aligned(self):
+        app_js = (REPO_ROOT / "pwa" / "app.js").read_text()
+        service_worker = (REPO_ROOT / "pwa" / "service-worker.js").read_text()
+        index_html = (REPO_ROOT / "pwa" / "index.html").read_text()
+
+        self.assertIn(f'const EXPECTED_SW_CACHE = "{web_app.PWA_SERVICE_WORKER_CACHE}"', app_js)
+        self.assertIn(f'const CACHE_NAME = "{web_app.PWA_SERVICE_WORKER_CACHE}"', service_worker)
+        self.assertIn(f'const APP_VERSION = "{web_app.PWA_APP_VERSION}"', app_js)
+        self.assertIn(f'const HIRA_APP_VERSION = "{web_app.PWA_APP_VERSION}"', service_worker)
+        self.assertIn('id="statusLine" role="status" aria-live="polite"', index_html)
+        self.assertIn('id="notificationReader"', index_html)
+        self.assertIn('tabindex="-1"', index_html)
+        self.assertIn('id="quickActionDrawer" class="quick-action-drawer" hidden role="dialog"', index_html)
+        self.assertIn('id="settingsPanel" class="settings-panel" aria-label="Settings" tabindex="-1"', index_html)
+        self.assertIn("Mark done", index_html)
+        self.assertIn("include_secondary=false", app_js)
+        self.assertIn("needsConnection", app_js)
+        self.assertIn('"/classops"', service_worker)
+        self.assertIn('"/growth"', service_worker)
+
     def test_upload_reader_stops_when_limit_is_exceeded(self):
         upload = _ChunkedUpload([b"aaaa", b"bbbb", b"cccc", b"dddd"])
 

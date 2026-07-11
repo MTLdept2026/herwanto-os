@@ -945,16 +945,16 @@ aside h2 {
   display: grid;
   gap: 4px;
   padding: 10px;
-  border-left: 4px solid var(--warning);
+  border: 1px solid color-mix(in srgb, var(--warning) 52%, var(--line));
   background: var(--surface);
 }
 
 .teacher-intel-panel article[data-tone="critical"] {
-  border-left-color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 58%, var(--line));
 }
 
 .teacher-intel-panel article[data-tone="muted"] {
-  border-left-color: var(--text-secondary);
+  border-color: var(--text-secondary);
 }
 
 .teacher-intel-panel p,
@@ -1056,11 +1056,11 @@ aside h2 {
 .insight-card {
   display: grid;
   gap: 6px;
-  border-left: 4px solid var(--warning);
+  border: 1px solid color-mix(in srgb, var(--warning) 52%, var(--line));
 }
 
 .insight-card[data-severity="critical"] {
-  border-left-color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 58%, var(--line));
 }
 
 .insight-card strong {
@@ -1098,10 +1098,10 @@ aside h2 {
   border-color: transparent;
 }
 
-.student-row[data-status="follow up"] { border-left: 4px solid var(--danger); }
+.student-row[data-status="follow up"] { border-color: color-mix(in srgb, var(--danger) 58%, var(--line)); }
 .student-row[data-status="catch up"],
 .student-row[data-status="marks watch"],
-.student-row[data-status="watch"] { border-left: 4px solid var(--warning); }
+.student-row[data-status="watch"] { border-color: color-mix(in srgb, var(--warning) 52%, var(--line)); }
 
 .student-row[data-student-name] {
   cursor: pointer;
@@ -1131,17 +1131,17 @@ aside h2 {
   display: grid;
   gap: 3px;
   padding: 9px 10px;
-  border-left: 4px solid var(--success);
+  border: 1px solid color-mix(in srgb, var(--success) 48%, var(--line));
   background: var(--surface);
 }
 
 .student-timeline article[data-status="missing"] {
-  border-left-color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 58%, var(--line));
 }
 
 .student-timeline article[data-status="absent"],
 .student-timeline article[data-status="marks watch"] {
-  border-left-color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 52%, var(--line));
 }
 
 .contents-row {
