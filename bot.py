@@ -13138,7 +13138,7 @@ _STATE_CHANGING_ACTIONS = {
 _VAGUE_ACTION_REF_RE = re.compile(r"\b(this|that|it|that day|the day|same day|there|then)\b", re.I)
 _CONFIRM_ACTION_RE = re.compile(
     r"^\s*(?:yes|yep|yeah|ok(?:ay)?|correct|confirm(?:ed)?|proceed|go ahead|do it|save it|add it|"
-    r"create it|delete it|remove it|mark it done|all day|"
+    r"add them|add these|add those|add to calendar|create it|delete it|remove it|mark it done|all day|"
     r"(?:yes|yep|yeah|ok(?:ay)?|correct|confirm(?:ed)?)\s+(?:save it|save draft|create it|add it|do it|go ahead|proceed)|"
     r"confirm(?:ed)?\s+(?:save\s+)?draft)(?:[.! ]*)$",
     re.I,
@@ -16579,8 +16579,9 @@ async def _run_agentic_openai(messages, max_tokens=2048, tools=None, openai_stat
     model = str(policy.get("model") or _agentic_model_for_messages(messages))
     previous_response_id = _openai_previous_response_id(openai_state_key)
     openai_input = _openai_latest_input(messages) if previous_response_id else _openai_input_from_messages(messages)
+    resolved_turn_tool = _forced_tool_for_current_turn(messages, tools)
     action_preflight = await _openai_action_preflight(messages, tools)
-    clarification = _openai_action_preflight_clarification(action_preflight)
+    clarification = "" if resolved_turn_tool else _openai_action_preflight_clarification(action_preflight)
     if clarification:
         return clarification
     preflight_tool = _openai_action_preflight_tool(action_preflight, tools)
@@ -16898,6 +16899,14 @@ def _is_contextual_followup_reply(text: str) -> bool:
     clean = _normalise_short_reply(text)
     if clean in _CONTEXTUAL_FOLLOWUP_REPLIES:
         return True
+    if re.fullmatch(
+        r"(?:add|create|schedule|save|put|block)\s+(?:it|them|these|those)"
+        r"(?:\s+(?:in|on|to)\s+(?:my\s+)?calendar)?",
+        clean,
+    ):
+        return True
+    if clean in {"add to calendar", "add in calendar", "put in calendar", "save to calendar"}:
+        return True
     words = clean.split()
     if len(words) <= 12 and re.match(r"^(?:yes|yep|yeah|sure|ok(?:ay)?|please|pls|go ahead)\b", clean):
         return True
@@ -17029,6 +17038,8 @@ def _contextual_followup_requires_full(text: str, recent_context: str = "") -> b
     blocked = _latest_blocked_action_from_context(recent_context)
     if blocked and _is_blocked_action_clarification_reply(text, blocked):
         return True
+    if _contextual_calendar_action_is_ready(text, recent_context):
+        return True
     if not _is_contextual_followup_reply(text):
         return False
     offer = _latest_contextual_offer(recent_context)
@@ -17044,14 +17055,43 @@ def _contextual_followup_requires_full(text: str, recent_context: str = "") -> b
         re.S,
     ))
 
+
+def _contextual_calendar_action_is_ready(text: str, recent_context: str = "") -> bool:
+    """Recognise a short confirmation of a fully specified calendar proposal."""
+    clean = _normalise_short_reply(text)
+    if not (
+        re.fullmatch(
+            r"(?:add|create|schedule|save|put|block)\s+(?:it|them|these|those)"
+            r"(?:\s+(?:in|on|to)\s+(?:my\s+)?calendar)?",
+            clean,
+        )
+        or clean in {"add to calendar", "add in calendar", "put in calendar", "save to calendar"}
+    ):
+        return False
+    context = str(recent_context or "").lower()
+    has_calendar_proposal = bool(re.search(r"\bcalendar\s+events?\b|\badd\b.{0,80}\bcalendar\b", context, re.S))
+    has_date = bool(re.search(
+        r"\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}\s+"
+        r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+        r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b",
+        context,
+    ))
+    has_time = bool(re.search(r"\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b", context))
+    return has_calendar_proposal and has_date and has_time
+
 def _contextual_followup_tool_from_context(
     text: str,
     recent_context: str = "",
     available: set[str] | None = None,
 ) -> str | None:
+    available = available or set()
+    if (
+        (not available or "create_calendar_event" in available)
+        and _contextual_calendar_action_is_ready(text, recent_context)
+    ):
+        return "create_calendar_event"
     if not _contextual_followup_requires_full(text, recent_context):
         return None
-    available = available or set()
     blocked = _latest_blocked_action_from_context(recent_context)
     if blocked:
         action = blocked.get("action", "")
@@ -17270,10 +17310,11 @@ async def stream_agentic_openai(
     previous_response_id = _openai_previous_response_id(openai_state_key)
     openai_input = _openai_latest_input(messages) if previous_response_id else _openai_input_from_messages(messages)
     yield {"type": "trace", "patch": {"model_policy": _model_policy_trace_payload(policy), "openai_stateful": bool(previous_response_id)}}
+    resolved_turn_tool = _forced_tool_for_current_turn(messages, tools)
     action_preflight = await _openai_action_preflight(messages, tools)
     if action_preflight:
         yield {"type": "trace", "patch": {"action_preflight": action_preflight}}
-    clarification = _openai_action_preflight_clarification(action_preflight)
+    clarification = "" if resolved_turn_tool else _openai_action_preflight_clarification(action_preflight)
     if clarification:
         yield {"type": "replace", "text": clarification}
         yield {"type": "done", "text": clarification}

@@ -504,6 +504,53 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertEqual(forced, "get_assistant_context")
         self.assertFalse(routed_quick)
 
+    def test_pwa_add_them_after_calendar_proposal_uses_calendar_tool(self):
+        proposal = (
+            "I'm ready to add these 4 calendar events:\n"
+            "- 14-16 Jul, 1:45-5:30pm - O Level Oral Examiner Duty, Yishun Town Sec\n"
+            "- 17 Jul, 1:45-5:30pm - O Level Oral Examiner Duty, Deyi Sec\n"
+            "Reply 'add them' and I'll lock them in."
+        )
+        messages = [{"role": "assistant", "content": proposal}]
+        text = "Add them"
+        tools = bot.pwa_tools_for_message(text, recent_context=proposal)
+        forced = bot._forced_tool_for_current_turn(
+            messages + [{"role": "user", "content": text}],
+            tools,
+        )
+        routed_quick = asyncio.run(bot.should_route_quick_pwa_chat(messages, text))
+
+        self.assertIn("create_calendar_event", {tool["name"] for tool in tools})
+        self.assertEqual(forced, "create_calendar_event")
+        self.assertFalse(routed_quick)
+        allowed, reason = bot._validate_state_changing_action(
+            "create_calendar_event",
+            {
+                "title": "O Level Oral Examiner Duty",
+                "date": "2026-07-14",
+                "start_time": "13:45",
+                "end_time": "17:30",
+            },
+            direct_user_text=text,
+        )
+        self.assertTrue(allowed, reason)
+
+    def test_pwa_add_to_calendar_uses_prior_detailed_proposal(self):
+        proposal = (
+            "These are the 4 calendar events: Tue 14 Jul, 1:45-5:30pm; "
+            "Wed 15 Jul, 1:45-5:30pm; Thu 16 Jul, 1:45-5:30pm; "
+            "Fri 17 Jul, 1:45-5:30pm."
+        )
+        forced = bot._forced_tool_for_current_turn(
+            [
+                {"role": "assistant", "content": proposal},
+                {"role": "user", "content": "Add to calendar"},
+            ],
+            bot._core_tools(),
+        )
+
+        self.assertEqual(forced, "create_calendar_event")
+
     def test_pwa_do_it_after_gmail_draft_offer_uses_draft_tool(self):
         messages = [
             {"role": "assistant", "content": "I can draft a reply to the latest Gmail thread. Want me to do that?"}
