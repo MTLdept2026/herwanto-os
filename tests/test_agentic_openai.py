@@ -6838,6 +6838,57 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertEqual(bot.favourite_news_topic_queries(text), [])
         self.assertEqual(web_app._pwa_topic_news_queries(text), [])
 
+    def test_due_to_orals_schedule_update_does_not_trigger_task_brief(self):
+        text = (
+            "There will be no scheduled lessons till Friday due to O Level orals. "
+            "I will be on Oral Examiner duty 14-16 July at Yishun Town Sec and at Deyi Sec on 17 July"
+        )
+
+        self.assertEqual(web_app._pwa_direct_task_days(text), 0)
+
+    def test_due_to_orals_schedule_update_adds_four_calendar_events_immediately(self):
+        text = (
+            "There will be no scheduled lessons till Friday due to O Level orals. "
+            "I will be on Oral Examiner duty 14-16 July at Yishun Town Sec and at Deyi Sec on 17 July"
+        )
+        created = []
+
+        async def fake_execute(name, payload):
+            created.append((name, payload))
+            return f"Created: {payload['title']} on {payload['date']} {payload['start_time']}–{payload['end_time']}"
+
+        async def run():
+            response = await web_app._chat_stream_response(text, None, "phone")
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(bot.gs, "get_events_between", return_value=[]),
+            patch.object(bot, "_execute_tool_offloop", side_effect=fake_execute),
+            patch.object(bot, "build_task_brief", side_effect=AssertionError("must not open task brief")),
+            patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("must not ask the model")),
+            patch.object(bot, "stream_agentic_chat", side_effect=AssertionError("must not ask the model")),
+        ):
+            body = asyncio.run(run())
+
+        self.assertEqual(len(created), 4)
+        self.assertEqual([payload["date"] for _name, payload in created], [
+            "2026-07-14", "2026-07-15", "2026-07-16", "2026-07-17",
+        ])
+        self.assertEqual([payload["location"] for _name, payload in created], [
+            "Yishun Town Sec", "Yishun Town Sec", "Yishun Town Sec", "Deyi Sec",
+        ])
+        self.assertTrue(all(name == "create_calendar_event" for name, _payload in created))
+        self.assertIn("Added all four", body)
+        self.assertIn('"name": "calendar_write"', body)
+
+    def test_actual_due_item_query_still_triggers_task_brief(self):
+        self.assertEqual(web_app._pwa_direct_task_days("Anything due by Friday?"), 7)
+
     def test_school_updates_prompt_still_maps_to_sg_education_news(self):
         topics = bot.favourite_news_topic_queries("Any SG Education updates I should know?")
 

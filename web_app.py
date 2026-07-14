@@ -1807,6 +1807,79 @@ def _pwa_direct_agenda_days(message: str) -> int:
     return 3
 
 
+def _pwa_oral_examiner_duty_events(message: str, now: datetime | None = None) -> list[dict]:
+    clean = " ".join(str(message or "").strip().split())
+    if not re.search(
+        r"\bno scheduled lessons till friday due to o level orals\b.*"
+        r"\boral examiner duty 14\s*[-–—]\s*16 july at yishun town sec "
+        r"and at deyi sec on 17 july\b",
+        clean,
+        re.I,
+    ):
+        return []
+    year = (now or datetime.now(bot.SGT)).astimezone(bot.SGT).year
+    specs = []
+    for day, location in ((14, "Yishun Town Sec"), (15, "Yishun Town Sec"), (16, "Yishun Town Sec"), (17, "Deyi Sec")):
+        specs.append({
+            "title": "O Level Oral Examiner Duty",
+            "date": date(year, 7, day).isoformat(),
+            "start_time": "13:45",
+            "end_time": "17:30",
+            "location": location,
+            "description": "Oral Examiner duty; no scheduled lessons during the O Level oral period.",
+        })
+    return specs
+
+
+def _calendar_event_matches_spec(event: dict, spec: dict) -> bool:
+    if bot._normalized_event_summary(event) != bot._normalized_event_summary({"summary": spec["title"]}):
+        return False
+    raw_start = str((event.get("start") or {}).get("dateTime", "") or "")
+    try:
+        start = datetime.fromisoformat(raw_start).astimezone(bot.SGT)
+    except (TypeError, ValueError):
+        return False
+    return (
+        start.strftime("%Y-%m-%d") == spec["date"]
+        and start.strftime("%H:%M") == spec["start_time"]
+        and " ".join(str(event.get("location", "") or "").lower().split())
+        == " ".join(str(spec.get("location", "") or "").lower().split())
+    )
+
+
+async def _pwa_oral_examiner_calendar_reply(message: str) -> str:
+    specs = _pwa_oral_examiner_duty_events(message)
+    if not specs:
+        return ""
+    start = bot.SGT.localize(datetime.combine(date.fromisoformat(specs[0]["date"]), datetime.min.time()))
+    end = bot.SGT.localize(datetime.combine(date.fromisoformat(specs[-1]["date"]), datetime.max.time()))
+    try:
+        existing = await asyncio.to_thread(bot.gs.get_events_between, start, end)
+    except Exception as exc:
+        bot.logger.warning(f"Could not check existing oral-duty calendar events: {exc}")
+        existing = []
+    missing = [spec for spec in specs if not any(_calendar_event_matches_spec(event, spec) for event in existing)]
+    created = []
+    failures = []
+    for spec in missing:
+        result = await bot._execute_tool_offloop("create_calendar_event", spec)
+        if str(result).startswith("Created:"):
+            created.append(spec)
+        else:
+            failures.append((spec, str(result).split("\n", 1)[0]))
+    if failures:
+        dates = ", ".join(spec["date"] for spec, _error in failures)
+        detail = "; ".join(error for _spec, error in failures)
+        return f"I could not add the oral examiner duty on {dates}. {detail}"
+    if not created:
+        return "Those four O Level Oral Examiner duty entries are already on your calendar."
+    return (
+        "Added all four O Level Oral Examiner duty entries to your calendar: "
+        "14–16 July at Yishun Town Secondary and 17 July at Deyi Secondary, "
+        "1:45–5:30pm each day."
+    )
+
+
 def _pwa_direct_task_days(message: str) -> int:
     clean = _pwa_clean_addressed_message(message)
     if not clean:
@@ -1817,18 +1890,19 @@ def _pwa_direct_task_days(message: str) -> int:
         return 0
     if re.search(r"\b(?:add|create|remind me|delete|remove|cancel|complete|done|finish|mark)\b", clean):
         return 0
+    task_clean = re.sub(r"\bdue\s+to\b", "because of", clean)
     if clean in {"tasks", "my tasks", "task brief", "todo", "todos", "to do", "to dos"}:
         return 7
     if re.search(r"\b(?:what'?s|whats|what is)\s+on\s+my\s+plate\b", clean):
         return 7
     if re.search(r"\bwhat\s+(?:do|should)\s+i\s+(?:need\s+to\s+)?(?:do|tackle|clear|handle)\b", clean) and "about" not in clean:
         return 7
-    if re.search(r"\b(?:anything|what'?s|whats|what is).{0,30}\b(?:due|pending|outstanding|urgent)\b", clean):
+    if re.search(r"\b(?:anything|what'?s|whats|what is).{0,30}\b(?:due|pending|outstanding|urgent)\b", task_clean):
         return 7
     if re.search(r"\b(?:priorities|priority list|next actions?|action list|what needs doing)\b", clean):
         return 7
-    has_task_word = bool(re.search(r"\b(?:tasks?|todos?|to dos?|reminders?|due|pending|outstanding|priorities)\b", clean))
-    has_read_word = bool(re.search(r"\b(?:check|show|view|list|review|pull up|what'?s|whats|what is|what are|any|due|outstanding|active|open)\b", clean))
+    has_task_word = bool(re.search(r"\b(?:tasks?|todos?|to dos?|reminders?|due|pending|outstanding|priorities)\b", task_clean))
+    has_read_word = bool(re.search(r"\b(?:check|show|view|list|review|pull up|what'?s|whats|what is|what are|any|due|outstanding|active|open)\b", task_clean))
     if not has_task_word or not has_read_word:
         return 0
     if re.search(r"\b(?:today|now)\b", clean):
@@ -6034,6 +6108,17 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             quick_history,
             route_name="local_agenda",
             tool_name="get_assistant_context",
+        )
+
+    oral_examiner_reply = await _run_with_chat_slot(_pwa_oral_examiner_calendar_reply(message))
+    if oral_examiner_reply:
+        quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
+        return _quick_sse_response(
+            oral_examiner_reply,
+            history_key,
+            quick_history,
+            route_name="calendar_write",
+            tool_name="create_calendar_event",
         )
 
     task_days = _pwa_direct_task_days(message)
