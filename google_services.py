@@ -2693,6 +2693,23 @@ def get_reminders(include_done=False):
 def add_reminder(description: str, due_date: str, category: str = "General") -> int:
     with _storage_mutation_lock("reminders", _reminders_mutation_lock):
         rows = _raw_reminders()
+        description_key = " ".join(str(description or "").lower().split())
+        category_key = " ".join(str(category or "General").lower().split())
+        for row in rows:
+            if len(row) < 5 or str(row[4]).strip().upper() == "TRUE":
+                continue
+            existing_description = " ".join(str(row[1] if len(row) > 1 else "").lower().split())
+            existing_due = str(row[2] if len(row) > 2 else "").strip()
+            existing_category = " ".join(str(row[3] if len(row) > 3 else "General").lower().split())
+            if (
+                existing_description == description_key
+                and existing_due == str(due_date or "").strip()
+                and existing_category == category_key
+            ):
+                try:
+                    return int(str(row[0]).strip())
+                except (TypeError, ValueError):
+                    break
         numeric_ids = []
         for row in rows:
             try:

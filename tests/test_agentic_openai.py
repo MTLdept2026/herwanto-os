@@ -179,6 +179,8 @@ class AgenticOpenAITests(unittest.TestCase):
         web_app._UPLOAD_JOBS.clear()
         web_app._UPLOAD_REQUESTS.clear()
         web_app._WEB_WORKING_MEMORY.clear()
+        web_app._WEB_PENDING_ACTIONS.clear()
+        web_app._WEB_PENDING_ACTION_LOCKS.clear()
         for limiter in (
             web_app._CHAT_RATE_LIMITER,
             web_app._UPLOAD_RATE_LIMITER,
@@ -1243,6 +1245,22 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertEqual(reminder_id, 4)
         appended = fake_sheets.spreadsheets_api.values_api.appends[0][3]["values"][0]
         self.assertEqual(appended[0], "4")
+
+    def test_add_reminder_storage_is_idempotent_for_exact_active_duplicate(self):
+        fake_sheets = FakeSheetsService({})
+        rows = [["4", "Set 3G3 WA3 paper 2", "2026-07-29", "Teaching", "FALSE"]]
+        with (
+            patch.object(bot.gs, "_raw_reminders", return_value=rows),
+            patch.object(bot.gs, "_sheets", return_value=fake_sheets),
+        ):
+            reminder_id = bot.gs.add_reminder(
+                "Set 3G3 WA3 paper 2",
+                "2026-07-29",
+                "Teaching",
+            )
+
+        self.assertEqual(reminder_id, 4)
+        self.assertEqual(fake_sheets.spreadsheets_api.values_api.appends, [])
 
     def test_add_reminder_tool_does_not_recreate_completed_exact_match(self):
         completed = {
@@ -6888,6 +6906,179 @@ class AgenticOpenAITests(unittest.TestCase):
 
     def test_actual_due_item_query_still_triggers_task_brief(self):
         self.assertEqual(web_app._pwa_direct_task_days("Anything due by Friday?"), 7)
+
+    def test_declarative_due_date_replies_do_not_trigger_task_brief(self):
+        self.assertEqual(web_app._pwa_direct_task_days("Due date by Wednesday 29/7"), 0)
+        self.assertEqual(
+            web_app._pwa_direct_task_days("Due date for 3G3 WA3 paper is 29/7/2026"),
+            0,
+        )
+
+    def test_explicit_task_destination_outranks_paper_and_class_keywords(self):
+        text = "I need to set 3G3 WA3 paper 2. Pls add to my tasks."
+        names = {tool["name"] for tool in bot.pwa_tools_for_message(text)}
+
+        self.assertEqual(web_app._pwa_explicit_task_subject(text), "Set 3G3 WA3 paper 2")
+        self.assertTrue(bot._direct_user_intent_allows_tool("add_reminder", text))
+        self.assertFalse(bot._direct_user_intent_allows_tool("add_marking_task", text))
+        self.assertIn("add_reminder", names)
+        self.assertNotIn("add_marking_task", names)
+        self.assertNotIn("update_mtl_class_score", names)
+
+    def test_task_due_date_parser_supports_singapore_slash_dates_and_checks_weekday(self):
+        now = bot.SGT.localize(datetime(2026, 7, 27, 15, 0))
+
+        parsed = web_app._pwa_parse_task_due_date("Due date by Wednesday 29/7", now=now)
+        mismatch = web_app._pwa_parse_task_due_date("Thursday 29/7/2026", now=now)
+        invalid = web_app._pwa_parse_task_due_date("Due date is 31/2/2026", now=now)
+
+        self.assertEqual(parsed, {"matched": True, "value": "2026-07-29", "error": ""})
+        self.assertIn("weekday and date do not match", mismatch["error"])
+        self.assertIn("not a valid calendar date", invalid["error"])
+
+    def test_reminder_validator_rejects_impossible_iso_date(self):
+        allowed, reason = bot._validate_state_changing_action(
+            "add_reminder",
+            {
+                "description": "Set 3G3 WA3 paper 2",
+                "category": "Teaching",
+                "due_date": "2026-02-31",
+            },
+            direct_user_text="Add Set 3G3 WA3 paper 2 to my tasks, due 31 February.",
+        )
+
+        self.assertFalse(allowed)
+        self.assertIn("concrete YYYY-MM-DD due date", reason)
+
+    def test_two_turn_task_creation_uses_pending_action_before_shortcuts(self):
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                value = bot.SGT.localize(cls(2026, 7, 27, 15, 15))
+                return value if tz is None else value.astimezone(tz)
+
+        history_store = {}
+        tool_calls = []
+
+        def get_history(key):
+            return list(history_store.get(key, []))
+
+        def save_history(key, history):
+            history_store[key] = list(history)
+
+        async def execute(name, payload):
+            tool_calls.append((name, dict(payload)))
+            return (
+                "Added reminder #42: Set 3G3 WA3 paper 2 by 2026-07-29\n\n"
+                "Action audit: action=add_reminder | status=saved"
+            )
+
+        async def send(message):
+            response = await web_app._chat_stream_response(message, None, "pending-task-test")
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "_get_redis", return_value=None),
+            patch.object(bot, "get_history", side_effect=get_history),
+            patch.object(bot, "save_history", side_effect=save_history),
+            patch.object(bot, "_execute_tool_offloop", side_effect=execute),
+            patch.object(bot, "build_task_brief", side_effect=AssertionError("must not open task brief")),
+            patch.object(bot.gs, "add_marking_task", side_effect=AssertionError("must not create marking task")),
+            patch.object(web_app, "datetime", FixedDateTime),
+        ):
+            first_body = asyncio.run(send("I need to set 3G3 WA3 paper 2. Pls add to my tasks."))
+            pending = web_app._load_pending_action("pwa:pending-task-test")
+            second_body = asyncio.run(send("Due date by Wednesday 29/7"))
+
+        self.assertIn('"name": "task_clarification"', first_body)
+        self.assertEqual(pending["tool"], "add_reminder")
+        self.assertEqual(pending["partial_args"]["description"], "Set 3G3 WA3 paper 2")
+        self.assertEqual(pending["missing_fields"], ["due_date"])
+        self.assertIn('"name": "task_write"', second_body)
+        self.assertIn("due Wednesday, 29 July 2026", second_body)
+        self.assertEqual(tool_calls, [(
+            "add_reminder",
+            {
+                "description": "Set 3G3 WA3 paper 2",
+                "category": "Teaching",
+                "due_date": "2026-07-29",
+            },
+        )])
+        self.assertEqual(web_app._load_pending_action("pwa:pending-task-test"), {})
+
+    def test_failed_pending_task_write_keeps_action_for_retry(self):
+        history_key = "pwa:pending-task-failure"
+        action = web_app._new_pending_task_action(
+            "Add the report to my tasks",
+            "The report",
+        )
+
+        async def execute(_name, _payload):
+            return "Failed to add reminder: Google unavailable"
+
+        with (
+            patch.object(bot, "_get_redis", return_value=None),
+            patch.object(bot, "_execute_tool_offloop", side_effect=execute),
+        ):
+            web_app._save_pending_action(history_key, action)
+            reply = asyncio.run(web_app._pwa_pending_task_reply("29/7/2026", history_key))
+
+        self.assertEqual(reply[1], "task_write_failed")
+        self.assertIn("kept the task pending", reply[0])
+        self.assertTrue(web_app._load_pending_action(history_key))
+
+    def test_pending_task_ignores_unrelated_date_question(self):
+        history_key = "pwa:pending-task-unrelated"
+        action = web_app._new_pending_task_action(
+            "Add the report to my tasks",
+            "The report",
+        )
+
+        with (
+            patch.object(bot, "_get_redis", return_value=None),
+            patch.object(
+                bot,
+                "_execute_tool_offloop",
+                side_effect=AssertionError("must not create a task"),
+            ),
+        ):
+            web_app._save_pending_action(history_key, action)
+            question_reply = asyncio.run(
+                web_app._pwa_pending_task_reply("Anything due by Friday?", history_key)
+            )
+            unrelated_reply = asyncio.run(
+                web_app._pwa_pending_task_reply("I'm travelling Friday", history_key)
+            )
+
+        self.assertIsNone(question_reply)
+        self.assertIsNone(unrelated_reply)
+        self.assertTrue(web_app._load_pending_action(history_key))
+
+    def test_pending_task_local_fallback_is_read_when_redis_write_fails(self):
+        class FailingRedis:
+            @staticmethod
+            def get(_key):
+                return None
+
+            @staticmethod
+            def setex(_key, _ttl, _value):
+                raise RuntimeError("redis unavailable")
+
+        history_key = "pwa:pending-task-redis-fallback"
+        action = web_app._new_pending_task_action(
+            "Add the report to my tasks",
+            "The report",
+        )
+
+        with patch.object(bot, "_get_redis", return_value=FailingRedis()):
+            saved = web_app._save_pending_action(history_key, action)
+            loaded = web_app._load_pending_action(history_key)
+
+        self.assertEqual(loaded["id"], saved["id"])
+        self.assertEqual(loaded["partial_args"]["description"], "The report")
 
     def test_school_updates_prompt_still_maps_to_sg_education_news(self):
         topics = bot.favourite_news_topic_queries("Any SG Education updates I should know?")

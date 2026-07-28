@@ -1090,6 +1090,9 @@ _UPLOAD_REQUESTS: OrderedDict[str, str] = OrderedDict()
 _MAX_LOCAL_UPLOAD_JOBS = _env_int("HIRA_WEB_MAX_LOCAL_UPLOAD_JOBS", 100)
 _WEB_WORKING_MEMORY: OrderedDict[str, dict] = OrderedDict()
 _MAX_LOCAL_WORKING_MEMORIES = _env_int("HIRA_WEB_MAX_LOCAL_WORKING_MEMORIES", 100)
+_WEB_PENDING_ACTIONS: OrderedDict[str, dict] = OrderedDict()
+_WEB_PENDING_ACTION_LOCKS: dict[str, asyncio.Lock] = {}
+_PENDING_ACTION_TTL_SECONDS = _env_int("HIRA_WEB_PENDING_ACTION_TTL_SECONDS", 48 * 60 * 60, minimum=300)
 
 
 def _normalise_client_key(client_id: str | None, default: str = "pwa") -> str:
@@ -1129,6 +1132,93 @@ def _clear_openai_state_for_local_reply(history_key: str) -> None:
 
 def _working_memory_storage_key(history_key: str) -> str:
     return f"workmem:{history_key}"
+
+
+def _pending_action_storage_key(history_key: str) -> str:
+    return f"pending-action:{history_key}"
+
+
+def _pending_action_lock(history_key: str) -> asyncio.Lock:
+    key = _pending_action_storage_key(history_key)
+    lock = _WEB_PENDING_ACTION_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _WEB_PENDING_ACTION_LOCKS[key] = lock
+    return lock
+
+
+def _clear_pending_action(history_key: str) -> None:
+    key = _pending_action_storage_key(history_key)
+    _WEB_PENDING_ACTIONS.pop(key, None)
+    redis = bot._get_redis()
+    if redis:
+        try:
+            redis.delete(key)
+        except Exception as exc:
+            bot.logger.warning(f"Pending action delete failed: {exc}")
+
+
+def _load_pending_action(history_key: str) -> dict:
+    key = _pending_action_storage_key(history_key)
+    redis = bot._get_redis()
+    action: dict = {}
+    if redis:
+        try:
+            raw = redis.get(key)
+            parsed = json.loads(raw) if raw else {}
+            action = parsed if isinstance(parsed, dict) else {}
+        except Exception as exc:
+            bot.logger.warning(f"Pending action read failed: {exc}")
+    if not action:
+        action = dict(_WEB_PENDING_ACTIONS.get(key, {}))
+        if key in _WEB_PENDING_ACTIONS:
+            _WEB_PENDING_ACTIONS.move_to_end(key)
+    if not action:
+        return {}
+    try:
+        expires_at = datetime.fromisoformat(str(action.get("expires_at", "") or ""))
+        if expires_at.tzinfo is None:
+            expires_at = bot.SGT.localize(expires_at)
+        if datetime.now(bot.SGT) >= expires_at.astimezone(bot.SGT):
+            _clear_pending_action(history_key)
+            return {}
+    except (TypeError, ValueError):
+        _clear_pending_action(history_key)
+        return {}
+    return action
+
+
+def _save_pending_action(history_key: str, action: dict) -> dict:
+    key = _pending_action_storage_key(history_key)
+    clean = {
+        "version": 1,
+        "id": str(action.get("id", "") or uuid.uuid4().hex),
+        "tool": str(action.get("tool", "") or ""),
+        "authorization_scope": str(action.get("authorization_scope", "") or ""),
+        "partial_args": dict(action.get("partial_args") or {}),
+        "missing_fields": [str(item) for item in action.get("missing_fields", []) if str(item)],
+        "origin_user_text": str(action.get("origin_user_text", "") or "")[:2000],
+        "origin_user_hash": str(action.get("origin_user_hash", "") or ""),
+        "idempotency_key": str(action.get("idempotency_key", "") or uuid.uuid4().hex),
+        "created_at": str(action.get("created_at", "") or datetime.now(bot.SGT).isoformat()),
+        "expires_at": str(
+            action.get("expires_at", "")
+            or (datetime.now(bot.SGT) + timedelta(seconds=_PENDING_ACTION_TTL_SECONDS)).isoformat()
+        ),
+    }
+    if clean["tool"] != "add_reminder" or clean["authorization_scope"] != "task:create":
+        raise ValueError("Unsupported pending action")
+    _WEB_PENDING_ACTIONS[key] = clean
+    _WEB_PENDING_ACTIONS.move_to_end(key)
+    while len(_WEB_PENDING_ACTIONS) > _MAX_LOCAL_WORKING_MEMORIES:
+        _WEB_PENDING_ACTIONS.popitem(last=False)
+    redis = bot._get_redis()
+    if redis:
+        try:
+            redis.setex(key, _PENDING_ACTION_TTL_SECONDS, json.dumps(clean, ensure_ascii=False))
+        except Exception as exc:
+            bot.logger.warning(f"Pending action write failed: {exc}")
+    return clean
 
 
 def _safe_text(builder, fallback: str) -> str:
@@ -1880,6 +1970,281 @@ async def _pwa_oral_examiner_calendar_reply(message: str) -> str:
     )
 
 
+_TASK_DESTINATION_WITH_OBJECT_RE = re.compile(
+    r"\b(?:add|put|save|create|park)\s+(.+?)\s+(?:to|in|on)\s+"
+    r"(?:my\s+)?(?:tasks?|task\s+list|to[-\s]?dos?|reminders?)\b",
+    re.I,
+)
+_TASK_DESTINATION_RE = bot.EXPLICIT_TASK_DESTINATION_PATTERN
+_TASK_DUE_SLASH_RE = re.compile(r"\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b")
+_TASK_DUE_ISO_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
+_TASK_DUE_MONTH_RE = re.compile(
+    r"\b(\d{1,2})\s+"
+    r"(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+    r"(?:\s+(\d{4}))?\b",
+    re.I,
+)
+_TASK_MONTHS = {
+    "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+    "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7, "july": 7,
+    "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9,
+    "oct": 10, "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12,
+}
+_TASK_WEEKDAYS = {
+    "mon": 0, "monday": 0, "tue": 1, "tues": 1, "tuesday": 1,
+    "wed": 2, "wednesday": 2, "thu": 3, "thur": 3, "thurs": 3, "thursday": 3,
+    "fri": 4, "friday": 4, "sat": 5, "saturday": 5, "sun": 6, "sunday": 6,
+}
+_TASK_WEEKDAY_RE = re.compile(
+    r"\b(mon(?:day)?|tue(?:s|sday)?|wed(?:nesday)?|thu(?:r|rs|rsday|rday)?|"
+    r"fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b",
+    re.I,
+)
+
+
+def _pwa_explicit_task_subject(message: str) -> str:
+    clean = " ".join(str(message or "").strip().split())
+    if not bot._has_explicit_task_destination(clean):
+        return ""
+    direct = _TASK_DESTINATION_WITH_OBJECT_RE.search(clean)
+    if direct:
+        subject = direct.group(1).strip(" .,:;!?\"'")
+    else:
+        destination = _TASK_DESTINATION_RE.search(clean)
+        before = clean[:destination.start()] if destination else ""
+        before = re.sub(r"(?:[.!?]\s*)?(?:please|pls)\s*$", "", before, flags=re.I).strip()
+        subject = re.sub(
+            r"^(?:(?:hey|hi)\s+hira[,.]?\s*)?(?:(?:please|pls)\s+)?"
+            r"(?:i\s+(?:need|have|got)\s+to|i\s+must|i\s+should)\s+",
+            "",
+            before,
+            flags=re.I,
+        ).strip(" .,:;!?\"'")
+    subject = re.sub(r"^(?:please|pls)\s+", "", subject, flags=re.I).strip()
+    if not subject or re.fullmatch(r"(?:it|this|that|something|a task)", subject, re.I):
+        return ""
+    subject = " ".join(subject.split())[:500]
+    return subject[:1].upper() + subject[1:]
+
+
+def _pwa_task_category(subject: str) -> str:
+    if re.search(
+        r"\b(?:1g2|2g3|3g3|4nt|wa\d|fa\d|eoy|prelim|class|lesson|student|school|paper)\b",
+        str(subject or ""),
+        re.I,
+    ):
+        return "Teaching"
+    return "General"
+
+
+def _task_weekday_from_text(text: str) -> tuple[int | None, bool]:
+    match = _TASK_WEEKDAY_RE.search(str(text or ""))
+    if not match:
+        return None, False
+    key = match.group(1).lower()
+    return _TASK_WEEKDAYS.get(key), bool(re.search(rf"\bnext\s+{re.escape(match.group(1))}\b", text, re.I))
+
+
+def _pwa_parse_task_due_date(message: str, now: datetime | None = None) -> dict:
+    clean = " ".join(str(message or "").strip().split())
+    current = (now or datetime.now(bot.SGT)).astimezone(bot.SGT)
+    today = current.date()
+    weekday, explicitly_next = _task_weekday_from_text(clean)
+    matched = False
+    resolved: date | None = None
+
+    iso_match = _TASK_DUE_ISO_RE.search(clean)
+    slash_match = _TASK_DUE_SLASH_RE.search(clean)
+    month_match = _TASK_DUE_MONTH_RE.search(clean)
+    try:
+        if iso_match:
+            matched = True
+            resolved = date.fromisoformat(iso_match.group(1))
+        elif slash_match:
+            matched = True
+            day = int(slash_match.group(1))
+            month = int(slash_match.group(2))
+            raw_year = slash_match.group(3)
+            year = int(raw_year) if raw_year else today.year
+            if raw_year and year < 100:
+                year += 2000
+            resolved = date(year, month, day)
+            if not raw_year and resolved < today:
+                resolved = date(year + 1, month, day)
+        elif month_match:
+            matched = True
+            day = int(month_match.group(1))
+            month = _TASK_MONTHS[month_match.group(2).lower()]
+            raw_year = month_match.group(3)
+            year = int(raw_year) if raw_year else today.year
+            resolved = date(year, month, day)
+            if not raw_year and resolved < today:
+                resolved = date(year + 1, month, day)
+        elif re.search(r"\btoday\b", clean, re.I):
+            matched = True
+            resolved = today
+        elif re.search(r"\btomorrow\b", clean, re.I):
+            matched = True
+            resolved = today + timedelta(days=1)
+        elif weekday is not None:
+            matched = True
+            days_ahead = (weekday - today.weekday()) % 7
+            if explicitly_next and days_ahead == 0:
+                days_ahead = 7
+            resolved = today + timedelta(days=days_ahead)
+    except (KeyError, TypeError, ValueError):
+        return {"matched": matched, "value": "", "error": "That due date is not a valid calendar date."}
+
+    if resolved is not None and weekday is not None and resolved.weekday() != weekday:
+        actual = resolved.strftime("%A")
+        stated = resolved.strftime("%d/%m/%Y")
+        return {
+            "matched": True,
+            "value": "",
+            "error": f"{stated} is {actual}, so the weekday and date do not match. Which should I use?",
+        }
+    return {"matched": matched, "value": resolved.isoformat() if resolved else "", "error": ""}
+
+
+def _new_pending_task_action(message: str, subject: str, due_date: str = "") -> dict:
+    created_at = datetime.now(bot.SGT)
+    digest = hashlib.sha256(str(message or "").encode("utf-8")).hexdigest()
+    return {
+        "tool": "add_reminder",
+        "authorization_scope": "task:create",
+        "partial_args": {
+            "description": subject,
+            "category": _pwa_task_category(subject),
+            **({"due_date": due_date} if due_date else {}),
+        },
+        "missing_fields": [] if due_date else ["due_date"],
+        "origin_user_text": str(message or ""),
+        "origin_user_hash": digest,
+        "idempotency_key": hashlib.sha256(f"{digest}:{subject}".encode("utf-8")).hexdigest(),
+        "created_at": created_at.isoformat(),
+        "expires_at": (created_at + timedelta(seconds=_PENDING_ACTION_TTL_SECONDS)).isoformat(),
+    }
+
+
+def _pending_task_cancelled(message: str) -> bool:
+    return bool(re.fullmatch(
+        r"\s*(?:cancel|cancel it|never mind|nevermind|forget it|don'?t add it|do not add it)\s*[.!]?\s*",
+        str(message or ""),
+        re.I,
+    ))
+
+
+def _pending_task_superseded(message: str) -> bool:
+    clean = str(message or "")
+    if bot._has_explicit_task_destination(clean):
+        return True
+    return bool(
+        re.search(r"\b(?:add|create|schedule|delete|remove|draft|send|mark|complete)\b", clean, re.I)
+        and not re.search(r"\bdue\s+date\b", clean, re.I)
+    )
+
+
+def _pending_task_due_reply(message: str) -> bool:
+    clean = " ".join(str(message or "").strip().split())
+    if not clean:
+        return False
+    if re.search(r"\b(?:what|which|when|how|show|check|list|anything|any)\b", clean, re.I):
+        return False
+    has_date = bool(
+        _TASK_DUE_ISO_RE.search(clean)
+        or _TASK_DUE_SLASH_RE.search(clean)
+        or _TASK_DUE_MONTH_RE.search(clean)
+        or _TASK_WEEKDAY_RE.search(clean)
+        or re.search(r"\b(?:today|tomorrow)\b", clean, re.I)
+    )
+    if not has_date:
+        return False
+    if re.search(r"\b(?:due(?:\s+date)?|deadline)\b", clean, re.I):
+        return True
+    residual = clean
+    for pattern in (_TASK_DUE_ISO_RE, _TASK_DUE_SLASH_RE, _TASK_DUE_MONTH_RE, _TASK_WEEKDAY_RE):
+        residual = pattern.sub(" ", residual)
+    residual = re.sub(
+        r"\b(?:by|on|this|next|is|the|date|today|tomorrow)\b",
+        " ",
+        residual,
+        flags=re.I,
+    )
+    return not re.sub(r"[\s,.;:!?-]+", "", residual)
+
+
+def _pending_task_result_reply(action: dict, due_date: str, result: str) -> tuple[str, bool]:
+    first_line = str(result or "").strip().splitlines()[0] if result else ""
+    subject = str((action.get("partial_args") or {}).get("description", "") or "task")
+    if first_line.startswith("Added reminder #"):
+        due = date.fromisoformat(due_date)
+        return f"Added to your tasks: {subject} — due {due.strftime('%A, %-d %B %Y')}.", True
+    if first_line.startswith("Reminder #") and ("already exists" in first_line or "was already completed" in first_line):
+        return first_line, True
+    if first_line:
+        return f"{first_line}\n\nI kept the task pending so you can retry without starting over.", False
+    return "I could not confirm that the task was saved. I kept it pending so you can retry.", False
+
+
+async def _execute_pending_task(action: dict, due_date: str) -> tuple[str, bool]:
+    payload = dict(action.get("partial_args") or {})
+    payload["due_date"] = due_date
+    origin_user_text = str(action.get("origin_user_text", "") or "")
+    token = bot._TOOL_DIRECT_USER_TEXT.set(origin_user_text)
+    try:
+        result = await bot._execute_tool_offloop("add_reminder", payload)
+    finally:
+        bot._TOOL_DIRECT_USER_TEXT.reset(token)
+    return _pending_task_result_reply(action, due_date, str(result or ""))
+
+
+async def _pwa_pending_task_reply(message: str, history_key: str) -> tuple[str, str, str] | None:
+    async with _pending_action_lock(history_key):
+        action = _load_pending_action(history_key)
+        if not action or action.get("tool") != "add_reminder":
+            return None
+        if _pending_task_cancelled(message):
+            _clear_pending_action(history_key)
+            return "Cancelled. I did not add the pending task.", "task_cancel", ""
+        if _pending_task_superseded(message):
+            _clear_pending_action(history_key)
+            return None
+        if not _pending_task_due_reply(message):
+            return None
+        parsed = _pwa_parse_task_due_date(message)
+        if parsed.get("error"):
+            return str(parsed["error"]), "task_clarification", ""
+        if not parsed.get("matched") or not parsed.get("value"):
+            return None
+        reply, resolved = await _execute_pending_task(action, str(parsed["value"]))
+        if resolved:
+            _clear_pending_action(history_key)
+        return reply, "task_write" if resolved else "task_write_failed", "add_reminder"
+
+
+async def _pwa_explicit_task_reply(message: str, history_key: str) -> tuple[str, str, str] | None:
+    subject = _pwa_explicit_task_subject(message)
+    if not subject:
+        return None
+    parsed = _pwa_parse_task_due_date(message)
+    if parsed.get("error"):
+        return str(parsed["error"]), "task_clarification", ""
+    action = _new_pending_task_action(message, subject, str(parsed.get("value") or ""))
+    async with _pending_action_lock(history_key):
+        action = _save_pending_action(history_key, action)
+        if not parsed.get("value"):
+            return (
+                f"I’ll add “{subject}” to your tasks. What due date should I use?",
+                "task_clarification",
+                "",
+            )
+        reply, resolved = await _execute_pending_task(action, str(parsed["value"]))
+        if resolved:
+            _clear_pending_action(history_key)
+        return reply, "task_write" if resolved else "task_write_failed", "add_reminder"
+
+
 def _pwa_direct_task_days(message: str) -> int:
     clean = _pwa_clean_addressed_message(message)
     if not clean:
@@ -1902,7 +2267,9 @@ def _pwa_direct_task_days(message: str) -> int:
     if re.search(r"\b(?:priorities|priority list|next actions?|action list|what needs doing)\b", clean):
         return 7
     has_task_word = bool(re.search(r"\b(?:tasks?|todos?|to dos?|reminders?|due|pending|outstanding|priorities)\b", task_clean))
-    has_read_word = bool(re.search(r"\b(?:check|show|view|list|review|pull up|what'?s|whats|what is|what are|any|due|outstanding|active|open)\b", task_clean))
+    has_read_word = bool(re.search(r"\b(?:check|show|view|list|review|pull up|what'?s|whats|what is|what are|any|active|open)\b", task_clean))
+    if task_clean.rstrip().endswith("?"):
+        has_read_word = True
     if not has_task_word or not has_read_word:
         return 0
     if re.search(r"\b(?:today|now)\b", clean):
@@ -5974,6 +6341,30 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
     retry_target = _retry_target_message(message, history)
     if retry_target:
         message = retry_target
+
+    pending_task_reply = await _pwa_pending_task_reply(message, history_key)
+    if pending_task_reply:
+        reply, route_name, tool_name = pending_task_reply
+        quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
+        return _quick_sse_response(
+            reply,
+            history_key,
+            quick_history,
+            route_name=route_name,
+            tool_name=tool_name,
+        )
+
+    explicit_task_reply = await _pwa_explicit_task_reply(message, history_key)
+    if explicit_task_reply:
+        reply, route_name, tool_name = explicit_task_reply
+        quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
+        return _quick_sse_response(
+            reply,
+            history_key,
+            quick_history,
+            route_name=route_name,
+            tool_name=tool_name,
+        )
 
     live_briefing_slot = _live_briefing_slot(message)
     if live_briefing_slot:

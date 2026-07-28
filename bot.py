@@ -1192,6 +1192,34 @@ TASK_OBJECT_PATTERN = re.compile(
     re.I,
 )
 
+EXPLICIT_TASK_DESTINATION_PATTERN = re.compile(
+    r"\b(?:add|put|save|create|park)\b.{0,100}\b(?:to|in|on)\s+"
+    r"(?:my\s+)?(?:tasks?|task\s+list|to[-\s]?dos?|reminders?)\b",
+    re.I,
+)
+
+
+def _has_explicit_task_destination(text: str) -> bool:
+    return bool(EXPLICIT_TASK_DESTINATION_PATTERN.search(str(text or "")))
+
+
+def _has_explicit_marking_intent(text: str) -> bool:
+    clean = " ".join(str(text or "").lower().split())
+    if not clean or _has_explicit_task_destination(clean):
+        return False
+    return bool(
+        re.search(r"\b(?:marking|scripts?|stacks?|marked|unmarked)\b", clean)
+        or re.search(
+            r"\b(?:papers?|worksheets?|karangan|kefahaman)\b.{0,50}\b(?:to\s+mark|for\s+marking)\b",
+            clean,
+        )
+        or re.search(
+            r"\bmark(?:ing|ed)?\b.{0,50}\b(?:papers?|worksheets?|karangan|kefahaman)\b",
+            clean,
+        )
+    )
+
+
 SOFT_REQUEST_PATTERN = re.compile(
     r"\b(?:can\s+you|could\s+you|would\s+you|mind\s+(?:helping|taking)|"
     r"let'?s|we\s+should|might\s+be\s+worth|probably\s+worth|it(?:'|’)d\s+be\s+good\s+to|"
@@ -3498,7 +3526,7 @@ Rules:
 - You have tools: create_calendar_event, delete_calendar_event_by_text, bulk_delete_duplicate_calendar_events, find_available_training_slots, get_cca_schedule, add_reminder, add_marking_task, update_marking_progress, reset_marking_load, get_marking_brief, get_classops_brief, create_proactive_nudge, create_daily_checkin, create_break_aware_daily_checkin, create_followup, complete_task_by_text, get_task_brief, get_timetable, get_mtl_classlists, analyze_mtl_scores, generate_mtl_score_trend_report, apply_mtl_failure_highlighting, update_mtl_class_score, fill_mtl_percentage_scores, get_gmail_brief, create_gmail_draft, search_vault, read_note, list_recent_notes, append_to_inbox, create_document_artifact, create_slide_deck_artifact, remember_artifact_template, get_assistant_context, remember_user_info, create_topic_profile, propose_playbook_update, remember_source_insight, update_project_status, get_nea_weather, get_muis_prayer_times, get_muis_friday_khutbah, get_latest_news, get_liverpool_brief, get_f1_brief, web_search, and fetch_url. Use them proactively.
 - When the user mentions an event, match, duty, or appointment at a specific time — call create_calendar_event immediately without asking.
 - When the user mentions a task, deadline, or something to prepare/submit/complete — call add_reminder immediately without asking, but do not recreate tasks that are already in the task brief or recently marked done. If a scanned email/screenshot repeats a completed or already-tracked item, report that it is already handled instead of adding a new reminder.
-- When the user mentions marking scripts, papers, compositions, kefahaman, karangan, worksheets, or a marking stack, use marking tools instead of ordinary reminders: add_marking_task for a new stack, update_marking_progress when he says how many scripts are marked, reset_marking_load when he asks to reset/clear the marking load or board, and get_marking_brief when he asks what marking is outstanding. Marking tasks are mission-critical and must persist even at 0 outstanding; only complete one when he explicitly says that marking stack is done, completed, can be closed, reset, or cleared.
+- Use marking tools instead of ordinary reminders only when the user explicitly means marking work: marking, scripts, a marking stack, marked/unmarked work, or papers/worksheets to mark. A bare assessment noun such as "paper", "WA3", or a class name is not enough. An explicit destination such as "add to my tasks/task list" always means add_reminder. Use add_marking_task for a new stack, update_marking_progress when he says how many scripts are marked, reset_marking_load when he asks to reset/clear the marking load or board, and get_marking_brief when he asks what marking is outstanding. Marking tasks are mission-critical and must persist even at 0 outstanding; only complete one when he explicitly says that marking stack is done, completed, can be closed, reset, or cleared.
 - When the user asks about ClassOps, Dropbox class materials, submission tracking, class follow-up signals, or the ClassOps dashboard, call get_classops_brief. Do not say ClassOps is unavailable unless that tool reports the connected service is not configured or a provider call fails.
 - When the user asks about Obsidian, his vault, second brain, notes, recent notes, or a note title/path, use search_vault, read_note, or list_recent_notes. These tools deliberately exclude 31 ClassOps, private, and student-sensitive paths. If a note is excluded or blocked, say that directly and do not ask him to paste sensitive material.
 - When the user explicitly asks to save/capture/append something to the Obsidian inbox, call append_to_inbox. Do not append inferred tasks, private content, or student-sensitive content unless Herwanto explicitly asks and the target path passes the vault safety policy.
@@ -13274,7 +13302,10 @@ def _direct_user_intent_allows_tool(name: str, direct_user_text: str | None) -> 
     if name == "bulk_delete_duplicate_calendar_events":
         return has(r"\b(duplicate|duplicates|duplicated|replicated|copies|copied)\b") and has(r"\b(delete|remove|clean|clear|dedupe)\b")
     if name == "add_reminder":
-        return has(r"\b(remind|reminder|task|deadline|due|keep .*radar|track this|add .*todo|add .*to[- ]do)\b")
+        return has(
+            r"\b(remind|reminders?|tasks?|deadline|due|keep .*radar|track this|"
+            r"add .*to[- ]?dos?|add .*to (?:my )?tasks?|add .*task list)\b"
+        )
     if name == "create_proactive_nudge":
         return has(r"\b(nudge|ping|notify|notification|push|remind me)\b")
     if name in {"create_daily_checkin", "create_break_aware_daily_checkin"}:
@@ -13288,7 +13319,7 @@ def _direct_user_intent_allows_tool(name: str, direct_user_text: str | None) -> 
     if name == "complete_followup_by_text":
         return has(r"\b(done|complete|completed|settled?|mark)\b")
     if name in {"add_marking_task", "update_marking_progress", "reset_marking_load"}:
-        return has(r"\b(marking|scripts?|papers?|worksheets?|karangan|kefahaman|stack|marked|unmarked)\b") and has(r"\b(add|update|mark|marked|done|complete|reset|clear|close)\b")
+        return _has_explicit_marking_intent(clean) and has(r"\b(add|update|mark|marked|done|complete|reset|clear|close)\b")
     if name == "apply_mtl_failure_highlighting":
         return has(r"\b(highlight|colour|color|red[- ]?fill|red|format)\b") and has(r"\b(fail|failure|below|score|mark|percentage|%)\b")
     if name == "update_mtl_class_score":
@@ -13382,7 +13413,12 @@ def _validate_state_changing_action(name: str, inp: dict, direct_user_text: str 
                 except Exception:
                     return False, "Timed calendar event needs title, date, start time, and end time."
     elif name == "add_reminder":
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(inp.get("due_date", "") or "")):
+        due_date = str(inp.get("due_date", "") or "")
+        try:
+            parsed_due_date = date.fromisoformat(due_date)
+        except (TypeError, ValueError):
+            return False, "Reminder needs a concrete YYYY-MM-DD due date."
+        if parsed_due_date.isoformat() != due_date:
             return False, "Reminder needs a concrete YYYY-MM-DD due date."
     elif name == "create_proactive_nudge":
         if not str(inp.get("send_at", "") or "").strip():
@@ -13576,7 +13612,7 @@ def _latest_blocked_action_from_context(recent_context: str = "") -> dict:
 _CLARIFICATION_DETAIL_RE = re.compile(
     r"\b(?:all[-\s]?day|whole\s+day|full\s+day|timed|not\s+all[-\s]?day|"
     r"today|tomorrow|tonight|next\s+\w+|this\s+(?:morning|afternoon|evening|week|month|term|mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rs(?:day)?|r)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)|by\s+\w+|on\s+\d{1,2}|"
-    r"\d{4}-\d{2}-\d{2}|\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|june|jul|july|aug|sep|sept|oct|nov|dec)|"
+    r"\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?|\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|june|jul|july|aug|sep|sept|oct|nov|dec)|"
     r"(?:jan|feb|mar|apr|may|jun|june|jul|july|aug|sep|sept|oct|nov|dec)\s+\d{1,2}|"
     r"\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{1,2}:\d{2}|"
     r"first\s+one|second\s+one|third\s+one|last\s+one|that\s+one|this\s+one|same\s+one)\b",
@@ -15960,6 +15996,8 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
     casual_sports_lifestyle = _is_casual_sports_lifestyle_text(effective_text)
     dated_absence_calendar_intent = _is_dated_absence_calendar_intent(effective_text)
     implicit_task_request = _is_implicit_task_request(effective_text)
+    explicit_task_destination = _has_explicit_task_destination(effective_text)
+    explicit_marking_intent = _has_explicit_marking_intent(effective_text)
     semantic_flags = _semantic_intent_flags(effective_text)
     reference_only_message = _is_reference_only_message(effective_text)
     sports_entity_mentioned = bool(SPORTS_FANDOM_ENTITY_PATTERN.search(combined))
@@ -16041,10 +16079,10 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         or _is_timetable_verification_query(text, context)
     ):
         add(TIMETABLE_TOOL, WEEK_TYPE_TOOL)
-    if classlist_followup or (
+    if not explicit_task_destination and (classlist_followup or (
         not sports_live_factish
         and re.search(r"\b(classlist|class list|students?|names?|my classes|mtl group|grouping|1 flagship|2g3|3g3|4nt|4nt bml|scores?|marks|results?|wa1|wa2|fa1|fa2|prelim|eoy|weighted assessment|formative assessment|exam|assessment|percentage|percent|%|analyse|analyze|analysis|graph|graphs|chart|charts|trend|mean|median|average|pass rate|underperforming|watchlist|most improved|progress|drop|dropped|colour|color|highlight|red|failures?|failed|below 50|less than 50)\b", effective_text)
-    ):
+    )):
         add(CLASSLIST_TOOL, ANALYZE_MTL_SCORES_TOOL, GENERATE_MTL_TREND_REPORT_TOOL, APPLY_MTL_FAILURE_HIGHLIGHTING_TOOL, UPDATE_CLASS_SCORE_TOOL, FILL_PERCENTAGE_SCORES_TOOL, TIMETABLE_TOOL)
     if (
         re.search(r"\b(calendar|schedule|agenda|today|tomorrow|week|meeting|event|appointment|duty|training|match|cca|what'?s on)\b", effective_text)
@@ -16061,6 +16099,7 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
     if not reference_only_message and (
         re.search(r"\b(task|tasks|due|deadline|remind|reminder|prepare|submit|complete|done|priority|prioritise|prioritize|focus|settle|sort|handle|application|paperwork|form)\b", effective_text)
         or implicit_task_request
+        or explicit_task_destination
         or bool(semantic_flags & {"task", "reminder"})
     ):
         add(CONTEXT_TOOL, TASK_BRIEF_TOOL, REMINDER_TOOL, COMPLETE_TASK_TOOL)
@@ -16074,7 +16113,7 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
             effective_text,
         ):
             add(NUDGE_TOOL)
-    if re.search(r"\b(marking|scripts?|papers?|compositions?|kefahaman|karangan|worksheets?|marked|unmarked)\b", effective_text):
+    if explicit_marking_intent:
         add(ADD_MARKING_TOOL, UPDATE_MARKING_TOOL, RESET_MARKING_TOOL, MARKING_BRIEF_TOOL)
     if re.search(
         r"\b(?:classops|class\s*ops|dropbox\s+class|class\s+materials?|lesson\s+materials?|"
@@ -16667,7 +16706,10 @@ async def _run_agentic_openai(messages, max_tokens=2048, tools=None, openai_stat
                 "content": result,
             }
 
-        tool_results = await asyncio.gather(*(run_tool(block) for block in tool_blocks))
+        if any(_tool_has_side_effect(block.name) for block in tool_blocks):
+            tool_results = [await run_tool(block) for block in tool_blocks]
+        else:
+            tool_results = await asyncio.gather(*(run_tool(block) for block in tool_blocks))
         all_tool_results.extend(tool_results)
         messages.append({"role": "user", "content": tool_results})
         tool_output_items = []
@@ -17454,7 +17496,10 @@ async def stream_agentic_openai(
                 "content": result,
             }
 
-        tool_results = await asyncio.gather(*(run_tool(block) for block in tool_blocks))
+        if any(_tool_has_side_effect(block.name) for block in tool_blocks):
+            tool_results = [await run_tool(block) for block in tool_blocks]
+        else:
+            tool_results = await asyncio.gather(*(run_tool(block) for block in tool_blocks))
         all_tool_results.extend(tool_results)
         messages.append({"role": "user", "content": tool_results})
         contracts = _source_contracts_from_tool_results(tool_results)
@@ -18146,7 +18191,8 @@ async def _execute_tool(name: str, inp: dict) -> str:
                 collected_date=inp.get("collected_date", ""),
                 notes=inp.get("notes", ""),
             )
-            return f"Added to your marking tracker. {_format_marking_task(task)}"
+            result = f"Added to your marking tracker. {_format_marking_task(task)}"
+            return f"{result}\n\n{_action_audit_text(name, inp, result, metadata={'marking_task_id': str(task.get('id', ''))})}"
         except Exception as e:
             return f"Failed to add marking stack: {e}"
 
