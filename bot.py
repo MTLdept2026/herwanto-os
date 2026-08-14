@@ -223,12 +223,19 @@ def _env_int_setting(name: str, default: int, minimum: int = 1, maximum: int | N
     return min(value, maximum) if maximum is not None else value
 
 
+def _env_float_setting(name: str, default: float, minimum: float = 0.0) -> float:
+    try:
+        return max(minimum, float(os.environ.get(name, str(default)) or default))
+    except (TypeError, ValueError):
+        return max(minimum, float(default))
+
+
 QUALITY_GUARDRAIL_COUNTERS_KEY = "quality_guardrail_counters"
 QUALITY_SIGNAL_LIMIT = 200
 QUALITY_COUNTER_WEEK_LIMIT = 8
 
-_DEFAULT_AGENTIC_MODEL = "gpt-5.4"
-_DEFAULT_DEEP_MODEL = "gpt-5.5"
+_DEFAULT_AGENTIC_MODEL = "gpt-5.6"
+_DEFAULT_DEEP_MODEL = "gpt-5.6"
 _DEFAULT_QUICK_MODEL = "gpt-5.4-mini"
 _DEFAULT_ROUTER_MODEL = "gpt-5.4-nano"
 _DEFAULT_STRUCTURED_MODEL = "gpt-5.4-mini"
@@ -273,6 +280,8 @@ OPENAI_SERVICE_TIER = os.environ.get("HIRA_OPENAI_SERVICE_TIER", "").strip()
 OPENAI_USAGE_TRACKING = _env_flag("HIRA_OPENAI_USAGE_TRACKING", True)
 OPENAI_USAGE_PERSIST = _env_flag("HIRA_OPENAI_USAGE_PERSIST", True)
 OPENAI_USAGE_PERSIST_INTERVAL_SECONDS = _env_int_setting("HIRA_OPENAI_USAGE_PERSIST_INTERVAL_SECONDS", 60, minimum=0, maximum=3600)
+OPENAI_MONTHLY_BUDGET_SGD = _env_float_setting("HIRA_OPENAI_MONTHLY_BUDGET_SGD", 20.0)
+OPENAI_BUDGET_MIN_REQUEST_RESERVE_SGD = _env_float_setting("HIRA_OPENAI_BUDGET_MIN_REQUEST_RESERVE_SGD", 0.05)
 try:
     OPENAI_USAGE_SGD_PER_USD = max(0.01, float(os.environ.get("HIRA_OPENAI_USAGE_SGD_PER_USD", "1.35") or 1.35))
 except ValueError:
@@ -403,6 +412,12 @@ def model_policy_for_text(text: str = "") -> dict:
         lowered,
     ):
         deep_reason = "complex_domain_or_deliberate_work"
+    elif re.search(
+        r"\b(?:why|how come|what happened|what went wrong|diagnos(?:e|is|tic)|"
+        r"didn'?t|did not|haven'?t|have not|wasn'?t|was not|missing|left out|omitted|failed to)\b",
+        lowered,
+    ):
+        deep_reason = "diagnostic_or_explanatory_question"
     elif len(clean) > 1800:
         deep_reason = "long_context_turn"
     elif source_policy.get("needs_live_check") and re.search(
@@ -414,7 +429,7 @@ def model_policy_for_text(text: str = "") -> dict:
     use_deep = bool(deep_reason) and DEEP_MODEL != AGENTIC_MODEL
     reasoning_effort = "medium"
     verbosity = "medium"
-    if deep_reason in {"complex_domain_or_deliberate_work", "long_context_turn"}:
+    if deep_reason in {"complex_domain_or_deliberate_work", "long_context_turn", "diagnostic_or_explanatory_question"}:
         reasoning_effort = "high"
     elif deep_reason == "source_sensitive_reasoning":
         reasoning_effort = "medium"
@@ -455,6 +470,13 @@ def specialist_policy_for_text(text: str = "") -> dict:
     clean = str(text or "").lower()
     if _is_conversational_self_read_text(clean):
         return {"specialist": "general", "reason": "conversational_self_read"}
+    if (
+        re.search(r"\b(?:h\.?i\.?r\.?a\.?|hira|assistant|digest|briefing|notification|push|delivery)\b", clean)
+        and re.search(r"\b(?:why|how come|what happened|didn'?t|did not|missing|left out|omitted|failed|wrong)\b", clean)
+    ):
+        return {"specialist": "assistant_ops", "reason": "matched_assistant_diagnostic"}
+    if re.search(r"\b(?:khutbah|sermon|jumu'?ah|jumaat|prayer|solat|muis|fatwa|halal|haram)\b", clean):
+        return {"specialist": "faith", "reason": "matched_faith"}
     sports_entity = bool(SPORTS_FANDOM_ENTITY_PATTERN.search(clean))
     if sports_entity and not _is_casual_sports_lifestyle_text(clean) and LIVE_SPORTS_FACT_PATTERN.search(clean):
         return {"specialist": "sports_live", "reason": "matched_sports_live_fact"}
@@ -3253,54 +3275,14 @@ async def maybe_self_repair_reply(
     )
     if not verdict.get("needs_repair"):
         return reply_text, {"repaired": False, "verdict": verdict}
-
-    frame = frame or conversation_pragmatic_frame(user_text, recent_context=recent_context)
-    response_plan = dict(response_plan or {})
-    style_profile = dict(interaction_style_profile() if style_profile is None else style_profile)
-    relevant_arcs = list(relevant_arcs or [])
-    trace = trace or {}
-    arc_notes = []
-    for arc in relevant_arcs[:2]:
-        subject = str(arc.get("subject", "") or arc.get("problem", "") or "open loop").strip()
-        outcome = str(arc.get("desired_outcome", "") or "").strip()
-        recurrence = int(arc.get("recurrence_count", 1) or 1)
-        line = subject
-        if outcome:
-            line = f"{line} | desired outcome: {outcome}"
-        if recurrence > 1:
-            line = f"{line} | recurring x{recurrence}"
-        arc_notes.append(line[:220])
-    length_target = "Keep it to 1-4 short sentences." if str(response_plan.get("length", "") or "brief") != "structured" else "Use a compact structured answer with a clear judgement and tradeoffs."
-    prompt = (
-        "Repair this H.I.R.A draft so it sounds more human, better fitted to the user's nuance, and more like a sharp chief-of-staff.\n\n"
-        "Hard constraints:\n"
-        "- Do not add new facts, source claims, or tool claims that are not already supported by the draft/trace.\n"
-        "- Preserve any concrete recommendation already present unless it is clearly generic filler.\n"
-        "- Improve tone, continuity, and directness without becoming verbose.\n"
-        f"- {length_target}\n\n"
-        f"User message: {user_text[:600]}\n"
-        f"Recent context: {recent_context[:500]}\n"
-        f"Conversation frame: {json.dumps(frame or {}, ensure_ascii=False)}\n"
-        f"Reply plan: {json.dumps(response_plan, ensure_ascii=False)}\n"
-        f"Interaction style: {json.dumps(style_profile, ensure_ascii=False)}\n"
-        f"Relevant open loops: {json.dumps(arc_notes, ensure_ascii=False)}\n"
-        f"Repair reasons: {json.dumps(verdict.get('flags', []), ensure_ascii=False)}\n"
-        f"Draft reply: {reply_text[:1400]}\n\n"
-        "Return only the repaired final reply."
-    )
-    try:
-        repaired = (await _llm_text_async(
-            model=QUICK_MODEL,
-            max_tokens=260 if str(response_plan.get("length", "") or "") != "structured" else 420,
-            messages=[{"role": "user", "content": prompt}],
-        ) or "").strip()
-    except Exception as exc:
-        logger.debug(f"Self-repair rewrite failed: {exc}")
-        return reply_text, {"repaired": False, "verdict": verdict, "error": str(exc)}
-    repaired = strip_ai_citation_markers(" ".join(repaired.split()))
-    if not repaired or repaired == " ".join(str(reply_text or "").split()):
-        return reply_text, {"repaired": False, "verdict": verdict, "reason": "rewrite_same_or_empty"}
-    return repaired, {"repaired": True, "verdict": verdict}
+    # Preserve the primary flagship response. A second short-output rewrite can
+    # discard nuance, tool evidence, or long-form reasoning; quality flags are
+    # retained for telemetry and future prompt/eval improvements instead.
+    return reply_text, {
+        "repaired": False,
+        "verdict": verdict,
+        "reason": "primary_model_output_preserved",
+    }
 
 
 def hira_wit_style_brief() -> str:
@@ -3954,13 +3936,55 @@ def _openai_specialist_instruction(policy: dict | None = None) -> str:
             "Specialist mode: memory curator. Write durable facts through memory tools, classify corrections with high priority, "
             "and never claim persistence unless the tool confirms it."
         ),
+        "assistant_ops": (
+            "Specialist mode: H.I.R.A operations diagnostician. Inspect stored briefing, delivery, runtime, and source evidence "
+            "before explaining why an assistant response or notification was missing or wrong. Distinguish confirmed cause from inference."
+        ),
+        "faith": (
+            "Specialist mode: Singapore faith assistant. Use MUIS-backed tools for prayer and Friday khutbah facts, "
+            "state the relevant date, and do not fill source gaps from memory."
+        ),
     }
     detail = instructions.get(specialist)
     return f"\n\n{detail}" if detail else ""
 
 
+def _openai_core_instructions() -> str:
+    return f"""You are H.I.R.A, Herwanto's personal AI assistant and chief of staff in Singapore.
+
+Interpretation and judgement:
+- Read the whole user turn and its conversation context before deciding what it means. Do not route or answer from isolated keywords.
+- Answer the actual question first. Diagnose causes from available evidence, distinguish fact from inference, and say what remains unverified.
+- Think with Herwanto: give a clear judgement, surface material tradeoffs, and challenge weak assumptions when useful.
+- Match the needed depth. Be concise by default, but never remove facts, reasoning, caveats, or next actions needed for a complete answer.
+
+Tools and actions:
+- Use only the tools supplied on this turn. Tool availability is capability, not intent; choose tools after understanding the request.
+- For current, private, scheduled, religious, inbox, project, task, or delivery facts, inspect the relevant tool before making a claim.
+- After a tool result, synthesize it into a direct answer. Do not dump raw output or merely announce that a tool ran.
+- Never claim an action succeeded unless its tool confirms success. Ask one crisp question only when a safety-critical detail is genuinely missing.
+- Treat destructive or externally visible changes cautiously. Clear, low-risk requested actions may proceed; ambiguous/high-impact actions require confirmation.
+
+Truth and continuity:
+- Never invent backend diagnoses, permissions, dates, source checks, memories, or tool results.
+- Current tool evidence outranks memory. New user corrections outrank older turns and stored assumptions.
+- Resolve pronouns and follow-ups against the newest relevant turn. Use persisted conversation state and supplied memory without restarting from zero.
+- For live or volatile facts, verify with current sources and label uncertainty. For Singapore Islamic facts, prefer MUIS evidence.
+
+Voice:
+- Sound like a capable trusted colleague: direct, grounded, quietly warm, and dryly witty only when appropriate.
+- If Herwanto is frustrated, acknowledge the specific failure, own H.I.R.A's part plainly, and fix or diagnose it before offering reassurance.
+- Avoid generic assistant filler, fake enthusiasm, helplessness, and long methodological preambles.
+
+Herwanto's working context:
+- Educator at Naval Base Secondary School; Bahasa Melayu content must follow DBP conventions.
+- Solo app developer using React, Vite, Capacitor, Netlify, GitHub, and Python.
+- Entrepreneur building GamePlan and Rūḥ for the Singapore market.
+{_system_prompt_dynamic_tail()}"""
+
+
 def _openai_instructions_for_policy(policy: dict | None = None) -> str:
-    return f"{SYSTEM_PROMPT()}{_openai_specialist_instruction(policy)}{_openai_playbook_instruction(policy)}"
+    return f"{_openai_core_instructions()}{_openai_specialist_instruction(policy)}{_openai_playbook_instruction(policy)}"
 
 
 def _openai_request_options(
@@ -4005,7 +4029,10 @@ def _openai_request_options(
         kwargs["max_tool_calls"] = int(policy.get("max_tool_calls") or 8)
     kwargs["parallel_tool_calls"] = True
     if OPENAI_REASONING_KWARGS and _openai_supports_reasoning(model):
-        kwargs["reasoning"] = {"effort": str(policy.get("reasoning_effort") or "medium")}
+        reasoning = {"effort": str(policy.get("reasoning_effort") or "medium")}
+        if str(model or "").lower().startswith("gpt-5.6"):
+            reasoning["context"] = "all_turns"
+        kwargs["reasoning"] = reasoning
     prior = previous_response_id or _openai_previous_response_id(state_key)
     if prior:
         kwargs["previous_response_id"] = prior
@@ -4069,13 +4096,27 @@ def _openai_value_to_plain(value, depth: int = 3):
     return str(value)[:240]
 
 
-OPENAI_USAGE_CONFIG_KEY = "openai_usage_summary_v1"
+OPENAI_USAGE_SCOPE = re.sub(
+    r"[^a-z0-9_-]+",
+    "-",
+    (
+        os.environ.get("HIRA_OPENAI_USAGE_SCOPE", "").strip()
+        or os.environ.get("RAILWAY_SERVICE_NAME", "").strip()
+        or "local"
+    ).lower(),
+).strip("-") or "local"
+OPENAI_USAGE_CONFIG_KEY = f"openai_usage_summary_v2:{OPENAI_USAGE_SCOPE}"
 _OPENAI_USAGE_SUMMARY = {"version": 1, "days": {}}
 _OPENAI_USAGE_SUMMARY_LOADED = False
 _OPENAI_USAGE_LAST_PERSISTED_AT = 0.0
 _OPENAI_USAGE_LOCK = threading.Lock()
+_OPENAI_BUDGET_RESERVED_SGD = 0.0
 
 _OPENAI_TEXT_PRICE_PER_MILLION = [
+    ("gpt-5.6-terra", {"input": 2.00, "cached_input": 0.20, "output": 12.00}),
+    ("gpt-5.6-luna", {"input": 0.20, "cached_input": 0.02, "output": 1.20}),
+    ("gpt-5.6-sol", {"input": 5.00, "cached_input": 0.50, "output": 30.00}),
+    ("gpt-5.6", {"input": 5.00, "cached_input": 0.50, "output": 30.00}),
     ("gpt-5.5", {"input": 5.00, "cached_input": 0.50, "output": 30.00}),
     ("gpt-5.4-mini", {"input": 0.75, "cached_input": 0.075, "output": 4.50}),
     ("gpt-5.4-nano", {"input": 0.20, "cached_input": 0.02, "output": 1.25}),
@@ -4182,10 +4223,130 @@ def _openai_usd_to_sgd(amount: float) -> float:
     return round(float(amount or 0.0) * OPENAI_USAGE_SGD_PER_USD, 8)
 
 
+class OpenAIMonthlyBudgetExceeded(RuntimeError):
+    pass
+
+
+def _openai_request_budget_reserve_sgd(kwargs: dict) -> float:
+    model = str(kwargs.get("model") or AGENTIC_MODEL)
+    price = _openai_price_for_model(model)
+    if not price.get("output"):
+        price = _openai_price_for_model("gpt-5.6-sol")
+    payload = {
+        key: kwargs.get(key)
+        for key in ("instructions", "input", "tools", "text")
+        if kwargs.get(key) not in (None, "", [], {})
+    }
+    try:
+        payload_chars = len(json.dumps(payload, ensure_ascii=False, default=str))
+    except Exception:
+        payload_chars = sum(len(str(value)) for value in payload.values())
+    input_tokens = max(1, (payload_chars + 2) // 3)
+    output_tokens = max(1, int(kwargs.get("max_output_tokens", 0) or 1))
+    estimated_usd = (
+        input_tokens * float(price.get("input", 0.0))
+        + output_tokens * float(price.get("output", 0.0))
+    ) / 1_000_000
+    max_tool_calls = max(1, int(kwargs.get("max_tool_calls", 1) or 1))
+    for tool in kwargs.get("tools", []) or []:
+        if not isinstance(tool, dict):
+            continue
+        tool_type = str(tool.get("type", "") or "")
+        for native_name, unit_cost in _OPENAI_NATIVE_TOOL_ESTIMATES.items():
+            if native_name in tool_type:
+                estimated_usd += max_tool_calls * float(unit_cost)
+                break
+    estimated_sgd = _openai_usd_to_sgd(estimated_usd)
+    return round(max(OPENAI_BUDGET_MIN_REQUEST_RESERVE_SGD, estimated_sgd * 1.5), 6)
+
+
+def _openai_monthly_budget_spend_locked(now: datetime | None = None) -> float:
+    current = (now or datetime.now(SGT)).astimezone(SGT)
+    month_prefix = current.strftime("%Y-%m-")
+    days = _OPENAI_USAGE_SUMMARY.get("days") or {}
+    total = 0.0
+    for day_key, bucket in days.items():
+        if not str(day_key).startswith(month_prefix) or not isinstance(bucket, dict):
+            continue
+        total += float(bucket.get("estimated_sgd", bucket.get("estimated_usd", 0.0)) or 0.0)
+        total += float(bucket.get("budget_adjustment_sgd", 0.0) or 0.0)
+    return round(total, 8)
+
+
+def _openai_reserve_request_budget(kwargs: dict) -> float:
+    global _OPENAI_BUDGET_RESERVED_SGD
+    if OPENAI_MONTHLY_BUDGET_SGD <= 0:
+        return 0.0
+    if not OPENAI_USAGE_TRACKING:
+        raise OpenAIMonthlyBudgetExceeded(
+            "OpenAI monthly budget guard requires HIRA_OPENAI_USAGE_TRACKING=1."
+        )
+    reserve = _openai_request_budget_reserve_sgd(kwargs)
+    with _OPENAI_USAGE_LOCK:
+        _openai_load_usage_summary_locked()
+        spent = _openai_monthly_budget_spend_locked()
+        projected = spent + _OPENAI_BUDGET_RESERVED_SGD + reserve
+        if projected > OPENAI_MONTHLY_BUDGET_SGD + 1e-9:
+            remaining = max(0.0, OPENAI_MONTHLY_BUDGET_SGD - spent - _OPENAI_BUDGET_RESERVED_SGD)
+            raise OpenAIMonthlyBudgetExceeded(
+                f"OpenAI monthly API budget reached: S${spent:.2f} used, "
+                f"S${remaining:.2f} safely available, S${OPENAI_MONTHLY_BUDGET_SGD:.2f} cap."
+            )
+        _OPENAI_BUDGET_RESERVED_SGD = round(_OPENAI_BUDGET_RESERVED_SGD + reserve, 8)
+    return reserve
+
+
+def _openai_finish_request_budget(reserve: float, usage_record: dict | None = None) -> None:
+    global _OPENAI_BUDGET_RESERVED_SGD
+    if reserve <= 0:
+        return
+    now = datetime.now(SGT)
+    with _OPENAI_USAGE_LOCK:
+        _OPENAI_BUDGET_RESERVED_SGD = max(0.0, round(_OPENAI_BUDGET_RESERVED_SGD - reserve, 8))
+        if not usage_record:
+            days = _OPENAI_USAGE_SUMMARY.setdefault("days", {})
+            day = days.setdefault(now.strftime("%Y-%m-%d"), _openai_usage_empty_bucket())
+            day["budget_adjustment_sgd"] = round(
+                float(day.get("budget_adjustment_sgd", 0.0) or 0.0) + reserve,
+                8,
+            )
+            _OPENAI_USAGE_SUMMARY["updated_at"] = now.isoformat()
+            _openai_persist_usage_summary_locked(now.timestamp(), force=True)
+
+
+def openai_budget_status() -> dict:
+    with _OPENAI_USAGE_LOCK:
+        _openai_load_usage_summary_locked()
+        spent = _openai_monthly_budget_spend_locked()
+        reserved = _OPENAI_BUDGET_RESERVED_SGD
+    cap = float(OPENAI_MONTHLY_BUDGET_SGD)
+    remaining = max(0.0, cap - spent - reserved) if cap > 0 else 0.0
+    ratio = (spent + reserved) / cap if cap > 0 else 0.0
+    if cap <= 0:
+        state = "disabled"
+    elif ratio >= 1:
+        state = "blocked"
+    elif ratio >= 0.8:
+        state = "warning"
+    else:
+        state = "ok"
+    return {
+        "state": state,
+        "scope": OPENAI_USAGE_SCOPE,
+        "monthly_cap_sgd": round(cap, 2),
+        "estimated_month_spend_sgd": round(spent, 4),
+        "active_reservations_sgd": round(reserved, 4),
+        "safely_available_sgd": round(remaining, 4),
+        "used_ratio": round(ratio, 4),
+        "guard": "hard_pre_request_cap" if cap > 0 else "disabled",
+    }
+
+
 def _openai_usage_empty_bucket() -> dict:
     return {
         "requests": 0,
         "estimated_sgd": 0.0,
+        "budget_adjustment_sgd": 0.0,
         "input_tokens": 0,
         "cached_input_tokens": 0,
         "output_tokens": 0,
@@ -4213,6 +4374,11 @@ def _openai_usage_merge_bucket(target: dict, source: dict | None) -> None:
     target["requests"] = int(target.get("requests", 0) or 0) + int(source.get("requests", 0) or 0)
     source_cost = source.get("estimated_sgd", source.get("estimated_usd", 0.0))
     target["estimated_sgd"] = round(float(target.get("estimated_sgd", target.get("estimated_usd", 0.0)) or 0.0) + float(source_cost or 0.0), 8)
+    target["budget_adjustment_sgd"] = round(
+        float(target.get("budget_adjustment_sgd", 0.0) or 0.0)
+        + float(source.get("budget_adjustment_sgd", 0.0) or 0.0),
+        8,
+    )
     for key in ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_tokens", "total_tokens"):
         target[key] = int(target.get(key, 0) or 0) + int(source.get(key, 0) or 0)
     tools = target.setdefault("native_tools", {})
@@ -4235,11 +4401,11 @@ def _openai_load_usage_summary_locked() -> None:
         logger.debug("OpenAI usage summary load skipped: %s", exc)
 
 
-def _openai_persist_usage_summary_locked(now_ts: float) -> None:
+def _openai_persist_usage_summary_locked(now_ts: float, force: bool = False) -> None:
     global _OPENAI_USAGE_LAST_PERSISTED_AT
-    if not (OPENAI_USAGE_PERSIST and google_ok()):
+    if not OPENAI_USAGE_PERSIST:
         return
-    if OPENAI_USAGE_PERSIST_INTERVAL_SECONDS and now_ts - _OPENAI_USAGE_LAST_PERSISTED_AT < OPENAI_USAGE_PERSIST_INTERVAL_SECONDS:
+    if not force and OPENAI_USAGE_PERSIST_INTERVAL_SECONDS and now_ts - _OPENAI_USAGE_LAST_PERSISTED_AT < OPENAI_USAGE_PERSIST_INTERVAL_SECONDS:
         return
     try:
         gs.set_config(OPENAI_USAGE_CONFIG_KEY, json.dumps(_OPENAI_USAGE_SUMMARY, ensure_ascii=False))
@@ -4290,7 +4456,10 @@ def _record_openai_usage(resp, kwargs: dict, stream: bool = False) -> dict:
                 days.pop(key, None)
         _OPENAI_USAGE_SUMMARY["updated_at"] = record["at"]
         _OPENAI_USAGE_SUMMARY["last_request"] = record
-        _openai_persist_usage_summary_locked(now.timestamp())
+        _openai_persist_usage_summary_locked(
+            now.timestamp(),
+            force=OPENAI_MONTHLY_BUDGET_SGD > 0,
+        )
     logger.info(
         "OpenAI usage tracked: model=%s tier=%s input=%s cached=%s output=%s est=S$%.5f",
         model,
@@ -4308,6 +4477,7 @@ def _openai_bucket_public(bucket: dict | None) -> dict:
     public = {
         "requests": int(bucket.get("requests", 0) or 0),
         "estimated_sgd": round(float(bucket.get("estimated_sgd", bucket.get("estimated_usd", 0.0)) or 0.0), 4),
+        "budget_adjustment_sgd": round(float(bucket.get("budget_adjustment_sgd", 0.0) or 0.0), 4),
         "input_tokens": int(bucket.get("input_tokens", 0) or 0),
         "cached_input_tokens": int(bucket.get("cached_input_tokens", 0) or 0),
         "output_tokens": int(bucket.get("output_tokens", 0) or 0),
@@ -4354,6 +4524,7 @@ def openai_usage_status(days: int = 7) -> dict:
         "models_today": _openai_top_buckets((all_days.get(today_key) or {}).get("models") or {}),
         "tiers_today": _openai_top_buckets((all_days.get(today_key) or {}).get("tiers") or {}),
         "last_request": last_request,
+        "budget": openai_budget_status(),
         "note": "Estimated in SGD from Responses API usage fields, configured public USD pricing, and HIRA_OPENAI_USAGE_SGD_PER_USD; check OpenAI billing for the USD source of truth.",
     }
 
@@ -4522,6 +4693,8 @@ def openai_failure_category(exc: Exception | str | None = None) -> str:
     message = str(exc or "").lower()
     code = _openai_exception_code(exc)
     status = _openai_exception_status(exc)
+    if "monthly api budget" in message or "monthly budget guard" in message:
+        return "budget"
     if any(token in code or token in message for token in ("insufficient_quota", "quota_exceeded", "billing_hard_limit")):
         return "quota"
     if status == 401 or any(token in code or token in message for token in ("invalid_api_key", "authentication_error", "incorrect api key", "unauthorized")):
@@ -4592,6 +4765,11 @@ def _openai_degraded_request_kwargs(kwargs: dict, exc: Exception | None = None) 
         degraded.pop(key, None)
     if fallback_model:
         degraded["model"] = fallback_model
+        if isinstance(degraded.get("reasoning"), dict):
+            degraded["reasoning"] = {
+                key: value for key, value in degraded["reasoning"].items()
+                if key != "context"
+            }
     if stale_previous_response or fallback_model:
         degraded.pop("previous_response_id", None)
     if isinstance(degraded.get("text"), dict) and set(degraded["text"].keys()) == {"verbosity"}:
@@ -4607,33 +4785,43 @@ def _openai_degraded_request_kwargs(kwargs: dict, exc: Exception | None = None) 
 
 
 def _openai_create_with_retry(kwargs: dict):
+    budget_reserve = _openai_reserve_request_budget(kwargs)
+    usage_record: dict = {}
     try:
-        resp = openai_client.responses.create(**kwargs)
-        _record_openai_usage(resp, kwargs, stream=False)
-        return resp
-    except Exception as exc:
-        degraded = _openai_degraded_request_kwargs(kwargs, exc)
-        if not degraded:
-            raise
-        logger.warning("OpenAI Responses request failed; retrying with conservative options: %s", exc)
-        resp = openai_client.responses.create(**degraded)
-        _record_openai_usage(resp, degraded, stream=False)
-        return resp
+        try:
+            resp = openai_client.responses.create(**kwargs)
+            usage_record = _record_openai_usage(resp, kwargs, stream=False)
+            return resp
+        except Exception as exc:
+            degraded = _openai_degraded_request_kwargs(kwargs, exc)
+            if not degraded:
+                raise
+            logger.warning("OpenAI Responses request failed; retrying with conservative options: %s", exc)
+            resp = openai_client.responses.create(**degraded)
+            usage_record = _record_openai_usage(resp, degraded, stream=False)
+            return resp
+    finally:
+        _openai_finish_request_budget(budget_reserve, usage_record)
 
 
 async def _openai_create_with_retry_async(kwargs: dict):
+    budget_reserve = _openai_reserve_request_budget(kwargs)
+    usage_record: dict = {}
     try:
-        resp = await async_openai_client.responses.create(**kwargs)
-        _record_openai_usage(resp, kwargs, stream=False)
-        return resp
-    except Exception as exc:
-        degraded = _openai_degraded_request_kwargs(kwargs, exc)
-        if not degraded:
-            raise
-        logger.warning("OpenAI Responses async request failed; retrying with conservative options: %s", exc)
-        resp = await async_openai_client.responses.create(**degraded)
-        _record_openai_usage(resp, degraded, stream=False)
-        return resp
+        try:
+            resp = await async_openai_client.responses.create(**kwargs)
+            usage_record = _record_openai_usage(resp, kwargs, stream=False)
+            return resp
+        except Exception as exc:
+            degraded = _openai_degraded_request_kwargs(kwargs, exc)
+            if not degraded:
+                raise
+            logger.warning("OpenAI Responses async request failed; retrying with conservative options: %s", exc)
+            resp = await async_openai_client.responses.create(**degraded)
+            usage_record = _record_openai_usage(resp, degraded, stream=False)
+            return resp
+    finally:
+        _openai_finish_request_budget(budget_reserve, usage_record)
 
 
 def _openai_create_response(
@@ -4925,6 +5113,25 @@ CONTEXT_TOOL = {
         "type": "object",
         "properties": {
             "days": {"type": "integer", "description": "Number of days to look ahead, from 1 to 14"}
+        }
+    }
+}
+
+BRIEFING_DIAGNOSTIC_TOOL = {
+    "name": "inspect_briefing_delivery",
+    "description": "Inspect H.I.R.A's stored morning/evening briefing and delivery evidence for a date. Use when Herwanto asks why a digest was missing, not delivered, or omitted an expected section such as the Friday khutbah.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "date": {
+                "type": "string",
+                "description": "today, tomorrow, or YYYY-MM-DD. Leave blank for today."
+            },
+            "slot": {
+                "type": "string",
+                "enum": ["morning", "evening"],
+                "description": "Briefing slot to inspect. Default morning."
+            }
         }
     }
 }
@@ -13684,6 +13891,13 @@ def _forced_tool_for_text(text: str, tools: list[dict]) -> str | None:
     def has_any(words):
         return any(word in clean for word in words)
 
+    if (
+        "inspect_briefing_delivery" in available
+        and re.search(r"\b(?:digest|briefing|roundup|notification|push|delivery)\b", clean)
+        and re.search(r"\b(?:why|how come|what happened|didn'?t|did not|missing|left out|omitted|failed|not delivered|not receive)\b", clean)
+    ):
+        return "inspect_briefing_delivery"
+
     gmail_intent = has_any([
         "email", "emails", "gmail", "inbox", "unread mail", "unread email",
         "last mail", "latest mail", "recent mail", "work mail", "personal mail",
@@ -15926,6 +16140,7 @@ Inspect this screenshot/document carefully. Priority:
 def _core_tools():
     tools = [
         CONTEXT_TOOL,
+        BRIEFING_DIAGNOSTIC_TOOL,
         CALENDAR_TOOL,
         DELETE_CALENDAR_TOOL,
         BULK_DELETE_DUPLICATE_CALENDAR_TOOL,
@@ -16026,6 +16241,12 @@ def pwa_tools_for_message(text: str, recent_context: str = "") -> list[dict]:
         for item in items:
             if item not in tools:
                 tools.append(item)
+
+    if (
+        re.search(r"\b(?:digest|briefing|roundup|notification|push|delivery)\b", effective_text)
+        and re.search(r"\b(?:why|how come|what happened|didn'?t|did not|missing|left out|omitted|failed|not delivered|not receive)\b", effective_text)
+    ):
+        add(BRIEFING_DIAGNOSTIC_TOOL)
 
     if is_hira_capability_feedback(effective_text):
         add(CONTEXT_TOOL, MEMORY_TOOL, PROPOSE_PLAYBOOK_UPDATE_TOOL)
@@ -16458,6 +16679,9 @@ _INJECTED_CHAT_CONTEXT_RE = re.compile(
     r"\n\s*\[(?:"
     r"Email account hint|"
     r"Pragmatic frame|"
+    r"Reply plan|"
+    r"Personal operator state|"
+    r"Interaction style|"
     r"Working memory(?: for this PWA chat)?|"
     r"Recent[- ]turn grounding(?: for follow-up resolution)?|"
     r"Thread state|"
@@ -16537,46 +16761,51 @@ def _openai_text_delta_from_event(event) -> str:
 
 
 async def _openai_stream_response(kwargs: dict):
+    budget_reserve = _openai_reserve_request_budget(kwargs)
+    usage_record: dict = {}
     text_parts: list[str] = []
     try:
-        async with async_openai_client.responses.stream(**kwargs) as stream:
-            async for event in stream:
-                delta = _openai_text_delta_from_event(event)
-                if delta:
-                    text_parts.append(delta)
-                yield event
-            try:
-                final_response = await stream.get_final_response()
-            except RuntimeError as exc:
-                incomplete = _openai_incomplete_stream_response(kwargs, text_parts, exc)
-                if incomplete:
-                    yield incomplete
-                    return
+        try:
+            async with async_openai_client.responses.stream(**kwargs) as stream:
+                async for event in stream:
+                    delta = _openai_text_delta_from_event(event)
+                    if delta:
+                        text_parts.append(delta)
+                    yield event
+                try:
+                    final_response = await stream.get_final_response()
+                except RuntimeError as exc:
+                    incomplete = _openai_incomplete_stream_response(kwargs, text_parts, exc)
+                    if incomplete:
+                        yield incomplete
+                        return
+                    raise
+            usage_record = _record_openai_usage(final_response, kwargs, stream=True)
+            yield SimpleNamespace(type="hira.final_response", response=final_response, request_kwargs=kwargs)
+        except Exception as exc:
+            degraded = _openai_degraded_request_kwargs(kwargs, exc)
+            if not degraded:
                 raise
-        _record_openai_usage(final_response, kwargs, stream=True)
-        yield SimpleNamespace(type="hira.final_response", response=final_response, request_kwargs=kwargs)
-    except Exception as exc:
-        degraded = _openai_degraded_request_kwargs(kwargs, exc)
-        if not degraded:
-            raise
-        logger.warning("OpenAI Responses stream failed; retrying with conservative options: %s", exc)
-        text_parts = []
-        async with async_openai_client.responses.stream(**degraded) as stream:
-            async for event in stream:
-                delta = _openai_text_delta_from_event(event)
-                if delta:
-                    text_parts.append(delta)
-                yield event
-            try:
-                final_response = await stream.get_final_response()
-            except RuntimeError as retry_exc:
-                incomplete = _openai_incomplete_stream_response(degraded, text_parts, retry_exc)
-                if incomplete:
-                    yield incomplete
-                    return
-                raise
-        _record_openai_usage(final_response, degraded, stream=True)
-        yield SimpleNamespace(type="hira.final_response", response=final_response, request_kwargs=degraded)
+            logger.warning("OpenAI Responses stream failed; retrying with conservative options: %s", exc)
+            text_parts = []
+            async with async_openai_client.responses.stream(**degraded) as stream:
+                async for event in stream:
+                    delta = _openai_text_delta_from_event(event)
+                    if delta:
+                        text_parts.append(delta)
+                    yield event
+                try:
+                    final_response = await stream.get_final_response()
+                except RuntimeError as retry_exc:
+                    incomplete = _openai_incomplete_stream_response(degraded, text_parts, retry_exc)
+                    if incomplete:
+                        yield incomplete
+                        return
+                    raise
+            usage_record = _record_openai_usage(final_response, degraded, stream=True)
+            yield SimpleNamespace(type="hira.final_response", response=final_response, request_kwargs=degraded)
+    finally:
+        _openai_finish_request_budget(budget_reserve, usage_record)
 
 
 def _openai_incomplete_stream_response(kwargs: dict, text_parts: list[str], exc: RuntimeError):
@@ -17808,6 +18037,12 @@ async def _execute_tool(name: str, inp: dict) -> str:
             return build_context_snapshot(inp.get("days", 7))
         except Exception as e:
             return f"Failed to get assistant context: {e}"
+
+    elif name == "inspect_briefing_delivery":
+        try:
+            return build_briefing_diagnostic(inp.get("date", ""), inp.get("slot", "morning"))
+        except Exception as e:
+            return f"Failed to inspect briefing delivery: {e}"
 
     elif name == "get_timetable":
         try:
@@ -19694,6 +19929,88 @@ def build_digest_delivery_status(delivery_log: list | None = None, queued: list 
         "summary": summary,
         "slots": slots,
     }
+
+
+def build_briefing_diagnostic(target_text: str = "", slot: str = "morning") -> str:
+    target = _parse_optional_date(target_text)
+    target_key = target.isoformat()
+    clean_slot = "evening" if str(slot or "").strip().lower() == "evening" else "morning"
+    sources = _briefing_sources(clean_slot, target_key)
+
+    try:
+        notifications = gs.get_app_notifications(include_archived=True)
+    except Exception as exc:
+        notifications = []
+        notification_error = str(exc)
+    else:
+        notification_error = ""
+    stored = next(
+        (
+            item for item in reversed(notifications or [])
+            if isinstance(item, dict) and str(item.get("source", "") or "").strip() in sources
+        ),
+        {},
+    )
+    body = str(stored.get("body", "") or "")
+    khutbah_in_body = bool(re.search(r"\b(?:jumu'?ah\s+khutbah|friday\s+khutbah|friday\s+sermon)\b", body, re.I))
+
+    try:
+        delivery_log = gs.get_web_push_delivery_log()
+    except Exception as exc:
+        delivery_log = []
+        delivery_error = str(exc)
+    else:
+        delivery_error = ""
+    delivered = _briefing_delivery_log_item(delivery_log, sources, target_key)
+    delivered_at = _parse_sgt_datetime(str(delivered.get("created", "") or "")) if delivered else None
+
+    muis_date = ""
+    muis_title = ""
+    muis_error = ""
+    if target.weekday() == 4:
+        try:
+            khutbah = isl.latest_khutbah(target)
+            muis_date = str(khutbah.get("date", "") or "")
+            muis_title = str(khutbah.get("title", "") or "")
+        except Exception as exc:
+            muis_error = str(exc)
+
+    lines = [
+        "Briefing diagnostic",
+        f"Date: {target_key}",
+        f"Slot: {clean_slot}",
+        f"Stored briefing found: {'yes' if stored else 'no'}",
+        f"Confirmed phone delivery: {'yes' if delivered else 'no'}",
+    ]
+    if delivered_at:
+        lines.append(f"Delivered at: {delivered_at.strftime('%H:%M SGT')}")
+    if notification_error:
+        lines.append(f"Notification lookup error: {notification_error}")
+    if delivery_error:
+        lines.append(f"Delivery-log lookup error: {delivery_error}")
+    if target.weekday() == 4:
+        lines.extend([
+            f"Friday khutbah present in stored briefing: {'yes' if khutbah_in_body else 'no'}",
+            f"Current MUIS khutbah date for lookup: {muis_date or 'unavailable'}",
+        ])
+        if muis_title:
+            lines.append(f"Current MUIS khutbah title: {muis_title}")
+        if muis_error:
+            lines.append(f"Current MUIS lookup error: {muis_error}")
+        lines.append(f"Morning briefing target time: {MORNING_BRIEFING_TIME[0]:02d}:{MORNING_BRIEFING_TIME[1]:02d} SGT")
+        lines.append("Separate Friday khutbah heads-up target time: 10:30 SGT")
+        if stored and not khutbah_in_body:
+            if muis_date == target_key:
+                lines.append(
+                    "Evidence-based diagnosis: the matching MUIS khutbah is available now but was absent from the stored briefing. "
+                    "It was unavailable, date-mismatched, or failed to load when the morning briefing was built; the historical fetch cause was not logged."
+                )
+            else:
+                lines.append(
+                    "Evidence-based diagnosis: the briefing builder only includes a khutbah whose MUIS date exactly matches Friday. "
+                    "The current lookup does not expose a matching dated khutbah, so it was intentionally omitted rather than guessed."
+                )
+    return "\n".join(lines)
 
 
 def format_digest_delivery_status(status: dict) -> str:

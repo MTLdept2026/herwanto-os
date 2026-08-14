@@ -5011,14 +5011,31 @@ def _briefing_replay_slot(message: str) -> str:
     wants_live = _wants_live_briefing(clean)
     if wants_live:
         return ""
-    wants_replay = re.search(r"\b(show|replay|open|missed|earlier|this morning|this evening)\b", clean)
-    if not wants_digest or not wants_replay:
+    asks_for_explanation = re.search(
+        r"\b(?:why|how come|what happened|what went wrong|reason)\b",
+        clean,
+    )
+    wants_replay = re.search(
+        r"^(?:please\s+)?(?:"
+        r"(?:(?:can|could|would|will|may)\s+(?:you|i)\s+(?:please\s+)?)?"
+        r"(?:show|replay|open|resend|send|pull up|bring up|get|give me)"
+        r"|i(?:'d| would)\s+like\s+to\s+(?:see|replay|open|get)"
+        r"|let me\s+(?:see|replay|open)"
+        r")\b",
+        clean,
+    )
+    if not wants_digest or not wants_replay or asks_for_explanation:
         return ""
     if re.search(r"\b(evening|roundup|tonight)\b", clean):
         return "evening"
     if re.search(r"\b(morning|today|digest|briefing|brief)\b", clean):
         return "morning"
     return ""
+
+
+def _pwa_natural_chat_uses_full_reasoning(message: str) -> bool:
+    clean = str(message or "").strip()
+    return bool(clean) and not clean.startswith("/")
 
 
 def _wants_live_briefing(clean: str) -> bool:
@@ -6354,7 +6371,9 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             tool_name=tool_name,
         )
 
-    explicit_task_reply = await _pwa_explicit_task_reply(message, history_key)
+    reasoning_first = _pwa_natural_chat_uses_full_reasoning(message)
+
+    explicit_task_reply = None if reasoning_first else await _pwa_explicit_task_reply(message, history_key)
     if explicit_task_reply:
         reply, route_name, tool_name = explicit_task_reply
         quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
@@ -6366,7 +6385,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             tool_name=tool_name,
         )
 
-    live_briefing_slot = _live_briefing_slot(message)
+    live_briefing_slot = "" if reasoning_first else _live_briefing_slot(message)
     if live_briefing_slot:
         reply = await _run_with_chat_slot(asyncio.to_thread(_live_briefing_text, live_briefing_slot))
         quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
@@ -6378,7 +6397,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             tool_name=f"{live_briefing_slot}_briefing",
         )
 
-    briefing_slot = _briefing_replay_slot(message)
+    briefing_slot = "" if reasoning_first else _briefing_replay_slot(message)
     if briefing_slot:
         reply = await _run_with_chat_slot(asyncio.to_thread(_briefing_replay_text, briefing_slot))
         quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
@@ -6390,7 +6409,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             tool_name=f"{briefing_slot}_briefing",
         )
 
-    triage_reply = await _run_with_chat_slot(_pwa_triage_reply(message))
+    triage_reply = "" if reasoning_first else await _run_with_chat_slot(_pwa_triage_reply(message))
     if triage_reply:
         quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
         return _quick_sse_response(
@@ -6401,7 +6420,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             tool_name="get_assistant_context",
         )
 
-    assistant_feeling_reply = _pwa_assistant_feeling_reply(message)
+    assistant_feeling_reply = "" if reasoning_first else _pwa_assistant_feeling_reply(message)
     if assistant_feeling_reply:
         quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
         return _quick_sse_response(
@@ -6411,7 +6430,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             route_name="casual_checkin",
         )
 
-    model_config_advice = _pwa_model_config_advice_reply(message)
+    model_config_advice = "" if reasoning_first else _pwa_model_config_advice_reply(message)
     if model_config_advice:
         quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
         return _quick_sse_response(
@@ -6421,7 +6440,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             route_name="model_config_advice",
         )
 
-    direct_greeting, greeting_route = _pwa_direct_greeting_reply(message)
+    direct_greeting, greeting_route = ("", "") if reasoning_first else _pwa_direct_greeting_reply(message)
     if direct_greeting:
         quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
         return _quick_sse_response(
@@ -6431,7 +6450,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             route_name=greeting_route,
         )
 
-    f1_calendar_reply = _pwa_direct_f1_calendar_reply(message, history)
+    f1_calendar_reply = "" if reasoning_first else _pwa_direct_f1_calendar_reply(message, history)
     if f1_calendar_reply:
         quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
         return _quick_sse_response(
@@ -6442,7 +6461,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             tool_name="get_f1_brief",
         )
 
-    lfc_transfer_reply = await _run_with_chat_slot(_pwa_lfc_transfer_news_reply(message))
+    lfc_transfer_reply = "" if reasoning_first else await _run_with_chat_slot(_pwa_lfc_transfer_news_reply(message))
     if lfc_transfer_reply:
         quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
         return _quick_sse_response(
@@ -6453,7 +6472,11 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             tool_name="web_search",
         )
 
-    direct_source_reply, direct_source_tool = await _run_with_chat_slot(_pwa_direct_source_reply(message, history))
+    direct_source_reply, direct_source_tool = (
+        ("", "")
+        if reasoning_first
+        else await _run_with_chat_slot(_pwa_direct_source_reply(message, history))
+    )
     if direct_source_reply:
         quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
         return _quick_sse_response(
@@ -6464,7 +6487,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             tool_name=direct_source_tool,
         )
 
-    if _pwa_casual_status_prompt(message):
+    if not reasoning_first and _pwa_casual_status_prompt(message):
         try:
             status_reply = await _run_with_chat_slot(bot._execute_tool_offloop("get_assistant_context", {"days": 3}))
         except Exception as exc:
@@ -6485,7 +6508,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             tool_name="get_assistant_context",
         )
 
-    agenda_days = _pwa_direct_agenda_days(message)
+    agenda_days = 0 if reasoning_first else _pwa_direct_agenda_days(message)
     if agenda_days:
         agenda_reply = await _run_with_chat_slot(asyncio.to_thread(
             _safe_text,
@@ -6501,7 +6524,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             tool_name="get_assistant_context",
         )
 
-    oral_examiner_reply = await _run_with_chat_slot(_pwa_oral_examiner_calendar_reply(message))
+    oral_examiner_reply = "" if reasoning_first else await _run_with_chat_slot(_pwa_oral_examiner_calendar_reply(message))
     if oral_examiner_reply:
         quick_history = [*history[-bot.MAX_TURNS:], {"role": "user", "content": message}]
         return _quick_sse_response(
@@ -6512,7 +6535,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
             tool_name="create_calendar_event",
         )
 
-    task_days = _pwa_direct_task_days(message)
+    task_days = 0 if reasoning_first else _pwa_direct_task_days(message)
     if task_days:
         task_reply = await _run_with_chat_slot(asyncio.to_thread(
             _safe_text,
@@ -6558,15 +6581,12 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
         user_content = f"{message}\n\n[Email account hint: use account=\"{account_hint}\" for Gmail tools.]"
     user_content = (
         f"{user_content}"
-        f"{bot.pragmatic_frame_context(initial_thread_state.get('pragmatic_frame', {}))}"
         f"{bot.response_plan_context(response_plan)}"
         f"{bot.personal_operator_context(operator_state)}"
         f"{bot.interaction_style_context(style_profile)}"
         f"{_working_memory_context(working_memory)}"
         f"{_recent_turn_grounding_context(history, message)}"
         f"{_thread_state_context(initial_thread_state)}"
-        f"{bot.intent_lens_hint(message)}"
-        f"{bot.source_discipline_hint(source_hint_message)}"
     )
     location_context = _device_location_context(location)
     if location_context:
@@ -6579,37 +6599,41 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
         for item in history[-8:-1]
         if isinstance(item, dict) and isinstance(item.get("content"), str)
     )
-    absence_reply = bot.absence_memory_response(message, recent_context=recent_context)
+    absence_reply = "" if reasoning_first else bot.absence_memory_response(message, recent_context=recent_context)
     if absence_reply:
         return _quick_sse_response(absence_reply, history_key, history, route_name="memory_recall")
 
-    source_pref_reply = bot.source_citation_preference_response(message)
+    source_pref_reply = "" if reasoning_first else bot.source_citation_preference_response(message)
     if source_pref_reply:
         return _quick_sse_response(source_pref_reply, history_key, history, route_name="memory_preference")
 
-    f1_sync_reply = bot.f1_calendar_sync_response(message)
+    f1_sync_reply = "" if reasoning_first else bot.f1_calendar_sync_response(message)
     if f1_sync_reply:
         return _quick_sse_response(f1_sync_reply, history_key, history, route_name="f1_calendar_sync", tool_name="sync_f1_calendar")
 
-    provider_status_reply = bot._llm_provider_status_reply([{"role": "user", "content": message}])
+    provider_status_reply = "" if reasoning_first else bot._llm_provider_status_reply([{"role": "user", "content": message}])
     if provider_status_reply:
         return _quick_sse_response(provider_status_reply, history_key, history, route_name="provider_status")
 
-    carryover_greeting_reply = bot.conversation_carryover_greeting_reply(message)
+    carryover_greeting_reply = "" if reasoning_first else bot.conversation_carryover_greeting_reply(message)
     if carryover_greeting_reply:
         return _quick_sse_response(carryover_greeting_reply, history_key, history, route_name="carryover_checkin")
 
-    checkin_command = _pwa_checkin_command_reply(message)
+    checkin_command = None if reasoning_first else _pwa_checkin_command_reply(message)
     if checkin_command:
         reply, tool_name = checkin_command
         return _quick_sse_response(reply, history_key, history, route_name="checkin_admin", tool_name=tool_name)
 
-    playbook_command = await _run_with_chat_slot(asyncio.to_thread(bot.pwa_playbook_command_reply, message))
+    playbook_command = (
+        None
+        if reasoning_first
+        else await _run_with_chat_slot(asyncio.to_thread(bot.pwa_playbook_command_reply, message))
+    )
     if playbook_command:
         reply, tool_name = playbook_command
         return _quick_sse_response(reply, history_key, history, route_name="playbook_admin", tool_name=tool_name)
 
-    nudge_command = _pwa_nudge_command_reply(message)
+    nudge_command = None if reasoning_first else _pwa_nudge_command_reply(message)
     if nudge_command:
         reply, tool_name = nudge_command
         return _quick_sse_response(reply, history_key, history, route_name="nudge_admin", tool_name=tool_name)
@@ -6619,7 +6643,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
         reply, tool_name = nudge_removal_confirmation
         return _quick_sse_response(reply, history_key, history, route_name="nudge_admin", tool_name=tool_name)
 
-    followup_command = _pwa_followup_command_reply(message)
+    followup_command = None if reasoning_first else _pwa_followup_command_reply(message)
     if followup_command:
         reply, tool_name = followup_command
         return _quick_sse_response(reply, history_key, history, route_name="followup_admin", tool_name=tool_name)
@@ -6629,7 +6653,11 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
         reply, tool_name = task_removal_confirmation
         return _quick_sse_response(reply, history_key, history, route_name="task_admin", tool_name=tool_name)
 
-    topic_news_reply = await _run_with_chat_slot(_pwa_topic_news_reply(message, recent_context_for_followup))
+    topic_news_reply = (
+        ""
+        if reasoning_first
+        else await _run_with_chat_slot(_pwa_topic_news_reply(message, recent_context_for_followup))
+    )
     if topic_news_reply:
         return _quick_sse_response(
             topic_news_reply,
@@ -6676,13 +6704,14 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
         return StreamingResponse(quick_checkin_events(), media_type="text/event-stream")
 
     delayed_digest_reply = ""
-    try:
-        scheduled_digest = bot.schedule_delayed_digest_push(message)
-        if scheduled_digest:
-            send_at = scheduled_digest["send_at"]
-            delayed_digest_reply = f"Scheduled. I’ll push the digest at {send_at.strftime('%H:%M')} SGT."
-    except Exception as exc:
-        bot.logger.warning(f"Delayed digest push scheduling failed: {exc}")
+    if not reasoning_first:
+        try:
+            scheduled_digest = bot.schedule_delayed_digest_push(message)
+            if scheduled_digest:
+                send_at = scheduled_digest["send_at"]
+                delayed_digest_reply = f"Scheduled. I’ll push the digest at {send_at.strftime('%H:%M')} SGT."
+        except Exception as exc:
+            bot.logger.warning(f"Delayed digest push scheduling failed: {exc}")
 
     if delayed_digest_reply:
         history.append({"role": "assistant", "content": delayed_digest_reply})
@@ -6757,7 +6786,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
         try:
             if working_summary:
                 yield sse({"type": "understood", **working_summary})
-            quick = await bot.should_route_quick_pwa_chat(list(history[:-1]), message)
+            quick = False
             yield sse(timing("route"))
             route_name = "quick" if quick else "agentic"
             _merge_chat_trace(trace, {"route": route_name})
@@ -7124,6 +7153,12 @@ def _pwa_model_failure_reply(message: str, error_detail: str = "") -> str:
         return (
             "I’m still here, but OpenAI says the account is out of quota or blocked by billing limits. "
             "Retrying will not help until billing or usage limits are fixed."
+        )
+    if category == "budget":
+        return (
+            "I stopped before making another OpenAI call because H.I.R.A’s monthly API cost cap has been reached. "
+            "That is the budget guard working, not a failed answer. Check the admin usage panel or raise "
+            "HIRA_OPENAI_MONTHLY_BUDGET_SGD deliberately before retrying."
         )
     if category == "model":
         return (

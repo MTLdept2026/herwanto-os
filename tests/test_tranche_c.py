@@ -105,7 +105,7 @@ class TrancheCTests(unittest.TestCase):
             ],
         }
 
-        with patch.object(bot, "SYSTEM_PROMPT", return_value="STATIC"):
+        with patch.object(bot, "_openai_core_instructions", return_value="STATIC"):
             instructions = bot._openai_instructions_for_policy(policy)
 
         self.assertTrue(instructions.startswith("STATIC"))

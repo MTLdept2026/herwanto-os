@@ -163,7 +163,43 @@ class FakeSheetsService:
 
 
 class AgenticOpenAITests(unittest.TestCase):
+    # These cases retain coverage for the deterministic command implementations
+    # themselves. Production natural-language chat is model-first; dedicated
+    # tests below exercise that boundary without this isolated legacy fixture.
+    _DETERMINISTIC_COMMAND_IMPLEMENTATION_TESTS = {
+        "test_agenda_phrase_matrix_uses_local_agenda_before_model_route",
+        "test_agenda_today_uses_local_agenda_before_model_route",
+        "test_backend_change_feeling_uses_local_checkin_before_model_route",
+        "test_chat_api_lfc_social_transfer_prompt_returns_fast_timeout_reply",
+        "test_chat_api_lfc_social_transfer_prompt_returns_rich_topic_news",
+        "test_chat_api_lfc_social_transfer_prompt_uses_google_news_proxy_source",
+        "test_day_looking_today_uses_local_agenda_before_model_route",
+        "test_direct_source_prefetch_uses_chat_semaphore_slot",
+        "test_due_to_orals_schedule_update_adds_four_calendar_events_immediately",
+        "test_explicit_status_phrase_matrix_uses_local_status_before_model_route",
+        "test_hey_hira_whats_up_routes_as_quick_chat_not_status_brief",
+        "test_how_are_you_routes_as_local_hira_greeting",
+        "test_live_briefing_bypasses_chat_memory_preflight",
+        "test_morning_hira_uses_local_greeting_before_model_route",
+        "test_openai_max_advice_uses_local_reply_before_model_route",
+        "test_plain_lfc_transfer_prompt_uses_proxy_shortcut",
+        "test_provider_status_bypasses_topic_news_shortcut",
+        "test_pwa_triage_uses_direct_context_route_before_model",
+        "test_task_phrase_matrix_uses_local_task_brief_before_model_route",
+        "test_tasks_check_uses_local_task_brief_before_model_route",
+        "test_topic_news_followup_bypasses_model_route",
+        "test_topic_news_screenshot_prompt_bypasses_generic_direct_news_query",
+        "test_two_turn_task_creation_uses_pending_action_before_shortcuts",
+        "test_usual_self_feeling_uses_local_checkin_before_model_route",
+        "test_whats_up_hira_routes_as_quick_chat_not_status_brief",
+        "test_whats_up_routes_as_quick_chat_not_status_brief",
+    }
+
     def setUp(self):
+        if self._testMethodName in self._DETERMINISTIC_COMMAND_IMPLEMENTATION_TESTS:
+            shortcut_patch = patch.object(web_app, "_pwa_natural_chat_uses_full_reasoning", return_value=False)
+            shortcut_patch.start()
+            self.addCleanup(shortcut_patch.stop)
         bot.gs._invalidate_classlist_cache()
         bot._invalidate_system_prompt_cache()
         bot._mem_histories.clear()
@@ -174,6 +210,7 @@ class AgenticOpenAITests(unittest.TestCase):
         bot._OPENAI_USAGE_SUMMARY = {"version": 1, "days": {}}
         bot._OPENAI_USAGE_SUMMARY_LOADED = False
         bot._OPENAI_USAGE_LAST_PERSISTED_AT = 0.0
+        bot._OPENAI_BUDGET_RESERVED_SGD = 0.0
         bot._PENDING_NEWS_DIGEST_ENTRIES = []
         bot._PENDING_NEWS_DIGEST_BUILT_AT = None
         web_app._UPLOAD_JOBS.clear()
@@ -462,23 +499,24 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertIn("too_generic", verdict["flags"])
         self.assertIn("missed_judgement", verdict["flags"])
 
-    def test_maybe_self_repair_reply_rewrites_generic_draft(self):
+    def test_maybe_self_repair_reply_preserves_primary_model_draft(self):
         text = "I'm tired lah, but should I send that reply tonight?"
         frame = bot.conversation_pragmatic_frame(text)
         plan = bot.conversation_response_plan(text, frame=frame, style_profile={}, relevant_episodes=[], relevant_arcs=[])
 
-        with patch.object(bot, "_llm_text_async", return_value="Long day, fair. I'd send it tonight and keep it clean."):
-            repaired, meta = asyncio.run(bot.maybe_self_repair_reply(
-                text,
-                "Sure.",
-                frame=frame,
-                response_plan=plan,
-                style_profile={},
-                relevant_arcs=[],
-            ))
+        repaired, meta = asyncio.run(bot.maybe_self_repair_reply(
+            text,
+            "Sure.",
+            frame=frame,
+            response_plan=plan,
+            style_profile={},
+            relevant_arcs=[],
+        ))
 
-        self.assertTrue(meta["repaired"])
-        self.assertIn("send it tonight", repaired)
+        self.assertEqual("Sure.", repaired)
+        self.assertFalse(meta["repaired"])
+        self.assertIn("too_generic", meta["verdict"]["flags"])
+        self.assertEqual("primary_model_output_preserved", meta["reason"])
 
     def test_pwa_yes_pls_after_calendar_offer_uses_context_tool(self):
         messages = [
@@ -5860,6 +5898,154 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertEqual(web_app._live_briefing_slot("Give me a crisp H.I.R.A briefing for right now."), "morning")
         self.assertEqual(web_app._briefing_replay_slot("Give me a crisp H.I.R.A briefing for right now."), "")
 
+    def test_briefing_replay_does_not_hijack_questions_or_delivery_complaints(self):
+        messages = [
+            "How come i didnt get the friday sermon in my digest this morning?",
+            "Why was the Friday sermon missing from this morning's digest?",
+            "I didn't receive my digest this morning.",
+            "What happened to the evening roundup?",
+            "Show me why the khutbah was omitted from today's briefing.",
+        ]
+
+        for message in messages:
+            with self.subTest(message=message):
+                self.assertEqual(web_app._briefing_replay_slot(message), "")
+
+    def test_briefing_replay_requires_an_explicit_retrieval_request(self):
+        requests = {
+            "Replay this morning's digest": "morning",
+            "Please show me today's briefing": "morning",
+            "Can you resend the morning digest?": "morning",
+            "Could I get this evening's roundup?": "evening",
+            "Pull up the earlier evening briefing": "evening",
+            "Let me see the morning digest": "morning",
+        }
+
+        for message, expected_slot in requests.items():
+            with self.subTest(message=message):
+                self.assertEqual(web_app._briefing_replay_slot(message), expected_slot)
+
+    def test_natural_chat_uses_full_reasoning_and_only_slash_commands_bypass(self):
+        messages = [
+            "How come i didnt get the friday sermon in my digest this morning?",
+            "Why was the khutbah missing from my digest",
+            "Ok whats on my agenda today",
+            "Can you check my tasks",
+            "I didn't receive the briefing this morning.",
+            "Replay this morning's digest",
+            "Morning Hira",
+            "What's the latest LFC transfer news?",
+        ]
+
+        for message in messages:
+            with self.subTest(message=message):
+                self.assertTrue(web_app._pwa_natural_chat_uses_full_reasoning(message))
+
+        self.assertFalse(web_app._pwa_natural_chat_uses_full_reasoning("/digestcheck"))
+        self.assertFalse(web_app._pwa_natural_chat_uses_full_reasoning(""))
+
+    def test_sermon_delivery_question_reaches_agentic_model_with_diagnostic_tool(self):
+        message = "How come i didnt get the friday sermon in my digest this morning?"
+        captured = {}
+
+        async def fake_stream(*_args, **kwargs):
+            captured.update(kwargs)
+            reply = (
+                "The stored morning digest omitted the Friday khutbah. "
+                "I checked the briefing evidence before explaining the likely timing gap."
+            )
+            yield {"type": "text", "text": reply}
+            yield {"type": "done", "text": reply}
+
+        async def fake_playbooks(_message):
+            return []
+
+        async def fake_repair(_message, reply, **_kwargs):
+            return reply, {"repaired": False, "verdict": {"flags": []}}
+
+        async def run():
+            response = await web_app._chat_stream_response(message, None, "sermon-diagnostic")
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with (
+            patch.object(bot, "get_history", return_value=[]),
+            patch.object(bot, "save_history"),
+            patch.object(web_app, "_update_working_memory", return_value={}),
+            patch.object(web_app, "_schedule_background_call"),
+            patch.object(web_app, "_briefing_replay_text", side_effect=AssertionError("question must not replay the digest")),
+            patch.object(bot, "should_route_quick_pwa_chat", side_effect=AssertionError("natural chat must not use the quick router")),
+            patch.object(bot, "_select_playbooks", side_effect=fake_playbooks),
+            patch.object(bot, "maybe_self_repair_reply", side_effect=fake_repair),
+            patch.object(bot, "stream_agentic_chat", side_effect=fake_stream) as stream,
+        ):
+            body = asyncio.run(run())
+
+        self.assertIn('"name": "agentic"', body)
+        self.assertIn('"forced_tool": "inspect_briefing_delivery"', body)
+        self.assertIn("omitted the Friday khutbah", body)
+        self.assertEqual(message, captured["direct_user_text"])
+        self.assertIn("inspect_briefing_delivery", {tool["name"] for tool in captured["tools"]})
+        stream.assert_called_once()
+
+    def test_sermon_delivery_question_gets_flagship_diagnostic_policy(self):
+        message = "How come i didnt get the friday sermon in my digest this morning?"
+
+        with (
+            patch.object(bot, "AGENTIC_MODEL", "gpt-5.6"),
+            patch.object(bot, "DEEP_MODEL", "gpt-5.6"),
+            patch.object(bot, "OPENAI_REASONING_KWARGS", True),
+        ):
+            policy = bot.model_policy_for_text(message)
+            tools = bot.pwa_tools_for_message(message)
+            kwargs = bot._openai_request_options(
+                policy["model"],
+                650,
+                [{"role": "user", "content": message}],
+                policy=policy,
+            )
+
+        tool_names = {tool["name"] for tool in tools}
+        self.assertEqual("gpt-5.6", policy["model"])
+        self.assertEqual("high", policy["reasoning_effort"])
+        self.assertEqual("diagnostic_or_explanatory_question", policy["reason"])
+        self.assertEqual("assistant_ops", policy["specialist"])
+        self.assertIn("inspect_briefing_delivery", tool_names)
+        self.assertIn("get_muis_friday_khutbah", tool_names)
+        self.assertEqual("inspect_briefing_delivery", bot._forced_tool_for_text(message, tools))
+        self.assertEqual({"effort": "high", "context": "all_turns"}, kwargs["reasoning"])
+
+    def test_briefing_diagnostic_distinguishes_evidence_from_unlogged_history(self):
+        target = "2026-08-14"
+        source = f"morning_briefing:{target}"
+        notifications = [{
+            "source": source,
+            "body": "Good morning. Agenda and product news only.",
+        }]
+        deliveries = [{
+            "source": source,
+            "created": "2026-08-14T06:46:00+08:00",
+            "sent": 1,
+        }]
+
+        with (
+            patch.object(bot.gs, "get_app_notifications", return_value=notifications),
+            patch.object(bot.gs, "get_web_push_delivery_log", return_value=deliveries),
+            patch.object(bot.isl, "latest_khutbah", return_value={
+                "date": target,
+                "title": "A Friday reminder",
+            }),
+        ):
+            result = bot.build_briefing_diagnostic(target, "morning")
+
+        self.assertIn("Stored briefing found: yes", result)
+        self.assertIn("Confirmed phone delivery: yes", result)
+        self.assertIn("Friday khutbah present in stored briefing: no", result)
+        self.assertIn("Current MUIS khutbah date for lookup: 2026-08-14", result)
+        self.assertIn("historical fetch cause was not logged", result)
+
     def test_live_briefing_bypasses_chat_memory_preflight(self):
         async def run():
             response = await web_app._chat_stream_response(
@@ -10766,6 +10952,73 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertEqual(native_counts["web_search"], 1)
         self.assertAlmostEqual(estimate, 0.0146, places=6)
         self.assertAlmostEqual(bot._openai_usd_to_sgd(estimate), 0.01971, places=6)
+
+    def test_openai_usage_prices_gpt_5_6_alias_and_resolved_sol_model(self):
+        expected = {"input": 5.00, "cached_input": 0.50, "output": 30.00}
+
+        self.assertEqual(expected, bot._openai_price_for_model("gpt-5.6"))
+        self.assertEqual(expected, bot._openai_price_for_model("gpt-5.6-sol"))
+
+    def test_openai_budget_reserves_conservative_cost_before_request(self):
+        reserve = bot._openai_request_budget_reserve_sgd({
+            "model": "gpt-5.6",
+            "instructions": "Read the whole turn.",
+            "input": [{"role": "user", "content": "Why was my digest incomplete?"}],
+            "max_output_tokens": 650,
+        })
+
+        self.assertGreaterEqual(reserve, bot.OPENAI_BUDGET_MIN_REQUEST_RESERVE_SGD)
+        self.assertLess(reserve, 0.25)
+
+    def test_openai_budget_blocks_request_before_monthly_cap_can_be_crossed(self):
+        today_key = datetime.now(bot.SGT).strftime("%Y-%m-%d")
+        bucket = bot._openai_usage_empty_bucket()
+        bucket["estimated_sgd"] = 0.98
+        bot._OPENAI_USAGE_SUMMARY = {"version": 1, "days": {today_key: bucket}}
+        bot._OPENAI_USAGE_SUMMARY_LOADED = True
+
+        with (
+            patch.object(bot, "OPENAI_MONTHLY_BUDGET_SGD", 1.0),
+            patch.object(bot, "OPENAI_BUDGET_MIN_REQUEST_RESERVE_SGD", 0.05),
+            patch.object(bot, "OPENAI_USAGE_TRACKING", True),
+        ):
+            with self.assertRaises(bot.OpenAIMonthlyBudgetExceeded):
+                bot._openai_reserve_request_budget({
+                    "model": "gpt-5.6",
+                    "input": [{"role": "user", "content": "hello"}],
+                    "max_output_tokens": 100,
+                })
+
+        self.assertEqual(0.0, bot._OPENAI_BUDGET_RESERVED_SGD)
+
+    def test_openai_budget_charges_reserve_when_api_usage_is_unavailable(self):
+        bot._OPENAI_USAGE_SUMMARY = {"version": 1, "days": {}}
+        bot._OPENAI_USAGE_SUMMARY_LOADED = True
+
+        with (
+            patch.object(bot, "OPENAI_MONTHLY_BUDGET_SGD", 1.0),
+            patch.object(bot, "OPENAI_USAGE_TRACKING", True),
+            patch.object(bot, "OPENAI_USAGE_PERSIST", False),
+        ):
+            reserve = bot._openai_reserve_request_budget({
+                "model": "gpt-5.6",
+                "input": [{"role": "user", "content": "hello"}],
+                "max_output_tokens": 100,
+            })
+            bot._openai_finish_request_budget(reserve, {})
+            status = bot.openai_budget_status()
+
+        self.assertEqual(0.0, bot._OPENAI_BUDGET_RESERVED_SGD)
+        self.assertAlmostEqual(reserve, status["estimated_month_spend_sgd"], places=4)
+        self.assertEqual("hard_pre_request_cap", status["guard"])
+
+    def test_pwa_budget_failure_explains_that_the_guard_stopped_the_call(self):
+        detail = "OpenAIMonthlyBudgetExceeded: OpenAI monthly API budget reached"
+
+        self.assertEqual("budget", bot.openai_failure_category(detail))
+        reply = web_app._pwa_model_failure_reply("hello", detail)
+        self.assertIn("stopped before making another OpenAI call", reply)
+        self.assertIn("HIRA_OPENAI_MONTHLY_BUDGET_SGD", reply)
 
     def test_openai_usage_record_updates_privacy_light_summary(self):
         resp = SimpleNamespace(
