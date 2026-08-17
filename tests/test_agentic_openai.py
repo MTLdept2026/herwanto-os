@@ -163,43 +163,7 @@ class FakeSheetsService:
 
 
 class AgenticOpenAITests(unittest.TestCase):
-    # These cases retain coverage for the deterministic command implementations
-    # themselves. Production natural-language chat is model-first; dedicated
-    # tests below exercise that boundary without this isolated legacy fixture.
-    _DETERMINISTIC_COMMAND_IMPLEMENTATION_TESTS = {
-        "test_agenda_phrase_matrix_uses_local_agenda_before_model_route",
-        "test_agenda_today_uses_local_agenda_before_model_route",
-        "test_backend_change_feeling_uses_local_checkin_before_model_route",
-        "test_chat_api_lfc_social_transfer_prompt_returns_fast_timeout_reply",
-        "test_chat_api_lfc_social_transfer_prompt_returns_rich_topic_news",
-        "test_chat_api_lfc_social_transfer_prompt_uses_google_news_proxy_source",
-        "test_day_looking_today_uses_local_agenda_before_model_route",
-        "test_direct_source_prefetch_uses_chat_semaphore_slot",
-        "test_due_to_orals_schedule_update_adds_four_calendar_events_immediately",
-        "test_explicit_status_phrase_matrix_uses_local_status_before_model_route",
-        "test_hey_hira_whats_up_routes_as_quick_chat_not_status_brief",
-        "test_how_are_you_routes_as_local_hira_greeting",
-        "test_live_briefing_bypasses_chat_memory_preflight",
-        "test_morning_hira_uses_local_greeting_before_model_route",
-        "test_openai_max_advice_uses_local_reply_before_model_route",
-        "test_plain_lfc_transfer_prompt_uses_proxy_shortcut",
-        "test_provider_status_bypasses_topic_news_shortcut",
-        "test_pwa_triage_uses_direct_context_route_before_model",
-        "test_task_phrase_matrix_uses_local_task_brief_before_model_route",
-        "test_tasks_check_uses_local_task_brief_before_model_route",
-        "test_topic_news_followup_bypasses_model_route",
-        "test_topic_news_screenshot_prompt_bypasses_generic_direct_news_query",
-        "test_two_turn_task_creation_uses_pending_action_before_shortcuts",
-        "test_usual_self_feeling_uses_local_checkin_before_model_route",
-        "test_whats_up_hira_routes_as_quick_chat_not_status_brief",
-        "test_whats_up_routes_as_quick_chat_not_status_brief",
-    }
-
     def setUp(self):
-        if self._testMethodName in self._DETERMINISTIC_COMMAND_IMPLEMENTATION_TESTS:
-            shortcut_patch = patch.object(web_app, "_pwa_natural_chat_uses_full_reasoning", return_value=False)
-            shortcut_patch.start()
-            self.addCleanup(shortcut_patch.stop)
         bot.gs._invalidate_classlist_cache()
         bot._invalidate_system_prompt_cache()
         bot._mem_histories.clear()
@@ -5925,24 +5889,50 @@ class AgenticOpenAITests(unittest.TestCase):
             with self.subTest(message=message):
                 self.assertEqual(web_app._briefing_replay_slot(message), expected_slot)
 
-    def test_natural_chat_uses_full_reasoning_and_only_slash_commands_bypass(self):
-        messages = [
+    def test_diagnostics_use_full_reasoning_without_forcing_routine_chat(self):
+        diagnostics = [
             "How come i didnt get the friday sermon in my digest this morning?",
             "Why was the khutbah missing from my digest",
+            "I didn't receive the briefing this morning.",
+            "Investigate what went wrong with yesterday's notification",
+        ]
+        routine = [
             "Ok whats on my agenda today",
             "Can you check my tasks",
-            "I didn't receive the briefing this morning.",
             "Replay this morning's digest",
             "Morning Hira",
             "What's the latest LFC transfer news?",
+            "/digestcheck",
+            "",
         ]
 
-        for message in messages:
+        for message in diagnostics:
             with self.subTest(message=message):
                 self.assertTrue(web_app._pwa_natural_chat_uses_full_reasoning(message))
 
-        self.assertFalse(web_app._pwa_natural_chat_uses_full_reasoning("/digestcheck"))
-        self.assertFalse(web_app._pwa_natural_chat_uses_full_reasoning(""))
+        for message in routine:
+            with self.subTest(message=message):
+                self.assertFalse(web_app._pwa_natural_chat_uses_full_reasoning(message))
+
+    def test_unused_memory_release_runs_gc_and_available_linux_trim(self):
+        trim_calls = []
+
+        with (
+            patch.object(bot.gc, "collect") as collect,
+            patch.object(bot, "_MALLOC_TRIM_CHECKED", True),
+            patch.object(bot, "_MALLOC_TRIM", side_effect=lambda padding: trim_calls.append(padding) or 1),
+        ):
+            released = bot._release_unused_memory()
+
+        self.assertTrue(released)
+        collect.assert_called_once_with()
+        self.assertEqual(trim_calls, [0])
+
+    def test_web_memory_cleanup_uses_absolute_rss_target(self):
+        with patch.object(web_app, "_MEMORY_GC_MB", 512), patch.object(web_app, "_MEMORY_GC_RATIO", 0.8):
+            self.assertFalse(web_app._web_memory_cleanup_needed(rss_mb=511, ratio=0.1))
+            self.assertTrue(web_app._web_memory_cleanup_needed(rss_mb=512, ratio=0.1))
+            self.assertTrue(web_app._web_memory_cleanup_needed(rss_mb=200, ratio=0.8))
 
     def test_sermon_delivery_question_reaches_agentic_model_with_diagnostic_tool(self):
         message = "How come i didnt get the friday sermon in my digest this morning?"

@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import asyncio
 import contextvars
-import gc
 import hashlib
 import hmac
 import io
@@ -48,9 +47,9 @@ PWA_APP_VERSION = "20260711-upgrade-3"
 PWA_SERVICE_WORKER_CACHE = "hira-os-v161"
 
 try:
-    _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "4"))
+    _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "2"))
 except ValueError:
-    _HOME_EXECUTOR_WORKERS = 4
+    _HOME_EXECUTOR_WORKERS = 2
 _HOME_EXECUTOR_WORKERS = max(1, min(4, _HOME_EXECUTOR_WORKERS))
 _HOME_EXECUTOR = ThreadPoolExecutor(max_workers=_HOME_EXECUTOR_WORKERS)
 _HOME_DIGEST_CACHE: dict = {}
@@ -96,6 +95,7 @@ _MAX_REQUEST_BYTES = max(_MAX_DOCUMENT_BYTES, _env_int("HIRA_WEB_MAX_REQUEST_MB"
 _MAX_VOICE_BYTES = max(256_000, _env_int("HIRA_WEB_VOICE_MAX_MB", 10) * 1024 * 1024)
 _TTS_MAX_CHARS = _env_int("HIRA_WEB_TTS_MAX_CHARS", 4000, minimum=200)
 _MEMORY_GC_RATIO = _env_float("HIRA_WEB_MEMORY_GC_RATIO", 0.80)
+_MEMORY_GC_MB = _env_int("HIRA_WEB_MEMORY_GC_MB", 512, minimum=128)
 _MEMORY_REJECT_RATIO = _env_float("HIRA_WEB_MEMORY_REJECT_RATIO", 0.92)
 _MEMORY_WATCHDOG_SECONDS = _env_int("HIRA_WEB_MEMORY_WATCHDOG_SECONDS", 45, minimum=10)
 _CHAT_MAX_TOKENS = _env_int("HIRA_WEB_CHAT_MAX_TOKENS", 3200, minimum=650)
@@ -189,6 +189,20 @@ def _memory_pressure_high() -> bool:
     return ratio is not None and ratio >= _MEMORY_REJECT_RATIO
 
 
+def _web_memory_cleanup_needed(rss_mb: float | None = None, ratio: float | None = None) -> bool:
+    rss = bot._rss_mb() if rss_mb is None else rss_mb
+    pressure = _memory_usage_ratio() if ratio is None else ratio
+    return rss >= _MEMORY_GC_MB or (pressure is not None and pressure >= _MEMORY_GC_RATIO)
+
+
+def _release_web_memory_if_needed(label: str) -> bool:
+    if not _web_memory_cleanup_needed():
+        return False
+    released = bot._release_unused_memory()
+    bot._log_memory(label)
+    return released
+
+
 def _is_supported_document(mime: str, filename: str) -> bool:
     name = (filename or "").lower()
     return (
@@ -225,10 +239,7 @@ async def _web_memory_watchdog():
     _prune_tick = 0
     while True:
         try:
-            ratio = _memory_usage_ratio()
-            if ratio is not None and ratio >= _MEMORY_GC_RATIO:
-                gc.collect()
-                bot._log_memory(f"web watchdog pressure {ratio:.0%}", force=True)
+            _release_web_memory_if_needed("web watchdog cleanup")
             # Prune rate limiter buckets every ~5 minutes
             _prune_tick += 1
             if _prune_tick % max(1, (300 // _MEMORY_WATCHDOG_SECONDS)) == 0:
@@ -275,7 +286,7 @@ async def add_static_cache_headers(request: Request, call_next):
                 return _apply_security_headers(JSONResponse({"detail": "Invalid H.I.R.A web token"}, status_code=401))
         is_static_path = request.url.path in _STATIC_PATHS or request.url.path.startswith("/static/")
         if _memory_pressure_high() and not is_static_path:
-            gc.collect()
+            bot._release_unused_memory()
             return _apply_security_headers(JSONResponse(
                 {"detail": "H.I.R.A is under memory pressure. Try again in a moment."},
                 status_code=503,
@@ -4987,8 +4998,11 @@ async def home(days: int = 7, include_secondary: bool = True, x_hira_token: Opti
     _require_token(x_hira_token)
     days = max(1, min(14, days))
     now = datetime.now(bot.SGT)
-    async with _HOME_SEMAPHORE:
-        data = await asyncio.to_thread(_parallel_home_data, days, include_secondary)
+    try:
+        async with _HOME_SEMAPHORE:
+            data = await asyncio.to_thread(_parallel_home_data, days, include_secondary)
+    finally:
+        _release_web_memory_if_needed("after pwa home cleanup")
     return {
         "greeting": now.strftime("%A, %-d %B"),
         "time_label": now.strftime("%H:%M SGT"),
@@ -5034,8 +5048,16 @@ def _briefing_replay_slot(message: str) -> str:
 
 
 def _pwa_natural_chat_uses_full_reasoning(message: str) -> bool:
-    clean = str(message or "").strip()
-    return bool(clean) and not clean.startswith("/")
+    clean = str(message or "").strip().lower()
+    if not clean or clean.startswith("/"):
+        return False
+    if _is_pwa_triage_prompt(clean):
+        return False
+    return bool(re.search(
+        r"\b(?:why|how come|what happened|what went wrong|diagnos(?:e|is|tic)|investigat(?:e|ion)|"
+        r"didn'?t|did not|haven'?t|have not|wasn'?t|was not|missing|left out|omitted|failed to)\b",
+        clean,
+    ))
 
 
 def _wants_live_briefing(clean: str) -> bool:
@@ -6786,7 +6808,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
         try:
             if working_summary:
                 yield sse({"type": "understood", **working_summary})
-            quick = False
+            quick = False if reasoning_first else await bot.should_route_quick_pwa_chat(list(history[:-1]), message)
             yield sse(timing("route"))
             route_name = "quick" if quick else "agentic"
             _merge_chat_trace(trace, {"route": route_name})
@@ -7055,7 +7077,7 @@ async def _chat_stream_response(message: str, location: DeviceLocation | None, x
         finally:
             try:
                 _CHAT_SEMAPHORE.release()
-                bot._log_memory("after pwa chat")
+                _release_web_memory_if_needed("after pwa chat cleanup")
             finally:
                 latency_cm.__exit__(None, None, None)
 
@@ -8536,7 +8558,7 @@ async def upload_document(
             )
             return result
         finally:
-            gc.collect()
+            bot._release_unused_memory()
             bot._log_memory("after pwa upload")
 
 
@@ -8633,7 +8655,7 @@ async def _run_upload_job(job_id: str, tmp_path: str, mime: str, filename: str, 
             os.unlink(tmp_path)
         except Exception:
             pass
-        gc.collect()
+        bot._release_unused_memory()
         bot._log_memory(f"after upload job {job_id}")
 
 

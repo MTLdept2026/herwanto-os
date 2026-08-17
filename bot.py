@@ -518,6 +518,8 @@ except ValueError:
 _BREAK_AWARE_SLOT_CACHE = {}
 _PRAYER_PROMPT_FALLBACK_KEYS = set()
 _LAST_MEMORY_LOG = None
+_MALLOC_TRIM = None
+_MALLOC_TRIM_CHECKED = False
 _FORGET_CONFIRM_PENDING: dict[int, datetime] = {}  # user_id → timestamp when /forget all was first requested
 _FORGET_CONFIRM_TTL_SECONDS = 60
 
@@ -3345,8 +3347,32 @@ def _log_memory(label: str, force: bool = False) -> None:
         len(_BREAK_AWARE_SLOT_CACHE),
     )
 
-def _finish_background_job(name: str) -> None:
+
+def _release_unused_memory() -> bool:
+    """Return unused Python/glibc heap pages to the container when supported."""
+    global _MALLOC_TRIM, _MALLOC_TRIM_CHECKED
     gc.collect()
+    if not _MALLOC_TRIM_CHECKED:
+        _MALLOC_TRIM_CHECKED = True
+        try:
+            import ctypes
+
+            trim = ctypes.CDLL("libc.so.6").malloc_trim
+            trim.argtypes = [ctypes.c_size_t]
+            trim.restype = ctypes.c_int
+            _MALLOC_TRIM = trim
+        except (AttributeError, OSError):
+            _MALLOC_TRIM = None
+    if _MALLOC_TRIM is None:
+        return False
+    try:
+        return bool(_MALLOC_TRIM(0))
+    except Exception:
+        return False
+
+
+def _finish_background_job(name: str) -> None:
+    _release_unused_memory()
     _log_memory(f"after {name}")
 
 
