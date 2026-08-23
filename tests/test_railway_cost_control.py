@@ -1,4 +1,5 @@
 import unittest
+import os
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -117,6 +118,22 @@ class RailwayCronCleanupTests(unittest.IsolatedAsyncioTestCase):
 
         redis_client.close.assert_called_once_with()
         close_pool.assert_called_once_with()
+
+
+class RailwayCronProcessExitTests(unittest.TestCase):
+    def test_cron_mode_forces_process_exit_after_async_work(self):
+        def run_and_close(coroutine):
+            coroutine.close()
+
+        with (
+            patch.dict(os.environ, {"HIRA_SERVICE_MODE": "pwa_cron"}),
+            patch("asyncio.run", side_effect=run_and_close) as run,
+            patch.object(start, "_exit_cron_process") as process_exit,
+        ):
+            start.main()
+
+        run.assert_called_once()
+        process_exit.assert_called_once_with(0)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,19 @@ import os
 import sys
 
 
+def _exit_cron_process(status: int) -> None:
+    """Flush logs and terminate after a completed one-shot cron pass."""
+    import logging
+
+    logging.shutdown()
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    os._exit(status)
+
+
 async def _run_pwa_cron() -> None:
     import bot
 
@@ -63,7 +76,15 @@ def main() -> None:
     if mode in {"pwa_cron", "cron", "notifications_cron"}:
         import asyncio
 
-        asyncio.run(_run_pwa_cron())
+        status = 0
+        try:
+            asyncio.run(_run_pwa_cron())
+        except BaseException:
+            status = 1
+            import logging
+
+            logging.getLogger(__name__).exception("H.I.R.A PWA cron process failed")
+        _exit_cron_process(status)
         return
     os.execvp(sys.executable, [sys.executable, "bot.py"])
 
