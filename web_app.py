@@ -891,30 +891,46 @@ async def recover_missed_daily_briefings() -> dict:
     return {"attempted": attempted, "delivered": delivered, "skipped": skipped}
 
 
+async def run_web_push_recovery_once() -> dict:
+    errors: dict[str, str] = {}
+    try:
+        result = await asyncio.to_thread(recover_missed_push_notifications)
+    except Exception as exc:
+        errors["notifications"] = str(exc)
+        bot.logger.warning(f"Web push recovery error: {exc}")
+        result = {"attempted": 0, "sent": 0, "skipped": 0}
+    try:
+        briefing_result = await recover_missed_daily_briefings()
+    except Exception as exc:
+        errors["briefings"] = str(exc)
+        bot.logger.warning(f"Daily briefing recovery error: {exc}")
+        briefing_result = {"attempted": 0, "delivered": 0, "skipped": 0}
+    if result.get("attempted"):
+        bot.logger.info(
+            "Web push recovery attempted=%s sent=%s skipped=%s",
+            result.get("attempted", 0),
+            result.get("sent", 0),
+            result.get("skipped", 0),
+        )
+    if briefing_result.get("attempted"):
+        bot.logger.info(
+            "Daily briefing safety net attempted=%s delivered=%s skipped=%s",
+            briefing_result.get("attempted", 0),
+            briefing_result.get("delivered", 0),
+            briefing_result.get("skipped", 0),
+        )
+    return {"notifications": result, "briefings": briefing_result, "errors": errors}
+
+
 async def _web_push_recovery_loop():
     while True:
         try:
-            result = await asyncio.to_thread(recover_missed_push_notifications)
-            briefing_result = await recover_missed_daily_briefings()
-            if result.get("attempted"):
-                bot.logger.info(
-                    "Web push recovery attempted=%s sent=%s skipped=%s",
-                    result.get("attempted", 0),
-                    result.get("sent", 0),
-                    result.get("skipped", 0),
-                )
-            if briefing_result.get("attempted"):
-                bot.logger.info(
-                    "Daily briefing safety net attempted=%s delivered=%s skipped=%s",
-                    briefing_result.get("attempted", 0),
-                    briefing_result.get("delivered", 0),
-                    briefing_result.get("skipped", 0),
-                )
+            await run_web_push_recovery_once()
             await asyncio.sleep(_WEB_PUSH_RECOVERY_INTERVAL)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            bot.logger.warning(f"Web push recovery error: {exc}")
+            bot.logger.warning(f"Web push recovery loop error: {exc}")
             await asyncio.sleep(max(60, _WEB_PUSH_RECOVERY_INTERVAL))
 
 

@@ -112,11 +112,13 @@ def _connection_pool():
         ConnectionPool = _psycopg_pool()
         max_size = _env_int("HIRA_POSTGRES_POOL_MAX_SIZE", 8)
         min_size = min(_env_int("HIRA_POSTGRES_POOL_MIN_SIZE", 1, minimum=0), max_size)
+        max_idle = _env_int("HIRA_POSTGRES_POOL_MAX_IDLE_SECONDS", 600)
         pool = ConnectionPool(
             conninfo=url,
             kwargs={"connect_timeout": 5},
             min_size=min_size,
             max_size=max_size,
+            max_idle=max_idle,
             open=True,
         )
         pool.wait(timeout=5)

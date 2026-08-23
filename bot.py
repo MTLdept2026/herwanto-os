@@ -21079,10 +21079,9 @@ async def _pwa_worker_daily_loop(
     while True:
         try:
             now = datetime.now(SGT)
-            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            grace_until = target + timedelta(minutes=grace_minutes or DAILY_JOB_GRACE_MINUTES)
+            target, grace_until = _pwa_daily_job_window(now, hour, minute, grace_minutes)
             today_key = now.strftime("%Y-%m-%d")
-            should_run = target <= now <= grace_until and (days is None or now.weekday() in days)
+            should_run = _pwa_daily_job_due(now, hour, minute, days, grace_minutes)
             if retry_until_success:
                 should_run = should_run and today_key != last_success_date
             else:
@@ -21117,6 +21116,112 @@ async def _pwa_worker_repeating_loop(name: str, interval: int, first: int, job):
         except Exception as e:
             logger.error(f"PWA worker repeating job {name} error: {e}")
         await asyncio.sleep(interval)
+
+
+def _pwa_daily_job_window(
+    now: datetime,
+    hour: int,
+    minute: int,
+    grace_minutes: int | None = None,
+) -> tuple[datetime, datetime]:
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    grace_until = target + timedelta(minutes=grace_minutes or DAILY_JOB_GRACE_MINUTES)
+    return target, grace_until
+
+
+def _pwa_daily_job_due(
+    now: datetime,
+    hour: int,
+    minute: int,
+    days: tuple[int, ...] | None = None,
+    grace_minutes: int | None = None,
+) -> bool:
+    target, grace_until = _pwa_daily_job_window(now, hour, minute, grace_minutes)
+    return target <= now <= grace_until and (days is None or now.weekday() in days)
+
+
+def _pwa_daily_job_specs() -> list[dict]:
+    morning_hour, morning_minute = MORNING_BRIEFING_TIME
+    evening_hour, evening_minute = EVENING_BRIEFING_TIME
+    return [
+        {
+            "name": "morning_briefing",
+            "hour": morning_hour,
+            "minute": morning_minute,
+            "job": morning_briefing_job,
+            "grace_minutes": MORNING_BRIEFING_CATCHUP_MINUTES,
+            "retry_until_success": True,
+        },
+        {
+            "name": "evening_briefing",
+            "hour": evening_hour,
+            "minute": evening_minute,
+            "job": evening_briefing_job,
+            "grace_minutes": EVENING_BRIEFING_CATCHUP_MINUTES,
+            "retry_until_success": True,
+        },
+        {"name": "weekly_planning", "hour": 19, "minute": 30, "job": weekly_planning_job, "days": (6,)},
+        {"name": "friday_khutbah", "hour": 10, "minute": 30, "job": friday_khutbah_job, "days": (4,)},
+        {"name": "friday_checkin", "hour": 17, "minute": 0, "job": friday_checkin_job, "days": (4,)},
+        {"name": "self_audit", "hour": 17, "minute": 15, "job": self_audit_job, "days": (4,)},
+        {
+            "name": "memory_consolidation",
+            "hour": 22,
+            "minute": 30,
+            "job": memory_consolidation_job,
+            "days": (4,),
+        },
+    ]
+
+
+def _pwa_repeating_job_specs() -> list[tuple[str, object]]:
+    return [
+        ("proactive_nudges", proactive_nudges_job),
+        ("calendar_reminders", calendar_reminders_job),
+        ("proactive_intelligence", proactive_intelligence_job),
+        ("daily_checkins", daily_checkins_job),
+        ("prayer_reminders", prayer_reminders_job),
+        ("followups", followups_job),
+        ("work_gmail_monitor", work_gmail_monitor_job),
+    ]
+
+
+async def run_pwa_notification_cron(now: datetime | None = None) -> dict:
+    """Run one notification pass and exit so Railway can schedule it cheaply."""
+    current = (now or datetime.now(SGT)).astimezone(SGT)
+    attempted: list[str] = []
+    errors: dict[str, str] = {}
+
+    async def run_job(name: str, job) -> object:
+        attempted.append(name)
+        try:
+            return await job(None)
+        except Exception as exc:
+            errors[name] = str(exc)
+            logger.error("PWA cron job %s error: %s", name, exc)
+            return None
+
+    for spec in _pwa_daily_job_specs():
+        if not _pwa_daily_job_due(
+            current,
+            spec["hour"],
+            spec["minute"],
+            spec.get("days"),
+            spec.get("grace_minutes"),
+        ):
+            continue
+        if not spec.get("retry_until_success"):
+            lock_name = f"pwa_cron_daily:{spec['name']}:{current:%Y-%m-%d}"
+            if not _acquire_job_lock(lock_name, 172800):
+                continue
+        await run_job(spec["name"], spec["job"])
+
+    for name, job in _pwa_repeating_job_specs():
+        await run_job(name, job)
+
+    _release_unused_memory()
+    logger.info("H.I.R.A PWA cron pass complete: attempted=%s errors=%s", attempted, sorted(errors))
+    return {"attempted": attempted, "errors": errors, "ran_at": current.isoformat()}
 
 
 async def run_pwa_notification_worker():
