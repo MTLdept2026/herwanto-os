@@ -4536,6 +4536,10 @@ def send_web_push_notification(title: str, body: str, data: dict | None = None) 
         "data": payload_data,
     }, ensure_ascii=False)
     payload_bytes = len(payload.encode("utf-8"))
+    try:
+        push_timeout = max(1.0, min(60.0, float(os.environ.get("HIRA_WEB_PUSH_TIMEOUT_SECONDS", "10") or 10)))
+    except ValueError:
+        push_timeout = 10.0
 
     key_file = None
     key_for_webpush = private_key
@@ -4571,6 +4575,7 @@ def send_web_push_notification(title: str, body: str, data: dict | None = None) 
                     data=payload,
                     vapid_private_key=key_for_webpush,
                     vapid_claims={"sub": subject},
+                    timeout=push_timeout,
                 )
                 sent += 1
             except WebPushException as exc:

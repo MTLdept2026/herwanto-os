@@ -1417,10 +1417,10 @@ class AgenticOpenAITests(unittest.TestCase):
         )
 
     def test_web_push_payload_uses_phone_sized_preview(self):
-        payloads = []
+        calls = []
         fake_pywebpush = ModuleType("pywebpush")
         fake_pywebpush.WebPushException = Exception
-        fake_pywebpush.webpush = lambda **kwargs: payloads.append(kwargs["data"])
+        fake_pywebpush.webpush = lambda **kwargs: calls.append(kwargs)
 
         with (
             patch.dict(os.environ, {"HIRA_WEB_PUSH_PRIVATE_KEY": "test-key"}),
@@ -1439,8 +1439,9 @@ class AgenticOpenAITests(unittest.TestCase):
             )
 
         self.assertEqual(sent, 1)
-        self.assertLess(len(payloads[0].encode("utf-8")), 1200)
-        self.assertIn("Open H.I.R.A", json.loads(payloads[0])["body"])
+        self.assertLess(len(calls[0]["data"].encode("utf-8")), 1200)
+        self.assertIn("Open H.I.R.A", json.loads(calls[0]["data"])["body"])
+        self.assertEqual(calls[0]["timeout"], 10.0)
 
     def test_web_push_prefers_standalone_subscription_over_browser(self):
         endpoints = []

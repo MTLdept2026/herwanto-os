@@ -111,7 +111,7 @@ class RailwayCronCleanupTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(bot, "_get_redis", return_value=redis_client),
             patch.object(bot, "run_pwa_notification_cron", new=AsyncMock()),
-            patch.object(web_app, "run_web_push_recovery_once", new=AsyncMock()),
+            patch.object(web_app, "run_web_push_recovery_once", new=AsyncMock(return_value={"errors": {}})),
             patch.object(postgres_storage, "close_pool") as close_pool,
         ):
             await start._run_pwa_cron()

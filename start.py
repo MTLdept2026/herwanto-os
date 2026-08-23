@@ -29,7 +29,11 @@ async def _run_pwa_cron() -> None:
 
         import web_app
 
-        await web_app.run_web_push_recovery_once()
+        recovery = await web_app.run_web_push_recovery_once()
+        bot.logger.info(
+            "H.I.R.A PWA push recovery pass complete: errors=%s",
+            sorted((recovery.get("errors") or {}).keys()),
+        )
     finally:
         try:
             redis_client.close()
