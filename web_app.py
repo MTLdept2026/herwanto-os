@@ -203,6 +203,21 @@ def _release_web_memory_if_needed(label: str) -> bool:
     return released
 
 
+def _disconnect_idle_redis_connections() -> None:
+    """Release idle Redis sockets so Railway can detect an inactive web service."""
+    clients = (getattr(bot, "_redis", None), getattr(bot.gs, "_redis_client", None))
+    for client in clients:
+        pool = getattr(client, "connection_pool", None)
+        if pool is None:
+            continue
+        try:
+            pool.disconnect(inuse_connections=False)
+        except TypeError:
+            bot.logger.warning("Redis client does not support safe idle-only disconnects")
+        except Exception as exc:
+            bot.logger.warning("Could not release idle Redis connections: %s", exc)
+
+
 def _is_supported_document(mime: str, filename: str) -> bool:
     name = (filename or "").lower()
     return (
@@ -240,6 +255,7 @@ async def _web_memory_watchdog():
     while True:
         try:
             _release_web_memory_if_needed("web watchdog cleanup")
+            _disconnect_idle_redis_connections()
             # Prune rate limiter buckets every ~5 minutes
             _prune_tick += 1
             if _prune_tick % max(1, (300 // _MEMORY_WATCHDOG_SECONDS)) == 0:

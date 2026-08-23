@@ -136,5 +136,19 @@ class RailwayCronProcessExitTests(unittest.TestCase):
         process_exit.assert_called_once_with(0)
 
 
+class RailwayWebSleepTests(unittest.TestCase):
+    def test_idle_redis_connections_are_closed_without_touching_active_ones(self):
+        bot_client = MagicMock()
+        storage_client = MagicMock()
+        with (
+            patch.object(bot, "_redis", bot_client),
+            patch.object(bot.gs, "_redis_client", storage_client),
+        ):
+            web_app._disconnect_idle_redis_connections()
+
+        bot_client.connection_pool.disconnect.assert_called_once_with(inuse_connections=False)
+        storage_client.connection_pool.disconnect.assert_called_once_with(inuse_connections=False)
+
+
 if __name__ == "__main__":
     unittest.main()
