@@ -1,8 +1,10 @@
 import unittest
 from datetime import datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import bot
+import postgres_storage
+import start
 import web_app
 
 
@@ -100,6 +102,21 @@ class RailwayPushRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["notifications"], notifications)
         self.assertEqual(result["briefings"], briefings)
         self.assertEqual(result["errors"], {})
+
+
+class RailwayCronCleanupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_one_shot_cron_closes_clients_before_process_exit(self):
+        redis_client = MagicMock()
+        with (
+            patch.object(bot, "_get_redis", return_value=redis_client),
+            patch.object(bot, "run_pwa_notification_cron", new=AsyncMock()),
+            patch.object(web_app, "run_web_push_recovery_once", new=AsyncMock()),
+            patch.object(postgres_storage, "close_pool") as close_pool,
+        ):
+            await start._run_pwa_cron()
+
+        redis_client.close.assert_called_once_with()
+        close_pool.assert_called_once_with()
 
 
 if __name__ == "__main__":

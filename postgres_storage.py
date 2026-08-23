@@ -134,6 +134,21 @@ def connect():
         yield conn
 
 
+def close_pool() -> None:
+    """Close background pool workers so one-shot processes can exit cleanly."""
+    global _pool, _pool_url
+    with _pool_lock:
+        pool = _pool
+        _pool = None
+        _pool_url = ""
+    if pool is None:
+        return
+    try:
+        pool.close()
+    except Exception as exc:
+        logger.warning("Could not close Postgres connection pool: %s", exc)
+
+
 def ensure_schema() -> None:
     global _schema_ready
     if not enabled():

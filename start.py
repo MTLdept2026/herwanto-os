@@ -7,14 +7,24 @@ import sys
 async def _run_pwa_cron() -> None:
     import bot
 
-    if bot._get_redis() is None:
+    redis_client = bot._get_redis()
+    if redis_client is None:
         bot.logger.error("Redis is required for the H.I.R.A PWA cron worker to deduplicate scheduled jobs.")
         raise SystemExit(1)
-    await bot.run_pwa_notification_cron()
+    try:
+        await bot.run_pwa_notification_cron()
 
-    import web_app
+        import web_app
 
-    await web_app.run_web_push_recovery_once()
+        await web_app.run_web_push_recovery_once()
+    finally:
+        try:
+            redis_client.close()
+        except Exception as exc:
+            bot.logger.warning("Could not close Redis client after cron pass: %s", exc)
+        import postgres_storage
+
+        postgres_storage.close_pool()
 
 
 def main() -> None:
