@@ -46,6 +46,12 @@ SCHOOL_TERMS_2026 = [
 ]
 
 TIMETABLE_EFFECTIVE_FROM = date(2026, 6, 29)
+# Lessons have ended for Herwanto. Keep the 2026 timetable for past lookups only.
+TIMETABLE_INACTIVE_FROM = date(2026, 9, 24)
+
+
+def is_timetable_active(query_date: date) -> bool:
+    return query_date < TIMETABLE_INACTIVE_FROM
 
 SCHOOL_CLOSURE_DATES_2026 = {
     date(2026, 1, 1),   # New Year's Day
@@ -75,24 +81,26 @@ def is_timetable_hbl(day_name: str | None, week_type: str | None) -> bool:
 def _is_hbl_date(query_date: date, week_type: str, is_school_holiday: bool) -> bool:
     if query_date in HBL_DATES_2026:
         return True
-    if query_date < TIMETABLE_EFFECTIVE_FROM or is_school_holiday:
+    if query_date < TIMETABLE_EFFECTIVE_FROM or not is_timetable_active(query_date) or is_school_holiday:
         return False
     return is_timetable_hbl(DAY_MAP.get(query_date.weekday()), week_type)
 
 SCHOOL_CALENDAR_MEMORY_2026 = (
     "MOE 2026 MK/Primary/Secondary calendar: Term I 2 Jan-13 Mar; "
     "Term II 23 Mar-29 May; Term III 29 Jun-4 Sep; Term IV 14 Sep-20 Nov. "
-    "Timetable week numbers reset at each term start; odd-numbered weeks use Odd timetable, "
-    "even-numbered weeks use Even timetable. HBL is not inferred from a free timetable day; "
-    "only explicit HBL dates or the Semester 2 Odd-Friday timetable rule count."
+    "While the teaching timetable was active, week numbers reset at each term start; "
+    "odd-numbered weeks used Odd timetable, even-numbered weeks used Even timetable. "
+    "HBL is not inferred from a free timetable day; only explicit HBL dates or the "
+    "active Semester 2 Odd-Friday timetable rule count."
 )
 
 TIMETABLE_MEMORY_2026 = (
     "Herwanto's 2026 NBSS odd/even master teaching timetable is hardcoded from "
     "the user-supplied Semester 2 TIMETABLE - Teacher MTL Muhammad Herwanto Johari "
-    "(generated 25 Jun 2026 via aSc Timetables). Odd Friday is HBL; "
-    "Even Friday has scheduled FTCT/CCE, CCE, and 3G3 ML blocks. "
-    "Use TIMETABLE in timetable.py as the source of truth for lesson periods, rooms, and week parity."
+    "(generated 25 Jun 2026 via aSc Timetables). Odd Friday was marked HBL; "
+    "Even Friday had scheduled FTCT/CCE, CCE, and 3G3 ML blocks. "
+    "This timetable is inactive from 24 Sep 2026 and is only for historical lookups; "
+    "do not use it for current or future lessons, availability, or HBL."
 )
 
 
@@ -258,7 +266,7 @@ def format_timetable_memory() -> str:
 
 def get_lessons(target_date: date, ref_date_str: str, ref_type: str) -> list:
     """Return lesson list for a specific date."""
-    if target_date.weekday() > 4:   # Saturday / Sunday
+    if not is_timetable_active(target_date) or target_date.weekday() > 4:
         return []
     day_name  = DAY_MAP[target_date.weekday()]
     week_type = get_week_type(ref_date_str, ref_type, target_date)

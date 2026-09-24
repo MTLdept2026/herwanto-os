@@ -43,8 +43,8 @@ PWA_DIR = APP_DIR / "pwa"
 app = FastAPI(title="H.I.R.A OS")
 app.mount("/static", StaticFiles(directory=str(PWA_DIR)), name="static")
 
-PWA_APP_VERSION = "20260711-upgrade-3"
-PWA_SERVICE_WORKER_CACHE = "hira-os-v161"
+PWA_APP_VERSION = "20260924-timetable-1"
+PWA_SERVICE_WORKER_CACHE = "hira-os-v162"
 
 try:
     _HOME_EXECUTOR_WORKERS = int(os.environ.get("HIRA_HOME_WORKERS", "2"))
@@ -3872,6 +3872,8 @@ def _home_week_config() -> tuple[str | None, str | None]:
 
 
 def _home_lessons_for_date(target: date, week_config: tuple[str | None, str | None] | None = None):
+    if not bot.tt.is_timetable_active(target):
+        return [], ""
     official_week = bot.tt.get_school_week_info(target)
     if official_week:
         day_name = bot.tt.DAY_MAP.get(target.weekday())

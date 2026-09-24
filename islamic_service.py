@@ -367,7 +367,7 @@ def _parse_khutbah_listing(html_text: str, language: str = "English") -> list[di
     cards = []
     for match in re.finditer(r'<a\b[^>]*href="([^"]+)"[^>]*>(.*?)</a>', html_text, flags=re.IGNORECASE | re.DOTALL):
         body = match.group(2)
-        lang_match = re.search(r'<p[^>]*>\s*(English|Malay/Jawi|Tamil)\s*</p>', body, flags=re.IGNORECASE)
+        lang_match = re.search(r'<(?:p|span)[^>]*>\s*(English|Malay/Jawi|Tamil)\s*</(?:p|span)>', body, flags=re.IGNORECASE)
         if not lang_match or lang_match.group(1).lower() != preferred:
             continue
         date_match = re.search(r'<p[^>]*>\s*([0-9]{1,2}\s+[A-Za-z]+\s+[0-9]{4})\s*</p>', body, flags=re.IGNORECASE)

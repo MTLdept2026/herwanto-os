@@ -22,14 +22,14 @@ function safeJsonObject(key) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-const APP_VERSION = "20260711-upgrade-3";
-const APP_SCRIPT = "app.js?v=20260711-upgrade-3";
-const EXPECTED_SW_CACHE = "hira-os-v161";
+const APP_VERSION = "20260924-timetable-1";
+const APP_SCRIPT = "app.js?v=20260924-timetable-1";
+const EXPECTED_SW_CACHE = "hira-os-v162";
 const CHAT_DEBUG_TRACE = localStorage.getItem("hira_pwa_debug_trace") === "1";
 const INTERNAL_TOOL_FALLBACK = "I caught an internal tool note instead of a proper reply, so I hid it from the chat. Try that once more.";
-const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v1";
-const RIGHT_NOW_CACHE_KEY = "hira_pwa_right_now_snapshot_v1";
-const AGENDA_CACHE_KEY = "hira_pwa_agenda_snapshot_v1";
+const HOME_CACHE_KEY = "hira_pwa_home_snapshot_v2";
+const RIGHT_NOW_CACHE_KEY = "hira_pwa_right_now_snapshot_v2";
+const AGENDA_CACHE_KEY = "hira_pwa_agenda_snapshot_v2";
 const PUSH_SYNC_MODE_KEY = "hira_pwa_last_push_sync_mode";
 const PUSH_SYNC_ENDPOINT_KEY = "hira_pwa_last_push_sync_endpoint";
 const SESSION_TOKEN_KEY = "hira_web_session_token";

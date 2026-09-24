@@ -1,12 +1,12 @@
-const CACHE_NAME = "hira-os-v161";
-const HIRA_APP_VERSION = "20260711-upgrade-3";
+const CACHE_NAME = "hira-os-v162";
+const HIRA_APP_VERSION = "20260924-timetable-1";
 const ASSETS = [
   "/",
   "/classops",
   "/growth",
   "/styles.css?v=20260711-upgrade-3",
   "/static/upgrades.css?v=20260711-upgrade-3",
-  "/app.js?v=20260711-upgrade-3",
+  "/app.js?v=20260924-timetable-1",
   "/static/integrations.js?v=20260711-upgrade-3",
   "/classops.css?v=20260711-upgrade-3",
   "/classops.js?v=20260711-upgrade-3",

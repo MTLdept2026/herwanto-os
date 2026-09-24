@@ -3415,26 +3415,27 @@ def _system_prompt_dynamic_tail():
                 memory_ctx += "\n\nStored memory:\n" + "\n".join(memory_lines)
         except Exception:
             pass
-        try:
-            official_week = tt.get_school_week_info(now.date())
-            if official_week:
-                week_label = tt.week_type_label(official_week["week_type"])
-                memory_ctx += (
-                    f"\n\nTimetable reference: this is {week_label} week, "
-                    f"{official_week['term']} Week {official_week['week_number']}."
-                )
-            else:
-                ref_date = gs.get_config("week_ref_date")
-                ref_type = gs.get_config("week_ref_type")
-                if not ref_date or not ref_type:
-                    raise ValueError("No timetable reference set")
-                wt = tt.get_week_type(ref_date, ref_type, now.date())
-                week_label = tt.week_type_label(wt)
-                school_week_number = gs.get_config("school_week_number")
-                week_number = f", school week {school_week_number}" if school_week_number else ""
-                memory_ctx += f"\n\nTimetable reference: this is {week_label} week{week_number}."
-        except Exception:
-            pass
+        if tt.is_timetable_active(now.date()):
+            try:
+                official_week = tt.get_school_week_info(now.date())
+                if official_week:
+                    week_label = tt.week_type_label(official_week["week_type"])
+                    memory_ctx += (
+                        f"\n\nTimetable reference: this is {week_label} week, "
+                        f"{official_week['term']} Week {official_week['week_number']}."
+                    )
+                else:
+                    ref_date = gs.get_config("week_ref_date")
+                    ref_type = gs.get_config("week_ref_type")
+                    if not ref_date or not ref_type:
+                        raise ValueError("No timetable reference set")
+                    wt = tt.get_week_type(ref_date, ref_type, now.date())
+                    week_label = tt.week_type_label(wt)
+                    school_week_number = gs.get_config("school_week_number")
+                    week_number = f", school week {school_week_number}" if school_week_number else ""
+                    memory_ctx += f"\n\nTimetable reference: this is {week_label} week{week_number}."
+            except Exception:
+                pass
 
     return f"""
 
@@ -3506,9 +3507,10 @@ Rules:
 - If you say you will check, pull, verify, look up, or get the actual result/details, you must call the relevant tool in that same turn before answering. Do not end with "give me a moment" as the final answer.
 - Be upfront about uncertainty and failures. Do not invent backend diagnoses, permission stories, service-account problems, sheet IDs, or "session memory only" explanations unless a tool/status result in this turn explicitly showed that. If memory/tool access fails, quote the exact tool failure briefly and say what is unverified.
 - For data lookups, use the user's words as intent: "last 5 emails" means latest 5 Gmail messages; "what's on today" means schedule/context; "anything due" means reminders/tasks; "who do I owe replies/follow-ups to" means Gmail/follow-up/task context as relevant.
-- For timetable or lesson lookups, use get_timetable. TIMETABLE in timetable.py is the source of truth for lessons; Google Calendar is only for events/appointments.
-- For recurring school timetable items such as PLT, FTCT/CCE, ML lessons, classes, or periods: never answer from memory alone when the question is dated ("today", "tomorrow", a weekday) or phrased as verification ("are you sure", "confirm", "do I have"). Call get_timetable first, then answer using the exact date, weekday, week type, and whether that item appears in the returned timetable. If it is absent, say it is absent; do not add it to calendar or imply a commitment.
-- HBL guardrail: The Semester 2 timetable explicitly marks Odd Friday as HBL. Never infer HBL from any other Friday, a free day, or "no timetabled lessons". Say it is HBL only when a dated source or the Semester 2 Odd-Friday timetable rule marks that date as HBL. If the assistant context says "HBL status: Not HBL", treat that as authoritative over stale/general HBL memories or generic recurring labels.
+- The 2026 daily teaching timetable is inactive from 24 Sep 2026 because Herwanto's lessons have ended for the year. Do not treat its old lesson periods, HBL rules, or odd/even week pattern as current or future commitments. Google Calendar remains the source for events/appointments.
+- For historical timetable lookups, use get_timetable. TIMETABLE in timetable.py records the old lesson periods.
+- For dated or verification questions about old recurring timetable items such as PLT, FTCT/CCE, ML lessons, classes, or periods, call get_timetable. For current and future dates, report that the daily timetable is inactive; do not infer commitments from an old weekday or week type.
+- HBL guardrail: The old Semester 2 timetable marked Odd Friday as HBL only while it was active. Never infer HBL from any other Friday, a free day, or "no timetabled lessons". Say it is HBL only when a dated source or the active timetable rule marks that date as HBL. If the assistant context says "HBL status: Not HBL", treat that as authoritative over stale/general HBL memories or generic recurring labels.
 - If Stored memory says Herwanto's lessons/classes are covered by relief for a date, treat those timetable lessons as covered for workload and overlap warnings. Do not warn that a calendar item clashes with relieved lessons unless newer user/calendar information clearly contradicts the relief memory.
 - For CCA schedule/duty questions, use get_cca_schedule. The canonical source is Herwanto's CCA schedule Google Sheet. Select the tab by the requested/current date and school week. If Herwanto's name is not on that day's schedule, do not prompt him and do not add a CCA duty/event to his calendar.
 - For availability planning ("best slots", "free slots", "when can I schedule", "after school", "not during CCA day"), call find_available_training_slots before suggesting times. Do not suggest a slot until timetable lessons and Google Calendar conflicts have been checked.
@@ -5988,7 +5990,10 @@ def _timetable_for_lookup(day: str | None = "", week_type: str | None = "") -> s
         wt_label = tt.week_type_label(wt_code)
         lessons = tt.TIMETABLE.get((day_name, wt_code), [])
         hbl = tt.is_timetable_hbl(day_name, wt_code)
-        return f"{day_name} {wt_label} week timetable:\n{tt.format_lessons(lessons, hbl=hbl)}"
+        return f"{day_name} {wt_label} week timetable (historical; inactive from 24 Sep 2026):\n{tt.format_lessons(lessons, hbl=hbl)}"
+
+    if not tt.is_timetable_active(today):
+        return "The 2026 daily teaching timetable has ended. No current lessons are scheduled from it."
 
     lessons, wt_label = _lessons_for_date(today)
     if _normalise_timetable_day(day):
@@ -6006,6 +6011,8 @@ def _timetable_for_lookup(day: str | None = "", week_type: str | None = "") -> s
     return f"{day_name} {wt_label} week timetable:\n{tt.format_lessons(lessons, hbl=hbl)}"
 
 def _lessons_for_date(target):
+    if not tt.is_timetable_active(target):
+        return [], ""
     official_week = tt.get_school_week_info(target)
     if official_week:
         day_name = tt.DAY_MAP.get(target.weekday())
@@ -6047,6 +6054,8 @@ def _agenda_week_display(target: date) -> str:
         return f"Weekend, {base}"
     if official_week["is_school_holiday"]:
         return f"School holiday, {base}"
+    if not tt.is_timetable_active(target):
+        return base
     return f"{tt.week_type_label(official_week['week_type'])} week, {base}"
 
 
@@ -6085,6 +6094,8 @@ def build_cca_schedule_brief(target_date: str = "") -> str:
 
 
 def _hbl_status_line(target: date) -> str:
+    if target >= tt.TIMETABLE_INACTIVE_FROM:
+        return ""
     official_week = tt.get_school_week_info(target)
     if not official_week or target.weekday() > 4 or official_week.get("is_school_holiday"):
         return ""
@@ -10322,22 +10333,59 @@ def format_curated_digest(entries: list[dict]) -> str:
     return "\n".join(lines).strip()
 
 
+def _friday_khutbah_digest_item(target: date) -> dict | None:
+    if target.weekday() != 4:
+        return None
+    try:
+        khutbah = isl.latest_khutbah(target)
+    except Exception as exc:
+        logger.info("MUIS khutbah digest unavailable: %s", exc)
+        return None
+    if khutbah.get("date") != target.isoformat():
+        return None
+    title = str(khutbah.get("title", "") or "").strip()
+    if not title:
+        return None
+    summary = str(khutbah.get("summary", "") or "").strip()
+    short_summary = summary[:220].rsplit(" ", 1)[0] if len(summary) > 220 else summary
+    if len(summary) > 220:
+        short_summary += "…"
+    return {
+        "label": "Friday khutbah",
+        "title": title,
+        "source": "MUIS",
+        "url": str(khutbah.get("url", "") or "").strip(),
+        "why": short_summary,
+        "score": 100,
+    }
+
+
 def build_curated_digest_snapshot(now: datetime | None = None, limit: int = 4) -> dict:
     current = now or datetime.now(SGT)
-    entries = build_curated_digest_entries(now=current, limit=limit, fetch_limit=4, record=False)
+    khutbah = _friday_khutbah_digest_item(current.date())
+    try:
+        entries = build_curated_digest_entries(now=current, limit=limit, fetch_limit=4, record=False)
+    except Exception:
+        if not khutbah:
+            raise
+        logger.warning("News digest unavailable; showing the MUIS Friday khutbah", exc_info=True)
+        entries = []
+    items = [
+        {
+            "label": entry.get("label", ""),
+            "title": entry.get("item", {}).get("title", ""),
+            "source": entry.get("item", {}).get("source", ""),
+            "url": entry.get("item", {}).get("url", ""),
+            "why": entry.get("why", ""),
+            "score": entry.get("score", 0),
+        }
+        for entry in entries
+    ]
+    if khutbah:
+        items.insert(0, khutbah)
     return {
         "generated_at": current.strftime("%A, %-d %B %Y, %H:%M SGT"),
-        "items": [
-            {
-                "label": entry.get("label", ""),
-                "title": entry.get("item", {}).get("title", ""),
-                "source": entry.get("item", {}).get("source", ""),
-                "url": entry.get("item", {}).get("url", ""),
-                "why": entry.get("why", ""),
-                "score": entry.get("score", 0),
-            }
-            for entry in entries
-        ],
+        "items": items[: max(1, int(limit or 4))],
     }
 
 def _fresh_news_entries(entries: list[dict], max_age_hours: int | None = None, now: datetime | None = None) -> list[dict]:
@@ -12848,7 +12896,7 @@ def _prayer_plan_for_date(target: date) -> list[dict]:
     return plan
 
 
-def build_islamic_brief(target: date | None = None) -> str:
+def build_islamic_brief(target: date | None = None, include_khutbah: bool = True) -> str:
     target = target or datetime.now(SGT).date()
     try:
         prayer_line = isl.format_prayer_times(target)
@@ -12859,7 +12907,7 @@ def build_islamic_brief(target: date | None = None) -> str:
         if fasting:
             lines.append(f"*Fasting:* {fasting}")
         lines.append(f"*Reflection:* {reflection['text']} _({reflection['ref']})_")
-        if target.weekday() == 4:
+        if include_khutbah and target.weekday() == 4:
             try:
                 khutbah = isl.latest_khutbah(target)
                 if khutbah.get("date") == target.isoformat():
@@ -14698,12 +14746,14 @@ def build_briefing(record_news_digest: bool = False):
 
     # Put the preferred-topic digest first so phone push previews do not spend
     # their limited body budget on routine agenda text before the news radar.
+    sermon_in_digest = False
     try:
         digest = _fresh_morning_digest(now=now, record=record_news_digest)
         if digest:
             lines.append("*Morning digest:*")
             lines.append(digest)
             lines.append("")
+            sermon_in_digest = "Friday khutbah:" in digest
     except Exception as e:
         logger.warning(f"Morning digest build failed: {e}")
         lines.append("_(Morning digest unavailable right now.)_")
@@ -14714,11 +14764,11 @@ def build_briefing(record_news_digest: bool = False):
     if wt_label:
         lines.append(f"*Today's lessons ({_week_display(wt_label, today)}):*")
         lines.append(tt.format_lessons(lessons, hbl=_hbl_for_date(today)))
-    elif google_ok():
+    elif google_ok() and tt.is_timetable_active(today):
         lines.append("_Timetable: use /setweek to activate_")
     lines.append("")
 
-    lines.append(build_islamic_brief(today))
+    lines.append(build_islamic_brief(today, include_khutbah=not sermon_in_digest))
     lines.append("")
 
     if google_ok():
@@ -14794,7 +14844,7 @@ def build_evening_briefing():
         lines.append(f"- Lessons: {lesson_count} block{'s' if lesson_count != 1 else ''} ({_week_display(wt_label, today)})")
         if lessons or _hbl_for_date(today):
             lines.append(tt.format_lessons(lessons, hbl=_hbl_for_date(today)))
-    else:
+    elif tt.is_timetable_active(today):
         lines.append("- Lessons: no active timetable reference.")
     if google_ok():
         try:
@@ -14823,7 +14873,7 @@ def build_evening_briefing():
     if tomorrow_wt_label:
         lines.append(f"Lessons ({_week_display(tomorrow_wt_label, tomorrow)}):")
         lines.append(tt.format_lessons(tomorrow_lessons, hbl=_hbl_for_date(tomorrow)))
-    else:
+    elif tt.is_timetable_active(tomorrow):
         lines.append("No timetable reference for tomorrow.")
     lines.append("")
 
@@ -14957,7 +15007,7 @@ def _today_payload(today) -> dict:
     if wt_label:
         lines.append(f"*Lessons ({_week_display(wt_label, today)}):*")
         lines.append(tt.format_lessons(lessons, hbl=_hbl_for_date(today)))
-    else:
+    elif tt.is_timetable_active(today):
         lines.append("_Timetable: use /setweek to activate_")
     lines.append("")
     if google_ok():
@@ -14979,7 +15029,7 @@ def _tomorrow_payload(tomorrow) -> dict:
     if wt_label:
         lines.append(f"*Lessons ({_week_display(wt_label, tomorrow)}):*")
         lines.append(tt.format_lessons(lessons, hbl=_hbl_for_date(tomorrow)))
-    else:
+    elif tt.is_timetable_active(tomorrow):
         lines.append("_Timetable: use /setweek to activate_")
     lines.append("")
     if google_ok():
@@ -15417,6 +15467,9 @@ async def start(update, context):
 
 async def lessons_cmd(update, context):
     today = datetime.now(SGT).date()
+    if not tt.is_timetable_active(today):
+        await update.message.reply_text("The 2026 daily teaching timetable has ended. No lessons are scheduled from it.")
+        return
     if today.weekday() > 4:
         await update.message.reply_text("Weekend - no lessons!")
         return
@@ -20514,17 +20567,32 @@ def _remember_news_digest_entries(entries: list[dict], now: datetime | None = No
 def _fresh_morning_digest(now: datetime | None = None, record: bool = False) -> str:
     global _PENDING_NEWS_DIGEST_ENTRIES, _PENDING_NEWS_DIGEST_BUILT_AT
     current = now or datetime.now(SGT)
-    entries = build_curated_digest_entries(
-        now=current,
-        limit=MORNING_DIGEST_ITEM_LIMIT,
-        fetch_limit=max(4, MORNING_DIGEST_ITEM_LIMIT),
-        record=False,
-    )
+    khutbah = _friday_khutbah_digest_item(current.date())
+    try:
+        entries = build_curated_digest_entries(
+            now=current,
+            limit=MORNING_DIGEST_ITEM_LIMIT,
+            fetch_limit=max(4, MORNING_DIGEST_ITEM_LIMIT),
+            record=False,
+        )
+    except Exception:
+        if not khutbah:
+            raise
+        logger.warning("News digest unavailable; showing the MUIS Friday khutbah", exc_info=True)
+        entries = []
     _PENDING_NEWS_DIGEST_ENTRIES = entries
     _PENDING_NEWS_DIGEST_BUILT_AT = current
     if record:
         _remember_news_digest_entries(entries, now=current)
-    return format_curated_digest(entries)
+    news = format_curated_digest(entries)
+    if not khutbah:
+        return news
+    sermon = f"- *Friday khutbah: {khutbah['title']}* (MUIS)"
+    if khutbah["why"]:
+        sermon += f"\n  Key message: {khutbah['why']}"
+    if khutbah["url"]:
+        sermon += f"\n  Source: {khutbah['url']}"
+    return f"{sermon}\n{news}".strip()
 
 
 def _commit_pending_morning_digest_entries():
