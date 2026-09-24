@@ -10969,6 +10969,14 @@ class AgenticOpenAITests(unittest.TestCase):
                 expected_effort = "none" if model == "gpt-6-luna" else "medium"
                 self.assertEqual(expected_effort, kwargs["reasoning"]["effort"])
 
+    def test_openai_gpt_6_cost_estimate_includes_cache_write_premium(self):
+        usage = {"input_tokens": 1000, "cached_input_tokens": 400, "output_tokens": 200}
+
+        with patch.object(bot, "OPENAI_PROMPT_CACHE_RETENTION", "24h"):
+            estimate = bot._openai_estimated_cost_usd("gpt-6-sol", usage)
+
+        self.assertAlmostEqual(estimate, 0.00358, places=8)
+
     def test_openai_budget_reserves_conservative_cost_before_request(self):
         reserve = bot._openai_request_budget_reserve_sgd({
             "model": "gpt-5.6",

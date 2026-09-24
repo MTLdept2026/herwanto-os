@@ -4243,10 +4243,20 @@ def _openai_estimated_cost_usd(model: str, usage: dict, native_counts: dict | No
     input_tokens = int(usage.get("input_tokens", 0) or 0)
     billable_input = max(0, input_tokens - cached)
     output_tokens = int(usage.get("output_tokens", 0) or 0)
+    input_rate = price["input"]
+    cached_rate = price["cached_input"]
+    output_rate = price["output"]
+    if str(model or "").lower().startswith("gpt-6"):
+        if OPENAI_PROMPT_CACHE_RETENTION == "24h":
+            input_rate *= 1.25
+        if input_tokens > 272_000:
+            input_rate *= 2
+            cached_rate *= 2
+            output_rate *= 1.5
     estimate = (
-        billable_input * price["input"]
-        + cached * price["cached_input"]
-        + output_tokens * price["output"]
+        billable_input * input_rate
+        + cached * cached_rate
+        + output_tokens * output_rate
     ) / 1_000_000
     for tool, count in (native_counts or {}).items():
         estimate += max(0, int(count or 0)) * float(_OPENAI_NATIVE_TOOL_ESTIMATES.get(tool, 0.0))
@@ -4277,9 +4287,17 @@ def _openai_request_budget_reserve_sgd(kwargs: dict) -> float:
         payload_chars = sum(len(str(value)) for value in payload.values())
     input_tokens = max(1, (payload_chars + 2) // 3)
     output_tokens = max(1, int(kwargs.get("max_output_tokens", 0) or 1))
+    input_rate = float(price.get("input", 0.0))
+    output_rate = float(price.get("output", 0.0))
+    if model.lower().startswith("gpt-6"):
+        if OPENAI_PROMPT_CACHE_RETENTION == "24h":
+            input_rate *= 1.25
+        if input_tokens > 272_000:
+            input_rate *= 2
+            output_rate *= 1.5
     estimated_usd = (
-        input_tokens * float(price.get("input", 0.0))
-        + output_tokens * float(price.get("output", 0.0))
+        input_tokens * input_rate
+        + output_tokens * output_rate
     ) / 1_000_000
     max_tool_calls = max(1, int(kwargs.get("max_tool_calls", 1) or 1))
     for tool in kwargs.get("tools", []) or []:
