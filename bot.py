@@ -234,11 +234,11 @@ QUALITY_GUARDRAIL_COUNTERS_KEY = "quality_guardrail_counters"
 QUALITY_SIGNAL_LIMIT = 200
 QUALITY_COUNTER_WEEK_LIMIT = 8
 
-_DEFAULT_AGENTIC_MODEL = "gpt-5.6"
-_DEFAULT_DEEP_MODEL = "gpt-5.6"
-_DEFAULT_QUICK_MODEL = "gpt-5.4-mini"
-_DEFAULT_ROUTER_MODEL = "gpt-5.4-nano"
-_DEFAULT_STRUCTURED_MODEL = "gpt-5.4-mini"
+_DEFAULT_AGENTIC_MODEL = "gpt-6-sol"
+_DEFAULT_DEEP_MODEL = "gpt-6-sol"
+_DEFAULT_QUICK_MODEL = "gpt-6-luna"
+_DEFAULT_ROUTER_MODEL = "gpt-6-luna"
+_DEFAULT_STRUCTURED_MODEL = "gpt-6-luna"
 AGENTIC_MODEL = _model_from_env("HIRA_AGENTIC_MODEL", _DEFAULT_AGENTIC_MODEL)
 DEEP_MODEL = _model_from_env("HIRA_DEEP_MODEL", _DEFAULT_DEEP_MODEL)
 QUICK_MODEL = _model_from_env("HIRA_QUICK_MODEL", _DEFAULT_QUICK_MODEL)
@@ -3924,7 +3924,7 @@ def _openai_playbook_instruction(policy: dict | None = None) -> str:
 
 def _openai_supports_reasoning(model: str = "") -> bool:
     clean = str(model or "").lower()
-    return clean.startswith(("gpt-5", "o1", "o3", "o4"))
+    return clean.startswith(("gpt-6", "gpt-5", "o1", "o3", "o4"))
 
 
 def _openai_stable_key(value: str | None, prefix: str = "hira") -> str:
@@ -4057,7 +4057,10 @@ def _openai_request_options(
         kwargs["max_tool_calls"] = int(policy.get("max_tool_calls") or 8)
     kwargs["parallel_tool_calls"] = True
     if OPENAI_REASONING_KWARGS and _openai_supports_reasoning(model):
-        reasoning = {"effort": str(policy.get("reasoning_effort") or "medium")}
+        effort = str(policy.get("reasoning_effort") or "medium")
+        if str(model or "").lower().startswith("gpt-6-luna"):
+            effort = "none"
+        reasoning = {"effort": effort}
         if str(model or "").lower().startswith("gpt-5.6"):
             reasoning["context"] = "all_turns"
         kwargs["reasoning"] = reasoning
@@ -4141,10 +4144,13 @@ _OPENAI_USAGE_LOCK = threading.Lock()
 _OPENAI_BUDGET_RESERVED_SGD = 0.0
 
 _OPENAI_TEXT_PRICE_PER_MILLION = [
+    ("gpt-6-astra", {"input": 10.00, "cached_input": 1.00, "output": 50.00}),
+    ("gpt-6-sol", {"input": 2.00, "cached_input": 0.20, "output": 10.00}),
+    ("gpt-6-luna", {"input": 0.10, "cached_input": 0.01, "output": 0.50}),
     ("gpt-5.6-terra", {"input": 2.00, "cached_input": 0.20, "output": 12.00}),
     ("gpt-5.6-luna", {"input": 0.20, "cached_input": 0.02, "output": 1.20}),
-    ("gpt-5.6-sol", {"input": 5.00, "cached_input": 0.50, "output": 30.00}),
-    ("gpt-5.6", {"input": 5.00, "cached_input": 0.50, "output": 30.00}),
+    ("gpt-5.6-sol", {"input": 4.00, "cached_input": 0.40, "output": 20.00}),
+    ("gpt-5.6", {"input": 4.00, "cached_input": 0.40, "output": 20.00}),
     ("gpt-5.5", {"input": 5.00, "cached_input": 0.50, "output": 30.00}),
     ("gpt-5.4-mini", {"input": 0.75, "cached_input": 0.075, "output": 4.50}),
     ("gpt-5.4-nano", {"input": 0.20, "cached_input": 0.02, "output": 1.25}),

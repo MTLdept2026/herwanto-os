@@ -10945,10 +10945,29 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertAlmostEqual(bot._openai_usd_to_sgd(estimate), 0.01971, places=6)
 
     def test_openai_usage_prices_gpt_5_6_alias_and_resolved_sol_model(self):
-        expected = {"input": 5.00, "cached_input": 0.50, "output": 30.00}
+        expected = {"input": 4.00, "cached_input": 0.40, "output": 20.00}
 
         self.assertEqual(expected, bot._openai_price_for_model("gpt-5.6"))
         self.assertEqual(expected, bot._openai_price_for_model("gpt-5.6-sol"))
+
+    def test_openai_gpt_6_reasoning_and_prices(self):
+        prices = {
+            "gpt-6-astra": {"input": 10.00, "cached_input": 1.00, "output": 50.00},
+            "gpt-6-sol": {"input": 2.00, "cached_input": 0.20, "output": 10.00},
+            "gpt-6-luna": {"input": 0.10, "cached_input": 0.01, "output": 0.50},
+        }
+        for model, expected in prices.items():
+            with self.subTest(model=model):
+                self.assertEqual(expected, bot._openai_price_for_model(model))
+                self.assertTrue(bot._openai_supports_reasoning(model))
+                kwargs = bot._openai_request_options(
+                    model,
+                    100,
+                    [{"role": "user", "content": "hello"}],
+                    policy={"reasoning_effort": "medium"},
+                )
+                expected_effort = "none" if model == "gpt-6-luna" else "medium"
+                self.assertEqual(expected_effort, kwargs["reasoning"]["effort"])
 
     def test_openai_budget_reserves_conservative_cost_before_request(self):
         reserve = bot._openai_request_budget_reserve_sgd({
