@@ -50,8 +50,7 @@ private Google links, logs, and exported documents out of git.
 | Morning briefing now | `/briefing` |
 | AI chat (any topic) | Just type naturally |
 | Private PWA interface | `uvicorn web_app:app --reload` |
-| Auto morning briefing | 6:45 AM SGT daily |
-| Auto evening briefing | 9:00 PM SGT daily |
+| Automatic briefings | Disabled; request `/briefing`, `/evening`, or `/weekly` when needed |
 | Project check-in | Friday 5:00 PM SGT |
 
 ---
@@ -222,7 +221,7 @@ git push -u origin main
 
 Open Telegram → find your bot → `/start`
 
-The bot stores your chat ID on first `/start`. This is needed for the scheduled morning briefings. **You must send /start at least once after deployment.**
+The bot stores your chat ID on first `/start`. This is needed for Telegram notifications. **You must send /start at least once after deployment.**
 
 ---
 
@@ -459,11 +458,11 @@ Current PWA surfaces:
 - Voice-note upload/transcription when `OPENAI_API_KEY` is configured
 - Marking-load dashboard with marked/unmarked segmented bars
 - Light/dark/auto theme switcher
-- App notifications for nudges, check-ins, follow-ups, morning/evening briefings, weekly planning, and project check-ins
+- App notifications for nudges, check-ins, follow-ups, and project check-ins
 
 The PWA chat uses the same H.I.R.A tool brain as Telegram. With the same production env vars, it can create/delete calendar events, add/complete reminders and follow-ups, manage marking progress, read Gmail, create drafts, generate DOCX/PPTX artifacts, process uploaded documents/images/voice notes, remember context, use timetable context, fetch NEA weather, and fetch news when search is configured. The morning digest always merges configured watch topics with H.I.R.A's built-in live radar for Liverpool, F1/Mercedes, AI tools, Codex/Gemini/Kimi, Teenage Engineering, Android, iOS, Islam, Singapore education, Nothing products, and Nothing OS.
 
-For OS-level PWA notifications while the app is closed, generate VAPID keys with `vapid --gen`, set `HIRA_WEB_PUSH_PUBLIC_KEY` to `vapid --applicationServerKey`, set `HIRA_WEB_PUSH_PRIVATE_KEY` to a base64-encoded `private_key.pem`, and set `HIRA_WEB_PUSH_SUBJECT` to `mailto:you@example.com` on both Railway services. Then tap **Enable app notifications** in H.I.R.A. Without VAPID keys, H.I.R.A still shows queued app notifications the next time the PWA is open. The morning briefing defaults to 06:45 SGT and the evening roundup defaults to 21:00 SGT; both retry phone push delivery during a 90-minute catch-up window. Override with `HIRA_MORNING_BRIEFING_TIME=HH:MM`, `HIRA_EVENING_BRIEFING_TIME=HH:MM`, `HIRA_MORNING_BRIEFING_CATCHUP_MINUTES=90`, or `HIRA_EVENING_BRIEFING_CATCHUP_MINUTES=90` if your routine changes.
+For OS-level PWA notifications while the app is closed, generate VAPID keys with `vapid --gen`, set `HIRA_WEB_PUSH_PUBLIC_KEY` to `vapid --applicationServerKey`, set `HIRA_WEB_PUSH_PRIVATE_KEY` to a base64-encoded `private_key.pem`, and set `HIRA_WEB_PUSH_SUBJECT` to `mailto:you@example.com` on both Railway services. Then tap **Enable app notifications** in H.I.R.A. Without VAPID keys, H.I.R.A still shows queued app notifications the next time the PWA is open. Automatic prayer reminders and scheduled morning, evening, and weekly briefings are disabled. Briefings remain available on request; the home briefing panels have been removed.
 
 Digest social search is optional and bounded. By default `HIRA_DIGEST_SOCIAL_SEARCH=1` adds a capped X/Twitter-style web-search pass for high-interest live topics using `HIRA_DIGEST_SOCIAL_DOMAINS=x.com,twitter.com`, `HIRA_DIGEST_SOCIAL_TOPIC_LIMIT=16`, and `HIRA_DIGEST_SOCIAL_READ=1` to read concrete public status/trending URLs through the normal `fetch_url` path. Discovery uses Tavily when configured, DuckDuckGo Lite or Brave Search when reachable, and Jina Search when `JINA_API_KEY` is set; Jina Reader (`r.jina.ai`) remains the no-key fallback for concrete public URLs. This is not an authenticated X API integration, so treat social hits as leads and confirm important facts with official or reputable sources.
 
@@ -499,9 +498,9 @@ Source discipline is deterministic before agentic chat: volatile or current ques
 
 For production, add Redis and set `HIRA_REQUIRE_REDIS=1` once `REDIS_URL` is working. This makes chat history, working memory, upload job state, locks, and queues fail loudly instead of silently falling back to one-process memory after a restart. `/api/admin/status` reports Redis state guardrail warnings when production is detected without required Redis. Telegram access fails closed unless `HIRA_ALLOWED_USER_IDS` is set; use `HIRA_TELEGRAM_OPEN_DEV_MODE=1` only for local development.
 
-Keep proactive phone notifications without paying for an idle worker by running the second Railway service as a cron job every five minutes (`*/5 * * * *`) with `HIRA_SERVICE_MODE=pwa_cron`, `REDIS_URL`, and `HIRA_REQUIRE_REDIS=1`. Each run checks morning/evening briefings, weekly planning, Friday khutbah/project checks, nudges, daily check-ins, prayer reminders, follow-ups, proactive intelligence, Work Gmail, and missed Web Push delivery, then exits. Existing Redis locks and catch-up windows prevent duplicate delivery. Configure the PWA web service with `HIRA_WEB_INLINE_SCHEDULER=0`, `HIRA_WEB_PUSH_RECOVERY_ENABLED=0`, `HIRA_POSTGRES_POOL_MIN_SIZE=0`, and `HIRA_POSTGRES_POOL_MAX_IDLE_SECONDS=30`, then enable Railway Serverless so it can sleep when the app is not being used. `HIRA_SERVICE_MODE=pwa_worker` remains available as an always-on fallback.
+Keep proactive phone notifications without paying for an idle worker by running the second Railway service as a cron job every five minutes (`*/5 * * * *`) with `HIRA_SERVICE_MODE=pwa_cron`, `REDIS_URL`, and `HIRA_REQUIRE_REDIS=1`. Each run checks Friday khutbah/project checks, nudges, daily check-ins, follow-ups, proactive intelligence, Work Gmail, and missed Web Push delivery, then exits. Existing Redis locks and catch-up windows prevent duplicate delivery. Configure the PWA web service with `HIRA_WEB_INLINE_SCHEDULER=0`, `HIRA_WEB_PUSH_RECOVERY_ENABLED=0`, `HIRA_POSTGRES_POOL_MIN_SIZE=0`, and `HIRA_POSTGRES_POOL_MAX_IDLE_SECONDS=30`, then enable Railway Serverless so it can sleep when the app is not being used. `HIRA_SERVICE_MODE=pwa_worker` remains available as an always-on fallback.
 
-Prayer reminders use a catch-up window, defaulting to `HIRA_PRAYER_REMINDER_WINDOW_MINUTES=20`, so a short deploy/restart does not silently miss the reminder. Use `/api/notifications/health` to confirm PWA push keys, subscription count, queued notifications, and today's prayer prompt status.
+Automatic prayer reminders and scheduled briefings are blocked during enqueue and Web Push recovery; existing queued items are archived. Use `/api/notifications/health` to confirm PWA push keys, subscription count, and queued notifications.
 
 The PWA Files and chat attachment flows submit uploads as background jobs through `/api/upload/jobs`, then poll for completion. Redis stores job state when `REDIS_URL` is configured; local memory is used as a fallback for development. Scheduler jobs also use Redis locks when available so a web service and worker service do not double-send the same prompt.
 

@@ -1855,7 +1855,7 @@ class AgenticOpenAITests(unittest.TestCase):
         archive.assert_called_once_with(["37"])
         send_push.assert_not_called()
 
-    def test_web_push_recovery_prioritises_missed_briefing_over_later_nudge(self):
+    def test_web_push_recovery_skips_disabled_briefing_and_sends_nudge(self):
         now = bot.SGT.localize(bot.datetime(2026, 5, 12, 7, 20))
         briefing = {
             "id": "40",
@@ -1897,7 +1897,7 @@ class AgenticOpenAITests(unittest.TestCase):
             result = web_app.recover_missed_push_notifications(limit=1)
 
         self.assertEqual(result["attempted"], 1)
-        self.assertEqual(sent_sources, ["morning_briefing:2026-05-12"])
+        self.assertEqual(sent_sources, ["nudge:41"])
 
     def test_notification_health_diagnostics_survive_subscription_lookup_failure(self):
         with (
@@ -3446,77 +3446,26 @@ class AgenticOpenAITests(unittest.TestCase):
 
         self.assertTrue(confirmed)
 
-    def test_daily_briefing_safety_net_runs_missing_evening_digest(self):
-        class FixedDateTime(datetime):
-            @classmethod
-            def now(cls, tz=None):
-                value = datetime(2026, 5, 10, 21, 5)
-                return bot.SGT.localize(value) if tz else value
-
-        calls = []
-
-        async def fake_evening(context=None, source="evening_briefing"):
-            calls.append(source)
-            return True
-
-        async def fake_morning(context=None, source="morning_briefing"):
-            raise AssertionError("morning safety net should not run at 21:05")
-
+    def test_daily_briefing_safety_net_is_disabled(self):
         with (
-            patch.object(web_app, "datetime", FixedDateTime),
-            patch.object(bot.gs, "get_web_push_delivery_log", return_value=[]),
-            patch.object(bot.gs, "get_config", return_value=""),
-            patch.object(bot, "send_evening_briefing_once", side_effect=fake_evening),
-            patch.object(bot, "send_morning_briefing_once", side_effect=fake_morning),
+            patch.object(bot.gs, "get_web_push_delivery_log") as delivery_log,
+            patch.object(bot, "send_evening_briefing_once") as evening,
+            patch.object(bot, "send_morning_briefing_once") as morning,
         ):
             result = asyncio.run(web_app.recover_missed_daily_briefings())
 
-        self.assertEqual(result["attempted"], 1)
-        self.assertEqual(result["delivered"], 1)
-        self.assertEqual(calls, ["evening_briefing"])
+        self.assertEqual(result, {"attempted": 0, "delivered": 0, "skipped": 2})
+        delivery_log.assert_not_called()
+        evening.assert_not_called()
+        morning.assert_not_called()
 
-    def test_briefing_delivery_status_shows_confirmed_pushes(self):
-        today_key = "2026-05-10"
-        now = bot.SGT.localize(datetime(2026, 5, 10, 21, 10))
-        delivery_log = [
-            {"created": "2026-05-10T06:50:00+08:00", "source": f"morning_briefing:{today_key}", "sent": 1},
-            {"created": "2026-05-10T21:03:00+08:00", "source": f"web_evening_briefing:{today_key}", "sent": 1},
-        ]
+    def test_briefing_delivery_status_reports_disabled(self):
+        with patch.object(bot.gs, "get_config") as get_config:
+            status = web_app._briefing_delivery_status([], [])
 
-        with patch.object(bot.gs, "get_config", return_value=today_key):
-            status = web_app._briefing_delivery_status(delivery_log, [], now=now)
-
-        self.assertEqual(status["overall"], "ok")
-        self.assertEqual([slot["status"] for slot in status["slots"]], ["delivered", "delivered"])
-        self.assertEqual(status["slots"][1]["delivered_at"], "21:03")
-
-    def test_briefing_delivery_status_flags_missed_evening_after_catchup(self):
-        today_key = "2026-05-10"
-        now = bot.SGT.localize(datetime(2026, 5, 10, 22, 45))
-        delivery_log = [
-            {"created": "2026-05-10T06:50:00+08:00", "source": f"morning_briefing:{today_key}", "sent": 1},
-        ]
-
-        with patch.object(bot.gs, "get_config", side_effect=lambda key: today_key if key == bot.MORNING_BRIEFING_SENT_KEY else ""):
-            status = web_app._briefing_delivery_status(delivery_log, [], now=now)
-
-        self.assertEqual(status["overall"], "attention")
-        self.assertEqual(status["slots"][1]["slot"], "evening")
-        self.assertEqual(status["slots"][1]["status"], "missed")
-
-    def test_briefing_delivery_status_shows_active_recovery_window(self):
-        today_key = "2026-05-10"
-        now = bot.SGT.localize(datetime(2026, 5, 10, 21, 5))
-        delivery_log = [
-            {"created": "2026-05-10T06:50:00+08:00", "source": f"morning_briefing:{today_key}", "sent": 1},
-        ]
-
-        with patch.object(bot.gs, "get_config", side_effect=lambda key: today_key if key == bot.MORNING_BRIEFING_SENT_KEY else ""):
-            status = web_app._briefing_delivery_status(delivery_log, [], now=now)
-
-        self.assertEqual(status["overall"], "watching")
-        self.assertEqual(status["slots"][1]["slot"], "evening")
-        self.assertEqual(status["slots"][1]["status"], "recovering")
+        self.assertEqual(status["overall"], "off")
+        self.assertEqual([slot["status"] for slot in status["slots"]], ["off", "off"])
+        get_config.assert_not_called()
 
     def test_bot_digestcheck_reports_confirmed_delivery_keys(self):
         today_key = "2026-05-10"
@@ -13000,7 +12949,7 @@ class AgenticOpenAITests(unittest.TestCase):
         self.assertEqual(due["key"], "zohor")
         self.assertEqual(store["prayer_prompt:2026-05-01:zohor"], "13:18")
 
-    def test_prayer_candidate_source_is_dated(self):
+    def test_prayer_candidates_are_disabled(self):
         now = bot.SGT.localize(bot.datetime(2026, 5, 1, 19, 8))
         due = {
             "key": "maghrib",
@@ -13018,7 +12967,7 @@ class AgenticOpenAITests(unittest.TestCase):
         ):
             queue = bot.build_proactive_v2_queue(now=now, families={"prayer"})
 
-        self.assertEqual(queue[0]["source"], "prayer:2026-05-01:maghrib")
+        self.assertEqual(queue, [])
 
     def test_prayer_reminder_uses_fallback_when_config_unavailable(self):
         now = bot.SGT.localize(bot.datetime(2026, 5, 1, 13, 5))

@@ -62,7 +62,6 @@ const state = {
   chatHistory: safeJsonArray("hira_pwa_chat"),
   notifications: safeJsonArray("hira_pwa_notifications"),
   dismissedNotificationIds: safeJsonArray("hira_pwa_dismissed_notification_ids"),
-  dismissedHomeSections: safeJsonArray("hira_pwa_dismissed_home_sections"),
   chatNotificationIds: safeJsonArray("hira_pwa_chat_notification_ids"),
   feedback: safeJsonObject("hira_pwa_feedback"),
   deviceLocation: safeJsonParse("hira_pwa_device_location", null),
@@ -1596,50 +1595,6 @@ async function loadApiSpend({ quiet = false } = {}) {
   }
 }
 
-function briefingDeliveryTone(status) {
-  const clean = String(status || "").toLowerCase();
-  if (clean === "delivered" || clean === "pending") return "ok";
-  if (clean === "queued" || clean === "recovering") return "warn";
-  if (clean === "missed" || clean === "unconfirmed") return "danger";
-  return "off";
-}
-
-function renderBriefingDelivery(delivery = {}) {
-  const rowsEl = $("#briefingDeliveryRows");
-  const summaryEl = $("#briefingDeliverySummary");
-  const badgeEl = $("#briefingDeliveryBadge");
-  if (!rowsEl || !summaryEl || !badgeEl) return;
-  const slots = Array.isArray(delivery.slots) ? delivery.slots : [];
-  const overall = String(delivery.overall || "unknown").toLowerCase();
-  const badgeTone = overall === "attention" ? "danger" : overall === "watching" ? "warn" : overall === "ok" ? "ok" : "off";
-  summaryEl.textContent = delivery.summary || "Digest delivery status unavailable.";
-  badgeEl.textContent = overall === "attention" ? "CHECK" : overall === "watching" ? "WATCH" : overall === "ok" ? "OK" : "WAIT";
-  badgeEl.className = `briefing-delivery-badge status-${badgeTone}`;
-  if (!slots.length) {
-    rowsEl.innerHTML = `
-      <div class="briefing-delivery-row is-empty">
-        <span>Delivery</span>
-        <strong>Unavailable</strong>
-        <small>No digest delivery data returned.</small>
-      </div>
-    `;
-    return;
-  }
-  rowsEl.innerHTML = slots.map((slot) => {
-    const status = String(slot.status || "unknown");
-    const tone = briefingDeliveryTone(status);
-    const label = escapeHtml(slot.label || slot.slot || "Digest");
-    const time = escapeHtml(slot.time || "--:--");
-    const detail = escapeHtml(slot.detail || "No detail yet.");
-    return `
-      <div class="briefing-delivery-row status-${tone}">
-        <span>${label} <small>${time}</small></span>
-        <strong>${escapeHtml(status.toUpperCase())}</strong>
-        <small>${detail}</small>
-      </div>
-    `;
-  }).join("");
-}
 
 function versionRow(label, value, tone = "") {
   const cleanTone = tone ? ` class="${tone}"` : "";
@@ -1898,64 +1853,6 @@ function renderConnections(services) {
     )
     .join("");
   refreshIcons($("#homeConnectionsList"));
-}
-
-function renderProactiveQueue(data = {}) {
-  const top = Array.isArray(data.top) ? data.top : [];
-  const changed = Array.isArray(data.changed) ? data.changed : [];
-  if (!top.length) {
-    const changedText = changed.length ? `<p class="subtle">${markdownish(changed.join(" "))}</p>` : "";
-    return `<div class="empty-state compact">No urgent proactive items right now.</div>${changedText}`;
-  }
-  const cards = top.map((item, index) => {
-    const score = Number(item.score || 0);
-    const priority = String(item.priority || "medium").toUpperCase();
-    const hint = item.action_hint ? `<p><strong>Next:</strong> ${markdownish(item.action_hint)}</p>` : "";
-    const why = item.why ? `<p><strong>Why:</strong> ${markdownish(item.why)}</p>` : "";
-    const date = item.event_date ? `<small>${markdownish(item.event_date)}</small>` : "";
-    return `
-      <article class="agenda-card">
-        <div class="agenda-card-head">
-          <strong>${index + 1}. ${markdownish(item.title || "H.I.R.A")}</strong>
-          <span>${score} · ${priority}</span>
-        </div>
-        <p>${markdownish(item.body || "")}</p>
-        ${why}
-        ${hint}
-        ${date}
-      </article>
-    `;
-  }).join("");
-  const changedNote = changed.length ? `<p class="subtle">${markdownish(changed.join(" "))}</p>` : "";
-  return `${cards}${changedNote}`;
-}
-
-function renderMorningDigest(data = {}, { limit = 0 } = {}) {
-  const items = Array.isArray(data.items) ? data.items : [];
-  if (!items.length) {
-    return `<div class="empty-state compact">No digest items returned yet.</div>`;
-  }
-  const visible = limit > 0 ? items.slice(0, limit) : items;
-  const extra = limit > 0 ? Math.max(0, items.length - visible.length) : 0;
-  const cards = visible.map((item, index) => {
-    const meta = [item.label, item.source].filter(Boolean).join(" · ");
-    const why = item.why ? `<p><strong>Why:</strong> ${markdownish(item.why)}</p>` : "";
-    const title = markdownish(item.title || "Digest item");
-    const safeLink = safeExternalLink(item.url);
-    const link = safeLink ? `<p>${safeLink}</p>` : "";
-    return `
-      <article class="agenda-card digest-card">
-        <div class="agenda-card-head">
-          <strong>${index + 1}. ${title}</strong>
-          ${meta ? `<span>${markdownish(meta)}</span>` : ""}
-        </div>
-        ${why}
-        ${link}
-      </article>
-    `;
-  }).join("");
-  const more = extra ? `<div class="preview-more">+${extra} more in the full digest.</div>` : "";
-  return `${cards}${more}`;
 }
 
 function minutesFromTime(value = "") {
@@ -3327,30 +3224,6 @@ function mountChatInHome() {
   if (mount && chat && chat.parentElement !== mount) mount.appendChild(chat);
 }
 
-function applyHomeSectionDismissals() {
-  const dismissed = new Set(state.dismissedHomeSections.map(String));
-  document.querySelectorAll("[data-home-section]").forEach((section) => {
-    section.hidden = dismissed.has(section.dataset.homeSection);
-  });
-  const restoreButton = $("#restoreBriefingsBtn");
-  if (restoreButton) restoreButton.hidden = dismissed.size === 0;
-}
-
-function dismissHomeSection(sectionId) {
-  if (!sectionId) return;
-  state.dismissedHomeSections = [...new Set([...state.dismissedHomeSections, sectionId])];
-  localStorage.setItem("hira_pwa_dismissed_home_sections", JSON.stringify(state.dismissedHomeSections));
-  applyHomeSectionDismissals();
-  setStatus("Briefing closed.", "ok");
-}
-
-function restoreHomeSections() {
-  state.dismissedHomeSections = [];
-  localStorage.removeItem("hira_pwa_dismissed_home_sections");
-  applyHomeSectionDismissals();
-  setStatus("Briefings restored.", "ok");
-}
-
 function setView(name) {
   state.currentView = name;
   document.querySelectorAll(".nav-tab").forEach((tab) => {
@@ -3447,9 +3320,6 @@ function renderHomeData(data = {}, { fromCache = false, savedAt = 0 } = {}) {
   updateLiveClock();
   $("#homeLivingTimeline").innerHTML = renderLivingTimeline(data.agenda_structured || {}, data.prayers || {});
   refreshIcons($("#homeLivingTimeline"));
-  $("#homeProactive").innerHTML = renderProactiveQueue(data.proactive || {});
-  $("#homeDigest").innerHTML = renderMorningDigest(data.digest || {}, { limit: 3 });
-  $("#homeIslamic").innerHTML = renderTextBlock(data.islamic || "Islamic rhythm unavailable right now.");
   const fileLines = countMeaningfulLines(data.files);
   $("#fileMemoryValue").textContent = String(fileLines);
   $("#fileMemoryLabel").textContent = fileLines ? "MEMORY ITEMS INDEXED" : "MEMORY STANDBY";
@@ -3468,7 +3338,6 @@ function renderHomeData(data = {}, { fromCache = false, savedAt = 0 } = {}) {
   renderConnections(services);
   renderIntegrationHealth(services, data.provider_health || {});
   renderDailyLoad(data.daily_load || {});
-  renderBriefingDelivery(data.briefing_delivery || {});
   renderIntelligenceStack(data.intelligence || {});
   renderClassOpsStatus(data.classops || {});
   renderTodayFocus(data);
@@ -3522,26 +3391,15 @@ function renderHomeLoadingState() {
   $("#focusMarkingCount").textContent = "0";
   $("#homeLivingTimeline").innerHTML = "<div>Loading...</div>";
   homeGlyphDataReady = false;
-  $("#homeProactive").innerHTML = "<div>Loading...</div>";
-  $("#homeDigest").innerHTML = "<div>Loading...</div>";
-  $("#homeIslamic").innerHTML = "<div>Loading...</div>";
   $("#classOpsStatusList").innerHTML = "<div class=\"classops-status-row is-empty\"><span>ClassOps</span><strong>Checking status</strong><small>Loading submission ledger...</small></div>";
 }
 
 function renderHomeErrorState(error) {
   $("#homeLivingTimeline").textContent = `Error: ${error.message}`;
-  $("#homeProactive").textContent = `Error: ${error.message}`;
-  $("#homeDigest").textContent = `Error: ${error.message}`;
-  $("#homeIslamic").textContent = `Error: ${error.message}`;
   $("#fileMemoryValue").textContent = "--";
   $("#fileMemoryLabel").textContent = "MEMORY CHECK FAILED";
   $("#fileMemoryValueHome").textContent = "--";
   $("#fileMemoryLabelHome").textContent = "MEMORY CHECK FAILED";
-  renderBriefingDelivery({
-    overall: "unknown",
-    summary: "Digest delivery status unavailable.",
-    slots: [],
-  });
   renderSegmentsAll(".file-memory-segments", 1, 12, "warning");
 }
 
@@ -3575,7 +3433,7 @@ async function loadHomeEnrichment(coreData = {}) {
       saveHomeSnapshot(data);
       renderHomeData(data);
       const slowNote = homeSlowSyncNote(data.sync_timings);
-      setStatus(slowNote ? `Day ready. One optional source needs attention: ${slowNote}.` : "Day ready. Briefings and supporting signals are up to date.", slowNote ? "warn" : "ok");
+      setStatus(slowNote ? `Day ready. One optional source needs attention: ${slowNote}.` : "Day ready. Supporting signals are up to date.", slowNote ? "warn" : "ok");
       return data;
     } catch (error) {
       const message = error.name === "AbortError" ? "Optional sources timed out." : error.message;
@@ -4627,14 +4485,6 @@ $("#homeSettingsBtn").addEventListener("click", () => {
   const shouldOpen = panel.hidden;
   setSettingsPanelOpen(shouldOpen, { scroll: shouldOpen });
 });
-$("#restoreBriefingsBtn").addEventListener("click", restoreHomeSections);
-document.querySelectorAll("[data-home-dismiss]").forEach((button) => {
-  button.addEventListener("click", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    dismissHomeSection(button.dataset.homeDismiss);
-  });
-});
 $("#refreshAgendaBtn").addEventListener("click", () => loadAgenda(currentAgendaDays(), { force: true, useCache: false }));
 $("#agendaDays").addEventListener("change", () => loadAgenda(currentAgendaDays()));
 $("#refreshTasksBtn").addEventListener("click", () => loadTasks(Number($("#tasksDays").value || 30)));
@@ -4702,7 +4552,6 @@ if (window.matchMedia("(min-width: 641px)").matches && $("#intelligenceDetail"))
 }
 refreshIcons();
 mountChatInHome();
-applyHomeSectionDismissals();
 renderStoredChat();
 rememberNotificationFromUrl();
 mirrorStoredNotificationsToChat();

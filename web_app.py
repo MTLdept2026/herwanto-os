@@ -338,59 +338,6 @@ async def add_static_cache_headers(request: Request, call_next):
         _REQUEST_CONTEXT.reset(context_token)
 
 
-async def _web_daily_briefing_loop(
-    hour: int,
-    minute: int,
-    sender,
-    source: str,
-    grace_minutes: int | None = None,
-    retry_until_success: bool = False,
-):
-    last_attempt_date = None
-    last_success_date = None
-    while True:
-        try:
-            now = datetime.now(bot.SGT)
-            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            grace_until = target + bot.timedelta(minutes=grace_minutes or bot.DAILY_JOB_GRACE_MINUTES)
-            today_key = now.strftime("%Y-%m-%d")
-            if retry_until_success:
-                should_run = target <= now <= grace_until and today_key != last_success_date
-            else:
-                should_run = target <= now <= grace_until and today_key != last_attempt_date
-            if should_run:
-                bot.logger.info(f"Web scheduler running {source} for {today_key}")
-                if not retry_until_success:
-                    last_attempt_date = today_key
-                delivered = await sender(context=None, source=source)
-                if delivered:
-                    last_success_date = today_key
-                    last_attempt_date = today_key
-                elif retry_until_success:
-                    bot.logger.warning(f"Web scheduler {source} not confirmed; will retry during catch-up window")
-            if now >= grace_until:
-                target = target + bot.timedelta(days=1)
-            sleep_for = max(60, min(1800, (target - now).total_seconds()))
-            await asyncio.sleep(sleep_for)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            bot.logger.warning(f"Web {source} scheduler error: {exc}")
-            await asyncio.sleep(300)
-
-
-async def _web_prayer_reminder_loop():
-    while True:
-        try:
-            await bot.prayer_reminders_job(None)
-            await asyncio.sleep(60)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            bot.logger.warning(f"Web prayer reminder scheduler error: {exc}")
-            await asyncio.sleep(300)
-
-
 async def _web_friday_khutbah_loop():
     while True:
         try:
@@ -529,16 +476,17 @@ def _archive_low_value_notifications() -> int:
     except Exception as exc:
         bot.logger.warning(f"Could not scan low-value notifications: {exc}")
         return archived_completed
-    ids = [
-        str(item.get("id", "") or "").strip()
-        for item in queued
-        if bot._low_value_notification_block_reason(
+    blocked = {}
+    for item in queued:
+        item_id = str(item.get("id", "") or "").strip()
+        reason = bot._low_value_notification_block_reason(
             str(item.get("source", "") or ""),
             str(item.get("title", "") or ""),
             str(item.get("body", "") or ""),
         )
-    ]
-    ids = [item_id for item_id in ids if item_id]
+        if item_id and reason:
+            blocked[item_id] = reason
+    ids = list(blocked)
     if not ids:
         return archived_completed
     try:
@@ -548,7 +496,7 @@ def _archive_low_value_notifications() -> int:
         return archived_completed
     for item_id in ids:
         bot._record_notification_outcome(
-            "blocked_classops_empty_assignment_state",
+            f"blocked_{blocked[item_id]}",
             notification_id=item_id,
             kind="update",
         )
@@ -749,162 +697,24 @@ def _daily_briefing_confirmed(slot: str, today_key: str, delivery_log: list) -> 
     return any(_delivery_log_has_source(delivery_log, source, today_key) for source in sources)
 
 
-def _briefing_delivery_log_item(delivery_log: list, sources: list[str], today_key: str) -> dict:
-    source_set = set(sources)
-    for item in reversed(delivery_log or []):
-        if str(item.get("source", "")).strip() not in source_set:
-            continue
-        if int(item.get("sent", 0) or 0) <= 0:
-            continue
-        created = _parse_sgt_datetime(str(item.get("created", "")))
-        if created and created.strftime("%Y-%m-%d") == today_key:
-            return item
-    return {}
-
-
 def _briefing_delivery_status(delivery_log: Optional[list] = None, queued: Optional[list] = None, now: Optional[datetime] = None) -> dict:
     current = now or datetime.now(bot.SGT)
     today_key = current.strftime("%Y-%m-%d")
-    if delivery_log is None:
-        try:
-            delivery_log = bot.gs.get_web_push_delivery_log()
-        except Exception:
-            delivery_log = []
-    if queued is None:
-        try:
-            queued = bot.gs.get_app_notifications(include_archived=False)
-        except Exception:
-            queued = []
-
-    slots = [
-        {
-            "slot": "morning",
-            "label": "Morning",
-            "time": bot.MORNING_BRIEFING_TIME,
-            "catchup": bot.MORNING_BRIEFING_CATCHUP_MINUTES,
-            "config_key": bot.MORNING_BRIEFING_SENT_KEY,
-        },
-        {
-            "slot": "evening",
-            "label": "Evening",
-            "time": bot.EVENING_BRIEFING_TIME,
-            "catchup": bot.EVENING_BRIEFING_CATCHUP_MINUTES,
-            "config_key": bot.EVENING_BRIEFING_SENT_KEY,
-        },
-    ]
-    entries = []
-    attention = False
-    watching = False
-    for spec in slots:
-        slot = spec["slot"]
-        target = current.replace(hour=spec["time"][0], minute=spec["time"][1], second=0, microsecond=0)
-        catchup_until = target + bot.timedelta(minutes=spec["catchup"])
-        sources = [f"{slot}_briefing:{today_key}", f"web_{slot}_briefing:{today_key}"]
-        delivered_item = _briefing_delivery_log_item(delivery_log, sources, today_key)
-        queued_item = next((item for item in queued or [] if str(item.get("source", "")).strip() in sources), {})
-        try:
-            config_marked = bot.gs.get_config(spec["config_key"]) == today_key
-        except Exception:
-            config_marked = False
-
-        delivered_at = ""
-        if delivered_item:
-            created = _parse_sgt_datetime(str(delivered_item.get("created", "")))
-            delivered_at = created.strftime("%H:%M") if created else str(delivered_item.get("created", ""))
-            status = "delivered"
-            detail = f"Confirmed at {delivered_at}" if delivered_at else "Confirmed by push log"
-        elif config_marked:
-            status = "unconfirmed"
-            detail = "Marked sent, but no phone push proof"
-            attention = True
-        elif current < target:
-            status = "pending"
-            detail = f"Due at {target.strftime('%H:%M')}"
-        elif queued_item:
-            status = "queued"
-            detail = "Queued, awaiting phone push proof"
-            watching = True
-        elif current <= catchup_until:
-            status = "recovering"
-            detail = f"Safety net active until {catchup_until.strftime('%H:%M')}"
-            watching = True
-        else:
-            status = "missed"
-            detail = "No confirmed delivery today"
-            attention = True
-
-        entries.append({
-            "slot": slot,
-            "label": spec["label"],
-            "time": target.strftime("%H:%M"),
-            "catchup_until": catchup_until.strftime("%H:%M"),
-            "status": status,
-            "detail": detail,
-            "delivered_at": delivered_at,
-            "queued": bool(queued_item),
-            "config_marked": config_marked,
-            "sources": sources,
-        })
-
-    if attention:
-        overall = "attention"
-        summary = "Digest delivery needs attention"
-    elif watching:
-        overall = "watching"
-        summary = "Digest delivery is being watched"
-    else:
-        overall = "ok"
-        summary = "Digest delivery is on track"
     return {
         "today": today_key,
         "generated_at": current.strftime("%H:%M SGT"),
-        "overall": overall,
-        "summary": summary,
-        "slots": entries,
+        "overall": "off",
+        "summary": "Scheduled briefings are off",
+        "slots": [
+            {"slot": slot, "label": label, "time": "--:--", "status": "off",
+             "detail": "Automatic delivery is disabled"}
+            for slot, label in (("morning", "Morning"), ("evening", "Evening"))
+        ],
     }
 
 
 async def recover_missed_daily_briefings() -> dict:
-    current = datetime.now(bot.SGT)
-    today_key = current.strftime("%Y-%m-%d")
-    try:
-        delivery_log = await asyncio.to_thread(bot.gs.get_web_push_delivery_log)
-    except Exception as exc:
-        bot.logger.warning(f"Daily briefing safety net could not read delivery log: {exc}")
-        delivery_log = []
-
-    checks = [
-        (
-            "morning",
-            bot.MORNING_BRIEFING_TIME,
-            bot.MORNING_BRIEFING_CATCHUP_MINUTES,
-            bot.send_morning_briefing_once,
-        ),
-        (
-            "evening",
-            bot.EVENING_BRIEFING_TIME,
-            bot.EVENING_BRIEFING_CATCHUP_MINUTES,
-            bot.send_evening_briefing_once,
-        ),
-    ]
-    attempted = 0
-    delivered = 0
-    skipped = 0
-    for slot, when, grace_minutes, sender in checks:
-        target = current.replace(hour=when[0], minute=when[1], second=0, microsecond=0)
-        grace_until = target + bot.timedelta(minutes=grace_minutes)
-        if not (target <= current <= grace_until):
-            skipped += 1
-            continue
-        if await asyncio.to_thread(_daily_briefing_confirmed, slot, today_key, delivery_log):
-            skipped += 1
-            continue
-        attempted += 1
-        source = f"{slot}_briefing"
-        bot.logger.warning(f"Daily briefing safety net running missed {slot} briefing for {today_key}")
-        if await sender(context=None, source=source):
-            delivered += 1
-    return {"attempted": attempted, "delivered": delivered, "skipped": skipped}
+    return {"attempted": 0, "delivered": 0, "skipped": 2}
 
 
 async def run_web_push_recovery_once() -> dict:
@@ -970,38 +780,9 @@ async def start_web_scheduler():
     if not _WEB_INLINE_SCHEDULER:
         bot.logger.info("Web inline scheduler disabled; use HIRA_SERVICE_MODE=pwa_worker for proactive jobs.")
         return
-    enabled = os.environ.get("HIRA_WEB_MORNING_BRIEFING", "1").strip().lower() not in {"0", "false", "no", "off"}
-    evening_enabled = os.environ.get("HIRA_WEB_EVENING_BRIEFING", "1").strip().lower() not in {"0", "false", "no", "off"}
-    prayer_enabled = os.environ.get("HIRA_WEB_PRAYER_REMINDERS", "1").strip().lower() not in {"0", "false", "no", "off"}
     khutbah_enabled = os.environ.get("HIRA_WEB_FRIDAY_KHUTBAH", "1").strip().lower() not in {"0", "false", "no", "off"}
     if _WEB_SCHEDULER_TASKS:
         return
-    if enabled:
-        morning_hour, morning_minute = bot.MORNING_BRIEFING_TIME
-        _WEB_SCHEDULER_TASKS.append(asyncio.create_task(
-            _web_daily_briefing_loop(
-                morning_hour,
-                morning_minute,
-                bot.send_morning_briefing_once,
-                "morning_briefing",
-                grace_minutes=bot.MORNING_BRIEFING_CATCHUP_MINUTES,
-                retry_until_success=True,
-            )
-        ))
-    if evening_enabled:
-        evening_hour, evening_minute = bot.EVENING_BRIEFING_TIME
-        _WEB_SCHEDULER_TASKS.append(asyncio.create_task(
-            _web_daily_briefing_loop(
-                evening_hour,
-                evening_minute,
-                bot.send_evening_briefing_once,
-                "evening_briefing",
-                grace_minutes=bot.EVENING_BRIEFING_CATCHUP_MINUTES,
-                retry_until_success=True,
-            )
-        ))
-    if prayer_enabled:
-        _WEB_SCHEDULER_TASKS.append(asyncio.create_task(_web_prayer_reminder_loop()))
     if khutbah_enabled:
         _WEB_SCHEDULER_TASKS.append(asyncio.create_task(_web_friday_khutbah_loop()))
 

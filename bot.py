@@ -8560,7 +8560,7 @@ def build_proactive_v2_queue(now: datetime | None = None, days: int = 7, familie
     candidates: list[dict] = []
 
     def allow(family: str) -> bool:
-        return allowed is None or family in allowed
+        return family not in {"prayer", "weekly_planning"} and (allowed is None or family in allowed)
 
     if google_ok():
         try:
@@ -8991,6 +8991,8 @@ async def _dispatch_proactive_candidates(context, candidates: list[dict], limit:
     current = datetime.now(SGT)
     for candidate in candidates:
         if candidate.get("suppressed"):
+            continue
+        if _low_value_notification_block_reason(candidate.get("source", "")):
             continue
         if _calendar_candidate_is_stale(candidate, now=current):
             continue
@@ -10996,6 +10998,11 @@ def _notification_expired_action_reason(
 
 
 def _low_value_notification_block_reason(source: str = "", title: str = "", body: str = "") -> str:
+    group = _notification_source_group(source)
+    if group in {"prayer", "web_prayer", "prayer_reminders", "morning_briefing",
+                 "web_morning_briefing", "evening_briefing", "web_evening_briefing",
+                 "weekly_planning"}:
+        return "prayer_and_scheduled_briefings_disabled"
     clean = " ".join(f"{source} {title} {body}".lower().split())
     if "no tracked assignments yet" in clean and "start tracking from a contents item" in clean:
         return "classops_empty_assignment_state"
@@ -20729,10 +20736,6 @@ async def _send_telegram_notification(context, text: str):
         return False
 
 
-async def morning_briefing_job(context):
-    return await send_morning_briefing_once(context, source="morning_briefing")
-
-
 def _friday_checkin_text() -> str:
     projs = gs.get_projects()
     lines = ["*Weekly project check-in*\n"]
@@ -20785,24 +20788,6 @@ async def self_audit_job(context=None):
     except Exception as e:
         logger.error(f"Self-audit error: {e}")
 
-
-async def evening_briefing_job(context):
-    return await send_evening_briefing_once(context, source="evening_briefing")
-
-async def weekly_planning_job(context):
-    if not google_ok():
-        return
-    if not _acquire_job_lock("weekly_planning", 900):
-        return
-    try:
-        sent = await _dispatch_proactive_candidates(context, build_proactive_v2_queue(now=datetime.now(SGT), families={"weekly_planning"}), limit=1)
-        if sent:
-            return
-        text = build_weekly_plan()
-        await _send_telegram_notification(context, text)
-        _queue_app_notification("update", "Weekly plan", text, source="weekly_planning")
-    except Exception as e:
-        logger.error(f"Weekly planning error: {e}")
 
 async def proactive_nudges_job(context):
     if not google_ok():
@@ -20878,17 +20863,6 @@ async def daily_checkins_job(context):
         logger.error(f"Daily check-in error: {e}")
     finally:
         _finish_background_job("daily_checkins")
-
-
-async def prayer_reminders_job(context):
-    if not google_ok():
-        return
-    if not _acquire_job_lock("prayer_reminders", 55):
-        return
-    try:
-        await _dispatch_proactive_candidates(context, build_proactive_v2_queue(now=datetime.now(SGT), families={"prayer"}), limit=2)
-    except Exception as e:
-        logger.error(f"Prayer reminder error: {e}")
 
 
 async def friday_khutbah_job(context):
@@ -21233,26 +21207,7 @@ def _pwa_daily_job_due(
 
 
 def _pwa_daily_job_specs() -> list[dict]:
-    morning_hour, morning_minute = MORNING_BRIEFING_TIME
-    evening_hour, evening_minute = EVENING_BRIEFING_TIME
     return [
-        {
-            "name": "morning_briefing",
-            "hour": morning_hour,
-            "minute": morning_minute,
-            "job": morning_briefing_job,
-            "grace_minutes": MORNING_BRIEFING_CATCHUP_MINUTES,
-            "retry_until_success": True,
-        },
-        {
-            "name": "evening_briefing",
-            "hour": evening_hour,
-            "minute": evening_minute,
-            "job": evening_briefing_job,
-            "grace_minutes": EVENING_BRIEFING_CATCHUP_MINUTES,
-            "retry_until_success": True,
-        },
-        {"name": "weekly_planning", "hour": 19, "minute": 30, "job": weekly_planning_job, "days": (6,)},
         {"name": "friday_khutbah", "hour": 10, "minute": 30, "job": friday_khutbah_job, "days": (4,)},
         {"name": "friday_checkin", "hour": 17, "minute": 0, "job": friday_checkin_job, "days": (4,)},
         {"name": "self_audit", "hour": 17, "minute": 15, "job": self_audit_job, "days": (4,)},
@@ -21272,7 +21227,6 @@ def _pwa_repeating_job_specs() -> list[tuple[str, object]]:
         ("calendar_reminders", calendar_reminders_job),
         ("proactive_intelligence", proactive_intelligence_job),
         ("daily_checkins", daily_checkins_job),
-        ("prayer_reminders", prayer_reminders_job),
         ("followups", followups_job),
         ("work_gmail_monitor", work_gmail_monitor_job),
     ]
@@ -21321,26 +21275,7 @@ async def run_pwa_notification_worker():
     _log_memory("pwa_worker startup", force=True)
     await asyncio.to_thread(seed_playbooks_if_needed)
     await asyncio.to_thread(sync_openai_vector_memory, reason="pwa_worker_startup")
-    morning_hour, morning_minute = MORNING_BRIEFING_TIME
-    evening_hour, evening_minute = EVENING_BRIEFING_TIME
     tasks = [
-        asyncio.create_task(_pwa_worker_daily_loop(
-            "morning_briefing",
-            morning_hour,
-            morning_minute,
-            morning_briefing_job,
-            grace_minutes=MORNING_BRIEFING_CATCHUP_MINUTES,
-            retry_until_success=True,
-        )),
-        asyncio.create_task(_pwa_worker_daily_loop(
-            "evening_briefing",
-            evening_hour,
-            evening_minute,
-            evening_briefing_job,
-            grace_minutes=EVENING_BRIEFING_CATCHUP_MINUTES,
-            retry_until_success=True,
-        )),
-        asyncio.create_task(_pwa_worker_daily_loop("weekly_planning", 19, 30, weekly_planning_job, days=(6,))),
         asyncio.create_task(_pwa_worker_daily_loop("friday_khutbah", 10, 30, friday_khutbah_job, days=(4,))),
         asyncio.create_task(_pwa_worker_daily_loop("friday_checkin", 17, 0, friday_checkin_job, days=(4,))),
         asyncio.create_task(_pwa_worker_daily_loop("self_audit", 17, 15, self_audit_job, days=(4,))),
@@ -21369,7 +21304,6 @@ async def run_pwa_notification_worker():
             20,
             daily_checkins_job,
         )),
-        asyncio.create_task(_pwa_worker_repeating_loop("prayer_reminders", 60, 30, prayer_reminders_job)),
         asyncio.create_task(_pwa_worker_repeating_loop(
             "followups",
             JOB_INTERVALS["followups"],
@@ -21480,11 +21414,6 @@ def main():
     if _unauth_handler_obj:
         app.add_handler(_unauth_handler_obj)
     jq = app.job_queue
-    morning_hour, morning_minute = MORNING_BRIEFING_TIME
-    evening_hour, evening_minute = EVENING_BRIEFING_TIME
-    jq.run_daily(morning_briefing_job, time=dt_time(morning_hour, morning_minute, 0, tzinfo=SGT), name="morning_briefing")
-    jq.run_daily(evening_briefing_job, time=dt_time(evening_hour, evening_minute, 0, tzinfo=SGT), name="evening_briefing")
-    jq.run_daily(weekly_planning_job, time=dt_time(19, 30, 0, tzinfo=SGT), days=(6,), name="weekly_planning")
     jq.run_daily(friday_khutbah_job, time=dt_time(10, 30, 0, tzinfo=SGT), days=(4,), name="friday_khutbah")
     jq.run_daily(friday_checkin_job,   time=dt_time(17, 0, 0, tzinfo=SGT), days=(4,), name="friday_checkin")
     jq.run_daily(self_audit_job, time=dt_time(17, 15, 0, tzinfo=SGT), days=(4,), name="self_audit")
@@ -21515,13 +21444,6 @@ def main():
         interval=JOB_INTERVALS["daily_checkins"],
         first=20,
         name="daily_checkins",
-        job_kwargs={"coalesce": True, "max_instances": 1},
-    )
-    jq.run_repeating(
-        prayer_reminders_job,
-        interval=60,
-        first=30,
-        name="prayer_reminders",
         job_kwargs={"coalesce": True, "max_instances": 1},
     )
     jq.run_repeating(

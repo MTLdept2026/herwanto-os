@@ -382,10 +382,6 @@
             <span data-lucide="settings" aria-hidden="true"></span>
             Settings
           </button>
-          <button id="restoreBriefingsBtn" type="button" class="home-action-btn home-action-secondary" hidden>
-            <span data-lucide="eye" aria-hidden="true"></span>
-            Show Briefings
-          </button>
         </div>
         <section class="today-focus-strip" aria-label="Today focus">
           <article class="focus-tile focus-now">
@@ -569,22 +565,6 @@
             <div class="segment-bar services-segments" aria-hidden="true"></div>
           </section>
 
-          <section class="ops-card briefing-delivery-card">
-            <div class="briefing-delivery-head">
-              <div>
-                <p class="eyebrow">Digest Delivery</p>
-                <h3 id="briefingDeliverySummary">Checking</h3>
-              </div>
-              <strong id="briefingDeliveryBadge" class="briefing-delivery-badge status-off">WAIT</strong>
-            </div>
-            <div id="briefingDeliveryRows" class="briefing-delivery-rows">
-              <div class="briefing-delivery-row is-empty">
-                <span>Morning</span>
-                <strong>Checking</strong>
-                <small>Delivery status will appear here.</small>
-              </div>
-            </div>
-          </section>
 
           <section class="ops-card classops-home-card">
             <div class="classops-card-head">
@@ -639,89 +619,8 @@
             <div id="homeLivingTimeline" class="living-timeline"></div>
           </section>
 
-          <details class="home-drawer ops-card-wide" data-home-section="priority">
-            <summary>
-              <span>
-                <span class="eyebrow">Briefing</span>
-                <strong>Priority Queue</strong>
-              </span>
-              <span class="drawer-actions">
-                <button type="button" class="icon-btn compact speak-target-btn" data-speak-target="homeProactive" title="Speak priority queue" aria-label="Speak priority queue">
-                  <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M11 5 6 9H3v6h3l5 4V5Z" />
-                    <path d="M15.5 8.5a5 5 0 0 1 0 7" />
-                    <path d="M19 5a9 9 0 0 1 0 14" />
-                  </svg>
-                </button>
-                <button type="button" class="icon-btn compact drawer-close" data-home-dismiss="priority" title="Close priority queue" aria-label="Close priority queue">
-                  <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
-                    <path d="M18 6 6 18" />
-                    <path d="m6 6 12 12" />
-                  </svg>
-                </button>
-                <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="m6 9 6 6 6-6" />
-                </svg>
-              </span>
-            </summary>
-            <div id="homeProactive" class="rich-output"></div>
-          </details>
 
-          <details class="home-drawer ops-card-wide" data-home-section="digest">
-            <summary>
-              <span>
-                <span class="eyebrow">Briefing</span>
-                <strong>Morning Digest</strong>
-              </span>
-              <span class="drawer-actions">
-                <button type="button" class="icon-btn compact speak-target-btn" data-speak-target="homeDigest" title="Speak morning digest" aria-label="Speak morning digest">
-                  <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M11 5 6 9H3v6h3l5 4V5Z" />
-                    <path d="M15.5 8.5a5 5 0 0 1 0 7" />
-                    <path d="M19 5a9 9 0 0 1 0 14" />
-                  </svg>
-                </button>
-                <button type="button" class="icon-btn compact drawer-close" data-home-dismiss="digest" title="Close morning digest" aria-label="Close morning digest">
-                  <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
-                    <path d="M18 6 6 18" />
-                    <path d="m6 6 12 12" />
-                  </svg>
-                </button>
-                <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="m6 9 6 6 6-6" />
-                </svg>
-              </span>
-            </summary>
-            <div id="homeDigest" class="rich-output"></div>
-          </details>
 
-          <details class="home-drawer ops-card-wide" data-home-section="islamic">
-            <summary>
-              <span>
-                <span class="eyebrow">Briefing</span>
-                <strong>Islamic Rhythm</strong>
-              </span>
-              <span class="drawer-actions">
-                <button type="button" class="icon-btn compact speak-target-btn" data-speak-target="homeIslamic" title="Speak Islamic rhythm" aria-label="Speak Islamic rhythm">
-                  <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M11 5 6 9H3v6h3l5 4V5Z" />
-                    <path d="M15.5 8.5a5 5 0 0 1 0 7" />
-                    <path d="M19 5a9 9 0 0 1 0 14" />
-                  </svg>
-                </button>
-                <button type="button" class="icon-btn compact drawer-close" data-home-dismiss="islamic" title="Close Islamic rhythm" aria-label="Close Islamic rhythm">
-                  <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
-                    <path d="M18 6 6 18" />
-                    <path d="m6 6 12 12" />
-                  </svg>
-                </button>
-                <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="m6 9 6 6 6-6" />
-                </svg>
-              </span>
-            </summary>
-            <div id="homeIslamic" class="rich-output"></div>
-          </details>
 
           <details class="home-drawer ops-card-wide">
             <summary>

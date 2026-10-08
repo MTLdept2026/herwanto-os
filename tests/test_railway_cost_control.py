@@ -15,9 +15,6 @@ class RailwayCronSchedulingTests(unittest.IsolatedAsyncioTestCase):
         repeating = {name for name, _job in bot._pwa_repeating_job_specs()}
 
         self.assertEqual(daily, {
-            "morning_briefing",
-            "evening_briefing",
-            "weekly_planning",
             "friday_khutbah",
             "friday_checkin",
             "self_audit",
@@ -28,10 +25,30 @@ class RailwayCronSchedulingTests(unittest.IsolatedAsyncioTestCase):
             "calendar_reminders",
             "proactive_intelligence",
             "daily_checkins",
-            "prayer_reminders",
             "followups",
             "work_gmail_monitor",
         })
+
+    async def test_disabled_notification_families_never_dispatch_to_telegram(self):
+        candidates = [{"source": source} for source in (
+            "prayer:2026-10-08:maghrib", "weekly_planning", "morning_briefing:2026-10-08",
+        )]
+        with patch.object(bot, "_dispatch_candidate_payload") as payload:
+            result = await bot._dispatch_proactive_candidates(object(), candidates)
+        self.assertEqual(result, 0)
+        payload.assert_not_called()
+
+    def test_disabled_notifications_are_blocked_before_storage(self):
+        with (
+            patch.object(bot.gs, "enqueue_app_notification") as enqueue,
+            patch.object(bot, "_record_notification_outcome"),
+        ):
+            for source in ("prayer:2026-10-08:maghrib", "web_prayer:2026-10-08:maghrib",
+                           "morning_briefing:2026-10-08", "web_evening_briefing:2026-10-08",
+                           "weekly_planning"):
+                with self.subTest(source=source):
+                    self.assertIsNone(bot._queue_app_notification("reminder", "Title", "Body", source))
+        enqueue.assert_not_called()
 
     def test_daily_window_uses_singapore_weekday_and_grace(self):
         friday = bot.SGT.localize(datetime(2026, 8, 21, 17, 19))
@@ -91,6 +108,24 @@ class RailwayCronSchedulingTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RailwayPushRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    def test_recovery_archives_disabled_notifications_without_pushing(self):
+        items = [{"id": str(i), "source": source, "body": "Body", "title": "Title"}
+                 for i, source in enumerate(("prayer:2026-10-08:maghrib",
+                                             "morning_briefing:2026-10-08", "weekly_planning"))]
+        with (
+            patch.object(bot, "archive_completed_task_reminder_notifications", return_value=[]),
+            patch.object(bot.gs, "get_app_notifications", return_value=items),
+            patch.object(bot.gs, "get_web_push_delivery_log", return_value=[]),
+            patch.object(bot.gs, "archive_app_notifications", return_value=3) as archive,
+            patch.object(bot.gs, "send_web_push_notification") as push,
+            patch.object(bot, "_record_notification_outcome"),
+        ):
+            result = web_app.recover_missed_push_notifications()
+        self.assertEqual(result["attempted"], 0)
+        self.assertEqual(result["sent"], 0)
+        archive.assert_any_call(["0", "1", "2"])
+        push.assert_not_called()
+
     async def test_one_shot_recovery_preserves_notification_and_briefing_checks(self):
         notifications = {"attempted": 2, "sent": 1, "skipped": 1}
         briefings = {"attempted": 1, "delivered": 1, "skipped": 0}
